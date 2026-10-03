@@ -1,0 +1,32 @@
+# Assessor Integrado - dependencias diretas (fonte do requisitos.txt).
+# O requisitos.txt e gerado a partir deste arquivo, com versoes e hashes
+# travados para Windows 64 bits / Python 3.12:
+#   uv pip compile instalador/requisitos.in --python-platform windows
+#      --python-version 3.12 --generate-hashes -o instalador/requisitos.txt
+
+# Transcricao (traz ctranslate2, onnxruntime, av/PyAV e tokenizers)
+faster-whisper==1.2.1
+huggingface-hub
+sounddevice
+soundfile
+numpy
+
+# Documentos
+python-docx
+pymupdf
+pypdf
+openpyxl
+xlrd
+
+# Download nos portais
+playwright
+
+# Interface e rede
+pillow
+requests
+truststore
+
+# DLLs do Visual C++ dentro do proprio Python (onnxruntime e ctranslate2
+# precisam delas; sem isto, um Windows sem o "Visual C++ Redistributable"
+# daria "DLL load failed" - e instala-lo pediria administrador)
+msvc-runtime

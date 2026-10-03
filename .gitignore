@@ -1,0 +1,12 @@
+# Restos do Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Dados e runtime do Assessor Integrado (nunca vão para o repositório)
+/AssessorIntegrado/runtime/
+/AssessorIntegrado/Acervo/
+/AssessorIntegrado/Sigilosos/
+/AssessorIntegrado/Logs/
+/AssessorIntegrado/config.ini
+/AssessorIntegrado/enderecos-locais.json
