@@ -483,6 +483,9 @@ class _PaginaFalsa:
     def evaluate(self, *a, **k):
         return None
 
+    def inner_text(self, *a, **k):
+        return ler_html(self.html).texto()
+
 
 class _NavPagina(_NavJanela):
     def __init__(self, url: str = "", html: str = "", visivel: bool = True):
@@ -574,7 +577,8 @@ class TestRegressoesSemNavegador(apoio.PastaTemporaria):
     def test_link_por_script_e_icone_com_data_doc_diferente(self):
         html = """<table id='tblEventos'><tr id='trEvento2'><td>2</td><td>02/02/2024 10:00</td>
           <td><label class='infraEventoDescricao'>JUNTADA</label></td><td></td><td>
-          <a class='infraLinkDocumento' href='controlador.php?acao=acessar_documento&amp;doc=777&amp;hash=a'><img src='pdf.gif'></a>
+          <a class='infraLinkDocumento'
+             href='controlador.php?acao=acessar_documento&amp;doc=777&amp;hash=a'><img></a>
           <a class='infraLinkDocumento' data-doc='X777' data-mimetype='pdf'
              href='controlador.php?acao=acessar_documento&amp;doc=777&amp;hash=a'>PET1</a>
           <a class='infraLinkDocumento' href='#' data-mimetype='pdf'
@@ -708,6 +712,23 @@ class TestRegressoesSemNavegador(apoio.PastaTemporaria):
         with self.assertRaises(modelos.ProcessoNaoEncontrado):
             portal._abrir_processo(self.n)
 
+    def test_alerta_da_pesquisa_rapida_nao_responde_pela_consulta(self):
+        portal = self.portal()
+
+        def rapida(n):
+            portal._avisos_portal.append("Processo não encontrado.")
+            return "nao_encontrado"
+
+        # a consulta lê os alertas junto com a tela: o da pesquisa rápida não
+        # pode valer como resposta dela
+        portal._pela_pesquisa_rapida = rapida
+        portal._pela_consulta = lambda n: ("nao_encontrado" if portal._avisos_portal
+                                           else "desconhecido")
+        with self.assertRaises(RuntimeError) as caso:
+            portal._abrir_processo(self.n)
+        self.assertNotIsInstance(caso.exception, modelos.ProcessoNaoEncontrado)
+        self.assertIn("não respondeu para confirmar", str(caso.exception))
+
     def test_conferencia_do_numero_sem_o_campo_da_capa(self):
         outro = apoio.numero("5009999", tr="21")
         # a lista de relacionados "continha" os 20 dígitos colados a outros números
@@ -724,6 +745,21 @@ class TestRegressoesSemNavegador(apoio.PastaTemporaria):
         nav = _NavPagina("https://e/eproc/controlador.php?acao=processo_selecionar&hash=1",
                          f"<table id='tblEventos'></table><h1>Processo {self.n.formatado}</h1>")
         self.portal(nav)._chegou(self.n)
+        # campo do número com outro processo que só MENCIONA este
+        nav = _NavPagina("https://e/eproc/controlador.php?acao=processo_selecionar&hash=1",
+                         f"<span id='txtNumProcesso'>{outro.formatado} (originário: "
+                         f"{self.n.formatado})</span>")
+        with self.assertRaises(RuntimeError):
+            self.portal(nav)._chegou(self.n)
+
+    def test_processo_selecionar_que_diz_nao_encontrado(self):
+        # o endereço processo_selecionar sozinho fazia a página de "não
+        # encontrado" passar por página do processo (e virar erro repetido)
+        nav = _NavPagina("https://e/eproc/controlador.php?acao=processo_selecionar"
+                         f"&num_processo={self.n.digitos}&hash=1",
+                         "<div class='infraMensagem'>Processo não encontrado.</div>")
+        self.assertEqual(self.portal(nav)._classificar(self.n, seguir_link=False),
+                         "nao_encontrado")
 
     def test_ancora_nao_e_o_post_da_escolha_de_perfil(self):
         painel = "controlador.php?acao=painel_adv_listar&hash=abc"

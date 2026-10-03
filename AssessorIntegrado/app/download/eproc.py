@@ -1387,11 +1387,12 @@ _JS_LINKS_COMPLETO = r"""() => {
     const vistos = [], saida = [];
     document.querySelectorAll('a[href]').forEach(a => {
         const h = a.href || '';
-        if (!(/download_completo_download_pronto_enviar|\/download72h\//).test(h) || vistos.includes(h))
-            return;
+        const pronto = /download_completo_download_pronto_enviar|\/download72h\//;
+        if (!pronto.test(h) || vistos.includes(h)) return;
         vistos.push(h);
         let linha = a.closest('tr, li, p');
-        if (!linha) linha = (a.parentElement && a.parentElement !== document.body) ? a.parentElement : a;
+        if (!linha)
+            linha = (a.parentElement && a.parentElement !== document.body) ? a.parentElement : a;
         saida.push({href: h, texto: String(linha.innerText || '').slice(0, 2000)});
     });
     return saida;
@@ -2339,6 +2340,9 @@ class PortalEProc:
                             "procuração ou restrito). Peça vista no portal")
         if rapida != "indisponivel":
             log.info("    a pesquisa rápida não abriu o processo; tentando a consulta processual.")
+        # O alerta "Processo não encontrado" da pesquisa rápida não pode ser
+        # lido de novo como a resposta da consulta (que é quem confirma).
+        self._avisos_portal.clear()
         consulta = self._pela_consulta(numero)
         if consulta == "processo":
             return self._chegou(numero)
@@ -2397,8 +2401,11 @@ class PortalEProc:
         return resultado[0]
 
     def _na_pagina_do_processo(self, raiz: No) -> bool:
-        return (primeiro(raiz, self.sel.get("processo_pagina", [])) is not None
-                or "acao=processo_selecionar" in self._url())
+        if primeiro(raiz, self.sel.get("processo_pagina", [])) is not None:
+            return True
+        # Só o endereço não basta: processo_selecionar também responde
+        # "Processo não encontrado" (processo baixado, número de outro órgão).
+        return "acao=processo_selecionar" in self._url() and not diz_nao_encontrado(raiz.texto())
 
     def _classificar(self, numero: Numero, seguir_link: bool = True) -> str:
         """processo | sem_acesso | nao_encontrado | desconhecido."""
@@ -2532,9 +2539,17 @@ class PortalEProc:
         self._esperar_carga()
         raiz = ler_html(self._html())
         no = primeiro(raiz, self.sel.get("capa_numero", []))
-        achados = re.sub(r"\D", "", no.texto() or no.attr("value")) if no is not None else ""
+        bruto = (no.texto() or no.attr("value")) if no is not None else ""
+        achados = re.sub(r"\D", "", bruto)
         trocados = "não baixei, para não gravar autos trocados"
-        if achados:
+        # O número do processo é o PRIMEIRO do campo: "5000099-... (originário:
+        # <este>)" é a página de outro processo que só menciona este.
+        numeros = [re.sub(r"\D", "", x) for x in _RE_CNJ_SOLTO.findall(bruto)]
+        if numeros:
+            if numeros[0] != numero.digitos:
+                raise RuntimeError(f"a página aberta é de outro processo ({bruto[:40]}); "
+                                   f"{trocados}")
+        elif achados:
             if numero.digitos not in achados:
                 raise RuntimeError(f"a página aberta é de outro processo "
                                    f"({(no.texto() or achados)[:40]}); {trocados}")
