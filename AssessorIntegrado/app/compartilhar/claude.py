@@ -156,9 +156,12 @@ def entrada_mcp(pasta_acervo: Path) -> dict:
     """A entrada do servidor no formato do claude_desktop_config.json."""
     return {
         "command": str(caminhos.python_exe(janela=False)),
-        "args": ["-m", "app.compartilhar.mcp_servidor", "--pasta", str(Path(pasta_acervo).resolve())],
+        # -s e PYTHONNOUSERSITE: pacote instalado pelo usuário em outro
+        # Python (pasta "site" do perfil) não pode se misturar com o nosso.
+        "args": ["-s", "-m", "app.compartilhar.mcp_servidor", "--pasta",
+                 str(Path(pasta_acervo).resolve())],
         "env": {"PYTHONPATH": str(caminhos.RAIZ), "PYTHONIOENCODING": "utf-8",
-                "PYTHONUTF8": "1"},
+                "PYTHONUTF8": "1", "PYTHONNOUSERSITE": "1"},
     }
 
 

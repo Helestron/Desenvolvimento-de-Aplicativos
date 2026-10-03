@@ -162,9 +162,14 @@ class TesteJanela(unittest.TestCase):
     def test_todas_as_paginas_abrem(self):
         from app.interface.janela import PaginaComErro
 
-        self.assertEqual(list(self.j.paginas), ["inicio", "baixar", "transcrever", "compartilhar",
-                                                "config", "ajuda"])
-        for nome, pagina in self.j.paginas.items():
+        from app.interface.janela import NOMES
+
+        self.assertEqual(NOMES, ("inicio", "baixar", "transcrever", "compartilhar", "config",
+                                 "ajuda"))
+        # as páginas se montam sozinhas logo depois da tela inicial
+        self.assertTrue(self.bombear(ate=lambda: len(self.j.paginas) == len(NOMES)))
+        for nome in NOMES:
+            pagina = self.j.paginas[nome]
             self.assertNotIsInstance(pagina, PaginaComErro, nome)
             self.j.mostrar(nome)
             self.bombear(0.05)

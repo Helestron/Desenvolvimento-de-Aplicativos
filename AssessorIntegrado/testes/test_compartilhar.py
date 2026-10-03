@@ -155,7 +155,7 @@ class TestClaude(BaseAcervo):
         self.assertEqual(set(dados["mcpServers"]), {"outro", claude.NOME_MCP})
         self.assertTrue(dados["coworkScheduledTasksEnabled"])
         entrada = dados["mcpServers"][claude.NOME_MCP]
-        self.assertEqual(entrada["args"][:2], ["-m", "app.compartilhar.mcp_servidor"])
+        self.assertEqual(entrada["args"][:3], ["-s", "-m", "app.compartilhar.mcp_servidor"])
         self.assertTrue(list(arq.parent.glob("*antes-do-assessor*")))
         self.assertEqual(claude.registrar_mcp(self.raiz, [arq]), [])   # nada mudou
 

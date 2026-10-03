@@ -64,10 +64,26 @@ PAGINAS = (
     ("config", "pagina_config", "PaginaConfig"),
     ("ajuda", "pagina_ajuda", "PaginaAjuda"),
 )
+NOMES = tuple(d[0] for d in PAGINAS if d is not None)
 ROTULOS = {"inicio": ("Início", "inicio"), "baixar": ("Baixar processos", "baixar"),
            "transcrever": ("Transcrever audiência", "transcrever"),
            "compartilhar": ("Compartilhar com IA", "compartilhar"),
            "config": ("Configurações", "config"), "ajuda": ("Ajuda", "ajuda")}
+
+
+class _Paginas(dict):
+    """As páginas já montadas; pedir uma que falta a monta na hora.
+
+    get() e a iteração NÃO montam: quem só consulta (indicadores, fechar)
+    vê apenas as páginas que já existem - as outras não têm trabalho nenhum.
+    """
+
+    def __init__(self, janela: "Janela"):
+        super().__init__()
+        self._janela = janela
+
+    def __missing__(self, nome: str):
+        return self._janela._construir(nome)
 
 
 class PaginaComErro(componentes.Pagina):
@@ -96,7 +112,7 @@ class Janela:
         self.recursos = Recursos()
         # Senhas digitadas sem "Lembrar": valem só enquanto o programa está aberto.
         self.credenciais_sessao: dict[str, tuple[str, str]] = {}
-        self.paginas: dict[str, componentes.Pagina] = {}
+        self.paginas: _Paginas = _Paginas(self)
         self.atual: str | None = None
         self.registro_geral: collections.deque = collections.deque(maxlen=componentes.MAX_LINHAS_REGISTRO)
         self.codigo_saida = 0
@@ -114,6 +130,7 @@ class Janela:
         raiz.protocol("WM_DELETE_WINDOW", self.fechar)
         self.mostrar("inicio")
         raiz.after(TICK_MS, self._consumir)
+        raiz.after(250, self._construir_restantes)
         if not teste and not self.cfg.flag("interface", "assistente_concluido"):
             raiz.after(500, self.abrir_assistente)
 
@@ -148,17 +165,51 @@ class Janela:
             if definicao is None:
                 self.barra.separador()
                 continue
-            nome, modulo, classe = definicao
+            nome = definicao[0]
             titulo, icone = ROTULOS[nome]
-            try:
-                mod = importlib.import_module(f"{__package__}.{modulo}")
-                pagina = getattr(mod, classe)(self.painel, self)
-            except Exception as erro:          # uma página quebrada não derruba a janela
-                log.exception("a página %s não abriu", nome)
-                pagina = PaginaComErro(self.painel, self, nome, titulo, icone, erro)
-            pagina.grid(row=0, column=0, sticky="nsew")
-            self.paginas[nome] = pagina
             self.barra.adicionar(nome, titulo, icone)
+
+    def _construir(self, nome: str) -> componentes.Pagina:
+        """Monta a página na primeira vez em que é pedida.
+
+        A janela abre só com a tela inicial pronta; as demais páginas são
+        montadas logo depois, uma a uma, no tempo ocioso (_construir_restantes)
+        - ou na hora, se o usuário clicar antes. Em computador modesto, montar
+        tudo de uma vez segurava a primeira imagem da janela por segundos.
+        """
+        import importlib
+
+        definicao = next((d for d in PAGINAS if d is not None and d[0] == nome), None)
+        if definicao is None:
+            raise KeyError(nome)
+        _, modulo, classe = definicao
+        titulo, icone = ROTULOS[nome]
+        try:
+            mod = importlib.import_module(f"{__package__}.{modulo}")
+            pagina = getattr(mod, classe)(self.painel, self)
+        except Exception as erro:          # uma página quebrada não derruba a janela
+            log.exception("a página %s não abriu", nome)
+            pagina = PaginaComErro(self.painel, self, nome, titulo, icone, erro)
+        pagina.grid(row=0, column=0, sticky="nsew")
+        if self.atual is not None and self.atual in self.paginas:
+            self.paginas[self.atual].tkraise()     # a nova não cobre a que está à vista
+        dict.__setitem__(self.paginas, nome, pagina)
+        return pagina
+
+    def _construir_restantes(self) -> None:
+        for nome in NOMES:
+            if nome not in self.paginas:
+                try:
+                    self.paginas[nome]
+                except Exception:
+                    log.exception("falha ao montar a página %s", nome)
+                if self._viva():
+                    self.raiz.after(30, self._construir_restantes)
+                return
+
+    def pagina(self, nome: str) -> componentes.Pagina:
+        """A página, montada se ainda não estiver."""
+        return self.paginas[nome]
 
     def _largura_mudou(self, evento) -> None:
         """Abaixo de ~1060 px (de projeto), a barra lateral vira trilho."""
@@ -173,8 +224,7 @@ class Janela:
             logging.getLogger().setLevel(logging.INFO)
 
     def _atalhos(self) -> None:
-        nomes = [d[0] for d in PAGINAS if d is not None]
-        for i, nome in enumerate(nomes, 1):
+        for i, nome in enumerate(NOMES, 1):
             self.raiz.bind_all(f"<Control-Key-{i}>", lambda _e, n=nome: self.mostrar(n))
         for k in range(1, 13):
             self.raiz.bind_all(f"<Key-F{k}>", self._tecla_funcao)
@@ -190,9 +240,9 @@ class Janela:
 
     # ------------------------------------------------------------- navegação
     def mostrar(self, nome: str) -> None:
-        pagina = self.paginas.get(nome)
-        if pagina is None or nome == self.atual:
+        if nome not in NOMES or nome == self.atual:
             return
+        pagina = self.paginas[nome]
         anterior = self.paginas.get(self.atual or "")
         if anterior is not None:
             try:
@@ -339,6 +389,8 @@ class Janela:
                 "Salvando o que estava em andamento. Isto leva poucos segundos.")
         self._esperar_e_destruir(time.monotonic() + ESPERA_FECHAR_S)
 
+    _fechar = fechar          # nome da base (WM_DELETE_WINDOW)
+
     def _esperar_e_destruir(self, limite: float) -> None:
         if any(p.ocupada for p in self.paginas.values()) and time.monotonic() < limite:
             self.raiz.after(150, lambda: self._esperar_e_destruir(limite))
@@ -374,7 +426,7 @@ class Janela:
         prova que cada tela abre e desenha sem erro.
         """
         passos: list = []
-        for nome in self.paginas:
+        for nome in NOMES:
             passos.append(("pagina", nome))
             if nome == "config":
                 aba = getattr(self.paginas[nome], "abas", None)
@@ -513,6 +565,6 @@ def executar(teste: bool = False, pasta_capturas: Path | None = None, cfg=None) 
     if teste:
         n = len(getattr(janela, "capturas", []))
         falhas = getattr(janela, "falhas_teste", [])
-        print(f"Teste de interface: {len(janela.paginas)} página(s), {n} captura(s)"
+        print(f"Teste de interface: {len(NOMES)} página(s), {n} captura(s)"
               + (f", {len(falhas)} falha(s): {'; '.join(falhas)}" if falhas else ", sem falhas."))
     return janela.codigo_saida

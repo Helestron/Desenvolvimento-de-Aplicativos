@@ -277,7 +277,7 @@ class PaginaCompartilhar(Pagina):
             self._exibir(self.btn_instalar_code, False)
             self.btn_code.state(["!disabled"])
         else:
-            code.estado.definir("Não instalado (requer plano pago do Claude)", "neutro")
+            code.estado.definir("Não instalado (exige plano pago do Claude)", "neutro")
             self._exibir(self.btn_instalar_code, True)
         nota = ""
         if claude.get("chave_no_ambiente"):
@@ -454,7 +454,7 @@ class PaginaCompartilhar(Pagina):
             if alterados:
                 self._recado("Sucesso", "Acervo conectado ao Claude Desktop",
                              "Feche e abra o Claude Desktop para ele carregar o conector "
-                             "“assessor-integrado” (ferramentas de leitura dos autos, só leitura).")
+                             "“assessor-integrado” (ferramentas que só leem os autos, sem alterar nada).")
             else:
                 self._recado("Info", "O acervo já estava conectado",
                              "Se o conector não aparece, feche o Claude Desktop pela bandeja do "

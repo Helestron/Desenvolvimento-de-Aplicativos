@@ -28,7 +28,7 @@ GUIAS = (
         "Digite o número do processo e escolha o microfone (Testar mostra o nível do som).",
         "Clique no botão redondo para iniciar. Marque quem está falando com os botões F1 a F8 "
         "— clique duas vezes num botão para trocar o nome.",
-        "Ao encerrar, o documento do Word fica na pasta Transcricoes, com o número do processo "
+        "Ao encerrar, o documento do Word fica na pasta “Transcricoes”, com o número do processo "
         "no nome. A gravação fica guardada para conferência.",
     )),
     ("cartao-compartilhar", "Compartilhar com IA", (
@@ -54,7 +54,7 @@ PROBLEMAS = (
      "Microfone › permita o acesso aos aplicativos da área de trabalho."),
     ("A transcrição atrasa muito", "Use o modelo “base” para a audiência ao vivo (Configurações "
      "› Transcrição) e revise depois com o modelo preciso."),
-    ("A luz caiu no meio da audiência", "Abra Transcrever audiência e use “Recuperar transcrição "
+    ("A luz caiu no meio da audiência", "Abra “Transcrever audiência” e use “Recuperar transcrição "
      "interrompida”: o que foi falado até a queda está salvo."),
     ("Algo não funciona", "Use “Verificar a instalação” e, se preciso, rode o INSTALAR.bat de "
      "novo: ele completa o que faltar sem apagar nada."),
@@ -139,8 +139,8 @@ class PaginaAjuda(Pagina):
                                                      "programa.")
 
     def _verificar(self) -> None:
-        config = self.janela.paginas.get("config")
         self.janela.mostrar("config")
+        config = self.janela.paginas.get("config")
         if config is not None and hasattr(config, "abas"):
             config.abas.select(len(config.abas.tabs()) - 1)
             if hasattr(config, "verificar"):

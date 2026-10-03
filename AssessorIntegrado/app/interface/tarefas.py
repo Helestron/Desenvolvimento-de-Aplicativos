@@ -119,7 +119,7 @@ class Tarefa:
         for nome in self.recursos:
             dono = ocupados.get(nome)
             if dono is not None and dono != self.nome:
-                return (f"{dono} está usando {NOMES.get(nome, nome)}. Espere terminar, "
+                return (f"{dono} está usando {NOMES.get(nome, nome)}. Espere terminar "
                         "ou interrompa aquele trabalho.")
         return None
 
@@ -130,7 +130,7 @@ class Tarefa:
         dono = self.gerente.tomar(self.nome, self.recursos)
         if dono is not None:
             quais = [NOMES.get(n, n) for n in self.recursos if self.gerente.quem_tem(n) == dono]
-            return (f"{dono} está usando {', '.join(quais) or 'um recurso'}. Espere terminar, "
+            return (f"{dono} está usando {', '.join(quais) or 'um recurso'}. Espere terminar "
                     "ou interrompa aquele trabalho.")
         self.parar.clear()
         self.erro = None

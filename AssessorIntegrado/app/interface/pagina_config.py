@@ -24,7 +24,7 @@ from .. import NOME, __version__
 from ..nucleo import caminhos, sistema, tribunais
 from . import componentes, dialogos, estilo, servicos
 from .acessos import EditorAcesso
-from .componentes import EstadoLinha, Faixa, Pagina
+from .componentes import EstadoLinha, Faixa, Pagina, plural
 from .estilo import px
 from .tarefas import NAVEGADOR, MODELO_REVISAO, ContextoTela
 
@@ -219,7 +219,7 @@ class PaginaConfig(Pagina):
             caixa.pack(anchor="w")
             caixa.bind("<FocusOut>", lambda _e, c=chave, v=var: self._salvar_numero(c, v))
         self._marcar(pai, "download", "salvar_diagnostico",
-                     "Guardar print e página quando algo der errado (ajuda o suporte)", 7)
+                     "Guardar a imagem e o código da tela quando algo der errado (ajuda o suporte)", 7)
 
     def _salvar_numero(self, chave: str, var: tk.StringVar) -> None:
         texto = var.get().strip().replace(",", ".")
@@ -567,11 +567,12 @@ class PaginaConfig(Pagina):
                            tags=(tag,))
             self.quadro_verif.grid()
             if falhas:
-                self.estado_verificar.definir(f"{falhas} item(ns) com falha. Rode o INSTALAR.bat "
-                                              "de novo.", "erro")
+                self.estado_verificar.definir(f"{plural(falhas, 'item', 'itens')} com falha. "
+                                              "Rode o INSTALAR.bat de novo.", "erro")
             elif avisos:
-                self.estado_verificar.definir(f"Tudo o que é essencial funciona; {avisos} "
-                                              "item(ns) pedem atenção.", "aviso")
+                self.estado_verificar.definir(
+                    f"Tudo o que é essencial funciona; "
+                    f"{plural(avisos, 'item pede', 'itens pedem')} atenção.", "aviso")
             else:
                 self.estado_verificar.definir("Tudo certo com a instalação.", "ok")
 

@@ -309,7 +309,7 @@ class PaginaInicio(Pagina):
         self.aviso.grid()
 
     def _baixar_modelo(self) -> None:
-        config = self.janela.paginas.get("config")
+        config = self.janela.pagina("config")
         if config is not None and hasattr(config, "baixar_modelo_ao_vivo"):
             self.janela.mostrar("config")
             config.baixar_modelo_ao_vivo()

@@ -344,8 +344,9 @@ class PaginaBaixar(Pagina):
                           "de novo.".format("guarda" if len(leitura.corrompidos) == 1 else "guardam"))
         if nao_suportados:
             avisos.append(f"{plural(nao_suportados, 'processo é', 'processos são')} de tribunal "
-                          "cujo sistema o programa ainda não baixa (PJe, Projudi): ficam "
-                          "marcados na tabela.")
+                          "cujo sistema o programa ainda não baixa (PJe, Projudi): "
+                          + ("fica marcado" if nao_suportados == 1 else "ficam marcados")
+                          + " na tabela.")
         avisos += [_maiuscula(a) for a in leitura.avisos[:3]]
         if avisos:
             self.faixa_lista.definir(texto="\n".join(f"•  {a}" for a in avisos),
@@ -606,8 +607,8 @@ class PaginaBaixar(Pagina):
                 dialogos.erro(self.janela.raiz, "Componente ausente", str(dado))
             else:
                 dialogos.erro(self.janela.raiz, "O download não pôde ser feito",
-                              f"{_maiuscula(str(dado))}\n\nOs detalhes ficaram em “Detalhes "
-                              "técnicos”, no fim desta página.")
+                              f"{_maiuscula(str(dado))}\n\nVeja os detalhes técnicos, no fim "
+                              "desta página.")
         elif tipo == "_tarefa_fim":
             if self.estado == "baixando" and not self.tarefa.ativa and dado is self.tarefa:
                 # terminou sem 'fim' nem 'falhou' (não deveria): destrava a tela
