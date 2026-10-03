@@ -299,9 +299,9 @@ def gerar_pacote(acervo: Path, destino: Path, numeros: list[str] | None = None,
         if rel.endswith(".md"):
             # As instruções e o índice falam das pastas do acervo; aqui elas
             # têm outro nome.
-            alvo.write_text(NOTA_PASTAS_DO_PACOTE + origem.read_text(encoding="utf-8-sig",
-                                                                       errors="replace"),
-                            encoding="utf-8")
+            # (em bytes: o Windows não troca as quebras de linha)
+            texto = origem.read_bytes().decode("utf-8-sig", errors="replace")
+            alvo.write_bytes((NOTA_PASTAS_DO_PACOTE + texto).encode("utf-8"))
         else:
             shutil.copy2(origem, alvo)
         if origem.stat().st_size > LIMITE_ARQUIVO_MB * 1024 * 1024:
