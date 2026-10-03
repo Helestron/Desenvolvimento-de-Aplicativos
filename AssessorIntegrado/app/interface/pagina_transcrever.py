@@ -542,8 +542,20 @@ class PaginaTranscrever(Pagina):
                                   ao_concluir=self._ambiente_lido,
                                   ao_falhar=lambda e: self._ambiente_lido(([], str(e), [], None)))
         elif not self.tarefa_apoio.ativa and self.situacao in ("pronta", "fim"):
-            self.em_segundo_plano(self.tarefa_apoio, lambda: servicos.recuperaveis(self.cfg),
-                                  ao_concluir=self._mostrar_recuperaveis,
+            # volta à página: o modelo pode ter sido baixado em Configurações,
+            # e uma audiência interrompida pode ter aparecido
+            def leve():
+                modelo = self.cfg.texto("transcricao", "modelo_ao_vivo") or "small"
+                return servicos.recuperaveis(self.cfg), (modelo, servicos.modelo_instalado(modelo))
+
+            def aplicar(dados):
+                recuperaveis, (nome, instalado) = dados
+                self._mostrar_recuperaveis(recuperaveis)
+                if self.situacao in ("pronta", "fim"):
+                    self._status["modelo"] = f"modelo {nome}" + ("" if instalado else
+                                                                 " (será baixado ao iniciar)")
+                    self._atualizar_rodape()
+            self.em_segundo_plano(self.tarefa_apoio, leve, ao_concluir=aplicar,
                                   ao_falhar=lambda e: None)
 
     def _ler_ambiente(self):
