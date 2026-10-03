@@ -588,6 +588,9 @@ class PaginaBaixar(Pagina):
             self._atualizar_rodape()
         elif tipo == "item":
             self._atualizar_linha(dado)
+            # um processo concluído = o login já passou: o recado sai de cena
+            if dado.situacao:
+                self.faixa_portal.grid_remove()
         elif tipo == "avisar":
             titulo, mensagem = dado
             self.faixa_portal.definir(texto=mensagem, titulo=titulo)

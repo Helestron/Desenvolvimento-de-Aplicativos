@@ -521,9 +521,11 @@ class PaginaConfig(Pagina):
             tk.Label(caminhos_, text=rotulo, font=estilo.FONTE_NOTA, background=estilo.FAIXA_CLARA,
                      foreground=estilo.TINTA_FRACA, anchor="w").grid(row=i, column=0, sticky="w",
                                                                      padx=(0, px(14)), pady=px(1))
-            tk.Label(caminhos_, text=str(valor), font=estilo.FONTE_MONO, anchor="w",
-                     background=estilo.FAIXA_CLARA, foreground=estilo.TINTA).grid(
-                row=i, column=1, sticky="w", pady=px(1))
+            valor_rotulo = tk.Label(caminhos_, text=str(valor), font=estilo.FONTE_MONO, anchor="w",
+                                    justify="left", background=estilo.FAIXA_CLARA,
+                                    foreground=estilo.TINTA)
+            valor_rotulo.grid(row=i, column=1, sticky="ew", pady=px(1))
+            estilo.acompanhar_largura(valor_rotulo)
 
         botoes = ttk.Frame(pai)
         botoes.grid(row=2, column=0, sticky="w", pady=(px(16), 0))

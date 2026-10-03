@@ -395,7 +395,11 @@ def anexar(alvo: Path, novas: list[bytes], titulos: list[str] | None = None) -> 
     páginas. O original só é trocado quando o novo está gravado por inteiro."""
     fitz = _pymupdf()
     alvo = Path(alvo)
-    doc = fitz.open(str(alvo))
+    # Aberto da MEMÓRIA, e não do arquivo: no Windows, um arquivo aberto
+    # pelo MuPDF não pode ser substituído (os.replace dá "acesso negado"),
+    # e é justamente ele que a gravação atômica troca no fim. Achado no CI
+    # do Windows; no Linux a troca passa mesmo com o arquivo aberto.
+    doc = fitz.open(stream=alvo.read_bytes(), filetype="pdf")
     try:
         sumario = doc.get_toc(simple=True) or []
         for i, dados in enumerate(novas or []):

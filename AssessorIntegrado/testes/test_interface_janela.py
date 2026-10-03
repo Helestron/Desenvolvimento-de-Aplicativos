@@ -459,7 +459,7 @@ class TesteJanela(unittest.TestCase):
                                       ItemVerificacao("Modelo", "aviso", "não baixado")]):
             pagina.verificar()
             self.assertTrue(self.bombear(ate=lambda: len(pagina.arvore_verif.get_children()) == 2))
-        self.assertIn("pedem atenção", pagina.estado_verificar.texto.cget("text"))
+        self.assertIn("1 item pede atenção", pagina.estado_verificar.texto.cget("text"))
 
     def test_transcrever_gravacao_e_recuperar(self):
         pagina = self.j.paginas["transcrever"]
