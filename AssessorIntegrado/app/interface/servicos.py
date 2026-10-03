@@ -116,22 +116,36 @@ _FALHAS = {"ERRO", "NAO_ENCONTRADO", "SEM_ACESSO", "NAO_SUPORTADO", "SIGILOSO_SE
 
 
 def ler_relatorio(relatorio: Path) -> InfoLote | None:
-    """Resumo de um _controle/relatorio.csv (gravado pelo motor)."""
+    """Resumo de um _controle/relatorio.csv (gravado pelo motor).
+
+    O magistrado pode abrir o relatório no Excel e salvá-lo: o Excel grava
+    o "CSV (separado por vírgulas)" em ANSI (cp1252), e a leitura só em
+    UTF-8 levantava UnicodeDecodeError - que derrubava a tela inicial
+    inteira. Arquivo ilegível vale como ausente (None).
+    """
     try:
-        texto = relatorio.read_text(encoding="utf-8-sig")
+        dados = relatorio.read_bytes()
         quando = datetime.fromtimestamp(relatorio.stat().st_mtime)
     except OSError:
         return None
+    try:
+        texto = dados.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        texto = dados.decode("cp1252", errors="replace")
     pasta = relatorio.parent.parent
     info = InfoLote(nome=pasta.name, pasta=pasta, relatorio=relatorio, quando=quando)
-    for linha in csv.DictReader(texto.splitlines(), delimiter=";"):
-        situacao = (linha.get("situacao") or "").strip().upper()
-        info.total += 1
-        info.situacoes[situacao] = info.situacoes.get(situacao, 0) + 1
-        if situacao in ("OK", "JA_BAIXADO"):
-            info.baixados += 1
-        elif situacao in _FALHAS:
-            info.falhas += 1
+    try:
+        for linha in csv.DictReader(texto.splitlines(), delimiter=";"):
+            situacao = (linha.get("situacao") or "").strip().upper()
+            info.total += 1
+            info.situacoes[situacao] = info.situacoes.get(situacao, 0) + 1
+            if situacao in ("OK", "JA_BAIXADO"):
+                info.baixados += 1
+            elif situacao in _FALHAS:
+                info.falhas += 1
+    except (csv.Error, ValueError, AttributeError) as erro:
+        log.warning("relatório ilegível (%s): %s", relatorio, erro)
+        return None
     return info
 
 
@@ -384,9 +398,14 @@ def pendencias(cfg) -> list[Pendencia]:
     faltam = [funcao for nome, funcao, obrigatorio in PACOTES
               if obrigatorio and not _pacote_presente(nome)]
     saida = []
+    problema = problema_nas_pastas(cfg.pasta_acervo, cfg.pasta_sigilosos)
+    if problema:
+        saida.append(Pendencia("pastas", problema, "Abrir as Configurações"))
     if faltam:
-        saida.append(Pendencia("pacotes", "Faltam componentes do programa: " + ", ".join(faltam)
-                               + ". " + DICA_INSTALAR, "Abrir a pasta do programa"))
+        inicio = ("Falta o componente do programa: " if len(faltam) == 1
+                  else "Faltam os componentes do programa: ")
+        saida.append(Pendencia("pacotes", inicio + ", ".join(faltam) + ". " + DICA_INSTALAR,
+                               "Abrir a pasta do programa"))
     modelo = cfg.texto("transcricao", "modelo_ao_vivo") or "small"
     if _pacote_presente("faster_whisper") and not modelo_instalado(modelo):
         # A sessão ao vivo baixa o modelo que faltar ao começar (o áudio é
@@ -396,6 +415,70 @@ def pendencias(cfg) -> list[Pendencia]:
                                          "começa baixando o modelo, e o texto demora a aparecer.",
                                "Baixar agora"))
     return saida
+
+
+# ===================================================================== pastas
+def _normalizar(p) -> str:
+    try:
+        p = Path(p).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        p = Path(os.path.abspath(p))
+    return os.path.normcase(str(p))
+
+
+def dentro_ou_igual(filho, pai) -> bool:
+    """'filho' é 'pai' ou fica dentro dele? (No Windows, sem distinguir
+    maiúsculas e com as barras normalizadas.)"""
+    f, p = _normalizar(filho), _normalizar(pai)
+    return f == p or f.startswith(p.rstrip(os.sep) + os.sep)
+
+
+def problema_nas_pastas(acervo, sigilosos) -> str | None:
+    """Por que este par de pastas vazaria o que não pode sair, ou None.
+
+    O acervo inteiro é lido pela IA (conector, CLAUDE.md, pacote) e copiado
+    para a nuvem. Por isso a pasta dos sigilosos não pode ficar dentro dele,
+    e ele não pode conter a pasta do programa (registros com imagens das
+    telas dos portais, config.ini e, no padrão, a própria pasta Sigilosos)
+    nem a pasta das senhas e dos perfis do navegador.
+    """
+    # A regra acervo x sigilosos é do núcleo, quando ele a tiver: uma frase só
+    # para a tela, o assistente e a verificação.
+    from ..nucleo import config as _config
+
+    conferir = getattr(_config, "conflito_de_pastas", None)
+    if conferir is not None:
+        try:
+            frase = conferir(Path(acervo), Path(sigilosos))
+        except Exception:
+            frase = ""
+        if frase:
+            return frase
+    if dentro_ou_igual(sigilosos, acervo):
+        return ("A pasta dos processos em segredo de justiça não pode ficar dentro do acervo: "
+                "tudo o que está no acervo é lido pela IA e copiado para a nuvem. Escolha uma "
+                "pasta fora dele.")
+    if dentro_ou_igual(caminhos.RAIZ, acervo):
+        return ("O acervo não pode ser a pasta do programa nem uma pasta que a contenha: ela "
+                "guarda os registros, a configuração e, no padrão, os processos sigilosos. "
+                "Escolha uma pasta só para o acervo.")
+    if dentro_ou_igual(caminhos.LOCAL, acervo):
+        return ("O acervo não pode conter a pasta em que o programa guarda as senhas e os "
+                f"perfis do navegador ({caminhos.LOCAL}). Escolha uma pasta só para o acervo.")
+    return None
+
+
+def atualizar_indice(cfg) -> None:
+    """INDICE.md (e CLAUDE.md/AGENTS.md, se faltarem) em dia, sem extrair o
+    texto dos PDFs - é rápido. Chamado depois de cada transcrição: o índice
+    é o que a IA lê primeiro, e sem isto a audiência recém-transcrita não
+    aparecia nele (nem no espelho da nuvem). Nunca levanta."""
+    try:
+        from ..compartilhar import preparo
+
+        preparo.atualizar_contexto(cfg, extrair_texto=False)
+    except Exception as erro:
+        log.warning("não consegui atualizar o INDICE.md do acervo: %s", str(erro)[:200])
 
 
 # ============================================================ compartilhar

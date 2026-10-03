@@ -22,10 +22,11 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from ..nucleo import sistema
+from ..nucleo import cnj, sistema
 
 log = logging.getLogger("transcricao.documento")
 
+SUBPASTA_TRANSCRICOES = "Transcricoes"   # dentro da pasta de sigilosos
 PAUSA_AGRUPAR_S = 3.0
 RE_AUTOMATICO = re.compile(r"^FALANTE \d+$")
 
@@ -40,6 +41,14 @@ AVISO_MANUAL = (
     "quem fala foi marcada durante a audiência e pode falhar nos instantes de troca. "
     "O conteúdo exige conferência humana contra a gravação original antes de qualquer "
     "uso processual."
+)
+# Sem rótulo nenhum (gravação transcrita sem a separação de vozes, ou
+# ninguém marcou quem falava): dizer que a indicação "foi marcada durante a
+# audiência" seria falso num documento que pode ir para os autos.
+AVISO_SEM_FALANTE = (
+    "Transcrição produzida automaticamente por reconhecimento de fala, sem indicação "
+    "de quem fala. O conteúdo exige conferência humana contra a gravação original "
+    "antes de qualquer uso processual."
 )
 
 FORMAS = {
@@ -171,6 +180,54 @@ def magistrado_da_config(cfg) -> str:
     if nome and cargo:
         return f"{nome} ({cargo})"
     return nome or cargo
+
+
+def processo_sigiloso(cfg, numero) -> bool:
+    """Os autos do processo estão na pasta de sigilosos (soltos ou num lote)?
+
+    É o critério do compartilhamento (um PDF com o número em
+    <sigilosos>/ ou <sigilosos>/<lote>/): o que vale para os autos vale para
+    a transcrição da audiência, a gravação e o diário.
+    """
+    try:
+        nome = numero.nome_arquivo
+        pasta = Path(cfg.pasta_sigilosos)
+        candidatos = [*pasta.glob(f"{nome}*.pdf"), *pasta.glob(f"*/{nome}*.pdf")]
+    except (AttributeError, OSError, ValueError):
+        return False
+    for p in candidatos:
+        try:
+            # "...0001-01.pdf" é o incidente, não o principal "...0001"
+            if cnj.ler_nome_arquivo(p.stem).nome_arquivo == nome:
+                return True
+        except cnj.NumeroInvalido:
+            continue
+    return False
+
+
+def pasta_das_transcricoes(cfg, numero=None, sigiloso: bool = False) -> Path:
+    """Onde vão o DOCX (e, em _audio, a gravação e o diário) do processo.
+
+    Processo em segredo de justiça - informado (`sigiloso`) ou com os autos
+    na pasta de sigilosos - fica em <sigilosos>/Transcricoes, FORA do acervo:
+    tudo o que está no acervo é lido pela IA (Cowork, Claude Code, ChatGPT) e
+    espelhado na nuvem. A informação só acrescenta sigilo, nunca o tira.
+    """
+    if sigiloso or (numero is not None and processo_sigiloso(cfg, numero)):
+        return Path(cfg.pasta_sigilosos) / SUBPASTA_TRANSCRICOES
+    return cfg.pasta_transcricoes
+
+
+def pastas_das_transcricoes(cfg) -> list[Path]:
+    """As duas pastas de transcrições: a do acervo e a dos sigilosos."""
+    pastas = [cfg.pasta_transcricoes]
+    try:
+        sigilosas = Path(cfg.pasta_sigilosos) / SUBPASTA_TRANSCRICOES
+    except (AttributeError, OSError, ValueError):
+        return pastas
+    if sigilosas not in pastas:
+        pastas.append(sigilosas)
+    return pastas
 
 
 # ------------------------------------------------------------------- DOCX
@@ -317,7 +374,13 @@ def montar_docx(falas: list[Fala], meta: MetaAudiencia, *, marcar_tempo: bool = 
 
     # --- aviso
     av = doc.add_paragraph()
-    ra = av.add_run(AVISO_AUTOMATICO if legenda else AVISO_MANUAL)
+    if legenda:
+        aviso = AVISO_AUTOMATICO
+    elif any((f.falante or "").strip() for f in agrupadas):
+        aviso = AVISO_MANUAL
+    else:
+        aviso = AVISO_SEM_FALANTE
+    ra = av.add_run(aviso)
     ra.italic = True
     ra.font.size = Pt(9)
     ra.font.color.rgb = RGBColor(0x80, 0x30, 0x00)

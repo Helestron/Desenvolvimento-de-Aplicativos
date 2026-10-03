@@ -16,12 +16,15 @@ comentários, para o arquivo continuar legível depois que a tela o salva.
 from __future__ import annotations
 
 import configparser
+import logging
 import os
 import re
 import threading
 from pathlib import Path
 
 from . import caminhos
+
+log = logging.getLogger("nucleo.config")
 
 # (seção, chave, padrão, comentário). A ordem aqui é a ordem do arquivo.
 ESQUEMA: list[tuple[str, str, str, str]] = [
@@ -46,7 +49,8 @@ ESQUEMA: list[tuple[str, str, str, str]] = [
     ("download", "separar_sigilosos", "true",
      "Processo em segredo de justiça vai para a pasta_sigilosos (recomendado)."),
     ("download", "baixar_midias", "false",
-     "Baixar também as gravações de audiência (ficam em _midias, ao lado)."),
+     "Baixar também as gravações de audiência (ficam em _controle\\midias, dentro\n"
+     "da pasta do lote)."),
     ("download", "mostrar_navegador", "false",
      "Mostrar a janela do navegador durante o download. O login por\n"
      "certificado e o login manual sempre mostram."),
@@ -119,8 +123,8 @@ ESQUEMA: list[tuple[str, str, str, str]] = [
     ("compartilhar", "espelhar_automaticamente", "false",
      "Espelhar sozinho ao fim de cada download e de cada transcrição."),
     ("compartilhar", "incluir_texto", "true",
-     "Gerar a versão em texto dos autos (com a folha marcada), que a IA lê\n"
-     "muito melhor e mais barato que o PDF."),
+     "Gerar a versão em texto dos autos (com a página e o documento marcados),\n"
+     "que a IA lê muito melhor e mais barato que o PDF."),
 ]
 
 CABECALHO = """\
@@ -151,30 +155,79 @@ def modelo_ini() -> str:
 PADROES = {(s, c): p for s, c, p, _ in ESQUEMA}
 
 
-class Config:
-    """Leitura tolerante: chave ausente ou inválida vira o padrão."""
+def _ler_texto(arquivo: Path) -> str:
+    """O config.ini como texto, qualquer que seja a codificação.
 
-    def __init__(self, arquivo: Path | None = None):
+    O cabeçalho manda editar no Bloco de Notas: o arquivo pode voltar em
+    ANSI (cp1252) ou em UTF-16 (Out-File do PowerShell 5.1). Lido só como
+    UTF-8, ele seria descartado em silêncio e todas as chaves - a pasta do
+    acervo inclusive - voltariam ao padrão. A gravação é sempre em UTF-8.
+    """
+    dados = arquivo.read_bytes()
+    if dados.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            return dados.decode("utf-16")
+        except UnicodeDecodeError:
+            pass
+    try:
+        return dados.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    # Linha a linha: um arquivo em UTF-8 com uma linha editada em ANSI não
+    # estraga o acento das outras.
+    log.warning("O %s não está todo em UTF-8: as linhas em outra codificação foram lidas "
+                "como ANSI (Windows-1252), e a próxima gravação converte o arquivo.",
+                arquivo.name)
+    linhas = []
+    for linha in dados.split(b"\n"):
+        try:
+            linhas.append(linha.decode("utf-8"))
+        except UnicodeDecodeError:
+            linhas.append(linha.decode("cp1252", errors="replace"))
+    return "\n".join(linhas).lstrip("\ufeff")
+
+
+def _novo_parser() -> configparser.ConfigParser:
+    return configparser.ConfigParser(
+        interpolation=None, comment_prefixes=(";", "#"),
+        inline_comment_prefixes=None, strict=False)
+
+
+class Config:
+    """Leitura tolerante: chave ausente ou inválida vira o padrão.
+
+    'criar=False' só lê: não cria o config.ini se ele faltar (uso do servidor
+    MCP, que roda a pedido do Claude Desktop e não deve gravar nada).
+    """
+
+    def __init__(self, arquivo: Path | None = None, criar: bool = True):
         self.arquivo = Path(arquivo or caminhos.ARQUIVO_CONFIG)
-        self._cp = configparser.ConfigParser(
-            interpolation=None, comment_prefixes=(";", "#"),
-            inline_comment_prefixes=None, strict=False)
+        self._criar = criar
+        self._cp = _novo_parser()
         self.recarregar()
 
     def recarregar(self) -> None:
-        if not self.arquivo.exists():
+        if self._criar and not self.arquivo.exists():
             try:
                 self.arquivo.parent.mkdir(parents=True, exist_ok=True)
                 self.arquivo.write_text(modelo_ini(), encoding="utf-8")
             except OSError:
                 pass
-        self._cp = configparser.ConfigParser(
-            interpolation=None, comment_prefixes=(";", "#"),
-            inline_comment_prefixes=None, strict=False)
+        # O parser novo é montado à parte e só então posto no lugar: as
+        # threads de trabalho leem a configuração sem trava e, durante a
+        # leitura, veriam um parser vazio (tudo no padrão) ou valores ainda
+        # em montagem (listas em vez de texto).
+        cp = _novo_parser()
         try:
-            self._cp.read(self.arquivo, encoding="utf-8-sig")
-        except (configparser.Error, UnicodeDecodeError):
-            pass  # arquivo estragado: tudo no padrão, e a tela regrava
+            cp.read_string(_ler_texto(self.arquivo), source=str(self.arquivo))
+        except OSError:
+            pass  # sem arquivo: tudo no padrão
+        except configparser.Error as erro:
+            # arquivo estragado: o que não pôde ser lido fica no padrão, e a
+            # tela regrava
+            log.warning("O %s tem erro de formato (%s); as chaves afetadas ficam no padrão.",
+                        self.arquivo.name, (str(erro).splitlines() or [""])[0][:160])
+        self._cp = cp
 
     # ------------------------------------------------------------- leitura
     def texto(self, secao: str, chave: str) -> str:
@@ -225,6 +278,9 @@ class Config:
     def pasta_sigilosos(self) -> Path:
         return caminhos.resolver(self.texto("geral", "pasta_sigilosos"), "Sigilosos")
 
+    def conflito_de_pastas(self) -> str:
+        return conflito_de_pastas(self.pasta_acervo, self.pasta_sigilosos)
+
     def criar_pastas(self) -> None:
         for p in (self.pasta_processos, self.pasta_transcricoes,
                   self.pasta_sigilosos, caminhos.LOGS):
@@ -241,12 +297,37 @@ class Config:
             self.recarregar()
 
 
+def conflito_de_pastas(acervo: Path, sigilosos: Path) -> str:
+    """Por que essas pastas não servem juntas; texto vazio se estão separadas.
+
+    Tudo o que está dentro do acervo é compartilhado com a IA (e espelhado
+    na nuvem). Se uma pasta ficar dentro da outra, os processos em segredo
+    de justiça passam a estar ao alcance da IA.
+    """
+    try:
+        a = Path(acervo).expanduser().resolve()
+        s = Path(sigilosos).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return ""
+    if a == s:
+        return ("A pasta dos sigilosos não pode ser a mesma do acervo: o acervo é "
+                "compartilhado com a IA. Escolha pastas separadas.")
+    if s.is_relative_to(a):
+        return ("A pasta dos sigilosos não pode ficar dentro da pasta do acervo: tudo o que "
+                "está no acervo é compartilhado com a IA. Escolha uma pasta fora dele.")
+    if a.is_relative_to(s):
+        return ("A pasta do acervo não pode ficar dentro da pasta dos sigilosos: os processos "
+                "em segredo de justiça ficariam junto do que é compartilhado com a IA. "
+                "Escolha pastas separadas.")
+    return ""
+
+
 _RE_SECAO = re.compile(r"^\s*\[([^\]]+)\]\s*$")
 
 
 def definir_no_arquivo(arquivo: Path, secao: str, chave: str, valor: str) -> None:
     try:
-        linhas = arquivo.read_text(encoding="utf-8-sig").splitlines()
+        linhas = _ler_texto(arquivo).splitlines()
     except FileNotFoundError:
         linhas = modelo_ini().splitlines()
     re_chave = re.compile(rf"^\s*{re.escape(chave)}\s*[=:]", re.I)
@@ -288,5 +369,5 @@ def definir_no_arquivo(arquivo: Path, secao: str, chave: str, valor: str) -> Non
     os.replace(tmp, arquivo)
 
 
-def carregar() -> Config:
-    return Config()
+def carregar(criar: bool = True) -> Config:
+    return Config(criar=criar)

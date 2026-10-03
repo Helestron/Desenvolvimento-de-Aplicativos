@@ -395,6 +395,9 @@ class TestAoVivo(unittest.TestCase):
             s._diario = None
             with ao_vivo._trava_ativos:
                 ao_vivo._ativos.discard(ao_vivo._chave(s.caminho_diario))
+            # o processo morto solta a trava (o arquivo dela fica)
+            ao_vivo._soltar(s._trava_processo)
+            s._trava_processo = None
         finally:
             s._fila.put(None)
             s._trabalhador.join(10)

@@ -69,9 +69,10 @@ from ..nucleo import caminhos, sistema
 from ..nucleo.cnj import Numero
 from . import pdf
 from .contexto import Contexto
-from .modelos import (NAO_ENCONTRADO, OK, SEM_ACESSO, SIGILOSO_SEM_SENHA, Cancelado,
-                      LoginFalhou, PortalIndisponivel, ProcessoNaoEncontrado,
-                      ResultadoProcesso, SemAcesso, SessaoPerdida, SigilosoSemSenha)
+from .modelos import (CAMPO_PRAZO_LOGIN, MOSTRAR_NAVEGADOR, NAO_ENCONTRADO, OK, SEM_ACESSO,
+                      SIGILOSO_SEM_SENHA, Cancelado, LoginFalhou, PortalIndisponivel,
+                      ProcessoNaoEncontrado, ResultadoProcesso, SemAcesso, SessaoPerdida,
+                      SigilosoSemSenha)
 from .navegador import explicar_erro, primeiro_visivel, recusou_credenciais, sem_acento
 
 log = logging.getLogger("download.eproc")
@@ -1474,6 +1475,8 @@ class PortalEProc:
         self._avisos_portal: list[str] = []
         self._abas_ouvidas: set[int] = set()
         self._notas: list[str] = []
+        # processos cujo sigilo esta sessão já apurou (Numero.nome_arquivo)
+        self.sigilosos_apurados: set[str] = set()
 
     # ----------------------------------------------------------- atalhos
     @property
@@ -1765,7 +1768,7 @@ class PortalEProc:
             raise PortalIndisponivel(
                 f"o login no {self.nome} não pôde ser concluído "
                 f"({explicar_erro(str(erro))}). Tente de novo; se persistir, marque "
-                "'Mostrar navegador' para acompanhar.") from erro
+                f"'{MOSTRAR_NAVEGADOR}' para acompanhar.") from erro
 
     def _entrar_em(self, candidatos: list[str]) -> None:
         candidatos = [normalizar_base(c) for c in candidatos if c]
@@ -1851,8 +1854,8 @@ class PortalEProc:
                 self.nav.diagnosticar("eproc-login-prazo")
                 raise LoginFalhou(
                     f"o prazo de {plural(minutos, 'minuto', 'minutos')} para concluir o login no "
-                    f"{self.nome} acabou. Tente de novo (o prazo se ajusta em Configurações: "
-                    "espera_login_minutos).")
+                    f"{self.nome} acabou. Tente de novo (o prazo se ajusta em "
+                    f"{CAMPO_PRAZO_LOGIN}).")
             if etapa == "recusado":
                 raise self._falha_de_credencial()
             if etapa == "bloqueado":
@@ -1870,8 +1873,8 @@ class PortalEProc:
                     self.nav.diagnosticar("eproc-login-sem-saida")
                     raise LoginFalhou(
                         f"o {self.nome} voltou à tela de login sem dizer por quê. Confira usuário "
-                        "e senha; se persistir, marque 'Mostrar navegador' para acompanhar, ou "
-                        "escolha 'Entrar manualmente'.")
+                        f"e senha; se persistir, marque '{MOSTRAR_NAVEGADOR}' para acompanhar, "
+                        "ou escolha 'Entrar manualmente'.")
                 self._preencher_login()
                 envios += 1
             elif etapa == "otp":
@@ -1881,8 +1884,8 @@ class PortalEProc:
                     self.nav.diagnosticar("eproc-captcha")
                     raise LoginFalhou(
                         f"o {self.nome} pediu uma verificação (captcha) que só se resolve na "
-                        "janela do navegador, e ela está oculta. Marque 'Mostrar navegador' (ou "
-                        "escolha 'Entrar manualmente') e tente de novo.")
+                        f"janela do navegador, e ela está oculta. Marque '{MOSTRAR_NAVEGADOR}' "
+                        "(ou escolha 'Entrar manualmente') e tente de novo.")
                 if not avisou_captcha:
                     avisou_captcha = True
                     self._restaurar_janela()
@@ -1899,7 +1902,8 @@ class PortalEProc:
                     raise LoginFalhou(
                         f"o login no {self.nome} não foi concluído: apareceu uma tela que o "
                         "programa não reconhece (aviso, troca de senha ou instabilidade). Marque "
-                        "'Mostrar navegador' para ver a tela, ou escolha 'Entrar manualmente'.")
+                        f"'{MOSTRAR_NAVEGADOR}' para ver a tela, ou escolha 'Entrar "
+                        "manualmente'.")
                 self._dormir(1)
             etapa = self._etapa(apos_envio=envios > 0)
             if etapa != "desconhecido":
@@ -1953,8 +1957,8 @@ class PortalEProc:
                 return codigos + 1, ""
             self.nav.diagnosticar("eproc-codigo-nao-informado")
             raise LoginFalhou(
-                "o código do aplicativo autenticador não foi informado. Clique em Baixar de novo "
-                "quando estiver com o celular à mão.")
+                "o código do aplicativo autenticador não foi informado. Clique em 'Tentar de "
+                "novo' quando estiver com o celular à mão.")
         codigo = re.sub(r"\D", "", codigo)
         if not codigo:
             # "pedir outro" não é tentativa: quem limita é o prazo do login
@@ -2027,9 +2031,9 @@ class PortalEProc:
         if not self._janela_visivel():
             self.nav.diagnosticar("eproc-perfil")
             raise LoginFalhou(
-                f"o seu usuário tem mais de um perfil no {self.nome} ({lista}). Marque 'Mostrar "
-                "navegador' (ou escolha 'Entrar manualmente') para escolher o perfil na janela, "
-                "ou indique-o em config.ini ([eproc] perfil = ...).")
+                f"o seu usuário tem mais de um perfil no {self.nome} ({lista}). Marque "
+                f"'{MOSTRAR_NAVEGADOR}' (ou escolha 'Entrar manualmente') para escolher o "
+                "perfil na janela, ou indique-o em config.ini ([eproc] perfil = ...).")
         if not avisou:
             self._restaurar_janela()
             self.ctx.avisar(
@@ -2045,7 +2049,7 @@ class PortalEProc:
             jeito = "com certificado digital" if self.modo_login == "certificado" else "manual"
             raise LoginFalhou(
                 f"o login {jeito} no {self.nome} precisa da janela do navegador, que está "
-                "oculta. Marque 'Mostrar navegador' e tente de novo.")
+                f"oculta. Marque '{MOSTRAR_NAVEGADOR}' e tente de novo.")
         self._restaurar_janela()
         minutos = max(1, int(self.opcoes.espera_login_min))
         if self.modo_login == "certificado":
@@ -2066,8 +2070,7 @@ class PortalEProc:
         self.nav.diagnosticar("eproc-manual-prazo")
         raise LoginFalhou(
             f"o prazo de {plural(minutos, 'minuto', 'minutos')} para o login na janela do "
-            "navegador acabou. Tente de novo (o prazo se ajusta em Configurações: "
-            "espera_login_minutos).")
+            f"navegador acabou. Tente de novo (o prazo se ajusta em {CAMPO_PRAZO_LOGIN}).")
 
     def _ancora(self) -> str:
         """Um link desta sessão para voltar à área logada (e testar a sessão).
@@ -2281,6 +2284,10 @@ class PortalEProc:
             raise
         finally:
             r.segundos = round(time.monotonic() - inicio, 1)
+            if numero.nome_arquivo in self.sigilosos_apurados:
+                r.sigiloso = True
+            elif r.sigiloso:
+                self.sigilosos_apurados.add(numero.nome_arquivo)
         return r
 
     def _garantir_login(self, numero: Numero) -> None:

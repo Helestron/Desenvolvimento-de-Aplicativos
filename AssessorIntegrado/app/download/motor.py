@@ -11,7 +11,10 @@ O que o motor garante, seja qual for o portal:
 * processo já baixado é pulado (inclusive se estiver na pasta de
   sigilosos);
 * processo em segredo de justiça vai para a pasta de sigilosos, FORA do
-  acervo compartilhado com a IA - o PDF, a capa e as gravações;
+  acervo compartilhado com a IA - o PDF, a capa e as gravações. O portal
+  grava numa pasta provisória fora do acervo, e nada entra no acervo antes
+  de se saber se é sigiloso; uma vez sigiloso, sempre sigiloso (e a cópia
+  de outro lote, de quando era público, também sai do acervo);
 * falha passageira é repetida; sessão que cai é refeita; login recusado
   encerra só o grupo daquele tribunal, com o motivo em cada linha;
 * tribunal em transição (TJAL, TJSP, TJAC: e-SAJ e eProc): o que não for
@@ -30,6 +33,7 @@ O que o motor garante, seja qual for o portal:
 from __future__ import annotations
 
 import csv
+import glob
 import io
 import logging
 import os
@@ -157,25 +161,75 @@ def _paginas(caminho: Path) -> int:
         return 0
 
 
-def _mover(origem: Path, destino: Path) -> Path:
+def _trocar(origem: Path, destino: Path) -> None:
+    # O mesmo os.replace com paciência do pdf.py: o antivírus, o indexador
+    # e o OneDrive abrem por um instante o arquivo recém-gravado.
+    from .pdf import _trocar as trocar
+    trocar(origem, destino)
+
+
+def _apagar(caminho: Path) -> None:
+    from . import pdf
+    for tentativa in range(pdf.TENTATIVAS_TROCA):
+        try:
+            caminho.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if tentativa == pdf.TENTATIVAS_TROCA - 1:
+                raise
+            time.sleep(pdf.ESPERA_TROCA_S)
+
+
+def _mover(origem: Path, destino: Path, manter_destino: bool = False) -> Path:
     """Move arquivo ou pasta (pastas são mescladas). Arquivo de mesmo nome
-    no destino é substituído: é o mesmo processo, baixado de novo."""
+    no destino é substituído: é o mesmo processo, baixado de novo - salvo
+    com 'manter_destino', em que o que já está lá vence e a origem, cópia
+    antiga, é apagada."""
     destino.parent.mkdir(parents=True, exist_ok=True)
     if origem.is_dir():
         destino.mkdir(parents=True, exist_ok=True)
         for item in origem.iterdir():
-            _mover(item, destino / item.name)
+            _mover(item, destino / item.name, manter_destino)
         try:
             origem.rmdir()
         except OSError:
             pass
         return destino
+    if manter_destino and destino.exists():
+        _apagar(origem)
+        return destino
     if _mesmo_volume(origem, destino):
-        os.replace(origem, destino)
+        _trocar(origem, destino)
     else:
-        # outro disco (pasta de sigilosos em D:, por exemplo): copia e apaga
-        shutil.move(str(origem), str(destino))
+        # Outro disco (pasta de sigilosos em D:, por exemplo): copia ao lado
+        # do destino e só então troca - cópia pela metade nunca ganha o nome
+        # do PDF - e por fim apaga a origem.
+        tmp = destino.with_name(destino.name + ".parcial")
+        try:
+            shutil.copy2(origem, tmp)
+            _trocar(tmp, destino)
+        except BaseException:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
+        _apagar(origem)
     return destino
+
+
+def _dentro(caminho: Path, pasta: Path) -> bool:
+    try:
+        Path(caminho).resolve().relative_to(Path(pasta).resolve())
+        return True
+    except (ValueError, OSError, RuntimeError):
+        return False
+
+
+def _juntar(*partes: str) -> str:
+    return "; ".join(p for p in partes if p)
 
 
 def _mesmo_volume(a: Path, b: Path) -> bool:
@@ -199,10 +253,26 @@ class _Lote:
         self.cfg = cfg
         self.controle = self.destino / "_controle"
         self.relatorio = self.controle / "relatorio.csv"
-        self.pasta_sigilosos = Path(opcoes.pasta_sigilosos) / self.destino.name
+        self.raiz_sigilosos = Path(opcoes.pasta_sigilosos)
+        self.pasta_sigilosos = self.raiz_sigilosos / self.destino.name
+        self.relatorio_sigilosos = self.pasta_sigilosos / "_controle" / "relatorio.csv"
+        # O portal grava aqui, FORA do acervo; só depois de saber se o
+        # processo é sigiloso o motor o leva para o lote ou para a pasta de
+        # sigilosos. Assim, nem uma separação que falha, nem o Ctrl+C, nem a
+        # queda de energia deixam um sigiloso no acervo (ou no OneDrive).
+        self.provisorio = Path(getattr(opcoes, "pasta_provisoria", None)
+                               or caminhos.TEMP / "baixando")
         self.inicio = time.monotonic()
         self._avisou_relatorio = False
+        self._avisou_relatorio_sigilosos = False
         self._interrompido = False
+        self._retirou_do_acervo = False
+        self._ultimo_preparo = 0.0
+        # Cópias de sigilosos que não puderam sair do acervo (arquivo preso).
+        self._sigilo_no_acervo: list[str] = []
+        # Uma vez sigiloso, sempre sigiloso: o que relatórios anteriores
+        # deste lote já apuraram (a página nem sempre repete o aviso).
+        self._sigilosos_sabidos = self._ler_sigilos_anteriores()
         # Itens reabertos para o sistema alternativo: já contavam como feitos
         # e continuam contando, para a barra de progresso não andar para trás.
         self._reabertos: set[int] = set()
@@ -255,11 +325,19 @@ class _Lote:
             time.sleep(min(0.2, max(0.0, limite - time.monotonic())))
 
     # ------------------------------------------------------- relatório
-    def _linhas_csv(self) -> str:
+    def _linhas_csv(self, mascarar: bool = False) -> str:
+        """O relatório. 'mascarar': o do acervo, que a IA lê, não diz qual
+        processo é sigiloso; o completo fica na pasta de sigilosos."""
         saida = io.StringIO()
         w = csv.writer(saida, delimiter=";", lineterminator="\r\n")
         w.writerow(COLUNAS)
         for r in self.itens:
+            if mascarar and r.sigiloso:
+                w.writerow([r.ordem, "(processo sigiloso)", r.tribunal, r.sistema,
+                            r.situacao or "PENDENTE", "", "", "", "sim", "",
+                            "processo em segredo de justiça; o número e os detalhes estão no "
+                            "relatório da pasta de sigilosos", r.data_hora])
+                continue
             arquivo = Path(r.arquivo).name if r.arquivo else ""
             if r.arquivo and r.sigiloso and r.situacao in (OK, JA_BAIXADO) \
                     and not str(r.arquivo).startswith(str(self.destino)):
@@ -272,7 +350,10 @@ class _Lote:
     def salvar_relatorio(self) -> None:
         """UTF-8 com BOM e ';' - o Excel brasileiro abre com acento e colunas
         certas num duplo clique. Gravação atômica."""
-        dados = ("\ufeff" + self._linhas_csv()).encode("utf-8")
+        mascarar = bool(self.opcoes.separar_sigilosos)
+        if mascarar:
+            self._salvar_relatorio_sigilosos()
+        dados = ("\ufeff" + self._linhas_csv(mascarar)).encode("utf-8")
         tmp = self.relatorio.with_name(self.relatorio.name + ".tmp")
         try:
             self.controle.mkdir(parents=True, exist_ok=True)
@@ -306,6 +387,53 @@ class _Lote:
             log.warning("não consegui gravar o relatório: %s", erro)
 
     # ------------------------------------------------------- sigilosos
+    def _salvar_relatorio_sigilosos(self) -> None:
+        """O relatório completo, com os números dos sigilosos, na pasta de
+        sigilosos do lote (fora do acervo). Só quando o lote tem sigiloso
+        (ou a pasta já existe): lote sem sigiloso não cria pasta nenhuma."""
+        if not (any(r.sigiloso for r in self.itens) or self.pasta_sigilosos.is_dir()):
+            return
+        destino = self.relatorio_sigilosos
+        tmp = destino.with_name(destino.name + ".tmp")
+        try:
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_bytes(("\ufeff" + self._linhas_csv()).encode("utf-8"))
+            os.replace(tmp, destino)
+        except OSError as erro:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            if not self._avisou_relatorio_sigilosos:
+                self._avisou_relatorio_sigilosos = True
+                log.warning("não consegui gravar o relatório da pasta de sigilosos: %s", erro)
+
+    def _ler_sigilos_anteriores(self) -> set[str]:
+        """Os processos que relatórios anteriores deste lote deram como
+        sigilosos - inclusive os que falharam (ERRO com sigilo apurado)."""
+        sabidos: set[str] = set()
+        for controle in (self.controle, self.pasta_sigilosos / "_controle"):
+            for nome in ("relatorio.csv", "relatorio (atualizado).csv"):
+                try:
+                    dados = (controle / nome).read_bytes()
+                except OSError:
+                    continue
+                try:
+                    texto = dados.decode("utf-8-sig")
+                except UnicodeDecodeError:       # salvo pelo Excel, em ANSI
+                    texto = dados.decode("cp1252", errors="replace")
+                try:
+                    for linha in csv.DictReader(texto.splitlines(), delimiter=";"):
+                        if (linha.get("sigiloso") or "").strip().lower() != "sim":
+                            continue
+                        try:
+                            sabidos.add(cnj.ler(linha.get("processo") or "").nome_arquivo)
+                        except Exception:        # linha mascarada ou editada à mão
+                            continue
+                except (csv.Error, ValueError, AttributeError):
+                    continue
+        return sabidos
+
     def _ja_baixado(self, n: Numero) -> Path | None:
         nome = f"{n.nome_arquivo}.pdf"
         for pasta in (self.destino, self.pasta_sigilosos):
@@ -313,49 +441,186 @@ class _Lote:
                 return pasta / nome
         return None
 
-    def _mover_sigiloso(self, r: ResultadoProcesso, n: Numero) -> None:
-        """Leva para a pasta de sigilosos TUDO o que é do processo: o PDF, a
-        capa e as gravações. Arquivo esquecido no acervo iria para a IA."""
-        alvo_dir = self.pasta_sigilosos
-        movidos = []
-        problemas = []
-        candidatos = [
-            (self.destino / f"{n.nome_arquivo}.pdf", alvo_dir / f"{n.nome_arquivo}.pdf"),
-            (self.controle / f"{n.nome_arquivo}_capa.txt",
-             alvo_dir / "_controle" / f"{n.nome_arquivo}_capa.txt"),
-            (self.controle / "midias" / n.nome_arquivo,
-             alvo_dir / "_controle" / "midias" / n.nome_arquivo),
-        ]
-        for origem, destino in candidatos:
+    def _sabido_sigiloso(self, n: Numero) -> bool:
+        """O processo já foi dado como sigiloso antes? Está na pasta de
+        sigilosos (de qualquer lote), consta assim de um relatório anterior
+        deste lote, ou a capa guardada diz "SEGREDO DE JUSTIÇA"."""
+        nome = n.nome_arquivo
+        if nome in self._sigilosos_sabidos:
+            return True
+        try:
+            if (self.raiz_sigilosos / f"{nome}.pdf").is_file() or \
+                    any(self.raiz_sigilosos.glob(f"*/{glob.escape(nome)}.pdf")):
+                return True
+        except OSError:
+            pass
+        try:
+            with open(self.controle / f"{nome}_capa.txt", encoding="utf-8",
+                      errors="replace") as f:
+                return "SEGREDO DE JUSTIÇA" in f.read(2000)
+        except OSError:
+            return False
+
+    def _levar(self, origem_dir: Path, alvo_dir: Path, n: Numero,
+               r: ResultadoProcesso | None,
+               manter_destino: bool = False) -> tuple[Path | None, list[str], Exception | None]:
+        """Leva o PDF, a capa e as gravações do processo de uma pasta de lote
+        (ou da área provisória) para outra. O PDF vai por ÚLTIMO: onde ele
+        está, o resto já chegou. 'manter_destino': o que já está no destino
+        (a cópia recém-baixada) não é trocado pela cópia antiga.
+
+        Devolve (onde o PDF ficou, problemas com a capa e as gravações, erro
+        do PDF). Sem PDF na origem, o primeiro item é None e o erro também.
+        """
+        nome = n.nome_arquivo
+        problemas: list[str] = []
+        velho_midias = origem_dir / "_controle" / "midias" / nome
+        novo_midias = alvo_dir / "_controle" / "midias" / nome
+        for origem, destino in (
+                (origem_dir / "_controle" / f"{nome}_capa.txt",
+                 alvo_dir / "_controle" / f"{nome}_capa.txt"),
+                (velho_midias, novo_midias)):
             if not origem.exists():
                 continue
             try:
-                novo = _mover(origem, destino)
-                movidos.append(novo)
-                if origem.suffix == ".pdf":
-                    r.arquivo = str(novo)
-            except OSError as erro:
+                _mover(origem, destino, manter_destino)
+            except Exception as erro:
                 problemas.append(f"{origem.name}: {erro}")
-        if r.midias:
-            velho = str(self.controle / "midias" / n.nome_arquivo)
-            novo = str(alvo_dir / "_controle" / "midias" / n.nome_arquivo)
-            r.midias = [m.replace(velho, novo, 1) for m in r.midias]
-        if problemas:
+        if r is not None and r.midias:
+            r.midias = [m.replace(str(velho_midias), str(novo_midias), 1) for m in r.midias]
+        origem_pdf = origem_dir / f"{nome}.pdf"
+        if not origem_pdf.exists():
+            return None, problemas, None
+        try:
+            return _mover(origem_pdf, alvo_dir / f"{nome}.pdf", manter_destino), problemas, None
+        except Exception as erro:
+            return None, problemas, erro
+
+    def _guardar(self, r: ResultadoProcesso, n: Numero, provisorio: Path) -> None:
+        """Leva o processo recém-baixado da área provisória para o lote - ou,
+        se sigiloso, para a pasta de sigilosos. Se não der, o processo fica
+        como ERRO e NADA dele entra no acervo."""
+        nome = f"{n.nome_arquivo}.pdf"
+        sigilo = r.sigiloso and self.opcoes.separar_sigilosos
+        alvo_dir = self.pasta_sigilosos if sigilo else self.destino
+        novo, problemas, erro = self._levar(provisorio, alvo_dir, n, r)
+        if novo is None:
+            r.situacao, r.arquivo, r.midias = ERRO, "", []
+            motivo = (getattr(erro, "strerror", None) or str(erro)) if erro else "o PDF sumiu"
+            if sigilo:
+                log.error("    %s é sigiloso e não pôde ser guardado na pasta de sigilosos "
+                          "(%s): não foi posto no acervo.", n.formatado, erro)
+                r.detalhe = _juntar(
+                    r.detalhe, f"processo em segredo de justiça: não consegui guardá-lo na pasta "
+                    f"de sigilosos ({motivo}). Por segurança, ele não foi posto no acervo. "
+                    "Confira a pasta de sigilosos em Configurações e baixe de novo")
+            elif isinstance(erro, PermissionError):
+                r.detalhe = (f"não consegui gravar {nome}: o arquivo está aberto em outro "
+                             "programa (leitor de PDF?). Feche-o e baixe de novo.")
+            else:
+                r.detalhe = f"não consegui gravar {nome} na pasta do lote ({motivo})"
+            log.error("    %s: %s", n.formatado, r.detalhe)
+        else:
+            r.arquivo = str(novo)
+            if problemas:
+                log.warning("    %s: a capa ou as gravações não puderam ser guardadas: %s",
+                            n.formatado, "; ".join(problemas))
+                r.detalhe = _juntar(r.detalhe, "a capa ou as gravações não puderam ser "
+                                    "guardadas; baixe de novo para tê-las")
+            if sigilo:
+                log.info("    sigiloso: guardado em %s (fora do acervo compartilhado).",
+                         alvo_dir)
+                r.detalhe = _juntar(r.detalhe, "guardado na pasta de sigilosos")
+        if sigilo:
+            # Cópias baixadas quando o processo ainda era público (neste
+            # lote ou noutro) também saem do acervo.
+            self._retirar_do_acervo(r, n)
+
+    def _lotes_do_acervo(self) -> list[Path]:
+        """As pastas de lote do acervo (Processos/*), fora a de sigilosos."""
+        raiz = getattr(self.cfg, "pasta_processos", None)
+        if raiz is None and self.destino.parent.name.lower() == "processos":
+            raiz = self.destino.parent           # sem configuração (testes)
+        lotes = [self.destino]
+        if raiz is None:
+            return lotes
+        try:
+            for p in sorted(Path(raiz).iterdir()):
+                if p.is_dir() and p not in lotes and not _dentro(p, self.raiz_sigilosos):
+                    lotes.append(p)
+        except OSError:
+            pass
+        return lotes
+
+    def _retirar_do_acervo(self, r: ResultadoProcesso, n: Numero) -> None:
+        """Tira do acervo toda cópia de um processo sigiloso: a deste lote e
+        as de outros lotes (Processos/<lote>/), com capa e gravações, para
+        Sigilosos/<lote>/; e apaga o texto dele em _ia/texto."""
+        nome = f"{n.nome_arquivo}.pdf"
+        presos: list[Path] = []
+        for lote in self._lotes_do_acervo():
+            if not (lote / nome).exists():
+                continue
+            novo, _problemas, erro = self._levar(lote, self.raiz_sigilosos / lote.name, n, None,
+                                                 manter_destino=True)
+            if erro is not None or novo is None:
+                presos.append(lote / nome)
+                continue
+            self._retirou_do_acervo = True
+            log.info("    cópia do sigiloso em %s levada para a pasta de sigilosos.", lote.name)
+            if lote == self.destino:
+                r.arquivo = str(novo)
+                r.detalhe = _juntar(r.detalhe, "levado agora para a pasta de sigilosos")
+        acervo = getattr(self.cfg, "pasta_acervo", None)
+        if acervo is None and self.destino.parent.name.lower() == "processos":
+            acervo = self.destino.parent.parent
+        if acervo is not None:
+            texto = Path(acervo) / "_ia" / "texto" / f"{n.nome_arquivo}.txt"
+            try:
+                _apagar(texto)
+            except OSError as erro:
+                log.warning("não consegui apagar %s (%s)", texto, erro)
+        if presos:
+            self._sigilo_no_acervo += [str(p) for p in presos]
             log.error("ATENÇÃO: %s é sigiloso e NÃO pôde ser tirado do acervo: %s",
-                      n.formatado, "; ".join(problemas))
-            r.detalhe = "; ".join(x for x in (
-                r.detalhe, "ATENÇÃO: sigiloso não pôde ser movido para a pasta de sigilosos "
-                "(arquivo aberto?). Mova-o à mão antes de compartilhar o acervo") if x)
-        elif movidos:
-            log.info("    sigiloso: guardado em %s (fora do acervo compartilhado).", alvo_dir)
-            r.detalhe = "; ".join(x for x in (r.detalhe, "guardado na pasta de sigilosos") if x)
+                      n.formatado, ", ".join(str(p) for p in presos))
+            if r.situacao in (OK, JA_BAIXADO):
+                r.situacao = ERRO
+            uma = len(presos) == 1
+            r.detalhe = _juntar(
+                r.detalhe, "ATENÇÃO: processo sigiloso com "
+                + ("cópia no acervo que não pôde ser levada" if uma
+                   else "cópias no acervo que não puderam ser levadas")
+                + " para a pasta de sigilosos (arquivo aberto?): "
+                + ", ".join(f"{p.parent.name}\\{p.name}" for p in presos)
+                + (". Mova-a" if uma else ". Mova-as") + " à mão antes de compartilhar o acervo")
+
+    def _area_provisoria(self, n: Numero) -> Path:
+        """A pasta provisória deste processo, vazia."""
+        pasta = self.provisorio / n.nome_arquivo
+        shutil.rmtree(pasta, ignore_errors=True)
+        pasta.mkdir(parents=True, exist_ok=True)
+        return pasta
 
     def _limpar_parcial(self, n: Numero) -> None:
+        shutil.rmtree(self.provisorio / n.nome_arquivo, ignore_errors=True)
+        # parciais de versões anteriores, que gravavam direto no lote
         for sufixo in (".pdf.parcial", ".pdf.parcial2"):
             try:
                 (self.destino / f"{n.nome_arquivo}{sufixo}").unlink()
             except OSError:
                 pass
+
+    def _limpar_provisorios_antigos(self) -> None:
+        """O que um lote interrompido à força (luz, Ctrl+C) deixou na área
+        provisória - fora do acervo, mas sem serventia."""
+        limite = time.time() - 12 * 3600
+        try:
+            antigos = [p for p in self.provisorio.iterdir() if p.stat().st_mtime < limite]
+        except OSError:
+            return
+        for p in antigos:
+            shutil.rmtree(p, ignore_errors=True)
 
     # ------------------------------------------------------------ grupos
     def grupos(self) -> "OrderedDict[str, tuple]":
@@ -367,8 +632,9 @@ class _Lote:
             r = self.itens[i]
             if t is None:
                 r.situacao = NAO_SUPORTADO
-                r.detalhe = (f"tribunal {n.chave_tribunal} não consta do catálogo "
-                             "(dados\\tribunais.json); confira o número")
+                r.detalhe = tribunais.problema() or (
+                    f"tribunal {n.chave_tribunal} não consta do catálogo "
+                    "(dados\\tribunais.json); confira o número")
                 r.carimbar()
                 continue
             if not t.suportado:
@@ -431,6 +697,7 @@ class _Lote:
             raise RuntimeError(f"não consegui criar a pasta de destino {self.destino} "
                                f"({erro.strerror or erro}). Escolha outra pasta.") from erro
         grupos = self.grupos()
+        self._limpar_provisorios_antigos()
         for r in self.itens:
             self._publicar(r)
         self.salvar_relatorio()
@@ -461,13 +728,31 @@ class _Lote:
             except Exception:
                 pass
         resumo = ResumoLote(itens=self.itens, destino=self.destino, relatorio=self.relatorio,
-                            minutos=round((time.monotonic() - self.inicio) / 60, 1))
+                            minutos=round((time.monotonic() - self.inicio) / 60, 1),
+                            sigilosos_no_acervo=list(self._sigilo_no_acervo))
         log.info("Fim do lote: %s Relatório: %s", resumo.texto(), self.relatorio)
+        if self._sigilo_no_acervo:
+            # Não se prepara nada para a IA com um sigiloso no acervo: o
+            # texto dele iria para _ia/texto e para o índice.
+            um = len(self._sigilo_no_acervo) == 1
+            try:
+                self.ctx.avisar(
+                    "Processo sigiloso ficou no acervo",
+                    ("Não consegui levar para a pasta de sigilosos o arquivo " if um
+                     else "Não consegui levar para a pasta de sigilosos os arquivos ")
+                    + "; ".join(self._sigilo_no_acervo)
+                    + (". Feche o programa que o mantém aberto e mova-o" if um
+                       else ". Feche o programa que os mantém abertos e mova-os")
+                    + " à mão (ou clique em 'Tentar de novo') antes de compartilhar o acervo.")
+            except Exception:
+                pass
+            return resumo
         # Depois de "Parar" (ou Ctrl+C), o usuário quer o programa livre já:
         # o preparo pode ler dezenas de PDFs. Fica para o botão "Preparar
         # arquivos para IA" ou para o próximo lote.
         parou = self._interrompido or self._cancelado()
-        if self.opcoes.atualizar_ia and resumo.baixados and not parou:
+        if self.opcoes.atualizar_ia and (resumo.baixados or self._retirou_do_acervo) \
+                and not parou:
             self._preparar_ia()
         return resumo
 
@@ -536,10 +821,18 @@ class _Lote:
             if cfg is None:
                 from ..nucleo import config
                 cfg = config.carregar()
-            preparo.atualizar_contexto(cfg)
+            preparo.atualizar_contexto(cfg, progresso=self._progresso_preparo,
+                                       cancelado=self._cancelado)
         except Exception as erro:
             log.warning("não consegui preparar os arquivos para a IA (%s); use o botão "
                         "'Preparar arquivos para IA' na tela Compartilhar.", str(erro)[:160])
+
+    def _progresso_preparo(self, feitos: int, total: int, _descricao: str = "") -> None:
+        # No máximo um recado a cada 2 s: no terminal, cada um vira uma linha.
+        agora = time.monotonic()
+        if total and agora - self._ultimo_preparo >= 2.0:
+            self._ultimo_preparo = agora
+            self.ctx.status(f"Preparando os arquivos para a IA ({feitos} de {total})...")
 
     # -------------------------------------------------------------- grupo
     def _grupo(self, tribunal, indices: list[int]) -> None:
@@ -609,12 +902,17 @@ class _Lote:
                 r.situacao = JA_BAIXADO
                 r.arquivo = str(existente)
                 r.paginas = _paginas(existente)
-                r.sigiloso = existente.parent == self.pasta_sigilosos
+                r.sigiloso = existente.parent == self.pasta_sigilosos or self._sabido_sigiloso(n)
                 r.detalhe = "já estava na pasta (não baixei de novo)"
+                if r.sigiloso and self.opcoes.separar_sigilosos:
+                    # sigiloso que ficou no acervo (separação que falhou numa
+                    # versão anterior, ou cópia de quando era público)
+                    self._retirar_do_acervo(r, n)
                 self._concluir(r)
                 return False, False
 
-        alvo = self.destino / f"{n.nome_arquivo}.pdf"
+        provisorio = self._area_provisoria(n)
+        alvo = provisorio / f"{n.nome_arquivo}.pdf"
         senha = senha_de(n, self.senhas)
         inicio = time.monotonic()
         tentativas = max(1, int(self.opcoes.tentativas))
@@ -665,7 +963,7 @@ class _Lote:
                 break
             except Exception as erro:
                 ultimo = erro
-                self._limpar_parcial(n)
+                self._area_provisoria(n)       # a próxima tentativa começa do zero
                 if tentativa >= tentativas:
                     break
                 log.warning("    falhou (%s); tentando de novo (%d/%d)...",
@@ -685,13 +983,33 @@ class _Lote:
             if r.situacao == OK and not _pdf_valido(alvo):
                 r.situacao = ERRO
                 r.detalhe = "o portal informou sucesso, mas o PDF não foi gravado"
-            if r.situacao == OK:
-                r.arquivo = str(alvo)
             if r.situacao not in (OK, JA_BAIXADO, NAO_ENCONTRADO, SEM_ACESSO,
                                   SIGILOSO_SEM_SENHA, NAO_SUPORTADO, ERRO, CANCELADO):
                 r.situacao, r.detalhe = ERRO, f"situação desconhecida: {res.situacao!r}"
-        if r.situacao == OK and r.sigiloso and self.opcoes.separar_sigilosos:
-            self._mover_sigiloso(r, n)
+        # Uma vez sigiloso, sempre sigiloso: o que o portal apurou numa
+        # tentativa que falhou, ou um download anterior, vale para esta.
+        if n.nome_arquivo in (getattr(portal, "sigilosos_apurados", None) or ()):
+            r.sigiloso = True
+        elif not r.sigiloso and self._sabido_sigiloso(n):
+            r.sigiloso = True
+            if r.situacao == OK:
+                r.detalhe = _juntar(r.detalhe, "tratado como sigiloso: assim constava de "
+                                    "download anterior")
+        try:
+            if r.situacao == OK:
+                self._guardar(r, n, provisorio)
+            elif r.sigiloso and self.opcoes.separar_sigilosos:
+                self._retirar_do_acervo(r, n)
+        except BaseException:
+            # Ctrl+C no meio da guarda: o que não chegou ao destino volta
+            # para a fila (o fim do lote o marca como interrompido)
+            if r.situacao == OK and r.arquivo and _dentro(r.arquivo, self.provisorio):
+                r.situacao = ""
+            raise
+        finally:
+            if r.arquivo and _dentro(r.arquivo, self.provisorio):
+                r.arquivo, r.midias = "", []       # a área provisória é apagada
+            self._limpar_parcial(n)
         r.segundos = round(time.monotonic() - inicio, 1)
         self._concluir(r)
         return True, fora

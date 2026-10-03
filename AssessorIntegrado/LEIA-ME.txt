@@ -9,8 +9,8 @@ ChatGPT.
 1. INSTALE
 
    Dê dois cliques em INSTALAR.bat e aguarde a mensagem final. Na primeira
-   vez, leva de 10 a 25 minutos, conforme a internet. Não é preciso ser
-   administrador: tudo fica dentro desta pasta.
+   vez, baixa cerca de 800 MB e leva de 5 a 20 minutos, conforme a internet.
+   Não é preciso ser administrador: tudo fica dentro desta pasta.
 
 2. ABRA
 

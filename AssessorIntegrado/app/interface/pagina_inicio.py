@@ -164,10 +164,21 @@ class PaginaInicio(Pagina):
     def _apurar(self) -> dict:
         cfg = self.cfg
         dados: dict = {}
-        dados["lotes"] = servicos.ultimos_lotes(cfg, 4)
-        dados["transcricoes"] = servicos.transcricoes_recentes(cfg, 4)
+
+        # Cada consulta por si: um relatório ilegível (salvo pelo Excel, por
+        # exemplo) não pode deixar os três cartões em "Verificando…" e esconder
+        # o aviso de pendências.
+        def consultar(chave, funcao, padrao):
+            try:
+                dados[chave] = funcao()
+            except Exception as erro:
+                log.warning("tela inicial: não consegui apurar %s: %s", chave, erro)
+                dados[chave] = padrao
+
+        consultar("lotes", lambda: servicos.ultimos_lotes(cfg, 4), [])
+        consultar("transcricoes", lambda: servicos.transcricoes_recentes(cfg, 4), [])
         modelo = cfg.texto("transcricao", "modelo_ao_vivo") or "small"
-        dados["modelo"] = (modelo, servicos.modelo_instalado(modelo))
+        consultar("modelo", lambda: (modelo, servicos.modelo_instalado(modelo)), (modelo, False))
         momento, lista, erro = self._microfones
         transcrever = self.janela.paginas.get("transcrever")
         gravando = bool(transcrever is not None and transcrever.tarefa_sessao.ativa)
@@ -179,13 +190,9 @@ class PaginaInicio(Pagina):
                 lista, erro = [], str(e)
             self._microfones = (time.monotonic(), lista, erro)
         dados["microfones"] = (lista or [], erro)
-        try:
-            dados["ia"] = servicos.estado_ia(cfg)
-        except Exception as e:
-            log.debug("estado da IA: %s", e)
-            dados["ia"] = {}
-        dados["pendencias"] = servicos.pendencias(cfg)
-        dados["recuperaveis"] = len(servicos.recuperaveis(cfg))
+        consultar("ia", lambda: servicos.estado_ia(cfg), {})
+        consultar("pendencias", lambda: servicos.pendencias(cfg), [])
+        consultar("recuperaveis", lambda: len(servicos.recuperaveis(cfg)), 0)
         return dados
 
     def _aplicar(self, dados: dict) -> None:
@@ -300,8 +307,11 @@ class PaginaInicio(Pagina):
             self.aviso.grid_remove()
             return
         primeira = pendencias[0]
-        titulo = ("Falta uma coisa na instalação" if len(pendencias) == 1
-                  else f"Faltam {len(pendencias)} coisas na instalação")
+        if primeira.chave == "pastas":
+            titulo = "Confira as pastas do acervo e dos sigilosos"
+        else:
+            titulo = ("Falta uma coisa na instalação" if len(pendencias) == 1
+                      else f"Faltam {len(pendencias)} coisas na instalação")
         texto = "\n".join(p.texto for p in pendencias)
         self.aviso.definir(texto=texto, titulo=titulo)
         self.aviso.limpar_acoes()
@@ -309,7 +319,15 @@ class PaginaInicio(Pagina):
             self.aviso.acao(primeira.acao, self._baixar_modelo)
         elif primeira.chave == "pacotes":
             self.aviso.acao(primeira.acao, lambda: self._abrir(caminhos.RAIZ, pasta=True))
+        elif primeira.chave == "pastas":
+            self.aviso.acao(primeira.acao, self._abrir_geral)
         self.aviso.grid()
+
+    def _abrir_geral(self) -> None:
+        self.janela.mostrar("config")
+        config = self.janela.paginas.get("config")
+        if config is not None and hasattr(config, "abas"):
+            config.abas.select(0)
 
     def _baixar_modelo(self) -> None:
         config = self.janela.pagina("config")

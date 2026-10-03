@@ -43,6 +43,8 @@ OPCOES = (("pular_baixados", "Pular os que já estão na pasta"),
           ("separar_sigilosos", "Separar os sigilosos (pasta Sigilosos, fora do acervo)"),
           ("baixar_midias", "Baixar também as gravações de audiência"),
           ("mostrar_navegador", "Mostrar o navegador enquanto baixa"))
+# Título do ctx.avisar do motor quando o portal recusa o login (motor._grupo).
+PREFIXO_LOGIN_RECUSADO = "Não foi possível entrar"
 
 
 class PaginaBaixar(Pagina):
@@ -62,6 +64,8 @@ class PaginaBaixar(Pagina):
         self.status_texto = ""
         self.editores: list[EditorAcesso] = []
         self._vars: dict[str, tk.BooleanVar] = {}
+        self._falhas_login: list[tuple[str, str]] = []   # (título, texto) do lote em curso
+        self._destino_lote: Path | None = None
         self.tarefa_ler = self.nova_tarefa("Ler a relação")
         self.tarefa = self.nova_tarefa("Baixar processos", (NAVEGADOR,))
         self.tarefa_nuvem = self.nova_tarefa("Espelho na nuvem (download)", (NUVEM,))
@@ -182,7 +186,7 @@ class PaginaBaixar(Pagina):
         if not caminho:
             return
         caminho = Path(caminho)
-        self.cfg.definir("interface", "pasta_relacoes", str(caminho.parent))
+        self.gravar("interface", "pasta_relacoes", str(caminho.parent))
         self._ler(lambda: listas.ler_arquivo(caminho), caminho.stem)
 
     def colar(self) -> None:
@@ -198,7 +202,15 @@ class PaginaBaixar(Pagina):
         def usar(url: str):
             def baixar_e_ler():
                 arquivo = listas.baixar_link(url, caminhos.TEMP / "listas")
-                leitura = listas.ler_arquivo(arquivo)
+                try:
+                    leitura = listas.ler_arquivo(arquivo)
+                finally:
+                    # A relação pode trazer as senhas dos sigilosos: lida, não
+                    # fica no disco (só o nome do arquivo segue, para o lote).
+                    try:
+                        arquivo.unlink()
+                    except OSError:
+                        log.warning("não consegui apagar a relação baixada %s", arquivo.name)
                 leitura.origem = leitura.origem or str(arquivo)
                 return leitura
             self._ler(baixar_e_ler, None)
@@ -218,6 +230,10 @@ class PaginaBaixar(Pagina):
             self.estado = estado_antes if estado_antes != "lendo" else "vazio"
             lote = nome or Path(leitura.origem or "Relação").stem
             self._usar_leitura(leitura, lote)
+            # Também quando o usuário cancela a troca da relação: sem isto,
+            # o rodapé ficava em "Lendo a relação…", com a barra girando e o
+            # botão de baixar desativado.
+            self._atualizar_rodape()
 
         def falhou(erro):
             self.estado = estado_antes if estado_antes != "lendo" else "vazio"
@@ -349,10 +365,12 @@ class PaginaBaixar(Pagina):
                           f"verificador errado — provável erro de digitação ({exemplos}{mais}). "
                           "Confira na relação antes de baixar.")
         if leitura.corrompidos:
+            uma = len(leitura.corrompidos) == 1
             avisos.append(f"{plural(len(leitura.corrompidos), 'linha')} da planilha "
-                          "{0} o número como NÚMERO, e o Excel corrompe os últimos dígitos: "
-                          "ficaram de fora de propósito. Formate a coluna como Texto e abra "
-                          "de novo.".format("guarda" if len(leitura.corrompidos) == 1 else "guardam"))
+                          f"{'guarda' if uma else 'guardam'} o número como NÚMERO, e o Excel "
+                          "corrompe os últimos dígitos: "
+                          f"{'ficou' if uma else 'ficaram'} de fora de propósito. Formate a "
+                          "coluna como Texto e abra de novo.")
         if nao_suportados:
             avisos.append(f"{plural(nao_suportados, 'processo é', 'processos são')} de tribunal "
                           "cujo sistema o programa ainda não baixa (PJe, Projudi): "
@@ -506,6 +524,13 @@ class PaginaBaixar(Pagina):
 
     # ============================================================ ações
     def _opcao(self, chave: str) -> None:
+        if chave == "separar_sigilosos" and not self._vars[chave].get() and not dialogos.confirmar(
+                self.janela.raiz, "Separar os sigilosos",
+                "Sem a separação, os processos em segredo de justiça ficam na pasta do lote, "
+                "junto com os demais. No acervo, eles passam a ser lidos pela IA e copiados "
+                "para a nuvem, se o espelho estiver ligado.\n\nDesmarcar mesmo assim?"):
+            self._vars[chave].set(True)
+            return
         self.cfg.definir("download", chave, self._vars[chave].get())
 
     def alterar_destino(self) -> None:
@@ -547,7 +572,8 @@ class PaginaBaixar(Pagina):
                 "Dígito verificador",
                 f"{plural(len(errados), 'número tem', 'números têm')} o dígito verificador "
                 "errado — provavelmente erro de digitação, e o portal pode abrir OUTRO processo "
-                "ou nenhum.\n\nSim: baixar todos mesmo assim.\nNão: deixar esses de fora.",
+                "ou nenhum.\n\nSim: baixar todos mesmo assim.\nNão: deixar "
+                f"{'esse número' if len(errados) == 1 else 'esses números'} de fora.",
                 parent=self.janela.raiz)
             if resposta is None:
                 return
@@ -587,6 +613,8 @@ class PaginaBaixar(Pagina):
         self.resumo = None
         self.progresso = (0, len(numeros), "")
         self.status_texto = "Preparando o navegador…"
+        self._destino_lote = destino
+        self._falhas_login = []
         self.faixa_portal.grid_remove()
         self._atualizar_rodape()
         self.janela.atualizar_indicadores()
@@ -635,9 +663,11 @@ class PaginaBaixar(Pagina):
             self._atualizar_linha(dado)
             # um processo concluído = o login já passou: o recado sai de cena
             if dado.situacao:
-                self.faixa_portal.grid_remove()
+                self._recolher_recado_portal()
         elif tipo == "avisar":
             titulo, mensagem = dado
+            if str(titulo).startswith(PREFIXO_LOGIN_RECUSADO):
+                self._falhas_login.append((str(titulo), str(mensagem)))
             self.faixa_portal.definir(texto=mensagem, titulo=titulo)
             self.faixa_portal.grid()
             componentes.mostrar_no_rolavel(self.faixa_portal)
@@ -685,9 +715,11 @@ class PaginaBaixar(Pagina):
             tag = "aguardando"
         obs = [self._notas[iid]] if self._notas.get(iid) else []
         if r.sigiloso:
-            obs.append("sigiloso (fora do acervo)")
+            obs.append(self._nota_sigilo(r))
         if r.incompleto:
-            obs.append(f"faltam as folhas {r.incompleto}")
+            # o eProc não numera folhas: o que falta são documentos de eventos
+            obs.append(f"faltam documentos: {r.incompleto}" if r.sistema == "eproc"
+                       else f"faltam as folhas {r.incompleto}")
         if r.detalhe:
             obs.append(r.detalhe)
         valores = list(self.arvore.item(iid, "values"))
@@ -698,13 +730,50 @@ class PaginaBaixar(Pagina):
         valores[5] = "; ".join(obs)
         self.arvore.item(iid, values=valores, tags=(tag,))
 
+    def _nota_sigilo(self, r) -> str:
+        """Onde o sigiloso está DE FATO - e não onde deveria estar.
+
+        Antes a tabela dizia "fora do acervo" sempre, também com a opção
+        "Separar os sigilosos" desmarcada ou quando o arquivo, aberto em
+        outro programa, não pôde ser movido.
+        """
+        if not r.arquivo:
+            return "sigiloso"                      # não baixado (sem senha, erro…)
+        pasta_lote = getattr(self, "_destino_lote", None) or self._destino()
+        if Path(r.arquivo).parent != Path(pasta_lote):
+            # o motor o levou para a pasta de sigilosos (ou já estava lá)
+            return ("sigiloso" if "pasta de sigilosos" in (r.detalhe or "")
+                    else "sigiloso (na pasta de sigilosos)")
+        return "SIGILOSO: ficou na pasta do lote, com os demais"
+
+    def _recolher_recado_portal(self) -> None:
+        """O recado passageiro ("Conclua o login…") sai de cena; o de login
+        recusado continua à vista, também depois do fim do lote.
+
+        O motor publica os processos do grupo como ERRO, avisa que não
+        conseguiu entrar e encerra; o 'fim' chegava no mesmo tique da fila
+        e escondia a faixa antes que alguém a lesse - sobrava só "0
+        baixados, 37 com problema".
+        """
+        falhas = getattr(self, "_falhas_login", [])
+        if not falhas:
+            self.faixa_portal.grid_remove()
+            return
+        if len(falhas) == 1:
+            titulo, texto = falhas[0]
+        else:
+            titulo = "Não foi possível entrar em alguns portais"
+            texto = "\n".join(f"•  {t}: {m}" for t, m in falhas)
+        self.faixa_portal.definir(texto=texto, titulo=titulo)
+        self.faixa_portal.grid()
+
     def _terminou(self, resumo) -> None:
         self.resumo = resumo
         self.estado = "fim"
         self.status_texto = ""
         for r in resumo.itens:
             self._atualizar_linha(r)
-        self.faixa_portal.grid_remove()
+        self._recolher_recado_portal()
         self._atualizar_rodape()
         estilo.piscar_na_barra(self.janela.raiz)
         log.info("Lote concluído: %s", resumo.texto())

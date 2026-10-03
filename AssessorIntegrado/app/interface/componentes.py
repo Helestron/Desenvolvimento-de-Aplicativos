@@ -110,6 +110,21 @@ class Pagina(ttk.Frame):
         """Seguro em qualquer thread: o evento chega em ao_evento()."""
         self.janela.postar(self.nome, tipo, dado)
 
+    def gravar(self, secao: str, chave: str, valor) -> bool:
+        """Grava uma preferência sem impedir a ação que vem depois dela.
+
+        Lembrar a última pasta ou o último processo não pode travar o botão:
+        config.ini somente leitura, preso pelo OneDrive ou fora de UTF-8
+        levantava a exceção antes de a relação ser lida ou de a audiência
+        começar, e sob o pythonw o botão simplesmente "não fazia nada".
+        """
+        try:
+            self.cfg.definir(secao, chave, valor)
+            return True
+        except (OSError, ValueError) as erro:
+            log.warning("não consegui gravar %s.%s no config.ini: %s", secao, chave, erro)
+            return False
+
     def em_segundo_plano(self, tarefa, alvo, *args, ao_concluir=None, ao_falhar=None) -> bool:
         """Roda alvo(*args) na tarefa; o resultado volta pela fila.
 

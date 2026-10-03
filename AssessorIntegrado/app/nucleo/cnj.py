@@ -18,7 +18,7 @@ ordem em que os números aparecem no documento.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # Aceita o número com ou sem pontuação, e também os 20 dígitos corridos.
 # O separador aceita hífen, ponto, espaço e os travessões que o Word põe
@@ -122,6 +122,30 @@ def ler(texto: str) -> Numero:
         raise NumeroInvalido(
             f"número de processo não reconhecido em '{(texto or '').strip()}'")
     return _montar(m)
+
+
+# No NOME DE ARQUIVO o dependente vem como "-NN" (Numero.nome_arquivo), porque
+# o Windows não aceita "/". Sem ler o sufixo, o PDF do incidente
+# ("...0001-01.pdf") e o do principal ("...0001.pdf") teriam a mesma chave.
+_DEPENDENTE_NO_NOME = re.compile(r"-(?:inc)?0*(\d{1,4})(?=$|[\s._()\[\]])", re.I)
+
+
+def ler_nome_arquivo(texto: str) -> Numero:
+    """O número CNJ de um nome de arquivo ou pasta, com o dependente "-NN".
+
+    Aceita também a barra ("/01") e o que vier depois do número, como
+    " (2)" ou " 2025-03-10 14h00 - revisão".
+    """
+    m = _PADRAO.search(texto or "")
+    if not m:
+        raise NumeroInvalido(
+            f"número de processo não reconhecido em '{(texto or '').strip()}'")
+    numero = _montar(m)
+    if not numero.dependente:
+        d = _DEPENDENTE_NO_NOME.match(texto[m.end():])
+        if d:
+            numero = replace(numero, dependente=(d.group(1).lstrip("0") or "0").zfill(2))
+    return numero
 
 
 def chave(n: Numero) -> str:

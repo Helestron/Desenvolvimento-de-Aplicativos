@@ -86,6 +86,9 @@ def cmd_transcrever(argv: list[str]) -> int:
     p.add_argument("--falantes", type=int, default=0,
                    help="arquivo: quantas pessoas falam (0 = descobrir sozinho)")
     p.add_argument("--sem-falantes", action="store_true", help="arquivo: não separar as vozes")
+    p.add_argument("--sigiloso", action="store_true",
+                   help="processo em segredo de justiça: grava na pasta dos sigilosos, fora do "
+                        "acervo (automático se os autos já estiverem lá)")
     p.add_argument("--config", help="config.ini alternativo")
     try:
         args = p.parse_args(argv)
@@ -136,7 +139,7 @@ def _arquivo(args, numero, cfg) -> int:
             origem, numero, cfg, progresso=_Progresso(), cancelado=lambda: False,
             destino=Path(args.destino) if args.destino else None,
             modelo=args.modelo, separar=False if args.sem_falantes else None,
-            num_falantes=args.falantes)
+            num_falantes=args.falantes, sigiloso=args.sigiloso)
     except arquivo.ProcessoNaoInformado as erro:
         _imprimir(f"{erro} Use --processo.")
         return USO
@@ -221,7 +224,8 @@ def _ao_vivo(args, numero, cfg) -> int:
 
     try:
         sessao = SessaoAoVivo(numero, cfg, eventos, captura_fabrica=fabrica, modelo=args.modelo,
-                              dispositivo=args.dispositivo, falante=args.falante)
+                              dispositivo=args.dispositivo, falante=args.falante,
+                              sigiloso=args.sigiloso)
     except ValueError as erro:
         _imprimir(str(erro))
         return USO
@@ -310,7 +314,8 @@ def cmd_falantes(argv: list[str]) -> int:
     p = _Analisador(prog="python -m app falantes",
                     description="Separação automática de falantes (componente opcional).")
     sub = p.add_subparsers(dest="acao")
-    i = sub.add_parser("instalar", help="instala a biblioteca e baixa os modelos (~47 MB)")
+    i = sub.add_parser("instalar", help="instala a biblioteca e baixa os modelos "
+                       f"(cerca de {falantes.TAMANHO_MB} MB)")
     i.add_argument("--sem-pip", action="store_true", help="não instalar a biblioteca, só os modelos")
     sub.add_parser("estado", help="mostra se o componente está instalado")
     try:

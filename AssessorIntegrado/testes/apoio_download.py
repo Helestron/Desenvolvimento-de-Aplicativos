@@ -262,6 +262,7 @@ def fabricas(roteiro=None, falha_entrar=None):
 def opcoes_de_teste(pasta: Path, **mudar) -> modelos.OpcoesDownload:
     """Opções rápidas: sem pausa, sem preparo de IA, pastas no temporário."""
     base = dict(pausa=0, tentativas=2, atualizar_ia=False,
-                pasta_sigilosos=pasta / "Sigilosos", pasta_diagnostico=pasta / "diag")
+                pasta_sigilosos=pasta / "Sigilosos", pasta_diagnostico=pasta / "diag",
+                pasta_provisoria=pasta / "provisorio")
     base.update(mudar)
     return modelos.OpcoesDownload(**base)

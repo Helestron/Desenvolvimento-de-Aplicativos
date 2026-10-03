@@ -148,7 +148,7 @@ class TestInstalar(unittest.TestCase):
 
         with self.assertRaises(falantes.ComponenteAusente) as ctx:
             falantes.diarizar(np.zeros(16000, dtype=np.float32))
-        self.assertIn("Instalar componente", str(ctx.exception))
+        self.assertIn("Instalar o componente", str(ctx.exception))
 
 
 @unittest.skipUnless(PACOTE.exists() and EMBEDDING.exists() and QUATRO_VOZES.exists()

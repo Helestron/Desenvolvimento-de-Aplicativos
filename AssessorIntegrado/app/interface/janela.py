@@ -125,6 +125,11 @@ class Janela:
         self._cofre = None
 
         raiz.title(NOME)
+        # Exceção dentro de um botão ou evento: o Tk a imprime no stderr, que
+        # sob o pythonw é o os.devnull - o erro sumia (nem tela, nem Logs) e o
+        # botão parecia "não fazer nada".
+        self._ultimo_erro_tk = -1e9
+        raiz.report_callback_exception = self._erro_no_tk
         estilo.aplicar_icone(raiz)
         self._geometria()
         self._montar()
@@ -262,9 +267,16 @@ class Janela:
 
     def abrir_assistente(self) -> None:
         def concluido():
-            inicio = self.paginas.get("inicio")
-            if inicio is not None:
-                inicio.ao_mostrar()
+            # A tela inicial (saudação) e a página à vista, que pode ser a de
+            # Configurações ("Refazer o assistente inicial"): o assistente
+            # acabou de gravar nome, unidade, pasta e acessos.
+            for nome in dict.fromkeys(("inicio", self.atual or "")):
+                pagina = self.paginas.get(nome)
+                if pagina is not None:
+                    try:
+                        pagina.ao_mostrar()
+                    except Exception:
+                        log.exception("erro ao atualizar a página %s", nome)
         try:
             dialogos.Assistente(self, ao_concluir=concluido)
         except Exception:
@@ -302,6 +314,22 @@ class Janela:
             return
         dialogos.erro(self.raiz, "Algo deu errado",
                       f"{erro}\n\nOs detalhes ficaram no registro (pasta Logs).")
+
+    def _erro_no_tk(self, tipo, valor, rastro) -> None:
+        """Exceção não tratada num comando do Tk: vai para o registro e, fora
+        do teste, aparece ao usuário (no máximo uma caixa a cada 10 s, para
+        um erro repetido num evento de desenho não virar uma enxurrada)."""
+        log.error("erro não tratado na interface", exc_info=(tipo, valor, rastro))
+        if self.teste or self._fechando:
+            return
+        agora = time.monotonic()
+        if agora - self._ultimo_erro_tk < 10:
+            return
+        self._ultimo_erro_tk = agora
+        try:
+            self.erro_inesperado(valor)
+        except Exception:
+            pass
 
     def atualizar_indicadores(self) -> None:
         em_andamento = []
@@ -568,6 +596,38 @@ def capturar(janela: tk.Misc, destino: Path) -> bool:
     return False
 
 
+IDADE_TEMP_S = 3600
+
+
+def limpar_relacoes_baixadas(agora: float | None = None) -> int:
+    """Apaga as relações baixadas por link que sobraram de outras execuções.
+
+    Elas podem trazer a coluna de senhas dos processos sigilosos, em texto
+    puro, no perfil do usuário (as senhas dos portais ficam cifradas). A
+    tela já apaga o arquivo logo depois de lê-lo; isto recolhe o que ficou
+    de versões anteriores, de uma queda no meio ou da linha de comando
+    (TEMP\\relacoes). Só o que tem mais de uma hora: um comando em curso
+    não perde o arquivo que acabou de baixar.
+    """
+    agora = time.time() if agora is None else agora
+    apagados = 0
+    for pasta in (caminhos.TEMP / "listas", caminhos.TEMP / "relacoes"):
+        try:
+            arquivos = [p for p in pasta.iterdir() if p.is_file()]
+        except OSError:
+            continue
+        for p in arquivos:
+            try:
+                if agora - p.stat().st_mtime > IDADE_TEMP_S:
+                    p.unlink()
+                    apagados += 1
+            except OSError:
+                pass
+    if apagados:
+        log.info("Apaguei %d relação(ões) baixada(s) por link que tinham sobrado.", apagados)
+    return apagados
+
+
 def executar(teste: bool = False, pasta_capturas: Path | None = None, cfg=None) -> int:
     """Abre a janela (bloqueia até fechar). Devolve o código de saída.
 
@@ -581,6 +641,9 @@ def executar(teste: bool = False, pasta_capturas: Path | None = None, cfg=None) 
         pass
     sistema.id_do_aplicativo()          # ícone próprio na barra de tarefas (bug B9)
     estilo.consciencia_de_dpi()         # antes de criar a janela
+    import threading
+
+    threading.Thread(target=limpar_relacoes_baixadas, name="limpar-temp", daemon=True).start()
     try:
         raiz = tk.Tk(className="AssessorIntegrado")
     except tk.TclError as erro:

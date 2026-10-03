@@ -17,6 +17,9 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 MARCA_PAGINA = "=== [fl. {n}] ==="
+# Logo abaixo da marca, o documento (marcador do PDF) a que a página pertence.
+# No eProc, que não numera folhas, é o que a IA cita: "Evento 1 — ... — INIC1".
+MARCA_DOCUMENTO = "[documento: {titulo}]"
 
 
 def _pymupdf():
@@ -29,8 +32,21 @@ def _pymupdf():
 _RE_MARCA = re.compile(r"^=== \[fl\. (\d+)\] ===$", re.M)
 
 
+def _documento_por_pagina(sumario, paginas: int) -> dict[int, str]:
+    """{página: título do marcador que a cobre}, a partir do sumário do PDF."""
+    inicios = sorted(((int(item[2]), str(item[1]).strip()) for item in sumario or []
+                      if len(item) >= 3 and int(item[2]) >= 1 and str(item[1]).strip()),
+                     key=lambda x: x[0])
+    saida: dict[int, str] = {}
+    for k, (inicio, titulo) in enumerate(inicios):
+        fim = inicios[k + 1][0] - 1 if k + 1 < len(inicios) else paginas
+        for n in range(inicio, max(inicio, fim) + 1):
+            saida[n] = titulo
+    return saida
+
+
 def texto_pdf(caminho: Path) -> str:
-    """O texto do PDF, página por página, com a marca da folha."""
+    """O texto do PDF, página por página, com a marca da página e o documento."""
     partes: list[str] = []
     try:
         fitz = _pymupdf()
@@ -38,8 +54,14 @@ def texto_pdf(caminho: Path) -> str:
         # e a busca da IA por "certifico" acha a palavra.
         flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP
         with fitz.open(str(caminho)) as doc:
+            try:
+                documentos = _documento_por_pagina(doc.get_toc(simple=True), doc.page_count)
+            except Exception:  # sumário estragado não impede o texto
+                documentos = {}
             for i, pagina in enumerate(doc, 1):
                 partes.append(MARCA_PAGINA.format(n=i))
+                if documentos.get(i):
+                    partes.append(MARCA_DOCUMENTO.format(titulo=documentos[i]))
                 partes.append(pagina.get_text("text", flags=flags).strip())
         return "\n".join(partes) + "\n"
     except ImportError:  # pragma: no cover - PyMuPDF faz parte da instalação
@@ -86,16 +108,27 @@ def texto_de(caminho: Path) -> str:
 
 
 def garantir_texto(origem: Path, destino: Path) -> Path:
-    """Extrai o texto de 'origem' para 'destino', se ainda não estiver em dia."""
+    """Extrai o texto de 'origem' para 'destino', se ainda não estiver em dia.
+
+    O texto leva a data de modificação do próprio PDF, e só vale enquanto as
+    duas coincidem. "Texto mais novo que o PDF" não basta: um texto tirado de
+    OUTRO PDF (o mesmo processo noutro lote, que foi apagado) passaria por
+    atual, e a IA leria autos que não são os do arquivo.
+    """
     try:
-        if destino.exists() and destino.stat().st_mtime >= origem.stat().st_mtime:
-            return destino
+        if destino.exists() and abs(destino.stat().st_mtime - origem.stat().st_mtime) <= 2:
+            return destino      # folga de 2 s: FAT/exFAT arredondam a data
     except OSError:
         pass
     destino.parent.mkdir(parents=True, exist_ok=True)
     texto = texto_de(origem)
     tmp = destino.with_name(destino.name + ".tmp")
     tmp.write_text(texto, encoding="utf-8")
+    try:
+        quando = origem.stat().st_mtime
+        os.utime(tmp, (quando, quando))
+    except OSError:
+        pass
     os.replace(tmp, destino)
     return destino
 

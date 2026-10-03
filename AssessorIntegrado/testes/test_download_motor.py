@@ -8,11 +8,14 @@ que não perde nada e o login recusado que não derruba o resto.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import io
+import os
 import sys
 import types
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from app.download import modelos, motor
@@ -25,6 +28,16 @@ TJAL3 = apoio.numero("0700003", tr="02")
 TJRS1 = apoio.numero("5000001", tr="21")      # eProc
 TJBA1 = apoio.numero("8000001", tr="05")      # sistema 'outro'
 TRT1 = apoio.numero("0100001", j="5", tr="01")  # fora do catálogo
+
+
+@contextlib.contextmanager
+def pymupdf_aberto(caminho):
+    import pymupdf
+    doc = pymupdf.open(caminho)
+    try:
+        yield doc
+    finally:
+        doc.close()
 
 
 def ler_relatorio(caminho):
@@ -188,6 +201,216 @@ class TestSigilosos(BaseMotor):
         self.assertIsNone(chamadas[TJAL2.formatado])
 
 
+class TestSigiloForaDoAcervo(BaseMotor):
+    """O sigiloso nunca passa pelo acervo, nem quando algo dá errado."""
+
+    def setUp(self):
+        super().setUp()
+        self.sig = self.tmp / "Sigilosos" / self.destino.name
+        self.nome = TJAL1.nome_arquivo
+
+    def _no_acervo(self):
+        return sorted(p.name for p in (self.tmp / "Acervo").rglob(f"{self.nome}*")
+                      if p.suffix != ".csv")
+
+    def _mover_falha_nos_sigilosos(self):
+        original = motor._mover
+
+        def falha(origem, destino, *a):
+            if Path(destino).suffix == ".pdf" and "Sigilosos" in Path(destino).parts:
+                raise PermissionError(13, "Acesso negado")
+            return original(origem, destino, *a)
+        return mock.patch.object(motor, "_mover", falha)
+
+    def test_portal_grava_fora_do_acervo(self):
+        destinos = []
+        original = apoio.PortalFalso.baixar
+
+        def espiao(portal, numero, destino_pdf, senha=None):
+            destinos.append(Path(destino_pdf))
+            return original(portal, numero, destino_pdf, senha)
+        with mock.patch.object(apoio.PortalFalso, "baixar", espiao):
+            self.rodar([TJAL1], roteiro={TJAL1.formatado: ["ok_sigiloso"]})
+        self.assertFalse(motor._dentro(destinos[0], self.tmp / "Acervo"))
+        self.assertEqual(list((self.tmp / "provisorio").rglob("*.*")), [],
+                         "a área provisória é esvaziada")
+
+    def test_separacao_que_falha_e_falha_e_nada_fica_no_acervo(self):
+        with self._mover_falha_nos_sigilosos():
+            resumo = self.rodar([TJAL1, TJAL2], roteiro={TJAL1.formatado: ["ok_sigiloso"]})
+        r = self.item(resumo, TJAL1)
+        self.assertEqual(r.situacao, modelos.ERRO)
+        self.assertTrue(r.sigiloso)
+        self.assertEqual(r.arquivo, "")
+        self.assertIn("não foi posto no acervo", r.detalhe)
+        self.assertIn(r, resumo.falhas)
+        self.assertIn(TJAL1.formatado, resumo.a_refazer())
+        self.assertEqual(self._no_acervo(), [])
+        self.assertNotIn("segredo", resumo.texto())
+        # na rodada seguinte, mesmo que o portal não repita o aviso, é sigiloso
+        resumo2 = self.rodar([TJAL1])
+        r2 = resumo2.itens[0]
+        self.assertEqual(r2.situacao, modelos.OK)
+        self.assertTrue(r2.sigiloso)
+        self.assertTrue((self.sig / f"{self.nome}.pdf").exists())
+        self.assertEqual(self._no_acervo(), [])
+
+    def test_ctrl_c_depois_de_gravar_o_sigiloso_nao_o_deixa_no_acervo(self):
+        original = apoio.PortalFalso.baixar
+
+        def grava_e_interrompe(portal, numero, destino_pdf, senha=None):
+            original(portal, numero, destino_pdf, senha)
+            raise KeyboardInterrupt()
+        with mock.patch.object(apoio.PortalFalso, "baixar", grava_e_interrompe):
+            resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["ok_sigiloso"]})
+        self.assertEqual(resumo.itens[0].situacao, modelos.CANCELADO)
+        self.assertEqual(self._no_acervo(), [])
+        # e a rodada seguinte não o toma por "já baixado"
+        resumo2 = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["ok_sigiloso"]})
+        self.assertEqual(resumo2.itens[0].situacao, modelos.OK)
+        self.assertTrue((self.sig / f"{self.nome}.pdf").exists())
+
+    def test_sigiloso_esquecido_no_acervo_sai_na_rodada_seguinte(self):
+        # versão anterior: a separação falhou e o PDF ficou no lote
+        controle = self.destino / "_controle"
+        controle.mkdir(parents=True)
+        (self.destino / f"{self.nome}.pdf").write_bytes(apoio.pdf_bytes(2))
+        (controle / f"{self.nome}_capa.txt").write_text(
+            "Processo X\n\nSEGREDO DE JUSTIÇA - processo sigiloso. Não compartilhe.\n",
+            encoding="utf-8")
+        resumo = self.rodar([TJAL1])
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.JA_BAIXADO)
+        self.assertTrue(r.sigiloso)
+        self.assertEqual(r.arquivo, str(self.sig / f"{self.nome}.pdf"))
+        self.assertTrue((self.sig / "_controle" / f"{self.nome}_capa.txt").exists())
+        self.assertEqual(self._no_acervo(), [])
+        self.assertEqual(apoio.PortalFalso.todos[0].chamadas, [])
+
+    def test_sigiloso_preso_no_acervo_e_falha_e_nao_prepara_a_ia(self):
+        (self.destino / "_controle").mkdir(parents=True)
+        (self.destino / f"{self.nome}.pdf").write_bytes(apoio.pdf_bytes(2))
+        (self.destino / "_controle" / f"{self.nome}_capa.txt").write_text(
+            "SEGREDO DE JUSTIÇA", encoding="utf-8")
+        chamadas = []
+        falso = types.ModuleType("app.compartilhar.preparo")
+        falso.atualizar_contexto = lambda cfg, *a, **k: chamadas.append(cfg)
+        fp, fn = apoio.fabricas()
+        opcoes = apoio.opcoes_de_teste(self.tmp, atualizar_ia=True)
+        with self._mover_falha_nos_sigilosos(), \
+                mock.patch.dict(sys.modules, {"app.compartilhar.preparo": falso}):
+            import app.compartilhar as pacote
+            with mock.patch.object(pacote, "preparo", falso, create=True):
+                resumo = motor.executar([TJAL1, TJAL2], self.destino, opcoes, self.ctx,
+                                        fabrica_portal=fp, fabrica_navegador=fn, cfg=object())
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.ERRO)
+        self.assertIn("ATENÇÃO", r.detalhe)
+        self.assertEqual(resumo.sigilosos_no_acervo, [str(self.destino / f"{self.nome}.pdf")])
+        self.assertEqual(chamadas, [], "com sigiloso no acervo, nada vai para _ia/texto")
+        self.assertTrue(any("sigiloso" in t.lower() for t, _ in self.ctx.avisos))
+
+    def test_copia_de_outro_lote_sai_do_acervo_quando_vira_sigiloso(self):
+        marco = self.destino.parent / "Pauta março"
+        (marco / "_controle").mkdir(parents=True)
+        (marco / f"{self.nome}.pdf").write_bytes(apoio.pdf_bytes(3))
+        (marco / "_controle" / f"{self.nome}_capa.txt").write_text("capa", encoding="utf-8")
+        texto = self.tmp / "Acervo" / "_ia" / "texto" / f"{self.nome}.txt"
+        texto.parent.mkdir(parents=True)
+        texto.write_text("autos", encoding="utf-8")
+        resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["ok_sigiloso"]})
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+        self.assertEqual(self._no_acervo(), [])
+        antigo = self.tmp / "Sigilosos" / "Pauta março"
+        self.assertTrue((antigo / f"{self.nome}.pdf").exists())
+        self.assertTrue((antigo / "_controle" / f"{self.nome}_capa.txt").exists())
+        self.assertFalse(texto.exists(), "o texto integral dos autos sai de _ia/texto")
+        # a cópia recém-baixada é a que fica na pasta do lote atual
+        with pymupdf_aberto(self.sig / f"{self.nome}.pdf") as doc:
+            self.assertEqual(len(doc), 2)
+
+    def test_redownload_sigiloso_nao_e_trocado_pela_copia_antiga(self):
+        self.destino.mkdir(parents=True)
+        (self.destino / f"{self.nome}.pdf").write_bytes(apoio.pdf_bytes(5))
+        resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["ok_sigiloso"]},
+                            pular_baixados=False)
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+        self.assertEqual(self._no_acervo(), [])
+        with pymupdf_aberto(self.sig / f"{self.nome}.pdf") as doc:
+            self.assertEqual(len(doc), 2)
+
+    def test_numero_ja_sigiloso_em_outro_lote_continua_sigiloso(self):
+        outro = self.tmp / "Sigilosos" / "Pauta março"
+        outro.mkdir(parents=True)
+        (outro / f"{self.nome}.pdf").write_bytes(apoio.pdf_bytes(1))
+        resumo = self.rodar([TJAL1])         # o portal, desta vez, não fala em sigilo
+        r = resumo.itens[0]
+        self.assertTrue(r.sigiloso)
+        self.assertTrue((self.sig / f"{self.nome}.pdf").exists())
+        self.assertEqual(self._no_acervo(), [])
+
+    def test_sigilo_apurado_em_tentativa_que_falhou_vale_para_as_outras(self):
+        def com_memoria(roteiro):
+            fp, fn = apoio.fabricas(roteiro)
+
+            def fabrica(*a):
+                p = fp(*a)
+                p.sigilosos_apurados = {self.nome}
+                return p
+            return fabrica, fn
+        fp, fn = com_memoria({TJAL1.formatado: ["erro", "ok"]})
+        self.opcoes = apoio.opcoes_de_teste(self.tmp)
+        resumo = motor.executar([TJAL1], self.destino, self.opcoes, self.ctx,
+                                fabrica_portal=fp, fabrica_navegador=fn)
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+        self.assertTrue(resumo.itens[0].sigiloso)
+        self.assertEqual(self._no_acervo(), [])
+        # e o ERRO de um sigiloso sai no relatório como sigiloso
+        fp, fn = com_memoria({TJAL2.formatado: ["erro", "erro"]})
+        self.nome = TJAL2.nome_arquivo
+        resumo = motor.executar([TJAL2], self.destino, self.opcoes, self.ctx,
+                                fabrica_portal=fp, fabrica_navegador=fn)
+        self.assertEqual(resumo.itens[0].situacao, modelos.ERRO)
+        self.assertTrue(resumo.itens[0].sigiloso)
+
+
+class TestMover(apoio.PastaTemporaria):
+    def test_insiste_quando_o_antivirus_segura_o_arquivo(self):
+        origem = self.tmp / "a.pdf"
+        origem.write_bytes(b"x")
+        original = os.replace
+        falhas = [PermissionError(13, "Acesso negado")] * 2
+
+        def replace(a, b):
+            if falhas:
+                raise falhas.pop()
+            return original(a, b)
+        from app.download import pdf
+        with mock.patch.object(pdf, "ESPERA_TROCA_S", 0), mock.patch("os.replace", replace):
+            motor._mover(origem, self.tmp / "b" / "a.pdf")
+        self.assertTrue((self.tmp / "b" / "a.pdf").exists())
+        self.assertFalse(origem.exists())
+
+    def test_outro_disco_nao_deixa_copia_pela_metade(self):
+        origem = self.tmp / "a.pdf"
+        origem.write_bytes(b"%PDF-" + b"x" * 100)
+        destino = self.tmp / "b" / "a.pdf"
+        with mock.patch.object(motor, "_mesmo_volume", return_value=False):
+            motor._mover(origem, destino)
+        self.assertEqual(destino.read_bytes()[:5], b"%PDF-")
+        self.assertFalse(origem.exists())
+        self.assertEqual([p.name for p in destino.parent.iterdir()], ["a.pdf"])
+
+        origem.write_bytes(b"y")
+        with mock.patch.object(motor, "_mesmo_volume", return_value=False), \
+                mock.patch("shutil.copy2", side_effect=OSError(28, "Disco cheio")):
+            with self.assertRaises(OSError):
+                motor._mover(origem, destino)
+        self.assertEqual(destino.read_bytes()[:5], b"%PDF-", "o destino não foi estragado")
+        self.assertTrue(origem.exists())
+        self.assertEqual([p.name for p in destino.parent.iterdir()], ["a.pdf"])
+
+
 class TestSenhaDe(unittest.TestCase):
     def test_grafias_do_dependente(self):
         dep = apoio.numero("0700001", tr="02", dependente="01")
@@ -216,16 +439,34 @@ class TestRelatorio(BaseMotor):
         self.assertEqual(linhas[0], ["ordem", "processo", "tribunal", "sistema", "situacao",
                                      "paginas", "documentos", "arquivo", "sigiloso",
                                      "incompleto", "detalhe", "data_hora"])
+        # o relatório do acervo (que a IA lê) não diz QUAL processo é sigiloso
         self.assertEqual([l[1] for l in linhas[1:]],
-                         [TJAL1.formatado, TJBA1.formatado, TJAL2.formatado])
+                         [TJAL1.formatado, TJBA1.formatado, "(processo sigiloso)"])
         self.assertEqual([l[4] for l in linhas[1:]], ["OK", "NAO_SUPORTADO", "OK"])
         self.assertEqual(linhas[1][7], f"{TJAL1.nome_arquivo}.pdf")
         self.assertEqual(linhas[1][8], "não")
         self.assertEqual(linhas[3][8], "sim")
-        self.assertIn("pasta de sigilosos", linhas[3][7])
+        self.assertEqual(linhas[3][5:8], ["", "", ""])
+        self.assertIn("pasta de sigilosos", linhas[3][10])
+        self.assertNotIn(TJAL2.formatado, resumo.relatorio.read_text(encoding="utf-8-sig"))
         self.assertRegex(linhas[1][11], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+        # o completo fica na pasta de sigilosos do lote
+        completo = ler_relatorio(self.tmp / "Sigilosos" / self.destino.name / "_controle" /
+                                 "relatorio.csv")
+        self.assertEqual([l[1] for l in completo[1:]],
+                         [TJAL1.formatado, TJBA1.formatado, TJAL2.formatado])
+        self.assertIn("pasta de sigilosos", completo[3][7])
         # gravação atômica: nada de .tmp esquecido
         self.assertEqual([p.name for p in (self.destino / "_controle").glob("*.tmp")], [])
+
+    def test_lote_sem_sigiloso_nao_cria_pasta_de_sigilosos(self):
+        self.rodar([TJAL1, TJAL2])
+        self.assertFalse((self.tmp / "Sigilosos").exists())
+
+    def test_sem_separar_o_relatorio_do_lote_e_completo(self):
+        resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["ok_sigiloso"]},
+                            separar_sigilosos=False)
+        self.assertEqual(ler_relatorio(resumo.relatorio)[1][1], TJAL1.formatado)
 
     def test_relatorio_regravado_a_cada_item(self):
         visto = []
@@ -634,6 +875,26 @@ class TestPreparoParaIA(BaseMotor):
         self.assertEqual(len(resumo.baixados), 1)
         self.assertEqual(chamadas, [], "depois de 'Parar' o programa fica livre na hora")
 
+    def test_preparo_enxerga_o_parar_e_mostra_o_andamento(self):
+        recebido = {}
+        falso = types.ModuleType("app.compartilhar.preparo")
+
+        def atualizar_contexto(cfg, *a, **k):
+            self.assertFalse(k["cancelado"]())
+            k["progresso"](0, 412, "texto de X")
+            self.ctx.cancelar()            # "Parar" (ou fechar a janela) no meio do preparo
+            recebido["parou"] = k["cancelado"]()
+        falso.atualizar_contexto = atualizar_contexto
+        fp, fn = apoio.fabricas()
+        opcoes = apoio.opcoes_de_teste(self.tmp, atualizar_ia=True)
+        with mock.patch.dict(sys.modules, {"app.compartilhar.preparo": falso}):
+            import app.compartilhar as pacote
+            with mock.patch.object(pacote, "preparo", falso, create=True):
+                motor.executar([TJAL1], self.destino, opcoes, self.ctx,
+                               fabrica_portal=fp, fabrica_navegador=fn, cfg=object())
+        self.assertTrue(recebido["parou"], "o preparo precisa ver o pedido de parar")
+        self.assertIn("Preparando os arquivos para a IA (0 de 412)...", self.ctx.status_)
+
     def test_sem_baixados_nao_prepara(self):
         chamadas = []
         falso = types.ModuleType("app.compartilhar.preparo")
@@ -710,3 +971,54 @@ class TestResumo(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCatalogoDeTribunais(apoio.PastaTemporaria):
+    """dados\\tribunais.json é editado à mão no Bloco de Notas."""
+
+    def setUp(self):
+        super().setUp()
+        from app.nucleo import tribunais
+        self.tribunais = tribunais
+        self.original = tribunais.ARQUIVO.read_text(encoding="utf-8")
+
+    def test_utf8_com_bom_e_ansi(self):
+        com_bom = self.tmp / "bom.json"
+        com_bom.write_bytes(b"\xef\xbb\xbf" + self.original.encode("utf-8"))
+        ansi = self.tmp / "ansi.json"
+        ansi.write_bytes(self.original.encode("cp1252", errors="replace"))
+        total = len(self.tribunais.carregar())
+        self.assertGreater(total, 0)
+        for arquivo in (com_bom, ansi):
+            self.assertEqual(len(self.tribunais.carregar(arquivo)), total, arquivo.name)
+            self.assertEqual(self.tribunais.problema(arquivo), "")
+
+    def test_catalogo_estragado_e_explicado_na_tela(self):
+        ruim = self.tmp / "tribunais.json"
+        ruim.write_text(self.original.replace('"tribunais"', '"tribunais",', 1), encoding="utf-8")
+        with mock.patch.object(self.tribunais, "ARQUIVO", ruim), \
+                self.assertLogs("app.nucleo.tribunais", "ERROR"):
+            self.assertEqual(self.tribunais.carregar(), ())
+            fp, fn = apoio.fabricas()
+            resumo = motor.executar([TJAL1], self.tmp / "Processos" / "Lote",
+                                    apoio.opcoes_de_teste(self.tmp), apoio.ContextoGravador(),
+                                    fabrica_portal=fp, fabrica_navegador=fn)
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.NAO_SUPORTADO)
+        self.assertIn("catálogo de tribunais", r.detalhe)
+        self.assertIn("não pôde ser lido: erro de formatação na linha", r.detalhe)
+
+
+class TestRotulosCitados(unittest.TestCase):
+    """As mensagens dos portais citam rótulos que existem na tela."""
+
+    def test_rotulos(self):
+        from pathlib import Path as P
+        raiz = P(motor.__file__).resolve().parents[1] / "interface"
+        baixar = (raiz / "pagina_baixar.py").read_text(encoding="utf-8")
+        config = (raiz / "pagina_config.py").read_text(encoding="utf-8")
+        self.assertIn(f'"{modelos.MOSTRAR_NAVEGADOR}"', baixar)
+        self.assertIn('"Tentar de novo', baixar)
+        self.assertIn('"Esperar o login até (min)"', config)
+        self.assertIn("'Esperar o login até (min)'", modelos.CAMPO_PRAZO_LOGIN)
+        self.assertIn('("Acessos", self._aba_acessos)', config)

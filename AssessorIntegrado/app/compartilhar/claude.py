@@ -76,6 +76,19 @@ def achar_claude_code() -> Path | None:
     return binarios[-1] if binarios else None
 
 
+def linha_console(pasta: Path, exe: str, titulo: str) -> str:
+    """A linha de comando do console clássico (sem o Windows Terminal).
+
+    Vai pronta, como TEXTO: numa lista, o Python escaparia as aspas internas
+    com \\", que o cmd.exe não entende (o executável não abriria). Com /s, o
+    cmd tira só a primeira e a última aspa e mantém as do meio, o que protege
+    caminho com espaço, "&" ou parênteses. O pushd entra na pasta mesmo que
+    seja de rede (\\\\servidor\\...), que o cmd.exe não aceita como pasta
+    atual: sem ele, o agente trabalharia em C:\\Windows.
+    """
+    return f'cmd.exe /s /k "title {titulo}& pushd "{pasta}" && "{exe}""'
+
+
 def _abrir_terminal(pasta: Path, executavel: Path, titulo: str) -> None:
     """Abre um terminal novo na pasta, rodando o executável.
 
@@ -90,11 +103,16 @@ def _abrir_terminal(pasta: Path, executavel: Path, titulo: str) -> None:
         return
     wt = shutil.which("wt.exe") or shutil.which("wt")
     if wt:
-        subprocess.Popen([wt, "-w", "new", "--title", titulo, "-d", str(pasta),
-                          "cmd.exe", "/k", exe], env=env)
+        # Um item por palavra: o Windows Terminal remonta a linha e põe aspas
+        # no que tem espaço. O pushd cobre a pasta de rede (ver linha_console);
+        # nela, o "-d" só faria o cmd.exe reclamar antes de chegar ao pushd.
+        args = [wt, "-w", "new", "--title", titulo]
+        if not str(pasta).startswith("\\\\"):
+            args += ["-d", str(pasta)]
+        subprocess.Popen(args + ["cmd.exe", "/k", "pushd", str(pasta), "&&", exe], env=env)
         return
-    subprocess.Popen(["cmd.exe", "/k", f'title {titulo} && "{exe}"'], cwd=str(pasta),
-                     env=env, creationflags=sistema.NOVO_CONSOLE)
+    subprocess.Popen(linha_console(pasta, exe, titulo), env=env,
+                     creationflags=sistema.NOVO_CONSOLE)
 
 
 def abrir_claude_code(pasta: Path) -> None:
@@ -140,14 +158,14 @@ def arquivos_config_desktop() -> list[Path]:
 
 
 def claude_desktop_instalado() -> bool:
+    """O app está instalado? Pelo pacote ou pelo executável - nunca pela pasta
+    %APPDATA%\\Claude: o próprio registrar_mcp a cria ao gravar o
+    claude_desktop_config.json, e ela continua lá depois de desinstalar."""
     local = os.environ.get("LOCALAPPDATA")
     if local:
         if any((Path(local) / "Packages").glob("Claude_*")):     # MSIX (o atual)
             return True
-        if (Path(local) / "AnthropicClaude").is_dir():           # instalador antigo
-            return True
-    for cfg in arquivos_config_desktop():
-        if cfg.parent.is_dir():
+        if (Path(local) / "AnthropicClaude" / "claude.exe").is_file():   # instalador antigo
             return True
     return False
 
@@ -254,8 +272,8 @@ def remover_mcp() -> list[Path]:
 PROMPT_INICIAL = (
     "Você vai trabalhar no acervo judicial desta pasta. Leia primeiro o CLAUDE.md "
     "(ou o AGENTS.md) e o INDICE.md. Depois, aguarde a minha tarefa — por exemplo: "
-    "\"faça o relatório do processo <número>, com as folhas\" ou \"resuma os "
-    "depoimentos da audiência do processo <número>\".")
+    "\"faça o relatório do processo <número>, com as folhas (no eProc, os eventos)\" "
+    "ou \"resuma os depoimentos da audiência do processo <número>\".")
 
 
 def _link(esquema: str, pasta: Path, prompt: str = "", parametro_pasta: str = "folder") -> str:
@@ -309,7 +327,7 @@ def gerar_plugin_cowork(destino: Path) -> Path:
         "name": "acervo-judicial",
         "version": __version__,
         "description": "Método de trabalho com o acervo judicial do Assessor Integrado: "
-                       "autos em PDF nomeados pelo número CNJ, texto com a folha marcada "
+                       "autos em PDF nomeados pelo número CNJ, texto com a página marcada "
                        "e transcrições de audiência.",
         "author": {"name": "Assessor Integrado"},
     }

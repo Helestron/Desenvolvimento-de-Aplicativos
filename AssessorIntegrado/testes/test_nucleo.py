@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import configparser
 import json
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 from app.nucleo import cnj, config, cofre_senhas, listas, sistema, tribunais
+
+
+class _nada:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
 
 
 class TestCNJ(unittest.TestCase):
@@ -42,6 +52,21 @@ class TestCNJ(unittest.TestCase):
     def test_ler_none(self):
         with self.assertRaises(cnj.NumeroInvalido):
             cnj.ler(None)  # type: ignore[arg-type]
+
+    def test_nome_de_arquivo_com_dependente(self):
+        # Regressão: o "-NN" do nome do arquivo (Numero.nome_arquivo) era
+        # ignorado, e o PDF do incidente ficava com a chave do principal.
+        principal = "0700123-83.2024.8.02.0001"
+        for nome, esperado in ((principal, principal),
+                               (f"{principal}-01", f"{principal}-01"),
+                               (f"{principal}/0001", f"{principal}-01"),
+                               (f"{principal} (2)", principal),
+                               (f"{principal}-01 (2)", f"{principal}-01"),
+                               (f"{principal} 2025-03-10 14h00 - revisão", principal),
+                               (f"{principal} - 2ª Vara", principal)):
+            self.assertEqual(cnj.ler_nome_arquivo(nome).nome_arquivo, esperado, nome)
+        with self.assertRaises(cnj.NumeroInvalido):
+            cnj.ler_nome_arquivo("INDICE")
 
 
 class TestTribunais(unittest.TestCase):
@@ -100,6 +125,53 @@ class TestConfig(unittest.TestCase):
         c.definir("geral", "nome_usuario", "B")
         self.assertEqual(c.texto("geral", "nome_usuario"), "B")
         self.assertEqual(self.arq.read_text(encoding="utf-8").count("[geral]"), 1)
+
+    def test_recarregar_nao_expoe_configuracao_vazia(self):
+        # Regressão: recarregar() trocava o parser por um VAZIO antes de ler;
+        # outra thread lia, nesse intervalo, os padrões (pasta do acervo
+        # errada) ou valores ainda em montagem (AttributeError).
+        c = config.Config(self.arq)
+        c.definir("geral", "pasta_acervo", r"D:\Gabinete\Acervo")
+        vistos = []
+        original = configparser.ConfigParser.read_string
+
+        def lendo(cp, *args, **kwargs):
+            vistos.append(c.texto("geral", "pasta_acervo"))
+            return original(cp, *args, **kwargs)
+
+        with mock.patch.object(configparser.ConfigParser, "read_string", lendo):
+            c.recarregar()
+        self.assertEqual(vistos, [r"D:\Gabinete\Acervo"])
+        self.assertEqual(c.texto("geral", "pasta_acervo"), r"D:\Gabinete\Acervo")
+
+    def test_arquivo_em_ansi_ou_utf16_nao_volta_ao_padrao(self):
+        acervo = Path(self.dir.name) / "Gabinete" / "Acervo"     # absoluto também no Windows
+        texto = (config.modelo_ini()
+                 .replace("nome_usuario = \n", "nome_usuario = Dra. Conceição\n")
+                 .replace("pasta_acervo = Acervo\n", f"pasta_acervo = {acervo}\n"))
+        for codificacao in ("cp1252", "utf-16"):
+            with self.subTest(codificacao=codificacao):
+                self.arq.write_bytes(texto.replace("\n", "\r\n").encode(codificacao))
+                with self.assertLogs("nucleo.config", "WARNING") if codificacao == "cp1252" \
+                        else _nada():
+                    c = config.Config(self.arq)
+                self.assertEqual(c.texto("geral", "nome_usuario"), "Dra. Conceição")
+                self.assertEqual(c.pasta_acervo, acervo)
+                c.definir("unidade", "comarca", "Maceió")      # antes: UnicodeDecodeError
+                self.assertIn("Dra. Conceição", self.arq.read_text(encoding="utf-8"))
+                self.assertEqual(config.Config(self.arq).texto("unidade", "comarca"), "Maceió")
+
+    def test_so_leitura_nao_cria_o_arquivo(self):
+        c = config.Config(self.arq, criar=False)
+        self.assertFalse(self.arq.exists())
+        self.assertEqual(c.texto("transcricao", "modelo_ao_vivo"), "small")
+
+    def test_pastas_uma_dentro_da_outra(self):
+        base = Path(self.dir.name)
+        self.assertEqual(config.conflito_de_pastas(base / "Acervo", base / "Sigilosos"), "")
+        for acervo, sigilosos in ((base, base / "Sigilosos"), (base / "Acervo", base),
+                                  (base / "Acervo", base / "Acervo")):
+            self.assertIn("compartilhado com a IA", config.conflito_de_pastas(acervo, sigilosos))
 
     def test_valor_invalido_vira_padrao(self):
         self.arq.write_text("[download]\npausa_entre_processos = muito\npular_baixados = talvez\n",

@@ -84,13 +84,47 @@ class Tribunal:
         return candidatos[0] if candidatos else ""
 
 
+# Por que o catálogo não pôde ser lido (vazio quando foi lido).
+_PROBLEMAS: dict[str, str] = {}
+
+
+def _ler_json(caminho: Path):
+    """JSON editado à mão no Windows: o Bloco de Notas e o PowerShell 5.1
+    gravam "UTF-8 com BOM", e o Bloco de Notas antigo, ANSI (cp1252)."""
+    dados = Path(caminho).read_bytes()
+    try:
+        texto = dados.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        texto = dados.decode("cp1252", errors="replace")
+    return json.loads(texto)
+
+
+def problema(arquivo: Path | None = None) -> str:
+    """Frase para o usuário quando o catálogo não pôde ser lido; "" se pôde."""
+    p = Path(arquivo or ARQUIVO)
+    carregar(p)
+    return _PROBLEMAS.get(str(p), "")
+
+
 @lru_cache(maxsize=4)
 def _carregar(arquivo: str, _mtime: float) -> tuple[Tribunal, ...]:
     try:
-        dados = json.loads(Path(arquivo).read_text(encoding="utf-8"))
+        dados = _ler_json(Path(arquivo))
+        if not isinstance(dados, dict):
+            raise ValueError("o conteúdo não é um objeto JSON")
     except (OSError, ValueError) as erro:
         log.error("catálogo de tribunais ilegível (%s): %s", arquivo, erro)
+        if isinstance(erro, json.JSONDecodeError):
+            motivo = f"erro de formatação na linha {erro.lineno}, coluna {erro.colno}"
+        elif isinstance(erro, OSError):
+            motivo = erro.strerror or "arquivo inacessível"
+        else:
+            motivo = str(erro)
+        nome = "dados\\tribunais.json" if Path(arquivo) == ARQUIVO else arquivo
+        _PROBLEMAS[arquivo] = (f"o catálogo de tribunais ({nome}) não pôde ser lido: {motivo}. "
+                               "Corrija o arquivo ou instale o programa de novo")
         return ()
+    _PROBLEMAS.pop(arquivo, None)
     saida = []
     for t in dados.get("tribunais", []):
         try:
@@ -117,9 +151,13 @@ def _mtime(p: Path) -> float:
 
 def _ler_locais() -> dict:
     try:
-        return json.loads(ARQUIVO_LOCAL.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        dados = _ler_json(ARQUIVO_LOCAL)
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError) as erro:
+        log.warning("endereços corrigidos ilegíveis (%s): %s", ARQUIVO_LOCAL, erro)
+        return {}
+    return dados if isinstance(dados, dict) else {}
 
 
 def _com_locais(t: Tribunal, locais: dict) -> Tribunal:

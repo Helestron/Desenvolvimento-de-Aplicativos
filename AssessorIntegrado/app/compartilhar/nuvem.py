@@ -8,7 +8,9 @@ anexar arquivo por arquivo.
 O acervo de trabalho NÃO mora na pasta sincronizada - a sincronização
 atrapalha arquivo em uso (lição do Assessor SAJ). O que se faz é uma CÓPIA
 de mão única, ao fim de cada lote ou quando o usuário pede: só o que é novo
-ou mudou é copiado, e nada é apagado no destino.
+ou mudou é copiado, e nada é apagado no destino - com uma exceção, de
+propósito: a cópia de um processo que hoje está na pasta de sigilosos
+(segredo de justiça) é retirada do espelho.
 """
 
 from __future__ import annotations
@@ -18,6 +20,10 @@ import os
 import shutil
 import string
 from pathlib import Path
+
+from ..nucleo import cnj
+from .mcp_servidor import (_DO_CONFIG, _partes_relativas, chaves_sigilosas,
+                           pasta_sigilosos_configurada)
 
 log = logging.getLogger("compartilhar.nuvem")
 
@@ -69,22 +75,43 @@ def _deve_copiar(origem: Path, destino: Path) -> bool:
     return a.st_size != b.st_size or a.st_mtime > b.st_mtime + 2
 
 
-def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None) -> tuple[int, int]:
+def _chave(nome: str) -> str | None:
+    try:
+        return cnj.ler_nome_arquivo(Path(nome).stem).nome_arquivo
+    except cnj.NumeroInvalido:
+        return None
+
+
+def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None,
+             sigilosos=_DO_CONFIG) -> tuple[int, int]:
     """Copia o acervo para '<destino_raiz>/Assessor Integrado - Acervo'.
 
-    Devolve (copiados, iguais). Nunca apaga nada no destino.
+    Devolve (copiados, iguais). Não apaga nada no destino, exceto a cópia de
+    processo que está na pasta de sigilosos ('sigilosos'; por padrão, a do
+    config.ini): PDF, texto extraído, transcrição ou minuta com o número dele.
     """
     origem = Path(origem)
     destino = Path(destino_raiz) / SUBPASTA
+    if sigilosos is _DO_CONFIG:
+        sigilosos = pasta_sigilosos_configurada()
+    # Pasta de sigilosos posta (por engano) dentro do acervo: fica de fora
+    fora = _partes_relativas(sigilosos, origem) if sigilosos else None
+    sigilosas = chaves_sigilosas(sigilosos, origem)
     arquivos = []
     for p in origem.rglob("*"):
         if not p.is_file():
             continue
-        partes = set(p.relative_to(origem).parts[:-1])
+        rel = p.relative_to(origem).parts
+        partes = set(rel[:-1])
         if partes & _IGNORAR_PASTAS or p.name.startswith("~$") \
                 or p.name.endswith(_IGNORAR_SUFIXOS):
             continue
+        if fora is not None and tuple(q.lower() for q in rel[:len(fora)]) == fora:
+            continue
+        if sigilosas and _chave(p.name) in sigilosas:
+            continue
         arquivos.append(p)
+    _retirar_sigilosos(destino, sigilosas)
     copiados = iguais = 0
     total = len(arquivos)
     for i, p in enumerate(arquivos, 1):
@@ -110,3 +137,22 @@ def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None) -
                 pass
     log.info("Espelho na nuvem (%s): %d copiado(s), %d sem mudança.", destino, copiados, iguais)
     return copiados, iguais
+
+
+def _retirar_sigilosos(destino: Path, sigilosas: set[str]) -> None:
+    """Apaga do espelho as cópias dos processos que estão na pasta de sigilosos.
+
+    Elas chegaram lá antes da separação (que falhou e foi refeita à mão, por
+    exemplo); segredo de justiça não pode continuar na nuvem.
+    """
+    if not sigilosas or not destino.is_dir():
+        return
+    for p in destino.rglob("*"):
+        try:
+            if p.is_file() and _chave(p.name) in sigilosas:
+                p.unlink()
+                log.warning("Retirei do espelho na nuvem %s: o processo está na pasta de "
+                            "sigilosos.", p.relative_to(destino))
+        except OSError as erro:
+            log.warning("ATENÇÃO: não consegui retirar do espelho na nuvem %s, de processo "
+                        "sigiloso (%s). Apague-o à mão.", p.name, erro)

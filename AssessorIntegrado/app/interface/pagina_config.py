@@ -42,6 +42,9 @@ class PaginaConfig(Pagina):
 
     def montar(self) -> None:
         self._vars: dict = {}
+        # Releem o config.ini ao reabrir a página: o assistente, a página
+        # Compartilhar e a grade de falantes também gravam nestas chaves.
+        self._recarregar: list = []
         self.editores: list[EditorAcesso] = []
         self.tarefa_login = self.nova_tarefa("Testar o login", (NAVEGADOR,))
         self.tarefa_modelo = self.nova_tarefa("Baixar o modelo de transcrição")
@@ -77,13 +80,25 @@ class PaginaConfig(Pagina):
         quadro, entrada = componentes.campo(pai, titulo, var, largura)
         quadro.grid(row=linha, column=coluna, columnspan=colspan, sticky="ew",
                     padx=(0 if coluna == 0 else px(14), 0), pady=(0, px(12)))
+        # Grava só o que o usuário MUDOU desde a última leitura. Comparar com
+        # o config.ini regravava o valor velho da tela por cima do que o
+        # assistente (ou outra página) acabara de gravar, a um simples
+        # clique no campo seguido de outro clique fora dele.
+        lido = [var.get().strip()]
 
         def salvar(_evento=None):
             valor = var.get().strip()
-            if valor != self.cfg.texto(secao, chave):
+            if valor != lido[0]:
                 self.cfg.definir(secao, chave, valor)
+                lido[0] = valor
                 if ao_salvar:
                     ao_salvar(valor)
+
+        def recarregar():
+            if var.get().strip() == lido[0]:          # sem edição pendente
+                lido[0] = self.cfg.texto(secao, chave)
+                var.set(lido[0])
+        self._recarregar.append(recarregar)
         entrada.bind("<FocusOut>", salvar, add="+")
         entrada.bind("<Return>", salvar, add="+")
         return entrada
@@ -129,6 +144,12 @@ class PaginaConfig(Pagina):
         def alterar():
             nova = dialogos.escolher_pasta(self.janela.raiz, titulo, atual())
             if nova:
+                acervo, sigilosos = ((nova, self.cfg.pasta_sigilosos) if chave == "pasta_acervo"
+                                     else (self.cfg.pasta_acervo, nova))
+                problema = servicos.problema_nas_pastas(acervo, sigilosos)
+                if problema:
+                    dialogos.avisar(self.janela.raiz, "Pasta não aceita", problema)
+                    return
                 self.cfg.definir(secao, chave, str(nova))
                 try:
                     self.cfg.criar_pastas()
@@ -147,12 +168,15 @@ class PaginaConfig(Pagina):
         estilo.botao(quadro, "Abrir", abrir, superficie="Faixa").grid(
             row=0, column=2, rowspan=2, padx=(px(8), 0))
         conferir()
+        self._recarregar.append(conferir)      # o assistente também troca o acervo
 
     # ============================================================ Geral
     def _aba_geral(self, pai) -> None:
         pai.columnconfigure((0, 1), weight=1, uniform="geral")
-        self._titulo(pai, "Pastas", 0, "O acervo é a pasta compartilhada com a IA. Os sigilosos "
-                                       "ficam fora dele.", primeiro=True)
+        self._titulo(pai, "Pastas", 0, "O acervo é a pasta compartilhada com a IA. Com a opção "
+                                       "“Separar os sigilosos” marcada (o padrão, na tela Baixar), "
+                                       "os processos em segredo de justiça ficam fora dele.",
+                     primeiro=True)
         self._pasta(pai, "geral", "pasta_acervo", "Pasta do acervo (processos e transcrições)", 1,
                     lambda: self.cfg.pasta_acervo)
         self._pasta(pai, "geral", "pasta_sigilosos", "Pasta dos processos em segredo de justiça",
@@ -479,7 +503,9 @@ class PaginaConfig(Pagina):
         pagina = self.janela.paginas.get("transcrever")
         grade = getattr(pagina, "grade", None)
         if grade is not None:
-            grade.nomes = (self.cfg.lista("transcricao", "falantes") + [""] * 8)[:8]
+            from .pagina_transcrever import nomes_falantes
+
+            grade.nomes = nomes_falantes(self.cfg)
             for k in range(8):
                 grade._desenhar(k)
 
@@ -605,10 +631,15 @@ class PaginaConfig(Pagina):
     # ============================================================ eventos
     def ao_mostrar(self) -> None:
         # Outra página (ou o assistente) pode ter mudado a configuração:
-        # as caixas de marcar acompanham.
+        # as caixas de marcar, os campos de texto e as pastas acompanham.
         for chave, var in self._vars.items():
             if isinstance(chave, tuple) and isinstance(var, tk.BooleanVar):
                 var.set(self.cfg.flag(*chave))
+        for recarregar in self._recarregar:
+            try:
+                recarregar()
+            except Exception:
+                log.exception("não consegui reler um campo das Configurações")
         if hasattr(self, "estado_falantes") and not self.tarefa_falantes.ativa:
             self._conferir_falantes()
         # o mesmo portal pode ter mudado na página Baixar ou no assistente

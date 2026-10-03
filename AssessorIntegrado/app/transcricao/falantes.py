@@ -54,6 +54,9 @@ ARQUIVO_SEGMENTACAO = "model.int8.onnx"
 ARQUIVO_EMBEDDING = "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
 
 PASTA: Path = caminhos.MODELOS / "falantes"   # trocável nos testes
+# Download do componente inteiro (a biblioteca sherpa-onnx e os dois modelos),
+# arredondado: um número só para a tela, a verificação, o instalador e a CLI.
+TAMANHO_MB = 60
 LIMIAR = 0.85
 SUAVIZAR_S = 1.5
 
@@ -178,17 +181,39 @@ def _baixar(url: str, destino: Path, sha256: str | None,
         "e tente de novo; o download continua de onde parou.")
 
 
+def _ambiente_do_pip() -> dict[str, str]:
+    """O ambiente do pip, limpo como o instalador o deixa (Preparar-Ambiente).
+
+    O -E do atalho vale só para o processo da janela: os.environ continua
+    com o PYTHONHOME global (deixado pelo ArcGIS, por exemplo), e o Python
+    filho morria na partida ("No module named encodings"). Um pip.ini do
+    usuário com "user = true" mandava o pacote para %APPDATA%\\Python, que o
+    programa (rodando com -s) não enxerga: reabrir não resolvia.
+    """
+    env = dict(os.environ)
+    for variavel in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PIP_USER", "PIP_TARGET",
+                     "PIP_PREFIX", "PIP_REQUIRE_VIRTUALENV", "VIRTUAL_ENV", "PIP_INDEX_URL"):
+        env.pop(variavel, None)
+    env["PYTHONNOUSERSITE"] = "1"
+    env["PIP_CONFIG_FILE"] = os.devnull      # "nul" no Windows: nenhum pip.ini é lido
+    env["PIP_NO_INPUT"] = "1"
+    env.setdefault("PIP_CACHE_DIR", str(caminhos.RUNTIME / "pip-cache"))
+    # Saída do pip em UTF-8: no Windows, por cano, ela sai em cp1252 e a
+    # mensagem de erro mostrada ao usuário vinha com os acentos trocados.
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
+
+
 def _instalar_biblioteca(progresso: Callable[[float, str], None]) -> None:
     requisitos = caminhos.RAIZ / "instalador" / "requisitos-falantes.txt"
     if not requisitos.exists():
         raise ComponenteAusente(f"Arquivo de requisitos não encontrado: {requisitos}")
     progresso(0.02, "Instalando o componente sherpa-onnx (alguns minutos)...")
-    env = dict(os.environ)
-    env.setdefault("PIP_CACHE_DIR", str(caminhos.RUNTIME / "pip-cache"))
-    # Saída do pip em UTF-8: no Windows, por cano, ela sai em cp1252 e a
-    # mensagem de erro mostrada ao usuário vinha com os acentos trocados.
-    env["PYTHONIOENCODING"] = "utf-8"
-    cmd = [str(caminhos.python_exe(False)), "-m", "pip", "install", "--require-hashes",
+    env = _ambiente_do_pip()
+    # -s: o pacote "do usuário" de outro Python 3.12 não entra (o programa
+    # roda com -s e não o enxergaria).
+    cmd = [str(caminhos.python_exe(False)), "-s", "-m", "pip", "install", "--require-hashes",
            "--only-binary=:all:", "--prefer-binary", "--no-warn-script-location",
            "--disable-pip-version-check", "--retries", "10", "--timeout", "60",
            "-r", str(requisitos)]
@@ -279,12 +304,12 @@ def diarizar(audio16k: np.ndarray, num_falantes: int = 0, *, limiar: float = LIM
     """
     if not modelos_presentes():
         raise ComponenteAusente("Os modelos da separação de falantes não estão instalados "
-                                "(Configurações > Transcrição > Instalar componente).")
+                                "(Configurações > Transcrição > Instalar o componente).")
     try:
         import sherpa_onnx
     except ImportError as erro:
         raise ComponenteAusente("O componente sherpa-onnx não está instalado "
-                                "(Configurações > Transcrição > Instalar componente).") from erro
+                                "(Configurações > Transcrição > Instalar o componente).") from erro
 
     audio = np.ascontiguousarray(audio16k, dtype=np.float32).reshape(-1)
     duracao = audio.size / TAXA

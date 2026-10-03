@@ -99,15 +99,39 @@ class PaginaCompartilhar(Pagina):
         self._bloco_nuvem(corpo).grid(row=3, column=0, sticky="ew", pady=(px(18), 0))
 
         # ------------------------------------------------ sigilo
-        nota = Faixa(corpo, "Info", titulo="Sigilo e responsabilidade", texto=(
-            "Os processos em segredo de justiça ficam na pasta Sigilosos, fora do acervo, e "
-            "não são compartilhados. A IA é ferramenta de apoio: resumos e minutas são "
-            "sugestões para revisão, e a decisão é sempre do magistrado (Resolução CNJ "
-            "nº 615/2025)."))
-        nota.grid(row=4, column=0, sticky="ew", pady=(px(18), 0))
+        self._separa_sigilosos: bool | None = None
+        self.nota_sigilo: Faixa | None = None
+        self._nota_sigilo()
         self.detalhes = componentes.Detalhes(corpo, "Detalhes técnicos")
         self.detalhes.grid(row=5, column=0, sticky="ew", pady=(px(18), 0))
         self._atualizar_pasta()
+
+    def _nota_sigilo(self) -> None:
+        """A faixa de sigilo diz o que vale com a opção de hoje: com "Separar
+        os sigilosos" desmarcada, os sigilosos baixados ficam no acervo e
+        SÃO compartilhados - a frase fixa de antes afirmava o contrário."""
+        separa = self.cfg.flag("download", "separar_sigilosos")
+        if separa == self._separa_sigilosos:
+            return
+        self._separa_sigilosos = separa
+        responsabilidade = ("A IA é ferramenta de apoio: resumos e minutas são sugestões para "
+                            "revisão, e a decisão é sempre do magistrado (Resolução CNJ "
+                            "nº 615/2025).")
+        if separa:
+            tipo, texto = "Info", (
+                "Com a opção “Separar os sigilosos” marcada (o padrão, na tela Baixar), os "
+                "processos em segredo de justiça vão para a pasta Sigilosos, fora do acervo, e "
+                "não são compartilhados. " + responsabilidade)
+        else:
+            tipo, texto = "Aviso", (
+                "A opção “Separar os sigilosos”, na tela Baixar, está desmarcada: os processos "
+                "em segredo de justiça baixados assim ficam no acervo e SÃO compartilhados: "
+                "lidos pela IA e copiados para a nuvem, se o espelho estiver ligado. "
+                + responsabilidade)
+        if self.nota_sigilo is not None:
+            self.nota_sigilo.destroy()
+        self.nota_sigilo = Faixa(self.corpo, tipo, titulo="Sigilo e responsabilidade", texto=texto)
+        self.nota_sigilo.grid(row=4, column=0, sticky="ew", pady=(px(18), 0))
 
     # ============================================================ blocos
     def _bloco(self, icone: str, titulo: str, texto: str):
@@ -229,6 +253,7 @@ class PaginaCompartilhar(Pagina):
         linha.grid(row=2, column=1, sticky="ew")
         linha.columnconfigure(0, weight=1)
         self.var_nuvem = tk.StringVar(value=self.cfg.texto("compartilhar", "pasta_nuvem"))
+        self._nuvem_lida = self.var_nuvem.get().strip()   # o que o campo mostrava ao ler o ini
         self.c_nuvem = ttk.Combobox(linha, textvariable=self.var_nuvem, height=8)
         self.c_nuvem.grid(row=0, column=0, sticky="ew")
         self.c_nuvem.bind("<<ComboboxSelected>>", lambda _e: self._salvar_nuvem())
@@ -251,6 +276,12 @@ class PaginaCompartilhar(Pagina):
     # ============================================================ estado
     def ao_mostrar(self) -> None:
         self._atualizar_pasta()
+        # As Configurações (aba Compartilhamento) gravam as mesmas chaves.
+        if self.var_nuvem.get().strip() == self._nuvem_lida:      # sem edição pendente
+            self._nuvem_lida = self.cfg.texto("compartilhar", "pasta_nuvem")
+            self.var_nuvem.set(self._nuvem_lida)
+        self._vars["auto"].set(self.cfg.flag("compartilhar", "espelhar_automaticamente"))
+        self._nota_sigilo()
         if not self.tarefa_estado.ativa:
             self.em_segundo_plano(self.tarefa_estado, servicos.estado_ia, self.cfg,
                                   ao_concluir=self._aplicar_estado,
@@ -323,7 +354,10 @@ class PaginaCompartilhar(Pagina):
         texto = (f"{plural(acervo.get('processos', 0), 'processo')} e "
                  f"{plural(acervo.get('transcricoes', 0), 'transcrição', 'transcrições')}")
         if acervo.get("preparado"):
-            texto += f" · preparado para IA {quando(acervo['preparado'])}"
+            momento = quando(acervo["preparado"])
+            # "hoje, 14:32" e "ontem, 09:05" dispensam a preposição; datas, não
+            texto += (" · preparado para IA "
+                      + (momento if momento.startswith(("hoje", "ontem")) else f"em {momento}"))
             tipo = "ok"
         else:
             texto += " · ainda não preparado para IA"
@@ -575,9 +609,13 @@ class PaginaCompartilhar(Pagina):
 
     # ------------------------------------------------------------- nuvem
     def _salvar_nuvem(self) -> None:
+        # Grava só o que o usuário mudou neste campo: comparar com o ini
+        # apagava a pasta escolhida nas Configurações (o campo, montado
+        # antes, ainda mostrava o valor velho) ao clicar em "Espelhar agora".
         valor = self.var_nuvem.get().strip()
-        if valor != self.cfg.texto("compartilhar", "pasta_nuvem"):
+        if valor != self._nuvem_lida:
             self.cfg.definir("compartilhar", "pasta_nuvem", valor)
+            self._nuvem_lida = valor
 
     def escolher_nuvem(self) -> None:
         nova = dialogos.escolher_pasta(self.janela.raiz, "Pasta da nuvem (OneDrive ou Google Drive)",

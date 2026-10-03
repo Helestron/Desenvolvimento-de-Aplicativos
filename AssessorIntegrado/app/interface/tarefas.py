@@ -92,6 +92,25 @@ class Recursos:
             return dict(self._donos)
 
 
+def _ja_em_andamento(nome: str) -> str:
+    return f"Este trabalho já está em andamento: {nome}."
+
+
+def _ocupado(dono: str, recursos: list[str]) -> str:
+    """Frase da recusa. O nome da tarefa entra como rótulo, depois de dois-
+    pontos, e não como sujeito: os nomes misturam substantivo e infinitivo
+    ("Transcrição de gravação", "Instalar a separação de falantes"), e
+    "Instalar a separação de falantes está usando…" não é português."""
+    if not recursos:
+        sujeito, verbo = "Um recurso necessário", "está"
+    elif len(recursos) == 1:
+        sujeito, verbo = recursos[0], "está"
+    else:
+        sujeito, verbo = ", ".join(recursos[:-1]) + " e " + recursos[-1], "estão"
+    return (f"{sujeito[:1].upper()}{sujeito[1:]} {verbo} em uso por outro trabalho: {dono}. "
+            "Espere esse trabalho terminar ou interrompa-o.")
+
+
 class Tarefa:
     """Um trabalho em segundo plano com nome, recursos e pedido de parada.
 
@@ -120,24 +139,22 @@ class Tarefa:
     def motivo_recusa(self) -> str | None:
         """Por que não dá para começar agora (ou None, se dá)."""
         if self.ativa:
-            return f"{self.nome} já está em andamento."
+            return _ja_em_andamento(self.nome)
         ocupados = self.gerente.ocupados()
         for nome in self.recursos:
             dono = ocupados.get(nome)
             if dono is not None and dono != self.nome:
-                return (f"{dono} está usando {NOMES.get(nome, nome)}. Espere terminar "
-                        "ou interrompa aquele trabalho.")
+                return _ocupado(dono, [NOMES.get(nome, nome)])
         return None
 
     def iniciar(self, alvo: Callable, *args, **kwargs) -> str | None:
         """Começa o trabalho. Devolve None, ou a frase que explica a recusa."""
         if self.ativa:
-            return f"{self.nome} já está em andamento."
+            return _ja_em_andamento(self.nome)
         dono = self.gerente.tomar(self.nome, self.recursos)
         if dono is not None:
             quais = [NOMES.get(n, n) for n in self.recursos if self.gerente.quem_tem(n) == dono]
-            return (f"{dono} está usando {', '.join(quais) or 'um recurso'}. Espere terminar "
-                    "ou interrompa aquele trabalho.")
+            return _ocupado(dono, quais)
         self.parar.clear()
         self.erro = None
         self.inicio = time.monotonic()
@@ -186,6 +203,10 @@ class PedidoCodigo:
     titulo: str
     mensagem: str
     prazo_s: int = 600
+    # Dá para pedir outro código ao portal? True: e-mail do e-SAJ; False:
+    # aplicativo autenticador do eProc (muda sozinho a cada 30 s); None: o
+    # portal não disse, e o diálogo deduz pelo texto do pedido.
+    reenviavel: bool | None = None
     criado: float = field(default_factory=time.monotonic)
     resposta: str | None = None
     respondido: threading.Event = field(default_factory=threading.Event)
@@ -241,8 +262,9 @@ class ContextoTela(Contexto):
         log.info("%s: %s", titulo, mensagem)
         self._postar("avisar", (titulo, mensagem))
 
-    def pedir_codigo(self, titulo: str, mensagem: str, prazo_s: int = 600) -> str | None:
-        pedido = PedidoCodigo(titulo, mensagem, max(1, int(prazo_s)))
+    def pedir_codigo(self, titulo: str, mensagem: str, prazo_s: int = 600,
+                     reenviavel: bool | None = None) -> str | None:
+        pedido = PedidoCodigo(titulo, mensagem, max(1, int(prazo_s)), reenviavel)
         self._postar("pedir_codigo", pedido)
         # Espera em fatias curtas para enxergar o Parar e o prazo; a margem
         # de 2 s cobre o diálogo, que conta o mesmo prazo do lado da tela.

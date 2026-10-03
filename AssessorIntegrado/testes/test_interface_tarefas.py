@@ -57,7 +57,8 @@ class TesteTarefa(unittest.TestCase):
         # outra tarefa que disputa o navegador é recusada com a frase certa
         outra = Tarefa("Testar o login", (NAVEGADOR,), gerente)
         recusa = outra.iniciar(lambda: None)
-        self.assertIn("Baixar processos está usando o navegador", recusa)
+        self.assertEqual("O navegador dos portais está em uso por outro trabalho: Baixar "
+                         "processos. Espere esse trabalho terminar ou interrompa-o.", recusa)
         # a mesma tarefa não começa duas vezes
         self.assertIn("já está em andamento", t.iniciar(lambda: None))
         liberar.set()
@@ -300,7 +301,8 @@ class TesteRegressoesDaRevisao(unittest.TestCase):
         manual = Tarefa("Espelhar o acervo na nuvem", (NUVEM,), gerente)
         self.assertIsNone(lote.iniciar(liberar.wait, 5))
         recusa = manual.iniciar(lambda: None)
-        self.assertIn("a pasta da nuvem", recusa or "")
+        self.assertIn("A pasta da nuvem está em uso por outro trabalho: Espelho na nuvem "
+                      "(download).", recusa or "")
         liberar.set()
         self.assertTrue(lote.esperar(5))
         self.assertIsNone(manual.iniciar(lambda: None))

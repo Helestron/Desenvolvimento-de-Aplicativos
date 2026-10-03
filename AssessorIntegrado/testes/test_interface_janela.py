@@ -752,7 +752,7 @@ class TesteJanela(unittest.TestCase):
             # a tarefa de apoio ocupada não descarta mais o espelho
             liberar = threading.Event()
             transcrever.tarefa_apoio.iniciar(liberar.wait, 5)
-            transcrever._espelhar_se_preciso()
+            transcrever._depois_de_salvar()
             self.assertTrue(self.bombear(ate=lambda: len(chamadas) == 1))
             liberar.set()
             self.assertTrue(self.bombear(ate=lambda: not transcrever.tarefa_nuvem.ativa))
@@ -762,7 +762,7 @@ class TesteJanela(unittest.TestCase):
             self.assertTrue(all(callable(c) for c in chamadas), "o fechar consegue interromper")
             self.j._fechando = True
             try:
-                transcrever._espelhar_se_preciso()
+                transcrever._depois_de_salvar()
                 baixar._espelhar()
                 self.bombear(0.2)
             finally:

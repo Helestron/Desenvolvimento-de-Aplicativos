@@ -7,6 +7,8 @@ verificação da instalação.
 
 from __future__ import annotations
 
+import logging
+import subprocess
 import tkinter as tk
 from tkinter import ttk
 
@@ -15,6 +17,8 @@ from . import componentes, dialogos, estilo
 from .componentes import Pagina
 from .estilo import px
 
+log = logging.getLogger("interface.ajuda")
+
 GUIAS = (
     ("cartao-baixar", "Baixar processos", (
         "Abra a relação: planilha do Excel, documento do Word, PDF, CSV, texto ou um link "
@@ -22,7 +26,8 @@ GUIAS = (
         "Confira o acesso: usuário e senha, certificado digital ou entrada manual. Se o portal "
         "pedir um código (e-mail ou aplicativo autenticador), uma janela pede que você o digite.",
         "Clique em “Baixar”. Cada processo vira um PDF com o número no nome, na pasta do lote. "
-        "Os sigilosos vão para a pasta Sigilosos, fora do acervo.",
+        "Com a opção “Separar os sigilosos” (marcada por padrão), os sigilosos vão para a "
+        "pasta Sigilosos, fora do acervo.",
     )),
     ("cartao-transcrever", "Transcrever audiência", (
         "Digite o número do processo e escolha o microfone (Testar mostra o nível do som).",
@@ -130,11 +135,29 @@ class PaginaAjuda(Pagina):
                                                                           padx=(px(8), 0))
 
     def _manual(self) -> None:
+        """Abre o manual. Num Windows sem editor de Markdown, o .md não tem
+        programa associado (WinError 1155): abre no Bloco de Notas e, se nem
+        isso der, passa ao LEIA-ME.txt - em vez de mostrar o erro."""
+        falha = None
         for nome in ("MANUAL.md", "LEIA-ME.txt", "README.md"):
             alvo = caminhos.RAIZ / nome
-            if alvo.exists():
-                self._abrir(alvo)
+            if not alvo.exists():
+                continue
+            try:
+                sistema.abrir_arquivo(alvo)
                 return
+            except OSError as erro:
+                falha = erro
+                log.info("%s não abriu pelo programa associado: %s", nome, erro)
+            if sistema.NO_WINDOWS:
+                try:
+                    subprocess.Popen(["notepad.exe", str(alvo)])
+                    return
+                except OSError as erro:
+                    falha = erro
+        if falha is not None:
+            dialogos.erro(self.janela.raiz, "Abrir o manual", f"Não consegui abrir o manual: {falha}")
+            return
         dialogos.informar(self.janela.raiz, "Manual", "O manual não foi encontrado na pasta do "
                                                      "programa.")
 

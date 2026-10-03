@@ -171,8 +171,11 @@ class DialogoCodigo(Dialogo):
 
     Corrige a base em três pontos: aparece por um evento explícito (e não
     pelo texto do log), é modal e vem para a frente - a caixa antiga ficava
-    no rodapé, às vezes fora de vista -, e mostra quanto tempo o código ainda
-    vale. "Pedir novo código" devolve "" ao motor, que pede outro ao portal.
+    no rodapé, às vezes fora de vista -, e mostra quanto tempo resta para
+    digitar (o prazo da espera do programa, que não é a validade do código).
+    "Pedir novo código" devolve "" ao motor, que pede outro ao portal; o
+    código do aplicativo autenticador (eProc) não se pede: ele muda sozinho
+    a cada 30 segundos, e o botão não aparece.
     """
 
     largura = 500
@@ -191,11 +194,14 @@ class DialogoCodigo(Dialogo):
         self.barra = ttk.Progressbar(self.corpo, mode="determinate", maximum=1000)
         self.barra.grid(row=1, column=0, sticky="ew", pady=(px(14), px(6)))
         self.tempo = ttk.Label(self.corpo, text="", foreground=estilo.TINTA_FRACA,
-                               font=estilo.FONTE_NOTA)
+                               font=estilo.FONTE_NOTA, justify="left",
+                               wraplength=px(self.largura - 60))
         self.tempo.grid(row=2, column=0, sticky="w")
+        self.reenviavel = _reenviavel(pedido)
         _, self.ok = self.botoes(("Cancelar", self.cancelar, "apoio"),
                                  ("Confirmar", self.confirmar, "principal"),
-                                 esquerda=("Pedir novo código", self.novo, "texto"))
+                                 esquerda=(("Pedir novo código", self.novo, "texto")
+                                           if self.reenviavel else None))
         self.codigo.trace_add("write", lambda *_: self._habilitar())
         self._habilitar()
         self.mostrar(foco=self.entrada)
@@ -240,8 +246,12 @@ class DialogoCodigo(Dialogo):
             self._avisar_retorno(None)
             self.fechar()
             return
-        self.tempo.configure(text=f"O código vale por mais {minutos}:{segundos:02d}. "
-                                  "Se ele não chegou, peça outro.")
+        texto = f"Tempo para digitar: {minutos}:{segundos:02d}."
+        if self.reenviavel:
+            texto += " Se o código não chegou, peça outro."
+        else:
+            texto += " Digite o código que estiver na tela do aplicativo; ele muda a cada 30 segundos."
+        self.tempo.configure(text=texto)
         self.after(500, self._contar)
 
     def _avisar_retorno(self, valor) -> None:
@@ -269,6 +279,20 @@ class DialogoCodigo(Dialogo):
         self.pedido.responder(None)
         self._avisar_retorno(None)
         self.fechar()
+
+
+def _reenviavel(pedido) -> bool:
+    """Dá para pedir outro código? Sim para o enviado por e-mail (e-SAJ);
+    não para o do aplicativo autenticador (eProc), que muda sozinho.
+
+    Vale o que o portal disser (PedidoCodigo.reenviavel); enquanto ele não
+    disser, reconhece o autenticador pelo pedido.
+    """
+    valor = getattr(pedido, "reenviavel", None)
+    if valor is not None:
+        return bool(valor)
+    texto = f"{getattr(pedido, 'titulo', '')} {getattr(pedido, 'mensagem', '')}".lower()
+    return "autenticador" not in texto
 
 
 # ============================================================ colar a lista
@@ -499,8 +523,15 @@ class Assistente(Dialogo):
         self.pular()
 
     def _concluir(self) -> None:
-        self.cfg.definir("interface", "assistente_concluido", True)
-        self.fechar()
+        # Fecha mesmo que o config.ini não aceite a gravação: antes, a exceção
+        # vinha antes do fechar(), e Pular, Esc e o X não fechavam mais o
+        # diálogo, que segurava a janela inteira (grab).
+        try:
+            self.cfg.definir("interface", "assistente_concluido", True)
+        except (OSError, ValueError) as erro:
+            log.warning("não consegui marcar o assistente como concluído: %s", erro)
+        finally:
+            self.fechar()
         if self.ao_concluir:
             self.ao_concluir()
 
@@ -569,8 +600,8 @@ class Assistente(Dialogo):
 
         texto = ttk.Label(self.area, justify="left", text=(
             "É nesta pasta que ficam os PDFs dos processos e as transcrições das "
-            "audiências — e é ela que o Claude e o ChatGPT vão ler. Os processos em "
-            "segredo de justiça ficam numa pasta separada, fora do acervo."))
+            "audiências — e é ela que o Claude e o ChatGPT vão ler. Por padrão, os "
+            "processos em segredo de justiça ficam numa pasta separada, fora do acervo."))
         texto.grid(row=0, column=0, sticky="ew")
         estilo.acompanhar_largura(texto)
         linha = ttk.Frame(self.area, style="Faixa.TFrame", padding=(px(14), px(10)))
@@ -596,8 +627,14 @@ class Assistente(Dialogo):
                 aviso.configure(text="")
 
         def alterar():
+            from . import servicos
+
             nova = escolher_pasta(self, "Escolha a pasta do acervo", self.cfg.pasta_acervo)
             if nova:
+                problema = servicos.problema_nas_pastas(nova, self.cfg.pasta_sigilosos)
+                if problema:
+                    avisar(self, "Pasta não aceita", problema)
+                    return
                 self.cfg.definir("geral", "pasta_acervo", str(nova))
                 conferir()
 

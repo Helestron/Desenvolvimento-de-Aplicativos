@@ -174,6 +174,16 @@ class TestArvoreDaPasta(unittest.TestCase):
             "parametros": "cdDocumento=9&numInicial=1&numFinal=1&deTipoDocConsulta=Of%C3%ADcio+Expedido"}}]}]
         self.assertEqual(esaj.extrair_pecas(arvore)[0]["tipo"], "Ofício Expedido")
 
+    def test_marca_de_peca_sigilosa(self):
+        def com(valor):
+            filho = {"data": {"parametros": par(101, 1, 1), "documentoSigiloso": valor}}
+            return esaj.extrair_pecas([{"data": {"cdDocumento": 101}, "children": [filho]}])[0]
+        for valor in (True, "S", "true", 1):
+            self.assertTrue(com(valor)["sigiloso"], valor)
+        for valor in (False, "N", "false", 0, None, ""):
+            self.assertFalse(com(valor)["sigiloso"], valor)
+        self.assertFalse(esaj.extrair_pecas(ARVORE)[0]["sigiloso"])
+
     def test_arvore_estranha_nao_quebra(self):
         self.assertEqual(esaj.extrair_pecas(None), [])
         self.assertEqual(esaj.extrair_pecas({"x": 1}), [])
@@ -372,7 +382,7 @@ class TestLoginInsiste(unittest.TestCase):
         p = PortalDeLogin(sessao_final=False, texto_tela="Bem-vindo")
         with self.assertRaises(modelos.LoginFalhou) as caso:
             p.entrar()
-        self.assertIn("Mostrar navegador", str(caso.exception))
+        self.assertIn("Mostrar o navegador enquanto baixa", str(caso.exception))
 
 
 class PortalDoCodigo(PortalESAJ):
@@ -455,7 +465,7 @@ class TestCodigoPorEmail(unittest.TestCase):
         p._entrar_com_senha = quebra
         with self.assertRaises(modelos.PortalIndisponivel) as caso:
             p.entrar()
-        self.assertIn("Mostrar navegador", str(caso.exception))
+        self.assertIn("Mostrar o navegador enquanto baixa", str(caso.exception))
         self.assertIn("esaj-login-erro", p.nav.diagnosticos)
 
     def test_sem_tela_do_codigo_devolve_falso(self):
@@ -535,7 +545,12 @@ class TestLoginNaJanela(unittest.TestCase):
         with mock.patch.object(esaj, "time", RelogioFalso()):
             with self.assertRaises(modelos.LoginFalhou) as caso:
                 p.entrar()
-        self.assertIn("1 minutos", str(caso.exception))
+        texto = str(caso.exception)
+        self.assertIn("passou-se 1 minuto sem o login", texto)
+        self.assertNotIn("1 minutos", texto)
+        # o campo da tela, e não a chave do config.ini
+        self.assertIn("Esperar o login até (min)", texto)
+        self.assertNotIn("espera_login_minutos", texto)
 
     def test_certificado_sem_web_signer_avisa(self):
         p, ctx = self.portal("certificado", [False, True])
@@ -708,6 +723,27 @@ class TestBaixar(apoio.PastaTemporaria):
         p.pasta_recusa = 1
         r = p.baixar(N, self.destino())
         self.assertEqual(r.situacao, modelos.SEM_ACESSO)
+
+    def test_peca_sigilosa_torna_o_processo_sigiloso(self):
+        arvore = [dict(ARVORE[0], children=[{"data": dict(ARVORE[0]["children"][0]["data"],
+                                                          documentoSigiloso=True)}]),
+                  *ARVORE[1:]]
+        r = PortalDeDownload(arvore=arvore).baixar(N, self.destino())
+        self.assertEqual(r.situacao, modelos.OK)
+        self.assertTrue(r.sigiloso, "a peça sigilosa não pode ir para o acervo da IA")
+        self.assertIn("contém 1 peça sigilosa", r.detalhe)
+
+    def test_sigilo_apurado_vale_para_a_tentativa_seguinte(self):
+        # 1ª tentativa: a senha libera o processo, mas o PDF falha
+        p = PortalDeDownload(senha_pedida=[True], servidor="falha", pecas_ok=())
+        with self.assertRaises(Exception):
+            p.baixar(N, self.destino(), senha="s")
+        self.assertIn(N.nome_arquivo, p.sigilosos_apurados)
+        # 2ª, na mesma sessão: o modal não volta e a página não fala em sigilo
+        p.servidor, p.pecas_ok = "ok", {"101", "102", "104"}
+        r = p.baixar(N, self.destino(), senha="s")
+        self.assertEqual(r.situacao, modelos.OK)
+        self.assertTrue(r.sigiloso)
 
     def test_sigilo_declarado_na_pagina(self):
         info = dict(INFO, texto="Classe: Divórcio Litigioso  Segredo de Justiça")

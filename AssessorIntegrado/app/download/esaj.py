@@ -48,9 +48,10 @@ from ..nucleo import caminhos, sistema
 from ..nucleo.cnj import Numero
 from . import pdf
 from .contexto import Contexto
-from .modelos import (OK, Cancelado, LoginFalhou, NAO_ENCONTRADO, PortalIndisponivel,
-                      ProcessoNaoEncontrado, ResultadoProcesso, SEM_ACESSO, SemAcesso,
-                      SessaoPerdida, SIGILOSO_SEM_SENHA, SigilosoSemSenha)
+from .modelos import (CAMPO_PRAZO_LOGIN, MOSTRAR_NAVEGADOR, OK, Cancelado, LoginFalhou,
+                      NAO_ENCONTRADO, PortalIndisponivel, ProcessoNaoEncontrado,
+                      ResultadoProcesso, SEM_ACESSO, SemAcesso, SessaoPerdida,
+                      SIGILOSO_SEM_SENHA, SigilosoSemSenha)
 from .navegador import (explicar_erro, primeiro_visivel, recusou_credenciais, sem_acento,
                         tem_web_signer)
 
@@ -265,6 +266,14 @@ def _parametros(par: str) -> dict[str, str]:
     return dict(re.findall(r"(?:^|&)([^=&]+)=([^&]*)", par or ""))
 
 
+def _marcado(valor) -> bool:
+    """Bandeira do JSON da Pasta Digital: true, "S", "true", 1 - e não a
+    simples presença do campo ("N" e "false" também são texto)."""
+    if isinstance(valor, str):
+        return valor.strip().lower() in ("s", "sim", "true", "1", "y", "yes")
+    return valor is True or (isinstance(valor, (int, float)) and valor == 1)
+
+
 def extrair_pecas(arvore) -> list[dict]:
     """Achata a árvore da Pasta Digital (a variável 'requestScope').
 
@@ -295,7 +304,7 @@ def extrair_pecas(arvore) -> list[dict]:
                 "pagina_inicial": q.get("numInicial") or "",
                 "pagina_final": q.get("numFinal") or "",
                 "num_paginas": fd.get("nuPaginas") or "",
-                "sigiloso": bool(fd.get("documentoSigiloso")),
+                "sigiloso": _marcado(fd.get("documentoSigiloso")),
             })
     return pecas
 
@@ -526,6 +535,10 @@ class PortalESAJ:
         self.numero_atual: Numero | None = None
         self._pagina_token = None
         self._canal_proxy = None
+        # Processos cujo sigilo esta sessão já apurou (Numero.nome_arquivo).
+        # Depois de liberado pela senha, o modal pode não voltar na tentativa
+        # seguinte: sem esta memória, ela gravaria o processo como público.
+        self.sigilosos_apurados: set[str] = set()
 
     # ----------------------------------------------------------- atalhos
     @property
@@ -829,7 +842,7 @@ class PortalESAJ:
                 self.nav.diagnosticar("esaj-codigo-nao-informado")
                 raise LoginFalhou(
                     "o código de verificação enviado por e-mail não foi informado. "
-                    "Clique em Baixar de novo quando estiver com ele em mãos.")
+                    "Clique em 'Tentar de novo' quando estiver com ele em mãos.")
             codigo = re.sub(r"\s+", "", codigo)
             if not codigo:
                 recado = ("Pedi um código novo ao portal; confira o e-mail. "
@@ -907,7 +920,7 @@ class PortalESAJ:
             raise PortalIndisponivel(
                 f"o login no {self.nome} não pôde ser concluído "
                 f"({explicar_erro(str(erro))}). Tente de novo; se persistir, marque "
-                "'Mostrar navegador' para acompanhar.") from erro
+                f"'{MOSTRAR_NAVEGADOR}' para acompanhar.") from erro
 
     def _entrar_com_senha(self) -> None:
         self.ctx.status(f"Abrindo o {self.nome}...")
@@ -979,17 +992,18 @@ class PortalESAJ:
             if not pediu_codigo:
                 raise LoginFalhou(
                     "o portal aceitou o formulário, mas não abriu a tela do código de "
-                    "verificação nem a sessão. Marque 'Mostrar navegador' para acompanhar, "
-                    "ou escolha 'Entrar manualmente'.")
+                    f"verificação nem a sessão. Marque '{MOSTRAR_NAVEGADOR}' para "
+                    "acompanhar, ou escolha 'Entrar manualmente'.")
             raise LoginFalhou(
                 "o login não foi concluído (pode haver aviso, troca de senha obrigatória "
-                "ou instabilidade). Marque 'Mostrar navegador' para ver a tela, ou escolha "
-                "'Entrar manualmente'.")
+                f"ou instabilidade). Marque '{MOSTRAR_NAVEGADOR}' para ver a tela, ou "
+                "escolha 'Entrar manualmente'.")
         log.info("Login concluído.")
 
     def _esperar_login_na_janela(self, titulo: str, mensagem: str, rotulo: str) -> None:
         minutos = max(1, int(self.opcoes.espera_login_min))
-        self.ctx.avisar(titulo, f"{mensagem} Aguardo até {minutos} minutos e sigo sozinho.")
+        prazo = f"{minutos} minuto{'s' if minutos != 1 else ''}"
+        self.ctx.avisar(titulo, f"{mensagem} Aguardo até {prazo} e sigo sozinho.")
         limite = time.monotonic() + minutos * 60
         while time.monotonic() < limite:
             self._dormir(3)
@@ -999,8 +1013,8 @@ class PortalESAJ:
                 return
         self.nav.diagnosticar(rotulo)
         raise LoginFalhou(
-            f"passaram-se {minutos} minutos sem o login na janela do navegador. "
-            "Tente de novo (o prazo se ajusta em Configurações: espera_login_minutos).")
+            f"{'passou-se' if minutos == 1 else 'passaram-se'} {prazo} sem o login na janela "
+            f"do navegador. Tente de novo (o prazo se ajusta em {CAMPO_PRAZO_LOGIN}).")
 
     def _entrar_por_certificado(self) -> None:
         if self.sessao_ativa():
@@ -1063,6 +1077,11 @@ class PortalESAJ:
             raise
         finally:
             r.segundos = round(time.monotonic() - inicio, 1)
+            # uma vez sigiloso, sempre sigiloso (também na tentativa que falhou)
+            if numero.nome_arquivo in self.sigilosos_apurados:
+                r.sigiloso = True
+            elif r.sigiloso:
+                self.sigilosos_apurados.add(numero.nome_arquivo)
         return r
 
     def _baixar(self, numero: Numero, destino: Path, senha: str | None,
@@ -1108,6 +1127,15 @@ class PortalESAJ:
         pecas = extrair_pecas(arvore)
         if not pecas:
             raise RuntimeError("a Pasta Digital abriu, mas não trouxe nenhuma peça")
+        # Peça marcada como sigilosa (quebra de sigilo bancário, laudo
+        # psicossocial...) num processo público: o PDF a traz inteira, e ele
+        # não pode ir para o acervo da IA - vai para a pasta de sigilosos.
+        pecas_sigilosas = len({p["cdDocumento"] or p["parametros"] for p in pecas
+                               if p.get("sigiloso")})
+        if pecas_sigilosas:
+            r.sigiloso = True
+            log.info("    %d peça(s) marcada(s) como sigilosa(s) na Pasta Digital.",
+                     pecas_sigilosas)
         r.documentos = contar_documentos(pecas)
         buracos, soma = conferir_numeracao(pecas)
         if buracos:
@@ -1124,6 +1152,9 @@ class PortalESAJ:
             return extrair_pecas(self.abrir_pasta(_cd))
 
         detalhes: list[str] = []
+        if pecas_sigilosas:
+            detalhes.append("contém 1 peça sigilosa" if pecas_sigilosas == 1
+                            else f"contém {pecas_sigilosas} peças sigilosas")
         try:
             url = self.gerar_pdf(pecas, cd, reabrir)
             self.ctx.status(f"{rotulo}: baixando o PDF...")
@@ -1178,9 +1209,8 @@ class PortalESAJ:
         r.sigiloso = True
         if not senha:
             raise SigilosoSemSenha(
-                "processo em segredo de justiça: o e-SAJ pede a senha do processo "
-                "(Res. 121/CNJ). Ponha-a na relação, ao lado do número "
-                "(número ; senha), e baixe de novo.")
+                "processo em segredo de justiça: o e-SAJ pede a senha do processo. "
+                "Ponha-a na relação, ao lado do número (número ; senha), e baixe de novo.")
         self.ctx.status(f"{numero.formatado}: processo em segredo; enviando a senha informada...")
         if not self.liberar_segredo(senha):
             raise SigilosoSemSenha(

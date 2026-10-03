@@ -281,7 +281,7 @@ class TestEProcDeMentira(apoio.PastaTemporaria):
             with self.assertRaises(modelos.LoginFalhou) as caso:
                 self.portal(nav, ctx).entrar()
         self.assertIn("captcha", str(caso.exception))
-        self.assertIn("Mostrar navegador", str(caso.exception))
+        self.assertIn("Mostrar o navegador enquanto baixa", str(caso.exception))
 
     def test_perfil_unico_e_escolhido_sozinho(self):
         falso = ae.EProcFalso(perfis=["JUIZ"])

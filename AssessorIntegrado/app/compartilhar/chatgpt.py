@@ -61,7 +61,7 @@ def abrir_codex(pasta: Path) -> None:
     if exe is None:
         raise FileNotFoundError(
             "O Codex (agente da OpenAI) não está instalado neste computador. "
-            "Use \"Abrir o ChatGPT\" ou \"Gerar pacote para o ChatGPT\".")
+            "Use “Abrir no ChatGPT Work” ou “Gerar pacote para o ChatGPT”.")
     _abrir_terminal(pasta, exe, "Codex - Acervo")
 
 
@@ -192,14 +192,21 @@ def registrar_mcp_codex(pasta_acervo: Path, arquivo: Path | None = None) -> Path
     return arquivo
 
 
-def mcp_codex_registrado(arquivo: Path | None = None) -> bool:
+def mcp_codex_registrado(arquivo: Path | None = None, pasta_acervo: Path | None = None) -> bool:
+    """O conector está no config.toml? Com 'pasta_acervo', só conta se ele
+    aponta para essa pasta (depois de trocar o acervo, é preciso reconectar)."""
     import tomllib
 
     try:
         dados = tomllib.loads(Path(arquivo or arquivo_config_codex()).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return False
-    return NOME_MCP in (dados.get("mcp_servers") or {})
+    entrada = (dados.get("mcp_servers") or {}).get(NOME_MCP)
+    if not isinstance(entrada, dict):
+        return False
+    if pasta_acervo is None:
+        return True
+    return str(Path(pasta_acervo).resolve()) in (entrada.get("args") or [])
 
 
 def remover_mcp_codex(arquivo: Path | None = None) -> bool:
@@ -217,21 +224,36 @@ def remover_mcp_codex(arquivo: Path | None = None) -> bool:
     return True
 
 
+def _config():
+    try:
+        from ..nucleo import config
+
+        return config.carregar(criar=False)
+    except Exception:
+        return None
+
+
 def gerar_pacote(acervo: Path, destino: Path, numeros: list[str] | None = None,
-                 incluir_pdf: bool = True, incluir_texto: bool = True,
-                 progresso=None) -> tuple[Path, Path]:
+                 incluir_pdf: bool = True, incluir_texto: bool | None = None,
+                 progresso=None, cfg=None) -> tuple[Path, Path]:
     """Monta a pasta e o .zip para levar ao ChatGPT.
 
     'numeros' restringe aos processos indicados (padrão: o acervo inteiro).
-    Devolve (pasta, zip). Os textos são atualizados antes (preparo).
+    'incluir_texto' em branco segue a configuração ([compartilhar]
+    incluir_texto). Devolve (pasta, zip). Os textos são atualizados antes
+    (preparo).
     """
     acervo = Path(acervo)
-    preparo.atualizar_contexto(raiz=acervo, extrair_texto=incluir_texto)
-    ac = Acervo(acervo)
+    if cfg is None:
+        cfg = _config()
+    if incluir_texto is None:
+        incluir_texto = cfg.flag("compartilhar", "incluir_texto") if cfg is not None else True
+    preparo.atualizar_contexto(cfg, raiz=acervo, extrair_texto=incluir_texto)
+    ac = Acervo(acervo) if cfg is None else Acervo(acervo, sigilosos=cfg.pasta_sigilosos)
     pdfs = ac.pdfs()
     trans = ac.transcricoes()
     if numeros:
-        escolhidos = {cnj.ler(n).nome_arquivo for n in numeros}
+        escolhidos = {cnj.ler_nome_arquivo(n).nome_arquivo for n in numeros}
         pdfs = {k: v for k, v in pdfs.items() if k in escolhidos}
         trans = {k: v for k, v in trans.items() if k in escolhidos}
     if not pdfs and not trans:
@@ -282,8 +304,13 @@ def gerar_pacote(acervo: Path, destino: Path, numeros: list[str] | None = None,
     return pasta, arquivo_zip
 
 
-def estado() -> dict:
+def estado(pasta_acervo: Path | None = None) -> dict:
+    """Resumo para a tela. "mcp" só é verdadeiro se o conector aponta para o
+    acervo atual ('pasta_acervo'; em branco, o do config.ini)."""
+    if pasta_acervo is None:
+        cfg = _config()
+        pasta_acervo = cfg.pasta_acervo if cfg is not None else None
     codex = achar_codex()
     return {"codex": str(codex) if codex else "",
             "app": chatgpt_desktop_instalado(),
-            "mcp": mcp_codex_registrado()}
+            "mcp": mcp_codex_registrado(pasta_acervo=pasta_acervo)}

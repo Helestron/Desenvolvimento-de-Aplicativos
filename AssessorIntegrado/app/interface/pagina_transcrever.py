@@ -324,6 +324,16 @@ def _caber(widget, texto: str, fonte, largura: int) -> str:
     return texto.rstrip() + "…"
 
 
+def nomes_falantes(cfg) -> list[str]:
+    """Os oito nomes dos botões F1 a F8, cada um na sua posição.
+
+    Ao contrário de cfg.lista(), mantém as posições vazias: "Juiz(a);;Defensor(a)"
+    deixa F2 vazio e o defensor em F3.
+    """
+    nomes = [n.strip() for n in cfg.texto("transcricao", "falantes").split(";")]
+    return (nomes + [""] * 8)[:8]
+
+
 def _hms(segundos: float) -> str:
     s = int(max(0, segundos))
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
@@ -357,6 +367,7 @@ class PaginaTranscrever(Pagina):
         self.tarefa_arquivo = self.nova_tarefa("Transcrição de gravação", (MODELO_REVISAO,))
         self.tarefa_apoio = self.nova_tarefa("Preparar a transcrição")
         self.tarefa_nuvem = self.nova_tarefa("Espelho na nuvem (transcrição)", (NUVEM,))
+        self.tarefa_indice = self.nova_tarefa("Atualizar o índice do acervo")
         self._seguir_fim = True         # a transcrição acompanha a última fala
         self._relogio_id = None
 
@@ -440,7 +451,7 @@ class PaginaTranscrever(Pagina):
         ttk.Label(cab, text="teclas F1 a F8 · duplo clique troca o nome",
                   foreground=estilo.TINTA_FRACA, font=estilo.FONTE_NOTA).grid(row=0, column=1,
                                                                               sticky="e")
-        self.grade = GradeFalantes(corpo, self.cfg.lista("transcricao", "falantes"),
+        self.grade = GradeFalantes(corpo, nomes_falantes(self.cfg),
                                    self._falante_escolhido, self._falantes_renomeados)
         self.grade.grid(row=2, column=0, columnspan=2, sticky="ew")
 
@@ -575,10 +586,13 @@ class PaginaTranscrever(Pagina):
     def _salvar_tipo(self) -> None:
         tipo = self.var_tipo.get().strip()
         if tipo and tipo != self.cfg.texto("interface", "tipo_audiencia"):
-            self.cfg.definir("interface", "tipo_audiencia", tipo)
+            self.gravar("interface", "tipo_audiencia", tipo)
 
     # ============================================================ microfone
     def ao_mostrar(self) -> None:
+        # A mesma opção está em Configurações › Transcrição: sem reler, valia
+        # a da abertura do programa, e o "Encerrar" ignorava a mudança.
+        self.var_refinar.set(self.cfg.flag("transcricao", "refinar_ao_encerrar"))
         if not self._microfones_lidos and not self.tarefa_apoio.ativa:
             self._microfones_lidos = True
             self.em_segundo_plano(self.tarefa_apoio, self._ler_ambiente,
@@ -707,7 +721,9 @@ class PaginaTranscrever(Pagina):
                 log.warning("não consegui trocar o falante: %s", erro)
 
     def _falantes_renomeados(self, nomes: list[str]) -> None:
-        self.cfg.definir("transcricao", "falantes", ";".join(n for n in nomes if n))
+        # Cada nome na SUA posição, com as vazias no meio: filtrar os vazios
+        # encolhia a lista, e na sessão seguinte F3 passava a ser o antigo F4.
+        self.cfg.definir("transcricao", "falantes", ";".join(nomes).rstrip(";"))
 
     def atalho(self, evento) -> bool:
         tecla = getattr(evento, "keysym", "")
@@ -744,7 +760,8 @@ class PaginaTranscrever(Pagina):
         if self.tarefa_teste.ativa:
             self.tarefa_teste.esperar(2)
         self._salvar_tipo()
-        self.cfg.definir("interface", "ultimo_processo", n.formatado)
+        # lembrar o processo não pode impedir a audiência de começar
+        self.gravar("interface", "ultimo_processo", n.formatado)
         try:
             sessao = servicos.nova_sessao(n, self.cfg, lambda t, d: self.postar("sessao", (t, d)),
                                           tipo=self.var_tipo.get().strip(),
@@ -1042,7 +1059,7 @@ class PaginaTranscrever(Pagina):
             acoes.append(("Revisar agora", self.revisar, "apoio"))
         self._faixa("Sucesso", "Transcrição salva", caminho.name, acoes)
         estilo.piscar_na_barra(self.janela.raiz)
-        self._espelhar_se_preciso()
+        self._depois_de_salvar()
 
     def revisar(self) -> None:
         if not self.ultimo_audio or self.numero_sessao is None:
@@ -1098,7 +1115,7 @@ class PaginaTranscrever(Pagina):
                         [("Abrir o documento", lambda: self._abrir(caminho), "principal"),
                          ("Abrir a pasta", lambda: self._abrir_pasta(caminho), "apoio")])
             estilo.piscar_na_barra(self.janela.raiz)
-            self._espelhar_se_preciso()
+            self._depois_de_salvar()
 
         def falhou(erro):
             self._status["salvo"] = ""
@@ -1129,6 +1146,7 @@ class PaginaTranscrever(Pagina):
             self._mostrar_recuperaveis(self._recuperaveis[1:])
             self._faixa("Sucesso", "Transcrição recuperada", caminho.name,
                         [("Abrir o documento", lambda: self._abrir(caminho), "principal")])
+            self._depois_de_salvar()
 
         self.em_segundo_plano(self.tarefa_apoio, servicos.recuperar, alvo, ao_concluir=pronto,
                               ao_falhar=lambda e: self._faixa("Erro", "Não consegui recuperar",
@@ -1147,26 +1165,44 @@ class PaginaTranscrever(Pagina):
         except Exception as erro:
             dialogos.erro(self.janela.raiz, "Abrir a pasta", str(erro))
 
-    def _espelhar_se_preciso(self) -> None:
-        """Espelho automático na nuvem ao fim de cada transcrição.
+    def _depois_de_salvar(self) -> None:
+        """Ao fim de cada transcrição (ao vivo, gravação, revisão, recuperação):
+        o INDICE.md em dia e, se ligado, o espelho automático na nuvem.
 
-        Tarefa própria (a de apoio podia estar ocupada lendo os microfones, e
-        o espelho era descartado sem aviso), interrompível (o fechar do
-        programa não espera a cópia do acervo inteiro) e nunca durante o
-        fechamento (a audiência salva ao fechar não dispara cópia nova).
+        O índice é o que a IA lê primeiro ("o que há no acervo"); sem
+        refazê-lo aqui, a audiência recém-transcrita não constava dele - nem
+        da cópia na nuvem, que levava o índice velho. Ele vem ANTES do
+        espelho, na mesma thread.
+
+        O espelho tem tarefa própria (a de apoio podia estar ocupada lendo os
+        microfones, e o espelho era descartado sem aviso), interrompível (o
+        fechar do programa não espera a cópia do acervo inteiro) e nunca
+        roda durante o fechamento (a audiência salva ao fechar não dispara
+        cópia nova).
         """
-        destino = self.cfg.texto("compartilhar", "pasta_nuvem")
-        if not (destino and self.cfg.flag("compartilhar", "espelhar_automaticamente")):
-            return
         if getattr(self.janela, "_fechando", False):
             return
-        from ..compartilhar import nuvem
+        cfg = self.cfg
+        destino = cfg.texto("compartilhar", "pasta_nuvem")
+        if destino and cfg.flag("compartilhar", "espelhar_automaticamente"):
+            from ..compartilhar import nuvem
 
-        tarefa = self.tarefa_nuvem
-        recusa = tarefa.iniciar(nuvem.espelhar, self.cfg.pasta_acervo, Path(destino), None,
-                                tarefa.parar.is_set)
-        if recusa:
+            tarefa = self.tarefa_nuvem
+            acervo = cfg.pasta_acervo
+
+            def indice_e_espelho():
+                servicos.atualizar_indice(cfg)
+                if not tarefa.parar.is_set():
+                    nuvem.espelhar(acervo, Path(destino), None, tarefa.parar.is_set)
+
+            recusa = tarefa.iniciar(indice_e_espelho)
+            if not recusa:
+                return
             log.info("espelho na nuvem adiado: %s", recusa)
+        # sem espelho (ou com a nuvem ocupada): ao menos o índice
+        recusa = self.tarefa_indice.iniciar(servicos.atualizar_indice, cfg)
+        if recusa:
+            log.info("índice do acervo não atualizado agora: %s", recusa)
 
     def indicador(self):
         if self.situacao in ("gravando", "iniciando") and self.sessao is not None:

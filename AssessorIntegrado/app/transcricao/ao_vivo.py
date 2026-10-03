@@ -38,7 +38,7 @@ from typing import Callable
 from ..nucleo import cnj, energia, sistema
 from . import modelos
 from .documento import (Fala, MetaAudiencia, gerar_docx, magistrado_da_config,
-                        unidade_da_config)
+                        pasta_das_transcricoes, pastas_das_transcricoes, unidade_da_config)
 from .segmentador import TAXA, Segmentador, TrechoDeAudio
 
 __all__ = ["SessaoAoVivo", "Fala", "MetaAudiencia", "recuperaveis", "recuperar",
@@ -61,6 +61,69 @@ VERSAO_DIARIO = 1
 
 _ativos: set[str] = set()          # diários das sessões abertas neste processo
 _trava_ativos = threading.Lock()
+SUFIXO_TRAVA = ".trava"            # ao lado do diário: a sessão aberta em OUTRO processo
+
+
+def _travar(caminho: Path):
+    """Trava entre processos, sem esperar; o sistema a solta se o programa cair.
+
+    Devolve o arquivo aberto (soltar com `_soltar`) ou levanta OSError se
+    outro processo já a tem: duas janelas do programa abertas ao mesmo tempo
+    (duplo clique duas vezes no atalho) não podem tratar como interrompida a
+    audiência que a outra está gravando.
+    """
+    f = open(caminho, "a+b")
+    try:
+        _bloquear(f)
+    except BaseException:
+        f.close()
+        raise
+    return f
+
+
+def _bloquear(f) -> None:
+    f.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _soltar(f) -> None:
+    try:
+        f.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    except (OSError, ValueError):
+        pass
+    finally:
+        f.close()
+
+
+def _em_uso(diario: Path) -> bool:
+    """A sessão deste diário está aberta em outro processo do programa?"""
+    try:
+        # "r+b": não cria a trava; sem ela (ou ilegível), vale o que era antes
+        f = open(Path(diario).with_suffix(SUFIXO_TRAVA), "r+b")
+    except OSError:
+        return False
+    try:
+        _bloquear(f)
+    except OSError:
+        f.close()
+        return True
+    _soltar(f)
+    return False
 
 
 def _chave(p: Path) -> str:
@@ -107,7 +170,7 @@ class SessaoAoVivo:
                  tipo: str = "", participantes: dict[str, str] | None = None,
                  modelo: str | None = None, dispositivo: int | str | None = None,
                  falante: str = "", motor_revisao_fabrica: Callable[[], object] | None = None,
-                 diarizador: Callable | None = None):
+                 diarizador: Callable | None = None, sigiloso: bool = False):
         self.numero: cnj.Numero = numero if isinstance(numero, cnj.Numero) else cnj.ler(str(numero))
         self.cfg = cfg
         self._eventos = eventos
@@ -119,6 +182,9 @@ class SessaoAoVivo:
             modelo or cfg.texto("transcricao", "modelo_ao_vivo") or "small")
         self.dispositivo = dispositivo if dispositivo is not None else cfg.texto("transcricao", "dispositivo")
         self.falante = falante or ""
+        # Segredo de justiça (informado na tela ou com os autos na pasta de
+        # sigilosos): documento, gravação e diário ficam fora do acervo.
+        self.sigiloso = bool(sigiloso)
         self.marcar_tempo = cfg.flag("transcricao", "marcar_tempo")
         self.contexto = cfg.texto("transcricao", "contexto")
         self.meta = MetaAudiencia(
@@ -141,6 +207,7 @@ class SessaoAoVivo:
         self._seg = Segmentador()
         self._flac = None
         self._diario = None
+        self._trava_processo = None
         self._aceitando = False
         self._trabalhador: threading.Thread | None = None
         self._cancelar = threading.Event()
@@ -185,13 +252,15 @@ class SessaoAoVivo:
         with self._trava:
             if self.estado != "parada":
                 raise RuntimeError("Esta sessão já foi iniciada.")
-            pasta = self.cfg.pasta_transcricoes
+            pasta = pasta_das_transcricoes(self.cfg, self.numero, self.sigiloso)
+            self.sigiloso = pasta != self.cfg.pasta_transcricoes
             pasta_audio = pasta / "_audio"
             try:
                 pasta_audio.mkdir(parents=True, exist_ok=True)
             except OSError as erro:
                 raise RuntimeError(f"Não consegui criar a pasta das transcrições ({pasta}): "
-                                   f"{erro}. Confira a pasta do acervo em Configurações.") from erro
+                                   f"{erro}. Confira {self._qual_pasta} em "
+                                   "Configurações.") from erro
             agora = datetime.now().replace(microsecond=0)
             self.meta.inicio = agora
             self.meta.data = agora
@@ -208,6 +277,7 @@ class SessaoAoVivo:
             with _trava_ativos:
                 _ativos.add(_chave(self.caminho_diario))
             try:
+                self._travar_sessao()
                 em_andamento = replace(self.meta, observacao=(
                     "Transcrição em andamento; este documento é atualizado automaticamente."))
                 self.ultimo_docx = gerar_docx(self.caminho_docx, [], em_andamento,
@@ -233,7 +303,33 @@ class SessaoAoVivo:
             self._trabalhador.start()
         log.info("audiência do processo %s: gravando (%s); documento %s",
                  self.numero.formatado, self.caminho_audio.name, self.caminho_docx.name)
+        if self.sigiloso:
+            self._emitir("aviso", "Processo em segredo de justiça: a transcrição e a gravação "
+                                  f"ficam na pasta dos sigilosos ({pasta}), fora do acervo "
+                                  "compartilhado com a IA e a nuvem.")
         self._emitir("estado", "Gravando")
+
+    @property
+    def _qual_pasta(self) -> str:
+        return "a pasta dos sigilosos" if self.sigiloso else "a pasta do acervo"
+
+    def _travar_sessao(self) -> None:
+        """Marca a sessão como aberta também para os OUTROS processos."""
+        trava = self.caminho_diario.with_suffix(SUFIXO_TRAVA)
+        try:
+            self._trava_processo = _travar(trava)
+        except OSError as erro:   # disco que não trava: segue sem (a gravação vale mais)
+            log.warning("não consegui travar %s: %s", trava.name, erro)
+
+    def _soltar_sessao(self) -> None:
+        trava, self._trava_processo = self._trava_processo, None
+        if trava is None:
+            return
+        _soltar(trava)
+        try:
+            self.caminho_diario.with_suffix(SUFIXO_TRAVA).unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def _captura_padrao(self, ao_bloco, ao_nivel, ao_aviso):
         from .microfone import Captura
@@ -251,7 +347,7 @@ class SessaoAoVivo:
                                       format="FLAC", subtype="PCM_16")
         except Exception as erro:
             raise RuntimeError(f"Não consegui criar o arquivo da gravação ({erro}). Confira o "
-                               "espaço em disco e a pasta do acervo em Configurações.") from erro
+                               f"espaço em disco e {self._qual_pasta} em Configurações.") from erro
 
     def _abrir_diario(self) -> None:
         from .. import __version__
@@ -260,7 +356,7 @@ class SessaoAoVivo:
             self._diario = open(self.caminho_diario, "a", encoding="utf-8", newline="\n")
         except OSError as erro:
             raise RuntimeError(f"Não consegui criar o diário da audiência ({erro}). Confira o "
-                               "espaço em disco e a pasta do acervo em Configurações.") from erro
+                               f"espaço em disco e {self._qual_pasta} em Configurações.") from erro
         cabecalho = {"tipo": "inicio", "versao": VERSAO_DIARIO, "programa": __version__,
                      "meta": self.meta.como_dict(), "docx": self.caminho_docx.name,
                      "audio": self.caminho_audio.name, "marcar_tempo": self.marcar_tempo}
@@ -288,6 +384,7 @@ class SessaoAoVivo:
                     obj.close()
                 except Exception:
                     pass
+        self._soltar_sessao()
         if self.caminho_diario is not None:
             with _trava_ativos:
                 _ativos.discard(_chave(self.caminho_diario))
@@ -592,6 +689,7 @@ class SessaoAoVivo:
                 diario.close()
             except Exception:
                 pass
+        self._soltar_sessao()
         if self.caminho_diario is not None:
             # sem o registro de fim, o diário fica recuperável já nesta execução
             with _trava_ativos:
@@ -693,20 +791,24 @@ def _interrompido(caminho: Path) -> bool:
 def recuperaveis(cfg) -> list[Path]:
     """Diários de audiências interrompidas (sem o registro de fim), do mais novo
     para o mais antigo. Não lista as sessões abertas agora."""
-    pasta = cfg.pasta_transcricoes / "_audio"
-    if not pasta.is_dir():
-        return []
     with _trava_ativos:
         ativos = set(_ativos)
     achados: list[tuple[float, Path]] = []
-    for p in pasta.glob("*.jsonl"):
-        if _chave(p) in ativos:
+    vistos: set[str] = set()
+    # a do acervo e a dos sigilosos (as audiências em segredo de justiça)
+    for pasta in (p / "_audio" for p in pastas_das_transcricoes(cfg)):
+        if not pasta.is_dir():
             continue
-        try:
-            if _interrompido(p):
-                achados.append((p.stat().st_mtime, p))
-        except OSError:
-            continue
+        for p in pasta.glob("*.jsonl"):
+            chave = _chave(p)
+            if chave in ativos or chave in vistos:
+                continue
+            vistos.add(chave)
+            try:
+                if _interrompido(p) and not _em_uso(p):
+                    achados.append((p.stat().st_mtime, p))
+            except OSError:
+                continue
     achados.sort(key=lambda par: par[0], reverse=True)
     return [p for _, p in achados]
 
@@ -748,6 +850,9 @@ def reparar_audio(caminho: Path) -> float:
 def recuperar(jsonl: Path) -> Path:
     """Refaz o DOCX de uma audiência interrompida a partir do diário."""
     jsonl = Path(jsonl)
+    if _em_uso(jsonl):
+        raise RuntimeError("Esta audiência ainda está sendo gravada em outra janela do "
+                           "programa: encerre-a naquela janela.")
     registros = _ler_diario(jsonl)
     if not registros or registros[0].get("tipo") != "inicio":
         raise ValueError(f"{jsonl.name} não é um diário de audiência do programa.")
@@ -791,5 +896,9 @@ def recuperar(jsonl: Path) -> Path:
         f.write(json.dumps({"tipo": "fim", "fim": True, "docx": final.name, "recuperado": True,
                             "hora": datetime.now().isoformat(timespec="seconds")},
                            ensure_ascii=False) + "\n")
+    try:   # a trava que a sessão interrompida deixou
+        jsonl.with_suffix(SUFIXO_TRAVA).unlink(missing_ok=True)
+    except OSError:
+        pass
     log.info("transcrição recuperada: %s (%d fala(s))", final, len(falas))
     return final

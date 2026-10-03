@@ -20,6 +20,13 @@ exceções têm sentido próprio para o motor:
 * ``LoginFalhou`` - não adianta insistir: o grupo do tribunal é encerrado;
 * ``Cancelado`` - o usuário pediu para parar; o item volta para a fila.
 
+``destino_pdf`` é uma pasta provisória, fora do acervo: a capa e as
+gravações vão para ``destino_pdf.parent / "_controle"``, e o motor leva tudo
+para o lote (ou para a pasta de sigilosos) só depois de saber se o processo
+é sigiloso. O portal pode expor ``sigilosos_apurados`` (conjunto de
+``Numero.nome_arquivo``): o sigilo que ele apurou vale mesmo para uma
+tentativa que terminou em exceção.
+
 Por conveniência, um portal também pode LEVANTAR ``ProcessoNaoEncontrado``,
 ``SemAcesso`` ou ``SigilosoSemSenha`` em vez de devolver o resultado: o
 motor converte cada uma na situação correspondente, sem repetir.
@@ -100,6 +107,11 @@ FALHAS = {ERRO, NAO_ENCONTRADO, SEM_ACESSO, NAO_SUPORTADO, SIGILOSO_SEM_SENHA}
 
 MODOS_LOGIN = ("senha", "certificado", "manual")
 
+# Rótulos da tela que as mensagens dos portais citam: têm de ser os mesmos
+# da tela, ou o usuário procura uma opção que não existe.
+MOSTRAR_NAVEGADOR = "Mostrar o navegador enquanto baixa"
+CAMPO_PRAZO_LOGIN = "Configurações > Acessos, campo 'Esperar o login até (min)'"
+
 
 def rotulo(situacao: str) -> str:
     return ROTULOS.get(situacao, situacao.lower())
@@ -173,6 +185,8 @@ class OpcoesDownload:
     login: dict[str, str] = field(default_factory=lambda: {"esaj": "senha", "eproc": "senha"})
     espera_tela_codigo_s: int = 45        # quanto esperar o portal abrir a tela do código
     atualizar_ia: bool = True             # ao fim, preparar os arquivos para a IA
+    # onde o portal grava o processo antes de o motor saber se é sigiloso
+    pasta_provisoria: Path = field(default_factory=lambda: caminhos.TEMP / "baixando")
 
     def modo_login(self, sistema: str) -> str:
         return _modo_login(self.login.get(sistema, "senha"))
@@ -214,6 +228,9 @@ class ResumoLote:
     destino: Path
     relatorio: Path
     minutos: float = 0.0
+    # Cópias de processos sigilosos que NÃO puderam sair do acervo (arquivo
+    # aberto em outro programa): com isto não vazio, não espelhe o acervo.
+    sigilosos_no_acervo: list[str] = field(default_factory=list)
 
     def _com(self, *situacoes: str) -> list[ResultadoProcesso]:
         return [r for r in self.itens if r.situacao in situacoes]

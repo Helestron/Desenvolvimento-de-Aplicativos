@@ -34,7 +34,8 @@ import numpy as np
 from ..nucleo import cnj, energia, sistema
 from . import falantes as mod_falantes
 from . import modelos
-from .documento import Fala, MetaAudiencia, gerar_docx, magistrado_da_config, unidade_da_config
+from .documento import (Fala, MetaAudiencia, gerar_docx, magistrado_da_config,
+                        pasta_das_transcricoes, unidade_da_config)
 
 log = logging.getLogger("transcricao.arquivo")
 
@@ -305,6 +306,16 @@ def _numero_do_arquivo(origem: Path, numero) -> cnj.Numero:
         f"Não encontrei o número do processo no nome '{origem.name}'. Informe o número.")
 
 
+def _dentro_de(caminho: Path, pasta) -> bool:
+    if not pasta:
+        return False
+    try:
+        Path(caminho).resolve().relative_to(Path(pasta).resolve())
+        return True
+    except (ValueError, OSError, RuntimeError):
+        return False
+
+
 def transcrever_arquivo(origem: Path, numero, cfg,
                         progresso: Callable[[float, str], None] | None = None,
                         cancelado: Callable[[], bool] | None = None,
@@ -316,13 +327,16 @@ def transcrever_arquivo(origem: Path, numero, cfg,
                         num_falantes: int = 0,
                         motor_fabrica: Callable[[], object] | None = None,
                         diarizador: Callable[..., list] | None = None,
-                        audio: np.ndarray | None = None) -> Path:
+                        audio: np.ndarray | None = None,
+                        sigiloso: bool = False) -> Path:
     """Transcreve a gravação e grava o DOCX (nome = número do processo).
 
     `progresso(fração 0..1, texto)`; `cancelado()` -> True interrompe
     (levanta `Cancelado`, nada é gravado). `rotulos_manuais`: as falas da
     audiência ao vivo, cujos rótulos dão nome às vozes separadas. Devolve o
-    caminho do DOCX. `motor_fabrica`, `diarizador` e `audio` existem para os
+    caminho do DOCX. Sem `destino`, o DOCX vai para a pasta de transcrições
+    do acervo - ou para a dos sigilosos, se `sigiloso` ou se os autos do
+    processo estiverem lá. `motor_fabrica`, `diarizador` e `audio` existem para os
     testes (modelo dublê, separação simulada, áudio já em memória).
     """
     origem = Path(origem)
@@ -331,11 +345,13 @@ def transcrever_arquivo(origem: Path, numero, cfg,
     # vale para a thread que chama, que é a de trabalho).
     with energia.manter_acordado("transcrição de gravação"):
         return _transcrever(origem, numero, cfg, progresso, cancelado, rotulos_manuais, destino,
-                            meta, modelo, separar, num_falantes, motor_fabrica, diarizador, audio)
+                            meta, modelo, separar, num_falantes, motor_fabrica, diarizador, audio,
+                            sigiloso)
 
 
 def _transcrever(origem, numero, cfg, progresso, cancelado, rotulos_manuais, destino, meta,
-                 modelo, separar, num_falantes, motor_fabrica, diarizador, audio) -> Path:
+                 modelo, separar, num_falantes, motor_fabrica, diarizador, audio,
+                 sigiloso=False) -> Path:
     def avisar(fracao: float, texto: str) -> None:
         if progresso:
             try:
@@ -466,7 +482,11 @@ def _transcrever(origem, numero, cfg, progresso, cancelado, rotulos_manuais, des
     meta.duracao = duracao
     meta.gravacao = meta.gravacao or origem.name
     if destino is None:
-        pasta = cfg.pasta_transcricoes
+        # A gravação guardada na pasta de sigilosos (a de uma audiência
+        # sigilosa, no "Revisar agora", ou a mídia baixada com os autos) é
+        # sigilosa, mesmo sem os autos lá.
+        sigiloso = sigiloso or _dentro_de(origem, getattr(cfg, "pasta_sigilosos", None))
+        pasta = pasta_das_transcricoes(cfg, numero, sigiloso)
         pasta.mkdir(parents=True, exist_ok=True)
         destino = sistema.destino_livre(pasta, numero.nome_arquivo, ".docx")
     caminho = gerar_docx(Path(destino), falas, meta,
