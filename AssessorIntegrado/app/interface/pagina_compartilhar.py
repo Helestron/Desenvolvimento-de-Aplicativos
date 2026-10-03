@@ -148,9 +148,9 @@ class PaginaCompartilhar(Pagina):
         return b
 
     def _bloco_cowork(self):
-        b = self._bloco("bloco-pasta", "Claude Desktop e Cowork",
-                        "O Cowork trabalha na pasta do acervo; o conector dá ao chat do Claude "
-                        "acesso de leitura aos autos.")
+        b = self._bloco("bloco-pasta", "Claude Cowork",
+                        "No app Claude Desktop, o Cowork trabalha na pasta do acervo; o conector "
+                        "dá ao chat do Claude acesso de leitura aos autos.")
         self._acao(b, "Abrir no Cowork", self.abrir_cowork, "tonal")
         self.btn_conectar = self._acao(b, "Conectar o acervo ao Claude", self.conectar_claude)
         self.btn_claude = self._acao(b, "Abrir o Claude", self.abrir_claude, "texto")

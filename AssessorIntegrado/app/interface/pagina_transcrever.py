@@ -157,7 +157,7 @@ class GradeFalantes(ttk.Frame):
         self.chips: list[tk.Canvas] = []
         self.columnconfigure((0, 1, 2, 3), weight=1, uniform="falantes")
         for i in range(8):
-            c = tk.Canvas(self, height=px(44), highlightthickness=0, borderwidth=0,
+            c = tk.Canvas(self, height=px(42), highlightthickness=0, borderwidth=0,
                           background=estilo.PAPEL, cursor="hand2")
             c.grid(row=i // 4, column=i % 4, sticky="ew",
                    padx=(0 if i % 4 == 0 else px(4), 0 if i % 4 == 3 else px(4)),
@@ -204,10 +204,14 @@ class GradeFalantes(ttk.Frame):
         c.create_text(px(12), A // 2, text=f"F{k + 1}", anchor="w",
                       fill=estilo.AZUL if ativo else estilo.APAGADO, font=estilo.FONTE_NOTA_NEGRITO)
         nome = self.nomes[k] or "(vazio)"
+        largura = L - px(46)
         fonte = estilo.FONTE_NEGRITO if ativo else estilo.FONTE
-        nome = _caber(c, nome, fonte, L - px(48))
-        c.create_text(px(38), A // 2, text=nome, anchor="w", fill=letra if self.nomes[k]
-                      else estilo.APAGADO, font=fonte)
+        if _medir(c, nome, fonte) > largura:
+            # nome comprido ("Advogado(a) do autor"): letra menor, em até duas linhas
+            fonte = estilo.FONTE_NOTA_NEGRITO if ativo else estilo.FONTE_NOTA
+            nome = _caber_em_linhas(c, nome, fonte, largura, 2)
+        c.create_text(px(38), A // 2, text=nome, anchor="w", width=largura,
+                      fill=letra if self.nomes[k] else estilo.APAGADO, font=fonte)
 
     def _renomear(self, k: int) -> None:
         if self._editor is not None:
@@ -264,6 +268,32 @@ def _moldura(largura: int, altura: int, fundo: str, fio: str):
     return _molduras[chave]
 
 
+def _medir(widget, texto: str, fonte) -> int:
+    from tkinter import font as tkfont
+
+    try:
+        return tkfont.nametofont(fonte, root=widget).measure(texto)
+    except tk.TclError:
+        return 0
+
+
+def _caber_em_linhas(widget, texto: str, fonte, largura: int, linhas: int) -> str:
+    """Quebra por palavras em até 'linhas' linhas; a última leva reticências."""
+    palavras, saida, atual = texto.split(), [], ""
+    for p in palavras:
+        tentativa = f"{atual} {p}".strip()
+        if _medir(widget, tentativa, fonte) <= largura or not atual:
+            atual = tentativa
+        else:
+            saida.append(atual)
+            atual = p
+    saida.append(atual)
+    if len(saida) > linhas:
+        saida = saida[:linhas - 1] + [" ".join(saida[linhas - 1:])]
+    saida[-1] = _caber(widget, saida[-1], fonte, largura)
+    return "\n".join(saida)
+
+
 def _caber(widget, texto: str, fonte, largura: int) -> str:
     """Encurta com reticências até caber na largura (em pixels)."""
     from tkinter import font as tkfont
@@ -317,118 +347,128 @@ class PaginaTranscrever(Pagina):
             "Transcrição simultânea pelo microfone. O documento é salvo em Word, na pasta "
             "Transcricoes do acervo, com o número do processo no nome.", rolavel=False)
         corpo.columnconfigure(1, weight=1)
-        corpo.rowconfigure(0, weight=1)
 
-        # ----------------------------------------------- coluna de controle
-        quadro_esq, esq = componentes.coluna_rolavel(corpo, margem=0)
-        quadro_esq.configure(width=px(318))
-        quadro_esq.grid(row=0, column=0, sticky="nsw", padx=(0, px(24)), pady=(0, px(16)))
-        quadro_esq.grid_propagate(False)
-        esq.columnconfigure(0, weight=1)
-        esq.configure(padding=(0, px(2), px(14), px(8)))
+        # ------------------------------------------- 1. preparação (uma linha)
+        prep = ttk.Frame(corpo)
+        prep.grid(row=0, column=0, columnspan=2, sticky="ew")
+        prep.columnconfigure((0, 1, 2), weight=1, uniform="prep")
 
+        q = ttk.Frame(prep)
+        q.grid(row=0, column=0, sticky="new", padx=(0, px(16)))
+        q.columnconfigure(0, weight=1)
+        ttk.Label(q, text="Número do processo", foreground=estilo.TINTA_FRACA,
+                  font=estilo.FONTE_NOTA).grid(row=0, column=0, sticky="w", pady=(0, px(3)))
         self.var_numero = tk.StringVar(value=self.cfg.texto("interface", "ultimo_processo"))
-        rot = ttk.Label(esq, text="Número do processo", foreground=estilo.TINTA_FRACA,
-                        font=estilo.FONTE_NOTA)
-        rot.grid(row=0, column=0, sticky="w", pady=(0, px(3)))
-        self.e_numero = ttk.Entry(esq, textvariable=self.var_numero, font=estilo.FONTE_TRANSCRICAO)
+        self.e_numero = ttk.Entry(q, textvariable=self.var_numero)
         self.e_numero.grid(row=1, column=0, sticky="ew")
         self.e_numero.bind("<FocusOut>", lambda _e: self._formatar_numero())
         self.e_numero.bind("<Return>", lambda _e: self._formatar_numero())
-        self.dica_numero = ttk.Label(esq, text="", font=estilo.FONTE_NOTA, justify="left")
+        self.dica_numero = ttk.Label(q, text="", font=estilo.FONTE_NOTA, justify="left")
         self.dica_numero.grid(row=2, column=0, sticky="ew", pady=(px(4), 0))
         estilo.acompanhar_largura(self.dica_numero)
         self.var_numero.trace_add("write", lambda *_: self._validar_numero())
 
-        ttk.Label(esq, text="Tipo de audiência", foreground=estilo.TINTA_FRACA,
-                  font=estilo.FONTE_NOTA).grid(row=3, column=0, sticky="w", pady=(px(14), px(3)))
+        q = ttk.Frame(prep)
+        q.grid(row=0, column=1, sticky="new", padx=(0, px(16)))
+        q.columnconfigure(0, weight=1)
+        ttk.Label(q, text="Tipo de audiência", foreground=estilo.TINTA_FRACA,
+                  font=estilo.FONTE_NOTA).grid(row=0, column=0, sticky="w", pady=(0, px(3)))
         self.var_tipo = tk.StringVar(value=self.cfg.texto("interface", "tipo_audiencia") or TIPOS[0])
-        self.c_tipo = ttk.Combobox(esq, textvariable=self.var_tipo, values=TIPOS, height=12)
-        self.c_tipo.grid(row=4, column=0, sticky="ew")
+        self.c_tipo = ttk.Combobox(q, textvariable=self.var_tipo, values=TIPOS, height=12)
+        self.c_tipo.grid(row=1, column=0, sticky="ew")
         self.c_tipo.bind("<<ComboboxSelected>>", lambda _e: self._salvar_tipo())
         self.c_tipo.bind("<FocusOut>", lambda _e: self._salvar_tipo())
 
-        linha_mic = ttk.Frame(esq)
-        linha_mic.grid(row=5, column=0, sticky="ew", pady=(px(14), px(3)))
-        linha_mic.columnconfigure(0, weight=1)
-        ttk.Label(linha_mic, text="Microfone", foreground=estilo.TINTA_FRACA,
-                  font=estilo.FONTE_NOTA).grid(row=0, column=0, sticky="w")
-        self.btn_testar = estilo.botao(linha_mic, "Testar", self.testar_microfone, "texto",
-                                       pequeno=True)
-        self.btn_testar.grid(row=0, column=1, sticky="e")
+        q = ttk.Frame(prep)
+        q.grid(row=0, column=2, sticky="new")
+        q.columnconfigure(0, weight=1)
+        ttk.Label(q, text="Microfone", foreground=estilo.TINTA_FRACA,
+                  font=estilo.FONTE_NOTA).grid(row=0, column=0, sticky="w", pady=(0, px(3)))
+        self.btn_testar = estilo.botao(q, "Testar", self.testar_microfone, "texto", pequeno=True)
+        self.btn_testar.grid(row=0, column=1, sticky="e", pady=(0, px(1)))
         self.var_mic = tk.StringVar(value="Procurando microfones…")
-        self.c_mic = ttk.Combobox(esq, textvariable=self.var_mic, state="readonly", height=10)
-        self.c_mic.grid(row=6, column=0, sticky="ew")
+        self.c_mic = ttk.Combobox(q, textvariable=self.var_mic, state="readonly", height=10)
+        self.c_mic.grid(row=1, column=0, columnspan=2, sticky="ew")
         self.c_mic.bind("<<ComboboxSelected>>", lambda _e: self._salvar_microfone())
-        self.medidor = Medidor(esq, largura=px(200))
-        self.medidor.grid(row=7, column=0, sticky="ew", pady=(px(8), 0))
-        self.dica_mic = ttk.Label(esq, text="", font=estilo.FONTE_NOTA, foreground=estilo.TINTA_FRACA,
+        self.medidor = Medidor(q, largura=px(200), altura=px(6))
+        self.medidor.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(px(6), 0))
+        self.dica_mic = ttk.Label(q, text="", font=estilo.FONTE_NOTA, foreground=estilo.TINTA_FRACA,
                                   justify="left")
-        self.dica_mic.grid(row=8, column=0, sticky="ew", pady=(px(4), 0))
+        self.dica_mic.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(px(4), 0))
         estilo.acompanhar_largura(self.dica_mic)
 
-        # botão redondo + cronômetro
-        controle = ttk.Frame(esq)
-        controle.grid(row=9, column=0, sticky="ew", pady=(px(20), 0))
-        controle.columnconfigure(1, weight=1)
-        self.redondo = BotaoRedondo(controle, self._clique_redondo)
-        self.redondo.grid(row=0, column=0, rowspan=3, sticky="w")
-        self.relogio = ttk.Label(controle, text="00:00:00", font=estilo.FONTE_RELOGIO)
-        self.relogio.grid(row=0, column=1, sticky="sw", padx=(px(18), 0))
-        self.estado_sessao = componentes.EstadoLinha(controle, "Pronto para começar", "neutro",
-                                                     fonte=estilo.FONTE)
-        self.estado_sessao.grid(row=1, column=1, sticky="nw", padx=(px(18), 0))
-        self.btn_encerrar = estilo.botao(esq, "Encerrar e salvar", self.encerrar, "cuidado")
-        self.btn_encerrar.grid(row=10, column=0, sticky="ew", pady=(px(14), 0))
-        self.btn_encerrar.grid_remove()
-
-        self.var_refinar = tk.BooleanVar(value=self.cfg.flag("transcricao", "refinar_ao_encerrar"))
-        ttk.Checkbutton(esq, text="Ao encerrar, revisar com o modelo preciso (leva alguns "
-                                  "minutos)", variable=self.var_refinar,
-                        command=lambda: self.cfg.definir("transcricao", "refinar_ao_encerrar",
-                                                         self.var_refinar.get())).grid(
-            row=11, column=0, sticky="w", pady=(px(16), 0))
-
-        componentes.divisoria(esq).grid(row=12, column=0, sticky="ew", pady=(px(18), px(10)))
-        estilo.botao(esq, "Transcrever uma gravação (arquivo)…", self.transcrever_arquivo,
-                     "texto").grid(row=13, column=0, sticky="w")
-        self.btn_recuperar = estilo.botao(esq, "Recuperar transcrição interrompida",
-                                          self.recuperar, "texto")
-        self.btn_recuperar.grid(row=14, column=0, sticky="w", pady=(px(2), 0))
-        self.btn_recuperar.grid_remove()
-        estilo.botao(esq, "Abrir a pasta das transcrições", self._abrir_pasta, "texto").grid(
-            row=15, column=0, sticky="w", pady=(px(2), 0))
-
-        # --------------------------------------------------- coluna da fala
-        dir_ = ttk.Frame(corpo)
-        dir_.grid(row=0, column=1, sticky="nsew", pady=(0, px(16)))
-        dir_.columnconfigure(0, weight=1)
-        dir_.rowconfigure(3, weight=1)
-        cab = ttk.Frame(dir_)
-        cab.grid(row=0, column=0, sticky="ew", pady=(0, px(8)))
+        # ------------------------------------------- 2. quem está falando
+        cab = ttk.Frame(corpo)
+        cab.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(px(14), px(8)))
         cab.columnconfigure(0, weight=1)
         ttk.Label(cab, text="Quem está falando", font=estilo.FONTE_NEGRITO).grid(row=0, column=0,
                                                                                sticky="w")
         ttk.Label(cab, text="teclas F1 a F8 · duplo clique troca o nome",
                   foreground=estilo.TINTA_FRACA, font=estilo.FONTE_NOTA).grid(row=0, column=1,
                                                                               sticky="e")
-        self.grade = GradeFalantes(dir_, self.cfg.lista("transcricao", "falantes"),
+        self.grade = GradeFalantes(corpo, self.cfg.lista("transcricao", "falantes"),
                                    self._falante_escolhido, self._falantes_renomeados)
-        self.grade.grid(row=1, column=0, sticky="ew")
+        self.grade.grid(row=2, column=0, columnspan=2, sticky="ew")
 
+        # ------------------------------------------- 3. controle e texto
+        corpo.rowconfigure(3, weight=1)
+        quadro_esq, esq = componentes.coluna_rolavel(corpo, margem=0)
+        quadro_esq.configure(width=px(258))
+        quadro_esq.grid(row=3, column=0, sticky="nsw", padx=(0, px(20)), pady=(px(6), px(14)))
+        quadro_esq.grid_propagate(False)
+        esq.columnconfigure(0, weight=1)
+
+        controle = ttk.Frame(esq)
+        controle.grid(row=0, column=0, sticky="ew", pady=(px(6), 0))
+        controle.columnconfigure(1, weight=1)
+        self.redondo = BotaoRedondo(controle, self._clique_redondo)
+        self.redondo.grid(row=0, column=0, rowspan=2, sticky="w")
+        self.relogio = ttk.Label(controle, text="00:00:00", font=estilo.FONTE_RELOGIO)
+        self.relogio.grid(row=0, column=1, sticky="sw", padx=(px(14), 0))
+        self.estado_sessao = componentes.EstadoLinha(controle, "Pronto para começar", "neutro",
+                                                     fonte=estilo.FONTE)
+        self.estado_sessao.grid(row=1, column=1, sticky="nw", padx=(px(14), 0))
+        self.btn_encerrar = estilo.botao(esq, "Encerrar e salvar", self.encerrar, "cuidado")
+        self.btn_encerrar.grid(row=1, column=0, sticky="ew", pady=(px(12), 0))
+        self.btn_encerrar.grid_remove()
+
+        self.var_refinar = tk.BooleanVar(value=self.cfg.flag("transcricao", "refinar_ao_encerrar"))
+        ttk.Checkbutton(esq, text="Revisar ao encerrar", variable=self.var_refinar,
+                        command=lambda: self.cfg.definir("transcricao", "refinar_ao_encerrar",
+                                                         self.var_refinar.get())).grid(
+            row=2, column=0, sticky="w", pady=(px(14), 0))
+        nota = ttk.Label(esq, text="Refaz tudo com o modelo preciso; leva alguns minutos.",
+                         foreground=estilo.TINTA_FRACA, font=estilo.FONTE_NOTA, justify="left")
+        nota.grid(row=3, column=0, sticky="ew", padx=(px(26), 0))
+        estilo.acompanhar_largura(nota)
+
+        componentes.divisoria(esq).grid(row=4, column=0, sticky="ew", pady=(px(14), px(8)))
+        estilo.botao(esq, "Transcrever uma gravação…", self.transcrever_arquivo,
+                     "texto", pequeno=True).grid(row=5, column=0, sticky="w")
+        self.btn_recuperar = estilo.botao(esq, "Recuperar transcrição interrompida",
+                                          self.recuperar, "texto", pequeno=True)
+        self.btn_recuperar.grid(row=6, column=0, sticky="w", pady=(px(2), 0))
+        self.btn_recuperar.grid_remove()
+        estilo.botao(esq, "Abrir a pasta das transcrições", self._abrir_pasta, "texto",
+                     pequeno=True).grid(row=7, column=0, sticky="w", pady=(px(2), 0))
+
+        dir_ = ttk.Frame(corpo)
+        dir_.grid(row=3, column=1, sticky="nsew", pady=(px(6), px(14)))
+        dir_.columnconfigure(0, weight=1)
+        dir_.rowconfigure(1, weight=1)
         self._pai_faixa = dir_
         self.faixa = Faixa(dir_, "Sucesso")
-        self.faixa.grid(row=2, column=0, sticky="ew", pady=(0, px(10)))
+        self.faixa.grid(row=0, column=0, sticky="ew", pady=(0, px(10)))
         self.faixa.grid_remove()
 
         caixa = ttk.Frame(dir_, style="Bloco.TFrame", padding=px(2))
-        caixa.grid(row=3, column=0, sticky="nsew")
+        caixa.grid(row=1, column=0, sticky="nsew")
         caixa.columnconfigure(0, weight=1)
         caixa.rowconfigure(0, weight=1)
         self.texto = tk.Text(caixa, wrap="word", font=estilo.FONTE_TRANSCRICAO, relief="flat",
                              borderwidth=0, padx=px(18), pady=px(14), background=estilo.PAPEL,
                              foreground=estilo.TINTA, highlightthickness=0, spacing1=px(2),
-                             spacing3=px(6), cursor="arrow", state="disabled")
+                             spacing3=px(6), cursor="arrow", state="disabled", height=6)
         self.texto.grid(row=0, column=0, sticky="nsew", padx=(px(2), 0), pady=px(2))
         rolagem = ttk.Scrollbar(caixa, orient="vertical", command=self.texto.yview)
         rolagem.grid(row=0, column=1, sticky="ns", pady=px(8), padx=(0, px(4)))
@@ -441,11 +481,13 @@ class PaginaTranscrever(Pagina):
         self.texto.tag_configure("vazio", foreground=estilo.TINTA_FRACA, font=estilo.FONTE)
         self._placeholder()
 
-        self.rodape = ttk.Label(dir_, text="", foreground=estilo.TINTA_FRACA, font=estilo.FONTE_NOTA)
-        self.rodape.grid(row=4, column=0, sticky="ew", pady=(px(6), 0))
-
-        self.detalhes = Detalhes(dir_, "Detalhes técnicos da transcrição", altura=6)
-        self.detalhes.grid(row=5, column=0, sticky="ew", pady=(px(4), 0))
+        base = ttk.Frame(dir_)
+        base.grid(row=2, column=0, sticky="ew", pady=(px(6), 0))
+        base.columnconfigure(0, weight=1)
+        self.rodape = ttk.Label(base, text="", foreground=estilo.TINTA_FRACA, font=estilo.FONTE_NOTA)
+        self.rodape.grid(row=0, column=0, sticky="w")
+        self.detalhes = Detalhes(base, "Detalhes técnicos", altura=6)
+        self.detalhes.grid(row=1, column=0, sticky="ew", pady=(px(2), 0))
 
         self._validar_numero()
         self._aplicar_situacao()

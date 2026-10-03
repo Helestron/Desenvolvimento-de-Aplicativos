@@ -267,7 +267,8 @@ def coluna_rolavel(pai, margem: int = 0, fundo: str = estilo.PAPEL):
     barra = ttk.Scrollbar(quadro, orient="vertical", command=tela.yview)
     tela.configure(yscrollcommand=barra.set)
 
-    dentro = ttk.Frame(tela, padding=(margem, 0, margem, px(24)))
+    # À direita, espaço para a barra sobreposta não cobrir o conteúdo.
+    dentro = ttk.Frame(tela, padding=(margem, 0, max(margem, px(20)), px(24)))
     janela = tela.create_window((0, 0), window=dentro, anchor="nw")
 
     def ajustar(_evento=None):
@@ -575,7 +576,7 @@ class EstadoLinha(tk.Frame):
     def __init__(self, pai, texto: str = "", tipo: str = "neutro", fundo: str = estilo.PAPEL,
                  fonte=estilo.FONTE_NOTA):
         super().__init__(pai, background=fundo)
-        self.ponto = tk.Label(self, text="●", font=estilo.FONTE_NOTA, background=fundo,
+        self.ponto = tk.Label(self, text="●" if texto else "", font=estilo.FONTE_NOTA, background=fundo,
                               foreground=_CORES_ESTADO.get(tipo, estilo.APAGADO))
         self.ponto.pack(side="left", anchor="n")
         self.texto = tk.Label(self, text=texto, font=fonte, background=fundo,
@@ -585,7 +586,8 @@ class EstadoLinha(tk.Frame):
 
     def definir(self, texto: str, tipo: str = "neutro") -> None:
         self.texto.configure(text=texto)
-        self.ponto.configure(foreground=_CORES_ESTADO.get(tipo, estilo.APAGADO))
+        self.ponto.configure(foreground=_CORES_ESTADO.get(tipo, estilo.APAGADO),
+                             text="●" if texto else "")
 
     def bind_filhos(self, sequencia, funcao) -> None:
         for w in (self, self.ponto, self.texto):

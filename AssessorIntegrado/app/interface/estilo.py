@@ -464,6 +464,31 @@ def _molduras_retas(estilo: ttk.Style) -> None:
         estilo.configure(f"{nome}.TFrame", background=cor)
 
 
+# ------------------------------------------------------- abas internas
+def _abas(estilo: ttk.Style) -> None:
+    """Abas no desenho do Material: texto plano, a aberta com um traço azul
+    embaixo. O desenho do clam deslocava o texto da aba aberta para baixo."""
+    from PIL import Image, ImageDraw, ImageTk
+
+    L, A = px(40), px(36)
+    traco = max(2, px(3))
+
+    def aba(fundo: str, cor: str, espessura: int):
+        img = Image.new("RGBA", (L, A), fundo)
+        ImageDraw.Draw(img).rectangle((0, A - espessura, L, A), fill=cor)
+        foto = ImageTk.PhotoImage(img)
+        _imagens.append(foto)
+        return foto
+
+    imagens = [aba(PAPEL, LINHA, 1), ("selected", aba(PAPEL, AZUL, traco)),
+               ("active", aba(FAIXA_CLARA, LINHA, 1))]
+    _elemento(estilo, "AI.aba", imagens, border=(2, 2, 2, traco + 1), sticky="nsew")
+    estilo.layout("TNotebook.Tab", [("AI.aba", {"sticky": "nsew", "children": [
+        ("Notebook.padding", {"sticky": "nsew", "children": [
+            ("Notebook.label", {"sticky": ""})]})]})])
+    estilo.configure("TNotebook.Tab", padding=pxs(16, 9, 16, 11))
+
+
 # --------------------------------------------- caixas de marcar e de escolha
 def _indicadores(estilo: ttk.Style) -> None:
     """Caixa de marcar e botão de escolha no desenho do Material (o do clam
@@ -718,6 +743,7 @@ def aplicar(raiz: tk.Tk) -> ttk.Style:
             _familia_arredondada(estilo, nome, fundo, sobre, apertado, contorno, letra)
         _molduras(estilo)
         _indicadores(estilo)
+        _abas(estilo)
         estilo._arredondado = True  # type: ignore[attr-defined]
     except Exception as erro:
         # Sem Pillow (ou um Pillow que não fala com o Tk): o tema reto, com

@@ -34,10 +34,13 @@ def texto_pdf(caminho: Path) -> str:
     partes: list[str] = []
     try:
         fitz = _pymupdf()
+        # Sem TEXT_PRESERVE_LIGATURES: "Certiﬁco" (ligadura) vira "Certifico",
+        # e a busca da IA por "certifico" acha a palavra.
+        flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_MEDIABOX_CLIP
         with fitz.open(str(caminho)) as doc:
             for i, pagina in enumerate(doc, 1):
                 partes.append(MARCA_PAGINA.format(n=i))
-                partes.append(pagina.get_text("text").strip())
+                partes.append(pagina.get_text("text", flags=flags).strip())
         return "\n".join(partes) + "\n"
     except ImportError:  # pragma: no cover - PyMuPDF faz parte da instalação
         pass
