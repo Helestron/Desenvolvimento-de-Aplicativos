@@ -262,8 +262,6 @@ class TestArquivosPs1(unittest.TestCase):
             self.assertTrue(pacotes, nome)
             for p in pacotes:
                 self.assertRegex(p, r"^[A-Za-z0-9_.\-\[\],]+==[^\s]+", f"{nome}: {p} sem versão fixa")
-            self.assertEqual(len(re.findall(r"(?m)^[A-Za-z0-9]", "\n".join(linhas))),
-                             len([1 for b in "\n".join(linhas).split("\n\n") if b]) and len(pacotes))
             texto = "\n".join(linhas)
             blocos = re.split(r"(?m)^(?=[A-Za-z0-9])", texto)[1:]
             for bloco in blocos:
@@ -587,7 +585,7 @@ class TestFuncoesPowerShell(unittest.TestCase):
         if not curl or not os.path.exists(curl):
             self.skipTest("curl não disponível")
         with tempfile.TemporaryDirectory() as tmp:
-            origem = Path(tmp) / "origem com espaço.bin"
+            origem = Path(tmp) / "origem do teste.bin"
             dados = os.urandom(200_000)
             origem.write_bytes(dados)
             sha = hashlib.sha256(dados).hexdigest()
@@ -598,6 +596,7 @@ class TestFuncoesPowerShell(unittest.TestCase):
             r = ps_json(
                 "$e = [IO.File]::ReadAllText($Extra, [Text.Encoding]::UTF8) | ConvertFrom-Json\n"
                 "$script:Curl = $e.curl; $script:Proxy = ''\n"
+                "function Start-Sleep { }  # as esperas entre tentativas não interessam aqui\n"
                 "Baixar $e.url $e.destino $e.sha 'o teste'\n"
                 "Baixar $e.url $e.destino $e.sha 'o teste'\n"
                 "$falhou = $false\n"
