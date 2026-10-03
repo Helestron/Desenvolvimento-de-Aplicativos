@@ -154,7 +154,8 @@ class PortalFalso:
 
     Ações: ok | ok_sigiloso | ok_sigiloso_e_parar | erro | pdf_aberto | sessao |
     indisponivel | cancelar |
-    nao_encontrado | sem_acesso | sigiloso_sem_senha | login | teclado.
+    nao_encontrado | nao_encontrado_sem_acesso (SemAcesso levantado) |
+    sem_acesso | sigiloso_sem_senha | login | teclado.
     Processo sem roteiro: "ok".
     """
 
@@ -226,6 +227,8 @@ class PortalFalso:
             raise modelos.LoginFalhou("a senha expirou")
         if acao == "nao_encontrado":
             raise modelos.ProcessoNaoEncontrado("não encontrado no 1º grau")
+        if acao == "nao_encontrado_sem_acesso":
+            raise modelos.SemAcesso("o portal não liberou os autos")
         if acao == "sem_acesso":
             r.situacao, r.detalhe = modelos.SEM_ACESSO, "sem acesso"
             return r

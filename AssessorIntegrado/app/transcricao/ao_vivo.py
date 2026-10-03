@@ -70,6 +70,23 @@ def _chave(p: Path) -> str:
         return str(p).lower()
 
 
+def _audio_livre(pasta: Path, base: str) -> Path:
+    """O FLAC da sessão, com nome livre também para o diário (.jsonl).
+
+    Com "salvar_audio" desligado o FLAC é apagado no fim e o diário fica:
+    olhando só o FLAC, a sessão seguinte no mesmo minuto reusava o nome e
+    escrevia no diário da anterior, que já tinha o registro de fim - a nova
+    deixava de ser recuperável depois de uma queda, e a recuperação
+    misturava as falas das duas audiências.
+    """
+    alvo = pasta / f"{base}.flac"
+    n = 2
+    while alvo.exists() or alvo.with_suffix(".jsonl").exists():
+        alvo = pasta / f"{base} ({n}).flac"
+        n += 1
+    return alvo
+
+
 class SessaoAoVivo:
     """Uma audiência sendo transcrita.
 
@@ -180,10 +197,16 @@ class SessaoAoVivo:
             self.meta.data = agora
             self.caminho_docx = sistema.destino_livre(pasta, self.numero.nome_arquivo, ".docx")
             base = f"{self.numero.nome_arquivo} {agora:%Y-%m-%d %Hh%M}"
-            self.caminho_audio = sistema.destino_livre(pasta_audio, base, ".flac")
+            self.caminho_audio = _audio_livre(pasta_audio, base)
             self.caminho_diario = self.caminho_audio.with_suffix(".jsonl")
             self.meta.gravacao = f"_audio\\{self.caminho_audio.name}"
             criados: list[Path] = []
+            # Marcada como aberta ANTES de o diário existir: a tela inicial,
+            # que procura audiências interrompidas em outra thread, não pode
+            # ver este diário ainda sem o registro de fim e oferecer
+            # "recuperar" a audiência que está começando.
+            with _trava_ativos:
+                _ativos.add(_chave(self.caminho_diario))
             try:
                 em_andamento = replace(self.meta, observacao=(
                     "Transcrição em andamento; este documento é atualizado automaticamente."))
@@ -194,8 +217,6 @@ class SessaoAoVivo:
                 criados.append(self.caminho_audio)
                 self._abrir_diario()
                 criados.append(self.caminho_diario)
-                with _trava_ativos:
-                    _ativos.add(_chave(self.caminho_diario))
 
                 fabrica = self._captura_fabrica or self._captura_padrao
                 self.captura = fabrica(self._ao_bloco, self._ao_nivel, self._ao_aviso)
@@ -332,7 +353,9 @@ class SessaoAoVivo:
 
     def retomar(self) -> None:
         with self._trava:
-            if not self.pausada:
+            # Depois de encerrar (a captura já parou), retomar não volta o
+            # estado para "gravando".
+            if not self.pausada or not self._aceitando:
                 return
             if self._pausa is not None:
                 inicio, t = self._pausa
@@ -470,6 +493,13 @@ class SessaoAoVivo:
                                   "As falas continuam guardadas no diário da audiência.")
             return
         self.ultimo_docx = caminho
+        # Deixa o diário sempre mais novo que o documento salvo sozinho: a
+        # recuperação entende "documento mais novo que o diário" como editado
+        # pelo usuário (e não sobrescreve). Sem isto, um salvamento depois de
+        # trechos só de ruído (sem fala nova no diário) fazia a recuperação
+        # criar "(recuperada)" e deixar o documento "em andamento" no lugar.
+        self._escrever_diario({"tipo": "salvo", "docx": caminho.name,
+                               "hora": datetime.now().isoformat(timespec="seconds")})
         self._emitir("salvo", caminho)
 
     # ============================================================== fim
@@ -630,6 +660,36 @@ def _encerrado(registros: list[dict]) -> bool:
     return any(r.get("tipo") == "fim" or r.get("fim") is True for r in registros)
 
 
+def _interrompido(caminho: Path) -> bool:
+    """Diário do programa sem o registro de fim? Lê só a 1ª linha e o final.
+
+    A tela inicial pergunta isto a cada atualização; ler inteiros todos os
+    diários de anos de audiências (centenas de MB) deixava a resposta lenta.
+    O registro de fim é sempre o último a ser escrito.
+    """
+    with open(caminho, "rb") as f:
+        primeira = f.readline()
+        f.seek(0, os.SEEK_END)
+        tamanho = f.tell()
+        f.seek(max(0, tamanho - 16384))
+        cauda = f.read()
+    try:
+        cabecalho = json.loads(primeira.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(cabecalho, dict) or cabecalho.get("tipo") != "inicio":
+        return False
+    registros = []
+    for linha in cauda.decode("utf-8", errors="replace").splitlines()[-5:]:
+        try:
+            registro = json.loads(linha)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(registro, dict):
+            registros.append(registro)
+    return not _encerrado(registros)
+
+
 def recuperaveis(cfg) -> list[Path]:
     """Diários de audiências interrompidas (sem o registro de fim), do mais novo
     para o mais antigo. Não lista as sessões abertas agora."""
@@ -638,18 +698,17 @@ def recuperaveis(cfg) -> list[Path]:
         return []
     with _trava_ativos:
         ativos = set(_ativos)
-    achados: list[Path] = []
+    achados: list[tuple[float, Path]] = []
     for p in pasta.glob("*.jsonl"):
         if _chave(p) in ativos:
             continue
         try:
-            registros = _ler_diario(p)
+            if _interrompido(p):
+                achados.append((p.stat().st_mtime, p))
         except OSError:
             continue
-        if registros and registros[0].get("tipo") == "inicio" and not _encerrado(registros):
-            achados.append(p)
-    achados.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return achados
+    achados.sort(key=lambda par: par[0], reverse=True)
+    return [p for _, p in achados]
 
 
 def reparar_audio(caminho: Path) -> float:

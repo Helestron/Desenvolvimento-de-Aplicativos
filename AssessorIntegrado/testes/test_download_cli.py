@@ -37,6 +37,13 @@ class TestContextoTerminal(unittest.TestCase):
         ctx = ContextoTerminal(saida=io.StringIO(), entrada=sem_teclado)
         self.assertIsNone(ctx.pedir_codigo("t", "m"))
 
+    def test_ctrl_c_no_codigo_para_o_lote(self):
+        def ctrl_c(prompt):
+            raise KeyboardInterrupt
+        ctx = ContextoTerminal(saida=io.StringIO(), entrada=ctrl_c)
+        self.assertIsNone(ctx.pedir_codigo("t", "m"))
+        self.assertTrue(ctx.cancelado(), "Ctrl+C é 'parar', não 'não tenho o código'")
+
     def test_sem_terminal_nao_espera_input(self):
         ctx = ContextoTerminal(saida=io.StringIO())
         with mock.patch("sys.stdin", io.StringIO("")):
@@ -143,6 +150,15 @@ class TestCli(apoio.PastaTemporaria):
         self.assertIn("Precisam de atenção", texto)
         self.situacoes = [modelos.JA_BAIXADO]
         self.assertEqual(self.rodar(["--lista", str(lista)])[0], 0)
+
+    def test_destino_que_nao_pode_ser_criado_explica_sem_rastro(self):
+        def falha(*a, **k):
+            raise RuntimeError("não consegui criar a pasta de destino X (Acesso negado). "
+                               "Escolha outra pasta.")
+        with mock.patch.object(motor, "executar", falha):
+            codigo, texto = self.rodar([A.formatado])
+        self.assertEqual(codigo, 2)
+        self.assertIn("Não foi possível baixar: não consegui criar a pasta", texto)
 
     def test_cofre_com_memoria(self):
         cofre = cli._CofreComMemoria(apoio.CofreFalso({"esaj:TJAL": ("a", "b")}),

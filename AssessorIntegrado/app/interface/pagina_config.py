@@ -47,8 +47,9 @@ class PaginaConfig(Pagina):
         self.tarefa_modelo = self.nova_tarefa("Baixar o modelo de transcrição")
         self.tarefa_falantes = self.nova_tarefa("Instalar a separação de falantes", (MODELO_REVISAO,))
         self.tarefa_verificar = self.nova_tarefa("Verificar a instalação")
+        self.tarefa_conferir = self.nova_tarefa("Conferir os componentes")
         corpo, _, _ = componentes.estrutura(
-            self, "Configurações", "Tudo é salvo na hora em que você muda - não é preciso "
+            self, "Configurações", "Tudo é salvo na hora em que você muda — não é preciso "
             "reiniciar o programa.", rolavel=False)
         corpo.columnconfigure(0, weight=1)
         corpo.rowconfigure(0, weight=1)
@@ -159,7 +160,7 @@ class PaginaConfig(Pagina):
         self._titulo(pai, "Você e a unidade", 3, "Aparecem na tela inicial e no cabeçalho das "
                                                  "transcrições.")
         self._texto(pai, "geral", "nome_usuario", "Como o programa chama você (ex.: Dra. Helena)", 4)
-        self._texto(pai, "unidade", "magistrado", "Magistrado(a) - nome completo", 4, 1)
+        self._texto(pai, "unidade", "magistrado", "Magistrado(a) — nome completo", 4, 1)
         self._texto(pai, "unidade", "cargo", "Cargo (ex.: Juíza de Direito)", 5)
         self._texto(pai, "unidade", "vara", "Vara ou juízo", 5, 1)
         self._texto(pai, "unidade", "comarca", "Comarca", 6)
@@ -277,7 +278,7 @@ class PaginaConfig(Pagina):
         q = ttk.Frame(pai)
         q.grid(row=linha, column=0, sticky="ew", pady=(px(12), 0))
         q.columnconfigure(0, weight=1)
-        ttk.Label(q, text="Endereço do portal (1º grau) - corrija se o tribunal mudar",
+        ttk.Label(q, text="Endereço do portal (1º grau) — corrija se o tribunal mudar",
                   foreground=estilo.TINTA_FRACA, font=estilo.FONTE_NOTA).grid(
             row=0, column=0, sticky="w", pady=(0, px(3)))
         e = ttk.Entry(q, textvariable=var)
@@ -462,7 +463,9 @@ class PaginaConfig(Pagina):
             else:
                 self.btn_falantes.grid()
                 self.btn_falantes.state(["!disabled"])
-        self.em_segundo_plano(self.tarefa_verificar, servicos.falantes_situacao,
+        if self.tarefa_conferir.ativa:
+            return
+        self.em_segundo_plano(self.tarefa_conferir, servicos.falantes_situacao,
                               ao_concluir=mostrar, ao_falhar=lambda e: None)
 
     def _falantes_mudaram(self, _valor: str) -> None:
@@ -542,6 +545,7 @@ class PaginaConfig(Pagina):
                   ("detalhe", "Detalhe", 360, "w", True)], altura=8)
         self.quadro_verif.grid(row=4, column=0, sticky="ew", pady=(px(8), 0))
         self.quadro_verif.grid_remove()
+        componentes.DicaTabela(self.arvore_verif, ("detalhe", "item"))
 
     def verificar(self) -> None:
         def pronto(itens):
@@ -555,8 +559,12 @@ class PaginaConfig(Pagina):
                 falhas += situacao == "falha"
                 avisos += situacao == "aviso"
                 rotulo = {"ok": "OK", "aviso": "Atenção", "falha": "Falha"}.get(situacao, situacao)
-                arv.insert("", "end", values=(getattr(item, "nome", ""), rotulo,
-                                              getattr(item, "detalhe", "")), tags=(tag,))
+                detalhe = str(getattr(item, "detalhe", "") or "")
+                acao = str(getattr(item, "acao", "") or "")
+                if acao and situacao != "ok":
+                    detalhe = f"{detalhe} — {acao}" if detalhe else acao
+                arv.insert("", "end", values=(getattr(item, "nome", ""), rotulo, detalhe),
+                           tags=(tag,))
             self.quadro_verif.grid()
             if falhas:
                 self.estado_verificar.definir(f"{falhas} item(ns) com falha. Rode o INSTALAR.bat "
@@ -571,7 +579,8 @@ class PaginaConfig(Pagina):
             self.btn_verificar.state(["!disabled"])
             self.estado_verificar.definir(f"A verificação falhou: {erro}", "erro")
 
-        if self.em_segundo_plano(self.tarefa_verificar, servicos.verificar_instalacao,
+        if self.em_segundo_plano(self.tarefa_verificar,
+                                 lambda: servicos.verificar_instalacao(False, self.cfg),
                                  ao_concluir=pronto, ao_falhar=falhou):
             self.btn_verificar.state(["disabled"])
             self.estado_verificar.definir("Verificando…", "ocupado")

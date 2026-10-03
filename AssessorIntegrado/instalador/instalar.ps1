@@ -103,8 +103,8 @@ $script:TravaTomada = $false
 $script:Transcrevendo = $false
 $script:CodigoEncaminhado = $null
 $script:Verificacao = $null
-$script:Curl = Join-Path $env:SystemRoot 'System32\curl.exe'
-$script:Tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+$script:Curl = Programa-DoWindows 'curl.exe'
+$script:Tar = Programa-DoWindows 'tar.exe'
 $script:Inicio = Get-Date
 $script:Carimbo = Get-Date -Format 'yyyyMMdd-HHmmss'
 $script:ArquivoLog = Join-Path $Logs ('instalacao-' + $script:Carimbo + '.log')
@@ -138,6 +138,8 @@ function Interromper {
     # Uma etapa obrigatória falhou: não adianta seguir (código 10).
     param([string]$Motivo, [string]$OQueFazer)
     $script:Interrupcao = [pscustomobject]@{ Motivo = $Motivo; OQueFazer = $OQueFazer }
+    Mostrar-Falha $Motivo
+    if ($OQueFazer) { Mostrar-Dica ('O que fazer: ' + $OQueFazer) }
     $null = Registrar-Etapa 'falha' $Motivo $OQueFazer
     throw ('INTERROMPIDA: ' + $Motivo)
 }
@@ -148,6 +150,7 @@ function Iniciar-Etapa {
     $script:EtapaTitulo = $Titulo
     $script:EtapaInicio = Get-Date
     $pct = [int][math]::Floor(100 * ($Numero - 1) / $TotalEtapas)
+    if ($Numero -ge $TotalEtapas) { $pct = 100 }
     Write-Host ''
     Write-Host ('  [' + $Numero + '/' + $TotalEtapas + '] ' + $Titulo) -ForegroundColor Cyan
     if ($Explicacao) { Write-Host ('        ' + $Explicacao) -ForegroundColor DarkGray }
@@ -291,14 +294,14 @@ function Conferir-Windows {
     if (-not [Environment]::Is64BitOperatingSystem) {
         Bloquear 'Este Windows é de 32 bits.' 'O Assessor Integrado precisa do Windows 10 ou 11 de 64 bits.'
     }
-    $build = [Environment]::OSVersion.Version.Build
+    $build = Versao-DoWindows
     if ($build -lt 17763) {
         Bloquear ('Esta versão do Windows é antiga demais (compilação ' + $build + ').') 'Atualize para o Windows 10 versão 1809 ou mais recente, ou para o Windows 11.'
     }
-    if (-not (Test-Path -LiteralPath $script:Tar)) {
+    if (-not $script:Tar -or -not (Test-Path -LiteralPath $script:Tar)) {
         Bloquear 'Falta o tar.exe do Windows (System32).' 'Atualize o Windows pelo Windows Update e rode o INSTALAR.bat de novo.'
     }
-    if (-not (Test-Path -LiteralPath $script:Curl)) { $script:Curl = '' }
+    if (-not $script:Curl -or -not (Test-Path -LiteralPath $script:Curl)) { $script:Curl = '' }
     Mostrar-Ok ('Windows de 64 bits, compilação ' + $build + '.')
     if (Esta-ComoAdministrador) {
         Mostrar-Dica 'Aberto como administrador. Não é necessário: da próxima vez, use o duplo clique comum.'
@@ -334,8 +337,12 @@ function Avaliar-Pasta {
     }
     if ($NaoMover) { return $false }
     $sugerida = ''
-    foreach ($candidata in @((Join-Path $env:SystemDrive 'AssessorIntegrado'), (Join-Path $env:USERPROFILE 'AssessorIntegrado'))) {
-        if ($candidata -and -not (Esta-NoOneDrive $candidata $raizesOneDrive) -and (Pasta-Gravavel $candidata)) {
+    $candidatas = @()
+    foreach ($base in @($env:SystemDrive, $env:USERPROFILE)) {
+        if ($base) { $candidatas += (Join-Path $base 'AssessorIntegrado') }
+    }
+    foreach ($candidata in $candidatas) {
+        if (-not (Esta-NoOneDrive $candidata $raizesOneDrive) -and (Pasta-Gravavel $candidata)) {
             $sugerida = $candidata
             break
         }
@@ -359,14 +366,14 @@ function Mover-Para {
     param([string]$Destino)
     $raizBarra = $Raiz.TrimEnd('\') + '\'
     if (($Destino.TrimEnd('\') + '\').StartsWith($raizBarra, [StringComparison]::OrdinalIgnoreCase)) {
-        Bloquear 'A pasta de destino fica dentro da pasta atual.' 'Escolha uma pasta fora desta, por exemplo C:\AssessorIntegrado.'
+        Bloquear 'A pasta de destino fica dentro da pasta atual.' 'Escolha uma pasta fora desta, por exemplo, C:\AssessorIntegrado.'
     }
     if (-not (Pasta-Gravavel $Destino)) {
         Bloquear ('Não foi possível gravar em ' + $Destino + '.') 'Escolha outra pasta com -Pasta (por exemplo, dentro da sua pasta de usuário).'
     }
     Mostrar-Info ('Copiando o programa para ' + $Destino + '...')
     New-Item -ItemType Directory -Force -Path $Destino | Out-Null
-    $robocopy = Join-Path $env:SystemRoot 'System32\robocopy.exe'
+    $robocopy = Programa-DoWindows 'robocopy.exe'
     $codigo = Executar $robocopy @($Raiz, $Destino, '/E', '/XD', $Runtime, $Logs, (Join-Path $Raiz '.git'),
                                    '/R:2', '/W:2', '/NFL', '/NDL', '/NJH', '/NJS', '/NP')
     # robocopy: 0 a 7 = sucesso (com ou sem arquivos copiados); 8 ou mais = erro.
@@ -382,7 +389,7 @@ function Mover-Para {
     if ($SemFalantes) { $argumentos += '-SemFalantes' }
     if ($SemAtalhos) { $argumentos += '-SemAtalhos' }
     if ($ModeloAoVivo) { $argumentos += @('-ModeloAoVivo', $ModeloAoVivo) }
-    $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $powershell = Programa-DoWindows 'WindowsPowerShell\v1.0\powershell.exe'
     try {
         $proprio = (Get-Process -Id $PID).Path
         if ($proprio) { $powershell = $proprio }
@@ -448,7 +455,7 @@ function Montar-Plano {
         $script:Pendencias += [pscustomobject]@{ Nome = ('Modelo de transcrição ' + $script:Modelo); MB = $TamanhoModelos[$script:Modelo]; Hosts = @('huggingface.co') }
     }
     if (-not $SemFalantes -and ((Ler-Estado 'falantes') -ne (Hash-DoArquivo $RequisitosFalantes) -or -not $script:BibliotecasProntas -or -not (Falantes-Disponivel))) {
-        $script:Pendencias += [pscustomobject]@{ Nome = 'Separação de falantes (opcional)'; MB = $FalantesMB; Hosts = @('pypi.org', 'github.com') }
+        $script:Pendencias += [pscustomobject]@{ Nome = 'Separação de falantes, opcional'; MB = $FalantesMB; Hosts = @('pypi.org', 'github.com') }
     }
 }
 
@@ -464,7 +471,9 @@ function Mostrar-Plano {
         $total += $p.MB
     }
     $faixa = Estimar-Minutos $total
-    Mostrar-Info ('Total a baixar: cerca de ' + (Formatar-Tamanho ($total * 1MB)) + '. Tempo estimado: de ' +
+    $totalTexto = [string]$total + ' MB'
+    if ($total -ge 1024) { $totalTexto = Formatar-Tamanho ($total * 1MB) }
+    Mostrar-Info ('Total a baixar: cerca de ' + $totalTexto + '. Tempo estimado: de ' +
                   $faixa[0] + ' a ' + $faixa[1] + ' minutos, conforme a internet.')
     Mostrar-Dica 'Pode usar o computador enquanto isso; só não feche esta janela.'
 }
@@ -524,7 +533,7 @@ function Etapa-Verificacoes {
     Conferir-Espaco
     Conferir-Internet
     Mostrar-Plano
-    Registrar-Etapa 'ok' 'Verificações iniciais concluídas.' | Out-Null
+    Registrar-Etapa 'ok' 'Windows, pasta, espaço em disco e internet conferidos.' | Out-Null
 }
 
 # ------------------------------------------------------------ etapa 2
@@ -543,7 +552,7 @@ function Instalar-PythonPortatil {
     if ($codigo -ne 0) { throw ('o tar.exe terminou com o código ' + $codigo) }
     $extraido = Join-Path $tmp 'python'
     if (-not (Test-Path -LiteralPath (Join-Path $extraido 'python.exe'))) { throw 'o pacote não contém python\python.exe' }
-    Move-Item -LiteralPath $extraido -Destination $PyDir
+    Mover-ComPaciencia $extraido $PyDir
     $null = Remover-Pasta $tmp
 }
 
@@ -574,7 +583,7 @@ function Copiar-PythonExistente {
     }
     if (-not $origem) { throw 'nenhum Python 3.12 instalado neste computador' }
     Mostrar-Info ('Copiando o Python 3.12 já instalado em ' + $origem + '...')
-    $robocopy = Join-Path $env:SystemRoot 'System32\robocopy.exe'
+    $robocopy = Programa-DoWindows 'robocopy.exe'
     $codigo = Executar $robocopy @($origem, $PyDir, '/E', '/XD', (Join-Path $origem 'Lib\site-packages'),
                                    '/R:1', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/NP')
     if ($codigo -ge 8) { throw ('a cópia falhou (robocopy ' + $codigo + ')') }
@@ -720,7 +729,7 @@ function Etapa-Falantes {
     }
     $codigo = Executar $PythonExe @('-m', 'app', 'falantes', 'instalar') -Pasta $Raiz -LimiteSegundos 1800
     if ($codigo -eq 0 -and (Falantes-Disponivel)) {
-        Concluir-Etapa 'ok' 'Separação de falantes instalada.'
+        Concluir-Etapa 'ok' 'Separação de falantes pronta.'
     } else {
         Concluir-Etapa 'aviso' 'Os modelos de voz do componente não foram baixados.' 'O programa funciona sem eles. Para tentar de novo: Configurações > Transcrição > Instalar componente, ou o INSTALAR.bat.'
     }
@@ -766,7 +775,7 @@ function Etapa-Atalhos {
         }
     }
     if ($erros.Count -eq 0 -and $criados -gt 0) {
-        Concluir-Etapa 'ok' 'Atalho "Assessor Integrado" criado na Área de Trabalho e no Menu Iniciar.'
+        Concluir-Etapa 'ok' 'Atalho "Assessor Integrado" pronto na Área de Trabalho e no Menu Iniciar.'
     } else {
         foreach ($e in $erros) { Mostrar-Dica $e }
         Concluir-Etapa 'aviso' 'Não foi possível criar todos os atalhos.' 'O programa abre pelo arquivo "Assessor Integrado.bat", nesta pasta.'
@@ -929,6 +938,14 @@ function Tratar-Erro {
     $null = Mostrar-Resumo 'falha'
     Aguardar-Enter
     return 10
+}
+
+# Ponto de teste: o testes/test_instalador.py aponta esta variável para um
+# arquivo que troca as funções que mexem no Windows de verdade (downloads,
+# pip, atalhos) por dublês, e assim percorre o roteiro inteiro - inclusive
+# fora do Windows. Sem a variável, nada muda.
+if ($env:ASSESSOR_INSTALADOR_DUBLES -and (Test-Path -LiteralPath $env:ASSESSOR_INSTALADOR_DUBLES)) {
+    . $env:ASSESSOR_INSTALADOR_DUBLES
 }
 
 $codigoSaida = 0

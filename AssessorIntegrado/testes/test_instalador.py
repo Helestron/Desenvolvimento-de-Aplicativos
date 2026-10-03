@@ -657,6 +657,250 @@ class TestEmpacotar(unittest.TestCase):
             self.assertEqual(sha, hashlib.sha256(arquivo.read_bytes()).hexdigest())
 
 
+# ================================================ roteiro inteiro, com dublês
+
+# Dublês das funções que mexem no Windows de verdade. O instalar.ps1 os
+# carrega pela variável ASSESSOR_INSTALADOR_DUBLES, logo antes de começar:
+# todo o resto - ordem das etapas, decisões, retomada, códigos de saída,
+# estado.json - roda como no computador do usuário.
+_DUBLES = r"""
+$script:Tar = $PSCommandPath
+$script:Curl = ''
+function Start-Sleep { }
+function Sim-Anotar { param([string]$Texto)
+    [IO.File]::AppendAllText($env:ASSESSOR_SIM_REGISTRO, $Texto + "`n", (New-Object System.Text.UTF8Encoding $false)) }
+function Sim-Marca { param([string]$Nome) return (Join-Path $Runtime ('sim-' + $Nome)) }
+function Versao-DoWindows { return 19045 }
+function Configurar-Rede { $script:Proxy = ''; return '' }
+function Testar-Acesso { param([string]$Url, [int]$Segundos = 15) Sim-Anotar ('acesso ' + $Url); return '' }
+function Desbloquear-Arquivos { param([string]$Pasta) return 0 }
+function Caminhos-LongosAtivados { return $true }
+function Esta-ComoAdministrador { return $false }
+function Achar-Navegador { return [pscustomobject]@{ Nome = 'Microsoft Edge'; Caminho = 'msedge.exe' } }
+function Processos-DoPrograma { param([string]$Runtime)
+    if ($env:ASSESSOR_SIM_ABERTO) { return @([pscustomobject]@{ Id = 999999; ProcessName = 'pythonw' }) }
+    return @() }
+function Arquivos-DoAtalho {
+    return @((Join-Path $env:ASSESSOR_SIM_ATALHOS 'Desktop.lnk'), (Join-Path $env:ASSESSOR_SIM_ATALHOS 'Programs.lnk')) }
+function Criar-Atalho { param([string]$Arquivo, [string]$Alvo, [string]$Argumentos, [string]$PastaDeTrabalho,
+                              [string]$Icone, [string]$Descricao)
+    [IO.File]::WriteAllText($Arquivo, ($Alvo + '|' + $Argumentos + '|' + $PastaDeTrabalho + '|' + $Descricao)) }
+function Atalho-DestaPasta { param([string]$Arquivo, [string]$Raiz)
+    if (-not (Test-Path -LiteralPath $Arquivo)) { return $false }
+    return ([IO.File]::ReadAllText($Arquivo).Contains($Raiz)) }
+function Baixar { param([string]$Url, [string]$Destino, [string]$Sha256, [string]$Descricao)
+    Sim-Anotar ('baixar ' + $Url)
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destino) | Out-Null
+    [IO.File]::WriteAllText($Destino, 'x') }
+function Executar {
+    param([string]$Programa, [string[]]$Argumentos = @(), [string]$Pasta = '', [int]$LimiteSegundos = 0,
+          [string]$LinhaPronta = '')
+    $linha = $LinhaPronta
+    if (-not $linha) { $linha = Montar-LinhaDeComando $Argumentos }
+    Sim-Anotar ('executar ' + (Split-Path -Leaf $Programa) + ' ' + $linha)
+    if ($Programa -eq $script:Tar) {
+        $py = Join-Path $Pasta 'python'
+        New-Item -ItemType Directory -Force -Path $py | Out-Null
+        [IO.File]::WriteAllText((Join-Path $py 'python.exe'), 'x')
+        [IO.File]::WriteAllText((Join-Path $py 'pythonw.exe'), 'x')
+        return 0
+    }
+    if ($Argumentos -contains 'pip') {
+        if ($env:ASSESSOR_SIM_PIP_FALHA) { return 1 }
+        $alvo = 'bibliotecas'
+        if ($linha -like '*falantes*') { $alvo = 'falantes-pip' }
+        [IO.File]::WriteAllText((Sim-Marca $alvo), 'x')
+        return 0
+    }
+    if ($Argumentos -contains 'modelos') {
+        if ($env:ASSESSOR_SIM_MODELO_FALHA) { return 1 }
+        $m = Join-Path (Join-Path $Runtime 'modelos') ('whisper-' + $Argumentos[$Argumentos.Count - 1])
+        New-Item -ItemType Directory -Force -Path $m | Out-Null
+        [IO.File]::WriteAllText((Join-Path $m 'config.json'), '{}')
+        [IO.File]::WriteAllText((Join-Path $m 'tokenizer.json'), '{}')
+        [IO.File]::WriteAllBytes((Join-Path $m 'model.bin'), (New-Object byte[] 1100000))
+        return 0
+    }
+    if ($Argumentos -contains 'falantes') { [IO.File]::WriteAllText((Sim-Marca 'falantes'), 'x'); return 0 }
+    if ($Argumentos -contains 'verificar') {
+        $i = [array]::IndexOf($Argumentos, '--json')
+        $sit = $env:ASSESSOR_SIM_VERIFICACAO
+        if (-not $sit) { $sit = 'ok' }
+        $itens = @(@{ nome = 'Python e janela (Tk)'; situacao = 'ok'; detalhe = 'Python 3.12.10.'; obrigatorio = $true; acao = '' })
+        if ($sit -eq 'aviso') {
+            $itens += @{ nome = 'Microfone'; situacao = 'aviso'; detalhe = 'Nenhum microfone encontrado.'; obrigatorio = $false; acao = 'Conecte um microfone.' } }
+        if ($sit -eq 'falha') {
+            $itens += @{ nome = 'Componentes nativos (DLLs)'; situacao = 'falha'; detalhe = 'DLL load failed.'; obrigatorio = $true; acao = 'Rode o INSTALAR.bat de novo.' } }
+        Gravar-Json $Argumentos[$i + 1] @{ resultado = $sit; itens = $itens }
+        return 0
+    }
+    if ($Argumentos -contains 'preparar-pastas') {
+        New-Item -ItemType Directory -Force -Path (Join-Path (Join-Path $Raiz 'Acervo') 'Transcricoes') | Out-Null
+        return 0
+    }
+    return 0
+}
+function Capturar {
+    param([string]$Programa, [string[]]$Argumentos = @(), [string]$Pasta = '', [int]$LimiteSegundos = 300)
+    $codigo = [string]$Argumentos[$Argumentos.Count - 1]
+    Sim-Anotar ('capturar ' + $codigo)
+    if (-not (Test-Path -LiteralPath $Programa)) { return [pscustomobject]@{ Codigo = -1; Saida = ''; Erro = 'sem python' } }
+    $ok = $true
+    if ($codigo -like 'import faster_whisper*') { $ok = Test-Path -LiteralPath (Sim-Marca 'bibliotecas') }
+    elseif ($codigo -like '*falantes.disponivel*') { $ok = Test-Path -LiteralPath (Sim-Marca 'falantes') }
+    if ($ok) { return [pscustomobject]@{ Codigo = 0; Saida = '3.12.10'; Erro = '' } }
+    return [pscustomobject]@{ Codigo = 1; Saida = ''; Erro = "ModuleNotFoundError: No module named 'faster_whisper'" }
+}
+"""
+
+
+@unittest.skipUnless(POWERSHELL, "PowerShell não encontrado (defina ASSESSOR_PWSH)")
+class TestRoteiroDoInstalador(unittest.TestCase):
+    """O instalar.ps1 e o desinstalar.ps1 de ponta a ponta, numa cópia em pasta temporária."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.raiz = base / "Assessor Integrado"
+        (self.raiz / "instalador").mkdir(parents=True)
+        (self.raiz / "app").mkdir()
+        for arq in list(INSTALADOR.glob("*.ps1")) + [INSTALADOR / "requisitos.txt",
+                                                    INSTALADOR / "requisitos-falantes.txt"]:
+            shutil.copy2(arq, self.raiz / "instalador" / arq.name)
+        shutil.copy2(RAIZ / "app" / "__init__.py", self.raiz / "app" / "__init__.py")
+        self.atalhos = base / "atalhos"
+        self.atalhos.mkdir()
+        self.registro = base / "registro.txt"
+        # Perfil de usuário de mentira: o desinstalador mexe no %APPDATA% (conector
+        # do Claude), no %LOCALAPPDATA% (senhas e perfis) e no %USERPROFILE%
+        # (.codex) - num computador de desenvolvimento, os de verdade.
+        self.perfil = base / "perfil"
+        (self.perfil / "AppData" / "Roaming").mkdir(parents=True)
+        (self.perfil / "AppData" / "Local").mkdir(parents=True)
+        self.dubles = base / "dubles.ps1"
+        self.dubles.write_bytes(BOM + _DUBLES.replace("\n", "\r\n").encode("utf-8"))
+        self.runtime = self.raiz / "runtime"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def rodar(self, script: str = "instalar.ps1", *args: str, **simulacao: str) -> tuple[int, str, str]:
+        if self.registro.exists():
+            self.registro.unlink()
+        env = dict(os.environ, ASSESSOR_INSTALADOR_DUBLES=str(self.dubles), NO_COLOR="1",
+                   ASSESSOR_SIM_REGISTRO=str(self.registro), ASSESSOR_SIM_ATALHOS=str(self.atalhos))
+        env.update(USERPROFILE=str(self.perfil), APPDATA=str(self.perfil / "AppData" / "Roaming"),
+                   LOCALAPPDATA=str(self.perfil / "AppData" / "Local"))
+        for variavel in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
+            env.pop(variavel, None)
+        for chave, valor in simulacao.items():
+            env[f"ASSESSOR_SIM_{chave.upper()}"] = valor
+        r = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                            "-File", str(self.raiz / "instalador" / script), *args],
+                           capture_output=True, env=env, timeout=300, stdin=subprocess.DEVNULL)
+        saida = r.stdout.decode("utf-8", "replace") + r.stderr.decode("utf-8", "replace")
+        registro = self.registro.read_text(encoding="utf-8") if self.registro.exists() else ""
+        return r.returncode, saida, registro
+
+    def estado(self) -> dict:
+        return json.loads((self.runtime / "estado.json").read_text(encoding="utf-8"))
+
+    def test_primeira_instalacao_e_a_segunda_que_nada_refaz(self):
+        codigo, saida, registro = self.rodar("instalar.ps1", "-Silencioso")
+        self.assertEqual(codigo, 0, saida)
+        for trecho in ("baixar https://github.com/astral-sh/python-build-standalone/", "-m pip install",
+                       "--require-hashes", "requisitos.txt", "requisitos-falantes.txt",
+                       "-m app modelos baixar small", "-m app falantes instalar", "-m app preparar-pastas",
+                       "-m app verificar --completo --json"):
+            self.assertIn(trecho, registro)
+        self.assertIn("[10/10]", saida)
+        self.assertIn("PRONTO", saida)
+        estado = self.estado()
+        self.assertEqual(estado["resultado"], "ok")
+        self.assertEqual(estado["modelo_ao_vivo"], "small")
+        self.assertEqual(estado["bibliotecas"], hashlib.sha256((INSTALADOR / "requisitos.txt").read_bytes()).hexdigest())
+        self.assertTrue(estado["falantes"])
+        self.assertFalse((self.runtime / ".instalando").exists(), "a trava ficou para trás")
+        self.assertTrue(list((self.raiz / "Logs").glob("instalacao-*.log")))
+        atalho = (self.atalhos / "Desktop.lnk").read_text(encoding="utf-8")
+        self.assertIn("pythonw.exe", atalho)
+        self.assertIn('-E -s "', atalho)
+        self.assertIn("iniciar.pyw", atalho)
+        self.assertTrue((self.atalhos / "Programs.lnk").exists())
+
+        codigo, saida, registro = self.rodar("instalar.ps1", "-Silencioso")
+        self.assertEqual(codigo, 0, saida)
+        for trecho in ("baixar ", "pip install", "modelos baixar"):
+            self.assertNotIn(trecho, registro, "a segunda instalação refez o que já estava feito")
+        self.assertRegex(saida, r"Python 3\.12\.10 j.{1,3} instalado")
+        self.assertRegex(saida, r"Tudo j.{1,3} est.{1,3} instalado")
+
+    def test_falha_no_pip_interrompe_com_codigo_10(self):
+        codigo, saida, registro = self.rodar("instalar.ps1", "-Silencioso", pip_falha="1")
+        self.assertEqual(codigo, 10, saida)
+        self.assertEqual(registro.count("-m pip install"), 3, "o pip deve ser tentado 3 vezes")
+        self.assertIn("bibliotecas do programa", saida)
+        self.assertNotIn("modelos baixar", registro)
+        self.assertFalse((self.runtime / ".instalando").exists())
+
+    def test_modelo_que_nao_baixa_vira_aviso(self):
+        codigo, saida, _ = self.rodar("instalar.ps1", "-Silencioso", modelo_falha="1")
+        self.assertEqual(codigo, 0, saida)
+        self.assertEqual(self.estado()["resultado"], "aviso")
+        self.assertIn("primeiro uso", saida)
+
+    def test_verificacao_reprovada_da_codigo_10(self):
+        codigo, saida, _ = self.rodar("instalar.ps1", "-Silencioso", verificacao="falha")
+        self.assertEqual(codigo, 10, saida)
+        self.assertEqual(self.estado()["resultado"], "falha")
+        self.assertIn("DLL load failed", saida)
+        codigo, saida, _ = self.rodar("instalar.ps1", "-Silencioso", verificacao="aviso")
+        self.assertEqual(codigo, 0, saida)
+        self.assertIn("Conecte um microfone.", saida)
+
+    def test_programa_aberto_impede_no_modo_silencioso(self):
+        codigo, saida, registro = self.rodar("instalar.ps1", "-Silencioso", aberto="1")
+        self.assertEqual(codigo, 11, saida)
+        self.assertNotIn("baixar ", registro)
+
+    def test_parametros(self):
+        codigo, saida, _ = self.rodar("instalar.ps1", "-Silencioso", "-ModeloAoVivo", "gigante")
+        self.assertEqual(codigo, 11, saida)
+        self.assertIn("large-v3-turbo", saida)
+        codigo, saida, registro = self.rodar("instalar.ps1", "/s", "-SemModelo", "-SemFalantes", "-SemAtalhos",
+                                             "-ModeloAoVivo", "base")
+        self.assertEqual(codigo, 0, saida)
+        self.assertNotIn("modelos baixar", registro)
+        self.assertNotIn("falantes instalar", registro)
+        self.assertIn("'modelo_ao_vivo', 'base'", registro)
+        self.assertFalse((self.atalhos / "Desktop.lnk").exists())
+
+    def test_instalar_em_outra_pasta(self):
+        destino = Path(self.tmp.name) / "Nova Pasta"
+        codigo, saida, registro = self.rodar("instalar.ps1", "-Silencioso", "-Pasta", str(destino))
+        self.assertEqual(codigo, 0, saida)
+        self.assertIn("robocopy", registro)
+        self.assertIn("-NaoMover", registro)
+        self.assertIn("-Silencioso", registro.split("-NaoMover", 1)[1])
+
+    def test_desinstalar_mantem_os_dados_no_modo_silencioso(self):
+        codigo, saida, _ = self.rodar("instalar.ps1", "-Silencioso")
+        self.assertEqual(codigo, 0, saida)
+        (self.raiz / "Acervo" / "Transcricoes" / "0700123-45.2024.8.02.0001.docx").write_bytes(b"PK")
+        local = self.perfil / "AppData" / "Local" / "AssessorIntegrado"
+        (local / "perfis").mkdir(parents=True)
+        codigo, saida, _ = self.rodar("desinstalar.ps1", "-Silencioso")
+        self.assertEqual(codigo, 0, saida)
+        self.assertFalse(self.runtime.exists())
+        self.assertFalse((self.atalhos / "Desktop.lnk").exists())
+        self.assertTrue((self.raiz / "Acervo" / "Transcricoes" / "0700123-45.2024.8.02.0001.docx").exists())
+        self.assertTrue(local.exists(), "no modo silencioso sem -ApagarDados, as senhas ficam")
+        codigo, saida, _ = self.rodar("desinstalar.ps1", "-Silencioso", "-ApagarDados")
+        self.assertEqual(codigo, 0, saida)
+        self.assertFalse((self.raiz / "Acervo").exists())
+        self.assertFalse(local.exists())
+
+
 # ============================================================ iniciar.pyw
 
 class TestIniciar(unittest.TestCase):
@@ -759,6 +1003,37 @@ class TestWorkflow(unittest.TestCase):
                         run.encode("ascii")
                     except UnicodeEncodeError:
                         self.fail(f"{nome}/{passo.get('name')}: script com caractere não ASCII")
+
+    def test_scripts_dos_passos_sao_validos(self):
+        # Os passos em PowerShell passam pelo analisador; o Python embutido
+        # neles (here-strings @' ... '@) tem de compilar.
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML não instalado")
+        dados = yaml.safe_load(self.texto)
+        scripts = []
+        for nome, job in dados["jobs"].items():
+            for i, passo in enumerate(job.get("steps", [])):
+                run = passo.get("run") or ""
+                if passo.get("shell") == "powershell" and run:
+                    scripts.append((f"{nome}-{i}", run))
+                for m in re.finditer(r"@'\n(.*?)\n'@", run, re.S):
+                    compile(m.group(1), f"{nome}-{i}", "exec")
+        self.assertTrue(scripts)
+        if not POWERSHELL:
+            self.skipTest("PowerShell não encontrado")
+        with tempfile.TemporaryDirectory() as tmp:
+            for nome, run in scripts:
+                (Path(tmp) / f"{nome}.ps1").write_text(run, encoding="utf-8")
+            r = rodar_ps("param([string]$Pasta)\n$erros = @()\n"
+                         "foreach ($f in Get-ChildItem -LiteralPath $Pasta -Filter '*.ps1') {\n"
+                         " $t = $null; $e = $null\n"
+                         " [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$t, [ref]$e)\n"
+                         " foreach ($x in $e) { $erros += ($f.Name + ': ' + $x.Message) } }\n"
+                         "if ($erros.Count -gt 0) { $erros | ForEach-Object { Write-Output $_ }; exit 1 }\n",
+                         "-Pasta", tmp)
+        self.assertEqual(r.returncode, 0, r.stdout.decode("utf-8", "replace"))
 
 
 if __name__ == "__main__":

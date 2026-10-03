@@ -24,6 +24,7 @@ import io
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -298,6 +299,29 @@ def _parcial(destino: Path) -> Path:
     return destino.with_name(destino.name + ".parcial")
 
 
+TENTATIVAS_TROCA = 6
+ESPERA_TROCA_S = 0.4
+
+
+def _trocar(origem: Path, destino: Path) -> None:
+    """os.replace com paciência para o Windows.
+
+    O OneDrive (que sincroniza o acervo), o indexador e o antivírus abrem o
+    arquivo recém-gravado por um instante, e a troca falha com "acesso
+    negado" (PermissionError) - que o motor entenderia como "PDF aberto no
+    leitor" e não tentaria de novo. Insiste-se por ~2 s; se for mesmo o
+    leitor de PDF, o erro sobe igual.
+    """
+    for tentativa in range(TENTATIVAS_TROCA):
+        try:
+            os.replace(origem, destino)
+            return
+        except PermissionError:
+            if tentativa == TENTATIVAS_TROCA - 1:
+                raise
+            time.sleep(ESPERA_TROCA_S)
+
+
 def _salvar_atomico(doc, destino: Path) -> None:
     destino = Path(destino)
     destino.parent.mkdir(parents=True, exist_ok=True)
@@ -310,7 +334,7 @@ def _salvar_atomico(doc, destino: Path) -> None:
         except OSError:
             pass
         raise
-    os.replace(tmp, destino)
+    _trocar(tmp, destino)
 
 
 def _inserir(doc, dados: bytes, titulo: str) -> int:
@@ -439,7 +463,7 @@ def gravar(destino: Path, dados: bytes, marcadores: list[tuple[str, int]] | None
         except OSError:
             pass
         raise ValueError("o PDF recebido está corrompido (não abre)")
-    os.replace(tmp, destino)
+    _trocar(tmp, destino)
     return paginas
 
 

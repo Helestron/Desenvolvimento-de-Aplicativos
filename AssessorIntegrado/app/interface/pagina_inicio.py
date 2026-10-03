@@ -115,8 +115,9 @@ class PaginaInicio(Pagina):
         foto = estilo.imagem(icone, px(56))
         tk.Label(cartao, image=foto or "", background=estilo.PAPEL, borderwidth=0).grid(
             row=0, column=0, sticky="w")
-        ttk.Label(cartao, text=titulo, font=estilo.FONTE_CARTAO).grid(
-            row=1, column=0, sticky="w", pady=(px(16), px(6)))
+        nome = ttk.Label(cartao, text=titulo, font=estilo.FONTE_CARTAO, justify="left")
+        nome.grid(row=1, column=0, sticky="ew", pady=(px(16), px(6)))
+        estilo.acompanhar_largura(nome)
         texto = ttk.Label(cartao, text=descricao, foreground=estilo.TINTA_FRACA, justify="left")
         texto.grid(row=2, column=0, sticky="new")
         estilo.acompanhar_largura(texto)
@@ -223,14 +224,15 @@ class PaginaInicio(Pagina):
 
         # --- Compartilhar
         ia = dados.get("ia") or {}
-        code = "instalado" if ia.get("claude_code") else "não instalado"
-        if ia.get("mcp_acervo") or ia.get("mcp"):
+        claude = ia.get("claude") or {}
+        code = "instalado" if claude.get("claude_code") else "não instalado"
+        if ia.get("mcp_acervo"):
             desktop = "conectado"
-        elif ia.get("desktop"):
+        elif claude.get("desktop"):
             desktop = "instalado"
         else:
             desktop = "não instalado"
-        tipo = "ok" if ia.get("claude_code") or ia.get("desktop") else "neutro"
+        tipo = "ok" if claude.get("claude_code") or claude.get("desktop") else "neutro"
         self.estados["compartilhar"].definir(f"Claude Code: {code} · Claude Desktop: {desktop}",
                                              tipo)
 

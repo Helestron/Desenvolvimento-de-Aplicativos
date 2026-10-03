@@ -19,7 +19,6 @@ import csv
 import importlib.util
 import logging
 import os
-import shutil
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -317,17 +316,17 @@ class ItemVerificacao:
     obrigatorio: bool = False
 
 
-def verificar_instalacao(completo: bool = False) -> list:
-    """Itens de app.verificar (nome, situacao, detalhe, obrigatorio).
+def verificar_instalacao(completo: bool = False, cfg=None, ao_item=None) -> list:
+    """Itens de app.verificar (nome, situacao, detalhe, obrigatorio, acao).
 
-    Enquanto o módulo não existir (ou se quebrar), faz a conferência mínima
-    daqui mesmo: os pacotes e o modelo de transcrição.
+    Se o módulo não puder ser importado (instalação quebrada), faz a
+    conferência mínima daqui mesmo: os pacotes de cada função.
     """
     try:
         from .. import verificar
     except ImportError:
         return _verificacao_minima()
-    return list(verificar.verificar(completo=completo))
+    return list(verificar.verificar(completo=completo, cfg=cfg, ao_item=ao_item))
 
 
 PACOTES = (
@@ -392,7 +391,7 @@ PROMPT_PADRAO = (
     "Você vai trabalhar no acervo judicial desta pasta. Leia primeiro o CLAUDE.md "
     "(ou o AGENTS.md) e o INDICE.md. Depois, aguarde a minha tarefa.")
 
-LOJA_CHATGPT = "ms-windows-store://pdp/?productid=9PLM9XGG6VKS"
+LOJA_CHATGPT = "ms-windows-store://pdp/?productid=9PLM9XGG6VKS"   # reserva
 SITE_CHATGPT_APP = "https://openai.com/chatgpt/download/"
 
 
@@ -454,57 +453,48 @@ def chatgpt_desktop_instalado() -> bool | None:
 
     fn = getattr(chatgpt, "chatgpt_desktop_instalado", None)
     if fn is None:
-        return _chatgpt_desktop_por_pasta()
+        return None
     try:
         return bool(fn())
     except Exception:
         return None
 
 
-def _chatgpt_desktop_por_pasta() -> bool | None:
-    local = os.environ.get("LOCALAPPDATA")
-    if not local:
-        return None
-    try:
-        return any((Path(local) / "Packages").glob("OpenAI.ChatGPT*"))
-    except OSError:
-        return None
-
-
 def abrir_chatgpt_work(pasta: Path) -> str:
-    """Abre o ChatGPT para o modo Work. Devolve 'app', 'codex' ou 'web'.
+    """Abre o ChatGPT para o modo Work. Devolve 'app' ou 'web'.
 
-    Não há como entregar a pasta ao Work por linha de comando garantida: a
-    tela sempre mostra o plano B (Ctrl+O e colar o caminho, já copiado).
+    Não há como entregar a pasta ao Work de modo garantido (o link codex://
+    falha em algumas versões do app no Windows): a tela sempre mostra o
+    plano B - Ctrl+O e colar o caminho, que já vai copiado.
     """
     from ..compartilhar import chatgpt
 
     fn = getattr(chatgpt, "abrir_chatgpt_work", None)
-    if fn is not None:
-        resultado = fn(Path(pasta))
-        return resultado if isinstance(resultado, str) else "app"
-    if chatgpt_desktop_instalado():
-        try:
-            import urllib.parse
-
-            url = "codex://threads/new?" + urllib.parse.urlencode(
-                [("path", str(Path(pasta).resolve()))], quote_via=urllib.parse.quote)
-            abrir_endereco(url)
-            return "codex"
-        except OSError:
-            pass
-    chatgpt.abrir_chatgpt()
-    return "web"
+    if fn is None:
+        chatgpt.abrir_chatgpt()
+        return "web"
+    resultado = fn(Path(pasta))
+    if isinstance(resultado, str):
+        return resultado
+    return "app" if resultado else "web"
 
 
 def instalar_chatgpt_desktop() -> None:
+    from ..compartilhar import chatgpt
+
+    fn = getattr(chatgpt, "instalar_chatgpt_desktop", None)
+    if fn is not None:
+        fn()
+        return
     try:
         abrir_endereco(LOJA_CHATGPT)
     except OSError:
         sistema.abrir_endereco(SITE_CHATGPT_APP)
 
 
-def registrar_mcp_codex(pasta: Path) -> list[Path] | None:
+def registrar_mcp_codex(pasta: Path):
+    """Conecta o acervo ao ChatGPT (Work/Codex) pelo config.toml do Codex.
+    Devolve o arquivo alterado, ou None se esta versão não souber fazê-lo."""
     from ..compartilhar import chatgpt
 
     fn = getattr(chatgpt, "registrar_mcp_codex", None)
@@ -512,16 +502,20 @@ def registrar_mcp_codex(pasta: Path) -> list[Path] | None:
 
 
 def estado_ia(cfg) -> dict:
-    """Tudo o que a página Compartilhar mostra (procura arquivos: fora do Tk)."""
+    """Tudo o que a página Compartilhar mostra (procura arquivos: fora do Tk).
+
+    Cada ferramenta numa chave própria ('claude', 'chatgpt'): os dois
+    módulos usam o mesmo nome 'mcp' para coisas diferentes.
+    """
     from ..compartilhar import chatgpt, claude, nuvem
 
-    estado: dict = {}
+    estado: dict = {"claude": {}, "chatgpt": {}}
     try:
-        estado.update(claude.estado())
+        estado["claude"] = dict(claude.estado())
     except Exception as erro:
         log.debug("estado do Claude: %s", erro)
     try:
-        estado.update(chatgpt.estado())
+        estado["chatgpt"] = dict(chatgpt.estado())
     except Exception as erro:
         log.debug("estado do ChatGPT: %s", erro)
     estado["chatgpt_desktop"] = chatgpt_desktop_instalado()
@@ -554,14 +548,3 @@ def resumo_acervo(cfg) -> dict:
     return {"processos": len(pdfs), "transcricoes": sum(len(v) for v in trans.values()),
             "preparado": preparado}
 
-
-def area_de_trabalho() -> Path:
-    """Onde salvar o pacote do ChatGPT por padrão: ao lado do acervo."""
-    return Path.home() / "Desktop" if (Path.home() / "Desktop").is_dir() else Path.home()
-
-
-def copiar_para(destino_pasta: Path, arquivo: Path) -> Path:
-    destino_pasta.mkdir(parents=True, exist_ok=True)
-    alvo = sistema.destino_livre(destino_pasta, arquivo.stem, arquivo.suffix)
-    shutil.copy2(arquivo, alvo)
-    return alvo

@@ -17,6 +17,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from . import estilo
+from .componentes import EstadoLinha
 from .estilo import px
 
 log = logging.getLogger("interface.acessos")
@@ -59,8 +60,7 @@ class EditorAcesso(ttk.Frame):
         cabeca.columnconfigure(1, weight=1)
         ttk.Label(cabeca, text=rotulo or f"{tribunal.sigla} · {tribunal.nome_sistema}",
                   font=estilo.FONTE_NEGRITO).grid(row=0, column=0, sticky="w")
-        self.estado = tk.Label(cabeca, text="", font=estilo.FONTE_NOTA, background=estilo.PAPEL,
-                               foreground=estilo.TINTA_FRACA)
+        self.estado = EstadoLinha(cabeca, "", "neutro")
         self.estado.grid(row=0, column=1, sticky="w", padx=(px(10), 0))
         if nota:
             n = ttk.Label(self, text=nota, foreground=estilo.TINTA_FRACA, font=estilo.FONTE_NOTA,
@@ -159,8 +159,7 @@ class EditorAcesso(ttk.Frame):
                     sessao[self.portal] = (usuario, senha)
         except Exception as erro:
             log.warning("não consegui guardar a senha de %s: %s", self.portal, erro)
-            self.estado.configure(text="Não consegui guardar a senha neste computador.",
-                                  foreground=estilo.VINHO)
+            self.estado.definir("Não consegui guardar a senha neste computador.", "erro")
             return
         self._atualizar_estado()
         if self.ao_mudar:
@@ -182,14 +181,14 @@ class EditorAcesso(ttk.Frame):
     def _atualizar_estado(self) -> None:
         modo = self.modo.get()
         if modo != "senha":
-            texto, cor = "", estilo.TINTA_FRACA
+            texto, tipo = "", "neutro"
         elif self._senha_guardada:
-            texto, cor = "● Senha guardada neste computador", estilo.VERDE
+            texto, tipo = "Senha guardada neste computador", "ok"
         elif self.portal in self.janela.credenciais_sessao:
-            texto, cor = "● Senha só por agora (não guardada)", estilo.AZUL
+            texto, tipo = "Senha só por agora (não guardada)", "info"
         else:
-            texto, cor = "● Falta informar a senha", estilo.AMBAR_TINTA
-        self.estado.configure(text=texto, foreground=cor)
+            texto, tipo = "Falta informar a senha", "aviso"
+        self.estado.definir(texto, tipo)
 
 
 def _campo(pai, titulo, variavel, largura, **extra):

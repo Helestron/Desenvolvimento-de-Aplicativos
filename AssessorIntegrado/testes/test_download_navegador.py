@@ -289,6 +289,18 @@ class TestNavegadorSemAbrir(apoio.PastaTemporaria):
         outro._restaurar_sessao()
         self.assertEqual(outro._contexto.cookies, [])
 
+    def test_sessao_esquecida_nao_e_regravada_ao_fechar(self):
+        """Depois de um login recusado, fechar() regravava os mesmos cookies
+        e o esquecer_sessao() não valia nada."""
+        n = self.nav()
+        n._contexto = ContextoFalso([PaginaFalsa()])
+        n._guardar_sessao()
+        self.assertTrue(n.arquivo_sessao.exists())
+        n.esquecer_sessao()
+        n._contexto.close = lambda: None
+        n.fechar()
+        self.assertFalse(n.arquivo_sessao.exists())
+
     def test_sessao_corrompida_nao_quebra(self):
         n = self.nav()
         n.arquivo_sessao.parent.mkdir(parents=True)

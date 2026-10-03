@@ -246,7 +246,7 @@ def instalar_roda(raiz: tk.Misc) -> None:
     raiz.bind_all("<Button-5>", lambda e: girar(e, 1), add="+")
 
 
-def coluna_rolavel(pai, margem: int = 0, fundo: str = estilo.PAPEL):
+def coluna_rolavel(pai, margem: int = 0, fundo: str = estilo.PAPEL, base: int | None = None):
     """Uma coluna que rola quando o conteúdo passa da altura disponível.
 
     Devolve (quadro, dentro): ponha o quadro no pai e os filhos em 'dentro'.
@@ -268,7 +268,8 @@ def coluna_rolavel(pai, margem: int = 0, fundo: str = estilo.PAPEL):
     tela.configure(yscrollcommand=barra.set)
 
     # À direita, espaço para a barra sobreposta não cobrir o conteúdo.
-    dentro = ttk.Frame(tela, padding=(margem, 0, max(margem, px(20)), px(24)))
+    dentro = ttk.Frame(tela, padding=(margem, 0, max(margem, px(20)),
+                                      px(24) if base is None else base))
     janela = tela.create_window((0, 0), window=dentro, anchor="nw")
 
     def ajustar(_evento=None):
@@ -327,7 +328,7 @@ class _CachePilulas:
                 ImageDraw.Draw(img).rounded_rectangle(
                     (0, 0, largura * e - 1, altura * e - 1), radius=altura * e // 2, fill=cor)
                 self._fotos[chave] = ImageTk.PhotoImage(img.resize((largura, altura),
-                                                                   Image.LANCZOS))
+                                                                   Image.LANCZOS), master=estilo._raiz)
             except Exception:
                 self._fotos[chave] = None
         return self._fotos[chave]
@@ -337,8 +338,16 @@ _pilulas = _CachePilulas()
 estilo._ao_trocar_interpretador.append(_pilulas._fotos.clear)
 
 
+ROTULOS_CURTOS = {"inicio": "Início", "baixar": "Baixar", "transcrever": "Transcrever",
+                  "compartilhar": "IA", "config": "Ajustes", "ajuda": "Ajuda"}
+
+
 class ItemNav(tk.Canvas):
-    """Um item da barra lateral: ícone, rótulo e, à direita, o indicador."""
+    """Um item da barra lateral: ícone, rótulo e, à direita, o indicador.
+
+    No modo compacto (janela estreita) vira um item de "trilho": o ícone
+    numa pílula e o rótulo curto embaixo, como no Gmail e no Google Drive.
+    """
 
     def __init__(self, pai, nome: str, rotulo: str, icone: str, ao_clicar):
         super().__init__(pai, height=px(40), highlightthickness=0, borderwidth=0,
@@ -347,6 +356,7 @@ class ItemNav(tk.Canvas):
         self.ao_clicar = ao_clicar
         self.selecionado = False
         self.sobre = False
+        self.compacto = False
         self.indicador: tuple[str, str] | None = None
         self.bind("<Configure>", lambda _e: self.desenhar())
         self.bind("<Enter>", lambda _e: self._sobre(True))
@@ -357,13 +367,18 @@ class ItemNav(tk.Canvas):
         self.sobre = valor
         self.desenhar()
 
-    def definir(self, selecionado: bool | None = None, indicador=False) -> None:
+    def definir(self, selecionado: bool | None = None, indicador=False,
+                compacto: bool | None = None) -> None:
         mudou = False
         if selecionado is not None and selecionado != self.selecionado:
             self.selecionado = selecionado
             mudou = True
         if indicador is not False and indicador != self.indicador:
             self.indicador = indicador
+            mudou = True
+        if compacto is not None and compacto != self.compacto:
+            self.compacto = compacto
+            self.configure(height=px(58) if compacto else px(40))
             mudou = True
         if mudou:
             self.desenhar()
@@ -378,52 +393,80 @@ class ItemNav(tk.Canvas):
             fundo = estilo.SELECAO
         elif self.sobre:
             fundo = estilo.SOBRE_MOLDURA
+        cor_selo = self.indicador[1] if self.indicador else None
+        nome_icone = f"nav-{self.icone}-ativo" if self.selecionado else f"nav-{self.icone}"
+        foto_icone = estilo.imagem(nome_icone, px(20), selo=cor_selo)
+        cor = estilo.AZUL_PROFUNDO if self.selecionado else estilo.TINTA
+        if self.compacto:
+            pl, pa = px(52), px(30)
+            x0 = (largura - pl) // 2
+            if fundo:
+                foto = _pilulas.obter(pl, pa, fundo, estilo.MOLDURA)
+                if foto is not None:
+                    self.create_image(x0, px(2), anchor="nw", image=foto)
+            if foto_icone is not None:
+                self.create_image(largura // 2, px(2) + pa // 2, image=foto_icone)
+            self.create_text(largura // 2, px(2) + pa + px(12),
+                             text=ROTULOS_CURTOS.get(self.nome, self.rotulo), fill=cor,
+                             font=estilo.FONTE_NOTA_NEGRITO if self.selecionado else estilo.FONTE_NOTA)
+            return
         if fundo:
             foto = _pilulas.obter(largura, altura, fundo, estilo.MOLDURA)
             if foto is not None:
                 self.create_image(0, 0, anchor="nw", image=foto)
             else:
                 self.create_rectangle(0, 0, largura, altura, fill=fundo, outline=fundo)
-        cor_selo = self.indicador[1] if self.indicador else None
-        nome_icone = f"nav-{self.icone}-ativo" if self.selecionado else f"nav-{self.icone}"
-        foto_icone = estilo.imagem(nome_icone, px(20), selo=cor_selo)
         x = px(16)
         if foto_icone is not None:
             self.create_image(x + px(10), altura // 2, image=foto_icone)
-        cor = estilo.AZUL_PROFUNDO if self.selecionado else estilo.TINTA
         fonte = estilo.FONTE_NEGRITO if self.selecionado else estilo.FONTE
-        self.create_text(x + px(34), altura // 2, text=self.rotulo, anchor="w", fill=cor,
-                         font=fonte)
+        rotulo = self.create_text(x + px(34), altura // 2, text=self.rotulo, anchor="w",
+                                  fill=cor, font=fonte)
         if self.indicador and self.indicador[0]:
             texto, cor_ind = self.indicador
-            self.create_text(largura - px(14), altura // 2, text=texto, anchor="e",
-                             fill=cor_ind, font=estilo.FONTE_NOTA_NEGRITO)
+            item = self.create_text(largura - px(14), altura // 2, text=texto, anchor="e",
+                                    fill=cor_ind, font=estilo.FONTE_NOTA_NEGRITO)
+            # Rótulo comprido ("Transcrever audiência"): o texto do indicador
+            # sairia por cima; fica só o ponto no ícone.
+            caixa_r, caixa_i = self.bbox(rotulo), self.bbox(item)
+            if caixa_r and caixa_i and caixa_r[2] + px(6) > caixa_i[0]:
+                self.delete(item)
 
 
 class BarraLateral(tk.Frame):
-    """A navegação à esquerda: marca do programa, páginas, rodapé de estado."""
+    """A navegação à esquerda: marca do programa, páginas, rodapé de estado.
+
+    Em janela estreita (notebook a 125%, janela reduzida) vira um trilho de
+    ícones com rótulo curto: o conteúdo ganha 150 px, e as três funções
+    continuam à vista.
+    """
+
+    LARGURA, LARGURA_COMPACTA = 236, 90
 
     def __init__(self, pai, ao_escolher, versao: str):
-        super().__init__(pai, background=estilo.MOLDURA, width=px(236))
+        super().__init__(pai, background=estilo.MOLDURA, width=px(self.LARGURA))
         self.grid_propagate(False)
         self.pack_propagate(False)
         self.ao_escolher = ao_escolher
         self.itens: dict[str, ItemNav] = {}
+        self.compacta = False
 
-        marca = tk.Frame(self, background=estilo.MOLDURA)
-        marca.pack(fill="x", padx=px(18), pady=(px(20), px(18)))
+        self.marca = tk.Frame(self, background=estilo.MOLDURA)
+        self.marca.pack(fill="x", padx=px(18), pady=(px(20), px(18)))
         logo = estilo.imagem("assessor-64", px(34))
+        self.logo = tk.Label(self.marca, image=logo or "", background=estilo.MOLDURA)
         if logo is not None:
-            tk.Label(marca, image=logo, background=estilo.MOLDURA).pack(side="left")
-        textos = tk.Frame(marca, background=estilo.MOLDURA)
-        textos.pack(side="left", padx=(px(10), 0))
-        tk.Label(textos, text="Assessor Integrado", font=estilo.FONTE_MARCA,
+            self.logo.pack(side="left")
+        self.textos = tk.Frame(self.marca, background=estilo.MOLDURA)
+        self.textos.pack(side="left", padx=(px(10), 0))
+        tk.Label(self.textos, text="Assessor Integrado", font=estilo.FONTE_MARCA,
                  background=estilo.MOLDURA, foreground=estilo.TINTA).pack(anchor="w")
-        tk.Label(textos, text=f"versão {versao}", font=estilo.FONTE_NOTA,
+        tk.Label(self.textos, text=f"versão {versao}", font=estilo.FONTE_NOTA,
                  background=estilo.MOLDURA, foreground=estilo.TINTA_FRACA).pack(anchor="w")
 
         self.lista = tk.Frame(self, background=estilo.MOLDURA)
         self.lista.pack(fill="x", padx=px(10))
+        self._separadores: list[tk.Frame] = []
 
         self.rodape = tk.Label(self, text="", font=estilo.FONTE_NOTA, justify="left",
                                background=estilo.MOLDURA, foreground=estilo.TINTA_FRACA,
@@ -437,8 +480,31 @@ class BarraLateral(tk.Frame):
         return item
 
     def separador(self) -> None:
-        tk.Frame(self.lista, height=1, background=estilo.LINHA).pack(
-            fill="x", padx=px(14), pady=px(10))
+        linha = tk.Frame(self.lista, height=1, background=estilo.LINHA)
+        linha.pack(fill="x", padx=px(14), pady=px(10))
+        self._separadores.append(linha)
+
+    def definir_compacta(self, compacta: bool) -> None:
+        if compacta == self.compacta:
+            return
+        self.compacta = compacta
+        self.configure(width=px(self.LARGURA_COMPACTA if compacta else self.LARGURA))
+        if compacta:
+            self.textos.pack_forget()
+            self.marca.pack_configure(padx=px(8))
+            self.logo.pack_configure(side="top")
+            self.lista.pack_configure(padx=px(4))
+            self.rodape.pack_forget()
+        else:
+            self.logo.pack_configure(side="left")
+            self.textos.pack(side="left", padx=(px(10), 0))
+            self.marca.pack_configure(padx=px(18))
+            self.lista.pack_configure(padx=px(10))
+            self.rodape.pack(side="bottom", fill="x", padx=px(22), pady=(0, px(18)))
+        for linha in self._separadores:
+            linha.pack_configure(padx=px(14) if not compacta else px(16))
+        for item in self.itens.values():
+            item.definir(compacto=compacta)
 
     def selecionar(self, nome: str) -> None:
         for chave, item in self.itens.items():
@@ -534,10 +600,11 @@ class Faixa(ttk.Frame):
         self._texto = tk.Label(self, text=texto, font=estilo.FONTE, background=cor,
                                foreground=letra, anchor="w", justify="left")
         self._acoes = tk.Frame(self, background=cor)
-        self._acoes.grid(row=0, column=2, rowspan=2, sticky="e", padx=(px(12), 0))
+        self._acoes_embaixo = False
         estilo.acompanhar_largura(self._texto)
         estilo.acompanhar_largura(self._titulo)
         self._posicionar()
+        self.bind("<Configure>", lambda _e: self._posicionar_acoes(), add="+")
 
     def _posicionar(self) -> None:
         tem_titulo = bool(self._titulo.cget("text"))
@@ -547,6 +614,23 @@ class Faixa(ttk.Frame):
         else:
             self._titulo.grid_remove()
             self._texto.grid(row=0, column=1, rowspan=2, sticky="ew")
+        self._posicionar_acoes(forcar=True)
+
+    def _posicionar_acoes(self, forcar: bool = False) -> None:
+        """Botões à direita do texto; em faixa estreita, embaixo dele (senão
+        o texto fica espremido numa coluna de três palavras)."""
+        if not self._acoes.winfo_children():
+            self._acoes.grid_remove()
+            return
+        largura = self.winfo_width()
+        embaixo = 1 < largura < self._acoes.winfo_reqwidth() + px(360)
+        if embaixo == self._acoes_embaixo and not forcar and self._acoes.winfo_ismapped():
+            return
+        self._acoes_embaixo = embaixo
+        if embaixo:
+            self._acoes.grid(row=2, column=1, columnspan=2, sticky="w", padx=0, pady=(px(10), 0))
+        else:
+            self._acoes.grid(row=0, column=2, rowspan=2, sticky="e", padx=(px(12), 0), pady=0)
 
     def definir(self, texto: str | None = None, titulo: str | None = None) -> None:
         if texto is not None:
@@ -558,11 +642,13 @@ class Faixa(ttk.Frame):
     def acao(self, texto: str, comando, familia: str = "apoio") -> ttk.Button:
         b = estilo.botao(self._acoes, texto, comando, familia, superficie=self.tipo)
         b.pack(side="left", padx=(px(8) if self._acoes.winfo_children()[:-1] else 0, 0))
+        self._posicionar_acoes(forcar=True)
         return b
 
     def limpar_acoes(self) -> None:
         for w in self._acoes.winfo_children():
             w.destroy()
+        self._posicionar_acoes(forcar=True)
 
 
 # ============================================================ linha de estado
@@ -576,18 +662,29 @@ class EstadoLinha(tk.Frame):
     def __init__(self, pai, texto: str = "", tipo: str = "neutro", fundo: str = estilo.PAPEL,
                  fonte=estilo.FONTE_NOTA):
         super().__init__(pai, background=fundo)
-        self.ponto = tk.Label(self, text="●" if texto else "", font=estilo.FONTE_NOTA, background=fundo,
-                              foreground=_CORES_ESTADO.get(tipo, estilo.APAGADO))
-        self.ponto.pack(side="left", anchor="n")
+        self._fundo = fundo
+        self.ponto = tk.Label(self, background=fundo, borderwidth=0)
+        # o ponto acompanha a primeira linha do texto
+        self.ponto.pack(side="left", anchor="n", pady=(px(5) if fonte == estilo.FONTE_NOTA
+                                                       else px(6), 0))
         self.texto = tk.Label(self, text=texto, font=fonte, background=fundo,
                               foreground=estilo.TINTA_FRACA, justify="left", anchor="w")
-        self.texto.pack(side="left", fill="x", expand=True, padx=(px(4), 0))
+        self.texto.pack(side="left", fill="x", expand=True, padx=(px(6), 0))
         estilo.acompanhar_largura(self.texto)
+        self._pintar(texto, tipo)
+
+    def _pintar(self, texto: str, tipo: str) -> None:
+        cor = _CORES_ESTADO.get(tipo, estilo.APAGADO)
+        foto = estilo.ponto(cor, self._fundo) if texto else None
+        if foto is not None:
+            self.ponto.configure(image=foto, text="")
+        else:
+            self.ponto.configure(image="", text="●" if texto else "", foreground=cor,
+                                 font=estilo.FONTE_NOTA)
 
     def definir(self, texto: str, tipo: str = "neutro") -> None:
         self.texto.configure(text=texto)
-        self.ponto.configure(foreground=_CORES_ESTADO.get(tipo, estilo.APAGADO),
-                             text="●" if texto else "")
+        self._pintar(texto, tipo)
 
     def bind_filhos(self, sequencia, funcao) -> None:
         for w in (self, self.ponto, self.texto):
@@ -660,8 +757,9 @@ class Detalhes(ttk.Frame):
         self._aplicar()
 
     def _aplicar(self) -> None:
-        seta = "▾" if self._aberto else "▸"
-        self.botao.configure(text=f"{seta}  {self._titulo}")
+        # Texto, e não setas ▸/▾: nem toda fonte tem esses glifos.
+        acao = "Ocultar" if self._aberto else "Mostrar"
+        self.botao.configure(text=f"{acao} {self._titulo[:1].lower()}{self._titulo[1:]}")
         if self._aberto:
             self.caixa.grid(row=1, column=0, sticky="nsew", pady=(px(4), 0))
             self.caixa.see("end")
@@ -700,6 +798,53 @@ class Detalhes(ttk.Frame):
 
 
 # =================================================================== tabelas
+class DicaTabela:
+    """Mostra o texto inteiro de uma célula cortada ao parar o mouse sobre ela."""
+
+    def __init__(self, arvore: ttk.Treeview, colunas: tuple[str, ...]):
+        self.arvore, self.colunas = arvore, colunas
+        self.janela: tk.Toplevel | None = None
+        self._celula = None
+        arvore.bind("<Motion>", self._mover, add="+")
+        arvore.bind("<Leave>", lambda _e: self._esconder(), add="+")
+
+    def _mover(self, evento) -> None:
+        linha = self.arvore.identify_row(evento.y)
+        coluna = self.arvore.identify_column(evento.x)
+        celula = (linha, coluna)
+        if celula == self._celula:
+            return
+        self._celula = celula
+        self._esconder()
+        if not linha or not coluna:
+            return
+        try:
+            ident = self.arvore.column(coluna, "id")
+        except tk.TclError:
+            return
+        if ident not in self.colunas:
+            return
+        texto = str(self.arvore.set(linha, ident) or "")
+        largura = self.arvore.column(ident, "width")
+        from tkinter import font as tkfont
+        if not texto or tkfont.nametofont(estilo.FONTE, root=self.arvore).measure(texto) < largura - px(12):
+            return
+        self.janela = tk.Toplevel(self.arvore)
+        self.janela.wm_overrideredirect(True)
+        tk.Label(self.janela, text=texto, font=estilo.FONTE_NOTA, background=estilo.ESCURO,
+                 foreground="#ffffff", padx=px(8), pady=px(4), wraplength=px(420),
+                 justify="left").pack()
+        self.janela.wm_geometry(f"+{evento.x_root + px(12)}+{evento.y_root + px(16)}")
+
+    def _esconder(self) -> None:
+        if self.janela is not None:
+            try:
+                self.janela.destroy()
+            except tk.TclError:
+                pass
+            self.janela = None
+
+
 def tabela(pai, colunas: list[tuple], altura: int = 8):
     """Treeview num quadro de cantos macios, com rolagem vertical.
 

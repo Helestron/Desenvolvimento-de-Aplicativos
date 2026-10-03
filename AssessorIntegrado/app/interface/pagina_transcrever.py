@@ -124,7 +124,7 @@ class BotaoRedondo(tk.Canvas):
                 r = L * 0.035
                 for cx in (L * 0.38, L * 0.5, L * 0.62):
                     d.ellipse((cx - r, L / 2 - r, cx + r, L / 2 + r), fill=cor)
-            foto = ImageTk.PhotoImage(img.resize((self.d, self.d), Image.LANCZOS))
+            foto = ImageTk.PhotoImage(img.resize((self.d, self.d), Image.LANCZOS), master=self)
         except Exception as erro:
             log.debug("botão redondo sem Pillow: %s", erro)
         self._fotos[chave] = foto
@@ -157,7 +157,7 @@ class GradeFalantes(ttk.Frame):
         self.chips: list[tk.Canvas] = []
         self.columnconfigure((0, 1, 2, 3), weight=1, uniform="falantes")
         for i in range(8):
-            c = tk.Canvas(self, height=px(42), highlightthickness=0, borderwidth=0,
+            c = tk.Canvas(self, height=px(40), highlightthickness=0, borderwidth=0,
                           background=estilo.PAPEL, cursor="hand2")
             c.grid(row=i // 4, column=i % 4, sticky="ew",
                    padx=(0 if i % 4 == 0 else px(4), 0 if i % 4 == 3 else px(4)),
@@ -262,7 +262,8 @@ def _moldura(largura: int, altura: int, fundo: str, fio: str):
             ImageDraw.Draw(img).rounded_rectangle(
                 (0, 0, largura * e - 1, altura * e - 1), radius=px(10) * e, fill=fundo,
                 outline=fio, width=max(e, round(e * estilo.FATOR)))
-            _molduras[chave] = ImageTk.PhotoImage(img.resize((largura, altura), Image.LANCZOS))
+            _molduras[chave] = ImageTk.PhotoImage(img.resize((largura, altura), Image.LANCZOS),
+                                                  master=estilo._raiz)
         except Exception:
             _molduras[chave] = None
     return _molduras[chave]
@@ -344,8 +345,8 @@ class PaginaTranscrever(Pagina):
 
         corpo, _, _ = componentes.estrutura(
             self, "Transcrever audiência",
-            "Transcrição simultânea pelo microfone. O documento do Word fica na pasta "
-            "“Transcricoes” do acervo, com o número do processo no nome.", rolavel=False)
+            "Transcrição simultânea pelo microfone, salva em Word com o número do processo "
+            "no nome.", rolavel=False)
         corpo.columnconfigure(1, weight=1)
 
         # ------------------------------------------- 1. preparação (uma linha)
@@ -412,7 +413,7 @@ class PaginaTranscrever(Pagina):
 
         # ------------------------------------------- 3. controle e texto
         corpo.rowconfigure(3, weight=1)
-        quadro_esq, esq = componentes.coluna_rolavel(corpo, margem=0)
+        quadro_esq, esq = componentes.coluna_rolavel(corpo, margem=0, base=0)
         quadro_esq.configure(width=px(258))
         quadro_esq.grid(row=3, column=0, sticky="nsw", padx=(0, px(20)), pady=(px(6), px(14)))
         quadro_esq.grid_propagate(False)
@@ -484,8 +485,10 @@ class PaginaTranscrever(Pagina):
         base = ttk.Frame(dir_)
         base.grid(row=2, column=0, sticky="ew", pady=(px(6), 0))
         base.columnconfigure(0, weight=1)
-        self.rodape = ttk.Label(base, text="", foreground=estilo.TINTA_FRACA, font=estilo.FONTE_NOTA)
-        self.rodape.grid(row=0, column=0, sticky="w")
+        self.rodape = ttk.Label(base, text="", foreground=estilo.TINTA_FRACA, font=estilo.FONTE_NOTA,
+                                justify="left")
+        self.rodape.grid(row=0, column=0, sticky="ew")
+        estilo.acompanhar_largura(self.rodape)
         self.detalhes = Detalhes(base, "Detalhes técnicos", altura=6)
         self.detalhes.grid(row=1, column=0, sticky="ew", pady=(px(2), 0))
 
@@ -497,7 +500,7 @@ class PaginaTranscrever(Pagina):
         texto = self.var_numero.get()
         if not texto.strip():
             self.numero = None
-            self.dica_numero.configure(text="Obrigatório: o documento recebe este número.",
+            self.dica_numero.configure(text="Obrigatório: dá nome ao documento.",
                                        foreground=estilo.TINTA_FRACA)
             self.e_numero.configure(style="TEntry")
             return None
@@ -514,7 +517,7 @@ class PaginaTranscrever(Pagina):
         t = tribunais.por_numero(n)
         onde = f" · {t.sigla}" if t else ""
         if n.digito_confere:
-            self.dica_numero.configure(text=f"✓  {n.formatado}{onde}", foreground=estilo.VERDE)
+            self.dica_numero.configure(text=f"Número conferido{onde}", foreground=estilo.VERDE)
         else:
             self.dica_numero.configure(text=f"{n.formatado}{onde}: o dígito verificador não "
                                             "confere. Confira o número.",
@@ -679,7 +682,7 @@ class PaginaTranscrever(Pagina):
             return
         if not n.digito_confere and not dialogos.confirmar(
                 self.janela.raiz, "Dígito verificador",
-                f"O dígito verificador de {n.formatado} não confere - pode ser erro de "
+                f"O dígito verificador de {n.formatado} não confere — pode ser erro de "
                 "digitação.\n\nComeçar assim mesmo?"):
             return
         self._parar_teste()
@@ -725,7 +728,8 @@ class PaginaTranscrever(Pagina):
         self.sessao = sessao
         self.numero_sessao = n
         self.ultimo_falante = None
-        self._status.update(atraso="", salvo="")
+        self._status.update(modelo=f"modelo {getattr(sessao, 'modelo', '')}".strip(), atraso="",
+                            salvo="")
         self._limpar_texto()
         self.faixa.grid_remove()
         self.situacao = "iniciando"
@@ -775,7 +779,8 @@ class PaginaTranscrever(Pagina):
                   "iniciando": ("Abrindo o microfone…", "ocupado"),
                   "gravando": ("Gravando", "erro"),
                   "pausada": ("Pausado", "aviso"),
-                  "encerrando": ("Salvando o documento…", "ocupado"),
+                  "encerrando": ("Revisando com o modelo preciso…" if self._refinar
+                                 else "Salvando o documento…", "ocupado"),
                   "fim": ("Transcrição salva", "ok")}
         self.estado_sessao.definir(*textos.get(s, ("", "neutro")))
         ativa = s in ("iniciando", "gravando", "pausada")
@@ -920,7 +925,7 @@ class PaginaTranscrever(Pagina):
     def _faixa(self, tipo: str, titulo: str, texto: str, acoes: list | None = None) -> None:
         self.faixa.destroy()
         self.faixa = Faixa(self._pai_faixa, tipo, texto=texto, titulo=titulo)
-        self.faixa.grid(row=2, column=0, sticky="ew", pady=(0, px(10)))
+        self.faixa.grid(row=0, column=0, sticky="ew", pady=(0, px(10)))
         for rotulo, comando, familia in acoes or []:
             self.faixa.acao(rotulo, comando, familia)
 
@@ -1077,6 +1082,13 @@ class PaginaTranscrever(Pagina):
 
     def antes_de_fechar(self) -> None:
         self._parar_teste()
+        if self.sessao is not None and self.situacao == "encerrando":
+            # Revisão final em curso: interrompe a revisão (o documento ao
+            # vivo já está salvo) em vez de segurar o fechamento por minutos.
+            try:
+                self.sessao.cancelar()
+            except Exception:
+                pass
         super().antes_de_fechar()
 
 

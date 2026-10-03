@@ -90,10 +90,21 @@ class TestEnderecos(unittest.TestCase):
     def test_marca_do_incidente(self):
         m = esaj.marca_do_incidente(1)
         for sim in ("0700001-70.2024.8.02.0001/01 Cumprimento", "Execução (00001)", "x (01)",
-                    "x/0001", "x/1 fim"):
+                    "x/0001", "0700001-70.2024.8.02.0001/1 fim"):
             self.assertTrue(m.search(sim), sim)
         for nao in ("x/0100", "x/10", "item 1) a", "0700001-70.2024.8.02.0001", "000010"):
             self.assertFalse(m.search(nao), nao)
+
+    def test_data_na_linha_nao_passa_por_marca_do_incidente(self):
+        """A linha de OUTRO incidente traz a data de recebimento: "/01" de
+        janeiro não pode ser tomado pelo incidente 01 (autos trocados)."""
+        for ordem, linha in ((1, "Cumprimento de sentença  Recebido em 15/01/2024"),
+                             (1, "Recebido em 2024/01/15"),
+                             (10, "Embargos à execução 05/10/2024"),
+                             (1, "Volume (1)")):
+            self.assertFalse(esaj.marca_do_incidente(ordem).search(linha), (ordem, linha))
+        self.assertTrue(esaj.marca_do_incidente(10).search(
+            "0700001-70.2024.8.02.0001/10 - 05/10/2024"))
 
     def test_codigo_na_url_ou_no_html(self):
         self.assertEqual(esaj.codigo_na("show.do?processo.codigo=1K0001AAA0000&x"), "1K0001AAA0000")
@@ -128,6 +139,14 @@ class TestTextosDoPortal(unittest.TestCase):
         self.assertTrue(esaj.falha_de_rede("Timeout 300000ms exceeded"))
         self.assertTrue(esaj.falha_de_rede("net::ERR_CONNECTION_RESET"))
         self.assertFalse(esaj.falha_de_rede("HTTP 404"))
+        # rede do fórum: o canal direto não resolve o nome nem aceita o
+        # certificado da inspeção de TLS - é caminho, não recusa do portal
+        for msg in ("getaddrinfo ENOTFOUND www2.tjal.jus.br",
+                    "self-signed certificate in certificate chain",
+                    "unable to get local issuer certificate"):
+            self.assertTrue(esaj.falha_de_rede(msg), msg)
+            self.assertTrue(esaj.falha_de_caminho(msg), msg)
+        self.assertFalse(esaj.falha_de_caminho("connect ECONNRESET 1.2.3.4:443"))
 
     def test_mascara_do_usuario(self):
         self.assertEqual(esaj.mascarar("12345678900"), "123***")
@@ -740,6 +759,48 @@ class TestBaixar(apoio.PastaTemporaria):
         self.assertEqual(r.midias, [])
         self.assertTrue(self.destino().exists())
 
+    def test_midia_que_nao_grava_no_disco_nao_derruba_o_processo(self):
+        """Com o erro subindo, o processo virava ERRO com o PDF já na pasta -
+        e um sigiloso ficaria no acervo compartilhado com a IA."""
+        real = esaj.sistema.gravar_atomico
+
+        def gravar(destino, dados):
+            if "midias" in str(destino):
+                raise OSError(28, "Não há espaço suficiente no disco")
+            return real(destino, dados)
+        p = PortalDeDownload(baixar_midias=True, senha_pedida=[True])
+        with mock.patch.object(esaj.sistema, "gravar_atomico", gravar):
+            r = p.baixar(N, self.destino(), senha="s")
+        self.assertEqual(r.situacao, modelos.OK)
+        self.assertTrue(r.sigiloso)
+        self.assertEqual(r.midias, [])
+        self.assertTrue(self.destino().exists())
+
+    def test_peca_a_peca_com_servidor_fora_desiste_cedo(self):
+        arvore = [{"data": {"title": f"Doc {i}", "cdDocumento": 200 + i},
+                   "children": [{"data": {"parametros": par(200 + i, i, i), "nuPaginas": 1}}]}
+                  for i in range(1, 61)]
+        p = PortalDeDownload(servidor="falha", arvore=arvore, pecas_ok=())
+        pedidas = []
+        original = p.baixar_peca
+        p.baixar_peca = lambda par_: pedidas.append(par_) or original(par_)
+        with self.assertRaises(RuntimeError) as caso:
+            p.baixar(N, self.destino())
+        self.assertIn("servidor do tribunal parece fora do ar", str(caso.exception))
+        self.assertEqual(len(pedidas), esaj.MAX_PECAS_SEGUIDAS_FALHANDO,
+                         "60 peças x ~40 s seria quase uma hora para nada")
+        self.assertFalse(self.destino().exists())
+
+    def test_peca_a_peca_que_comecou_bem_vai_ate_o_fim(self):
+        arvore = [{"data": {"title": f"Doc {i}", "cdDocumento": 200 + i},
+                   "children": [{"data": {"parametros": par(200 + i, i, i), "nuPaginas": 1}}]}
+                  for i in range(1, 11)]
+        p = PortalDeDownload(servidor="falha", arvore=arvore, pecas_ok=("201",))
+        r = p.baixar(N, self.destino())
+        self.assertEqual(r.situacao, modelos.OK)
+        self.assertEqual(r.paginas, 10, "uma peça e nove páginas de aviso")
+        self.assertIn("9 peça(s) não vieram", r.detalhe)
+
     def test_sem_pdf_nem_pecas_e_erro_para_repetir(self):
         p = PortalDeDownload(servidor="falha", pecas_ok=())
         with self.assertRaises(RuntimeError) as caso:
@@ -814,6 +875,25 @@ class PortalDeConsulta(PortalESAJ):
 
     def modal_senha_visivel(self):
         return False
+
+
+class TestListaDaBusca(unittest.TestCase):
+    def test_principal_antes_do_incidente_de_mesmo_numero(self):
+        """Principal e incidente aparecem com o mesmo número na lista; o
+        primeiro da lista podia ser o incidente, gravado com o nome do principal."""
+        nav = NavegadorDeMentira()
+        pares = [{"h": "show.do?processo.codigo=1K0001AAA0001",
+                  "t": f"{N.principal} Cumprimento de sentença"},
+                 {"h": "show.do?processo.codigo=1K0001AAA0000",
+                  "t": f"{N.principal} Procedimento Comum Cível"},
+                 {"h": "show.do?processo.codigo=1K0009ZZZ0000", "t": "outro processo"}]
+        nav.pagina.evaluate = lambda js, *a: pares
+        p = PortalESAJ(nav, TRIBUNAL, opcoes(), apoio.ContextoGravador(), None)
+        self.assertEqual(p._codigo_na_lista(N), "1K0001AAA0000")
+        nav.pagina.evaluate = lambda js, *a: pares[:1]
+        self.assertEqual(p._codigo_na_lista(N), "1K0001AAA0001", "sem o principal, o que houver")
+        nav.pagina.evaluate = lambda js, *a: pares[2:]
+        self.assertIsNone(p._codigo_na_lista(N))
 
 
 class TestConsulta(unittest.TestCase):
@@ -936,6 +1016,74 @@ class TestPedirArquivo(unittest.TestCase):
         p.ctx.cancelar()
         with self.assertRaises(modelos.Cancelado):
             p.pedir_arquivo("https://portal.teste/a")
+
+    def test_nome_que_nao_resolve_passa_ao_proxy_sem_insistir(self):
+        p = self.portal([RuntimeError("getaddrinfo ENOTFOUND www2.tjal.jus.br")] * 3)
+        proxy = CanalFalso([Resposta(200, b"%PDF-proxy")])
+        p.canal_pelo_proxy = lambda: proxy
+        self.assertEqual(p.pedir_arquivo("https://portal.teste/a"), b"%PDF-proxy")
+        self.assertEqual(len(p.nav.contexto.request.pedidos), 1, "não repete o que não muda")
+        self.assertEqual(p.pela_janela, [])
+
+    def test_certificado_da_rede_cai_na_janela(self):
+        p = self.portal([RuntimeError("self-signed certificate in certificate chain")] * 3)
+        self.assertEqual(p.pedir_arquivo("https://portal.teste/a"), b"%PDF-janela")
+        self.assertEqual(len(p.nav.contexto.request.pedidos), 1)
+        self.assertEqual(p.pela_janela, ["https://portal.teste/a"])
+
+
+class TestSessaoAtiva(unittest.TestCase):
+    def portal(self, resposta, pela_aba=(200, '{"usuarioLogado": true}')):
+        nav = NavegadorDeMentira()
+
+        class Canal:
+            def get(self, url, timeout=0, headers=None):
+                if isinstance(resposta, Exception):
+                    raise resposta
+                return resposta
+        nav.contexto = types.SimpleNamespace(request=Canal())
+        p = PortalESAJ(nav, TRIBUNAL, opcoes(), apoio.ContextoGravador(), None)
+        p.pela_aba = []
+
+        def buscar(url, metodo="GET", corpo=None, cabecalhos=None):
+            p.pela_aba.append(url)
+            return pela_aba
+        p._buscar_texto = buscar
+        return p
+
+    def test_rede_do_forum_pergunta_pela_aba(self):
+        """O canal direto não alcança o portal atrás do proxy; sem a aba, a
+        sessão pareceria sempre caída (Pasta recusada -> novo login)."""
+        p = self.portal(RuntimeError("getaddrinfo ENOTFOUND portal.teste"))
+        self.assertTrue(p.sessao_ativa())
+        self.assertTrue(p.pela_aba[0].startswith("/esaj/api/auth/session?_="))
+        p = self.portal(RuntimeError("connect ETIMEDOUT"), pela_aba=(200, '{"usuarioLogado": false}'))
+        self.assertFalse(p.sessao_ativa())
+
+    def test_resposta_do_canal_direto_vale(self):
+        resp = types.SimpleNamespace(status=200, json=lambda: {"usuarioLogado": True})
+        p = self.portal(resp)
+        self.assertTrue(p.sessao_ativa())
+        self.assertEqual(p.pela_aba, [])
+        p = self.portal(types.SimpleNamespace(status=401, json=lambda: {}))
+        self.assertFalse(p.sessao_ativa())
+        self.assertEqual(p.pela_aba, [])
+
+    def test_aba_fora_do_portal_nao_e_consultada(self):
+        p = self.portal(RuntimeError("getaddrinfo ENOTFOUND portal.teste"))
+        p.nav.pagina.url = "about:blank"
+        self.assertFalse(p.sessao_ativa())
+        self.assertEqual(p.pela_aba, [])
+
+    def test_novo_login_descarta_o_canal_pelo_proxy(self):
+        """O canal pelo proxy leva cópia dos cookies de quando nasceu."""
+        p = self.portal(RuntimeError("x"))
+        descartes = []
+        p._canal_proxy = types.SimpleNamespace(dispose=lambda: descartes.append(1))
+        p._entrar_com_senha = lambda: None
+        p.entrar()
+        self.assertIsNone(p._canal_proxy)
+        self.assertEqual(descartes, [1])
 
 
 class TestPastaDigital(unittest.TestCase):

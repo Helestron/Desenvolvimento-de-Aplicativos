@@ -22,7 +22,9 @@ argumento `metadata_errors` sumiu do `av.open`). Por isso a decodificação
 from __future__ import annotations
 
 import logging
+import re
 import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -73,22 +75,33 @@ def _decodificar_soundfile(caminho: Path, taxa: int) -> np.ndarray | None:
         import soundfile as sf
     except ImportError:
         return None
+    from .microfone import Reamostrador
+
     try:
         with sf.SoundFile(str(caminho)) as f:
             # FLAC de gravação interrompida (queda de energia) fica sem a
             # duração no cabeçalho, e o libsndfile se perde: o PyAV lê.
             if not (0 < f.frames < 2 ** 40):
                 return None
-            dados = f.read(dtype="float32", always_2d=True)
             origem = int(f.samplerate)
+            esperado = int(round(f.frames * taxa / origem))
+            reamostrador = Reamostrador(origem, taxa) if origem != taxa else None
+            # Em blocos: ler de uma vez uma audiência de 3 h em WAV de 48 kHz
+            # estéreo são 4 GB de float32 na memória (MemoryError no notebook
+            # do gabinete); em 16 kHz mono ficam ~700 MB.
+            partes: list[np.ndarray] = []
+            for bloco in f.blocks(blocksize=origem * 60, dtype="float32", always_2d=True):
+                mono = (bloco.mean(axis=1, dtype=np.float32) if bloco.shape[1] > 1
+                        else bloco[:, 0].copy())
+                partes.append(reamostrador.processar(mono) if reamostrador else mono)
+            if reamostrador:
+                partes.append(reamostrador.finalizar())
     except Exception:
         return None
-    mono = dados.mean(axis=1, dtype=np.float32) if dados.shape[1] > 1 else dados[:, 0]
-    if origem != taxa:
-        from .microfone import Reamostrador
-
-        mono = Reamostrador(origem, taxa).tudo(mono)
-    return np.ascontiguousarray(mono, dtype=np.float32)
+    if not partes:
+        return None
+    audio = np.concatenate(partes)[:esperado] if len(partes) > 1 else partes[0][:esperado]
+    return np.ascontiguousarray(audio, dtype=np.float32)
 
 
 def _decodificar_av(caminho: Path, taxa: int) -> np.ndarray:
@@ -134,7 +147,10 @@ def _decodificar_av(caminho: Path, taxa: int) -> np.ndarray:
             log.warning("%s: %d pedaço(s) de áudio ilegível(is) foram pulados.", caminho.name, falhas)
     if not partes:
         raise AudioIlegivel(f"'{caminho.name}' não tem áudio legível.")
-    return (np.concatenate(partes).astype(np.float32) / 32768.0)
+    audio = np.concatenate(partes).astype(np.float32)
+    del partes
+    audio *= np.float32(1.0 / 32768.0)   # no lugar: 3 h são ~700 MB a menos no pico
+    return audio
 
 
 def decodificar(caminho: Path | str, taxa: int = TAXA) -> np.ndarray:
@@ -242,15 +258,49 @@ def preparar_audio(audio: np.ndarray, taxa: int = TAXA, copiar: bool = True) -> 
 
 
 # ------------------------------------------------------------ transcrever
+# O próprio programa grava o processo dependente com "-NN" no nome (o Windows
+# não aceita "/"): "0700123-45.2024.8.02.0001-01 2026-09-16 14h00.flac", a
+# pasta "_controle/midias/0700123-45.2024.8.02.0001-01". O "-inc0001" é da
+# base. Sem isto, a gravação do incidente virava a transcrição do principal.
+_DEPENDENTE_NO_NOME = re.compile(r"-(?:inc)?0*(\d{1,4})(?=$|[\s._()\[\]])", re.I)
+
+
+def numero_do_nome(texto: str) -> cnj.Numero | None:
+    """O número CNJ escrito num nome de arquivo ou pasta (com o dependente)."""
+    m = cnj._PADRAO.search(texto or "")
+    if not m:
+        return None
+    numero = cnj.ler(m.group(0))
+    if not numero.dependente:
+        d = _DEPENDENTE_NO_NOME.match(texto[m.end():])
+        if d:
+            numero = replace(numero, dependente=(d.group(1).lstrip("0") or "0").zfill(2))
+    return numero
+
+
+def numero_do_caminho(caminho: Path | str) -> cnj.Numero | None:
+    """O número do processo pelo nome do arquivo ou, senão, pela pasta.
+
+    As gravações baixadas dos autos ficam em
+    `_controle/midias/<número>/<nome dado pelo portal>`: o número está na
+    pasta, não no arquivo.
+    """
+    caminho = Path(caminho)
+    for nome in (caminho.name, caminho.parent.name):
+        numero = numero_do_nome(nome)
+        if numero is not None:
+            return numero
+    return None
+
+
 def _numero_do_arquivo(origem: Path, numero) -> cnj.Numero:
     if isinstance(numero, cnj.Numero):
         return numero
     if numero:
         return cnj.ler(str(numero))
-    try:
-        return cnj.ler(origem.name)
-    except cnj.NumeroInvalido:
-        pass
+    achado = numero_do_caminho(origem)
+    if achado is not None:
+        return achado
     raise ProcessoNaoInformado(
         f"Não encontrei o número do processo no nome '{origem.name}'. Informe o número.")
 
@@ -323,7 +373,8 @@ def _transcrever(origem, numero, cfg, progresso, cancelado, rotulos_manuais, des
     else:
         motor = modelos.carregar(
             nome_modelo, cfg.inteiro("transcricao", "threads"),
-            progresso=lambda f, t: avisar(0.05 * f, t))
+            # 0,05 a 0,08: o download (se faltar o modelo) não faz a barra voltar
+            progresso=lambda f, t: avisar(0.05 + 0.03 * f, t))
     conferir()
 
     contexto = cfg.texto("transcricao", "contexto")
@@ -397,14 +448,19 @@ def _transcrever(origem, numero, cfg, progresso, cancelado, rotulos_manuais, des
 
     avisar(0.97, "Gravando o documento...")
     if meta is None:
+        meta = MetaAudiencia(numero=numero.formatado)
+    # A tela passa uma ficha só com o tipo da audiência: o resto (unidade,
+    # magistrado, data) vem da configuração e do arquivo, como sem ficha. E
+    # o padrão do MetaAudiencia é "ao vivo", que aqui seria falso.
+    if meta.origem not in ("revisão", "gravação"):
+        meta.origem = "revisão" if rotulos_manuais else "gravação"
+    if meta.data is None:
         try:
-            data = datetime.fromtimestamp(origem.stat().st_mtime)
+            meta.data = datetime.fromtimestamp(origem.stat().st_mtime)
         except OSError:
-            data = datetime.now()
-        meta = MetaAudiencia(numero=numero.formatado, data=data,
-                             unidade=unidade_da_config(cfg),
-                             magistrado=magistrado_da_config(cfg),
-                             origem="revisão" if rotulos_manuais else "gravação")
+            meta.data = datetime.now()
+    meta.unidade = meta.unidade or unidade_da_config(cfg)
+    meta.magistrado = meta.magistrado or magistrado_da_config(cfg)
     meta.numero = meta.numero or numero.formatado
     meta.modelo = nome_modelo
     meta.duracao = duracao

@@ -47,7 +47,7 @@ class PaginaCompartilhar(Pagina):
         corpo, _, _ = componentes.estrutura(
             self, "Compartilhar com IA",
             "O acervo é uma pasta do seu computador. Daqui você a abre no Claude Code, no "
-            "Claude (Cowork) ou no ChatGPT Work - cada um lê sozinho as instruções de "
+            "Claude (Cowork) ou no ChatGPT Work — cada um lê sozinho as instruções de "
             "trabalho que o programa deixa na pasta.")
         corpo.columnconfigure(0, weight=1)
         self.corpo = corpo
@@ -114,9 +114,12 @@ class PaginaCompartilhar(Pagina):
         cartao.columnconfigure(0, weight=1)
         cab = ttk.Frame(cartao)
         cab.grid(row=0, column=0, sticky="ew")
+        cab.columnconfigure(1, weight=1)
         foto = estilo.imagem(icone, px(36))
-        tk.Label(cab, image=foto or "", background=estilo.PAPEL).pack(side="left")
-        ttk.Label(cab, text=titulo, font=estilo.FONTE_CARTAO).pack(side="left", padx=(px(12), 0))
+        tk.Label(cab, image=foto or "", background=estilo.PAPEL).grid(row=0, column=0)
+        nome = ttk.Label(cab, text=titulo, font=estilo.FONTE_CARTAO, justify="left")
+        nome.grid(row=0, column=1, sticky="ew", padx=(px(12), 0))
+        estilo.acompanhar_largura(nome)
         estado = EstadoLinha(cartao, "Conferindo…", "neutro")
         estado.grid(row=1, column=0, sticky="ew", pady=(px(12), 0))
         descricao = ttk.Label(cartao, text=texto, foreground=estilo.TINTA_FRACA, justify="left")
@@ -143,7 +146,7 @@ class PaginaCompartilhar(Pagina):
         b = self._bloco("bloco-terminal", "Claude Code",
                         "Abre um terminal já dentro do acervo. O Claude lê sozinho o CLAUDE.md "
                         "e trabalha com os autos e as transcrições.")
-        self.btn_code = self._acao(b, "Abrir o acervo no Claude Code", self.abrir_code, "tonal")
+        self.btn_code = self._acao(b, "Abrir no Claude Code", self.abrir_code, "tonal")
         self.btn_instalar_code = self._acao(b, "Instalar o Claude Code", self.instalar_code)
         return b
 
@@ -166,6 +169,8 @@ class PaginaCompartilhar(Pagina):
         self._acao(b, "Abrir no ChatGPT Work", self.abrir_work, "tonal")
         self.btn_codex = self._acao(b, "Abrir no Codex", self.abrir_codex)
         self._acao(b, "Gerar pacote para o ChatGPT", self.pacote)
+        self.btn_conectar_gpt = self._acao(b, "Conectar o acervo ao ChatGPT", self.conectar_chatgpt,
+                                           "texto")
         self.btn_instalar_chatgpt = self._acao(b, "Instalar o app do ChatGPT",
                                                servicos.instalar_chatgpt_desktop, "texto")
         b.nota.configure(text="No ChatGPT, escolha Work, tecle Ctrl+O e cole o caminho do "
@@ -176,7 +181,7 @@ class PaginaCompartilhar(Pagina):
         """Três colunas em tela larga; uma embaixo da outra em tela estreita
         (os botões não quebram linha e seriam cortados)."""
         largura = self.grade.winfo_width()
-        colunas = 3 if largura >= px(840) or largura <= 1 else 1
+        colunas = 3 if largura >= px(800) or largura <= 1 else 1
         if colunas == self._colunas:
             return
         self._colunas = colunas
@@ -191,6 +196,19 @@ class PaginaCompartilhar(Pagina):
                 bloco.grid(row=i, column=0, sticky="ew", padx=0,
                            pady=(0 if i == 0 else px(14), 0))
                 self.grade.columnconfigure(0, weight=1)
+            # Empilhados, os botões ficam lado a lado (largura natural); em
+            # coluna estreita, um embaixo do outro, da largura do cartão.
+            for k, b in enumerate(bloco.acoes.winfo_children()):
+                oculto = getattr(b, "_oculto", False)
+                if colunas == 3:
+                    b.grid_configure(row=k, column=0, sticky="ew", padx=0,
+                                     pady=(0 if k == 0 else px(8), 0))
+                else:
+                    b.grid_configure(row=0, column=k, sticky="w",
+                                     padx=(0 if k == 0 else px(8), 0), pady=0)
+                if oculto:
+                    b.grid_remove()
+            bloco.acoes.columnconfigure(0, weight=1 if colunas == 3 else 0)
 
     def _bloco_nuvem(self, pai):
         quadro = ttk.Frame(pai, style="Bloco.TFrame", padding=(px(20), px(18)))
@@ -240,18 +258,29 @@ class PaginaCompartilhar(Pagina):
     def _atualizar_pasta(self) -> None:
         self.rotulo_pasta.configure(text=str(self.cfg.pasta_acervo))
 
+    @staticmethod
+    def _exibir(botao, visivel: bool) -> None:
+        """Mostra ou esconde um botão de bloco (lembrado no rearranjo)."""
+        botao._oculto = not visivel  # type: ignore[attr-defined]
+        if visivel:
+            botao.grid()
+        else:
+            botao.grid_remove()
+
     def _aplicar_estado(self, estado: dict) -> None:
         self.estado = estado
+        claude = estado.get("claude") or {}
+        gpt = estado.get("chatgpt") or {}
         code, cowork, chatgpt = self.blocos
-        if estado.get("claude_code"):
+        if claude.get("claude_code"):
             code.estado.definir("Instalado neste computador", "ok")
-            self.btn_instalar_code.grid_remove()
+            self._exibir(self.btn_instalar_code, False)
             self.btn_code.state(["!disabled"])
         else:
             code.estado.definir("Não instalado (requer plano pago do Claude)", "neutro")
-            self.btn_instalar_code.grid()
+            self._exibir(self.btn_instalar_code, True)
         nota = ""
-        if estado.get("chave_no_ambiente"):
+        if claude.get("chave_no_ambiente"):
             nota = ("Há uma chave ANTHROPIC_API_KEY no Windows: o terminal abre sem ela, para "
                     "usar a sua assinatura (e não cobrança por uso).")
         code.nota.configure(text=nota)
@@ -259,30 +288,34 @@ class PaginaCompartilhar(Pagina):
         if estado.get("mcp_acervo"):
             cowork.estado.definir("Instalado · acervo conectado", "ok")
             self.btn_conectar.configure(text="Reconectar o acervo")
-        elif estado.get("desktop"):
+        elif claude.get("desktop"):
             cowork.estado.definir("Instalado · acervo ainda não conectado", "aviso")
             self.btn_conectar.configure(text="Conectar o acervo ao Claude")
         else:
             cowork.estado.definir("Claude Desktop não instalado", "neutro")
-        self.btn_claude.configure(text="Abrir o Claude" if estado.get("desktop")
+        self.btn_claude.configure(text="Abrir o Claude" if claude.get("desktop")
                                   else "Instalar o Claude Desktop")
 
         desktop = estado.get("chatgpt_desktop")
         partes = []
         if desktop:
             partes.append("App do ChatGPT instalado")
-            self.btn_instalar_chatgpt.grid_remove()
+            self._exibir(self.btn_instalar_chatgpt, False)
         elif desktop is False:
             partes.append("App do ChatGPT não instalado")
-            self.btn_instalar_chatgpt.grid()
+            self._exibir(self.btn_instalar_chatgpt, True)
         else:
             partes.append("App do ChatGPT: não verificado")
-        if estado.get("codex"):
+        if gpt.get("codex"):
             partes.append("Codex instalado")
-            self.btn_codex.grid()
+            self._exibir(self.btn_codex, True)
         else:
-            self.btn_codex.grid_remove()
-        chatgpt.estado.definir(" · ".join(partes), "ok" if desktop or estado.get("codex")
+            self._exibir(self.btn_codex, False)
+        if gpt.get("mcp"):
+            partes.append("acervo conectado")
+            self.btn_conectar_gpt.configure(text="Reconectar o acervo ao ChatGPT")
+        self._exibir(self.btn_conectar_gpt, bool(estado.get("tem_registrar_codex")))
+        chatgpt.estado.definir(" · ".join(partes), "ok" if desktop or gpt.get("codex")
                                else "neutro")
 
         acervo = estado.get("acervo") or {}
@@ -389,7 +422,7 @@ class PaginaCompartilhar(Pagina):
             return
         self._recado("Info", "Instalação do Claude Code",
                      "O instalador oficial abriu numa janela do PowerShell. Ao terminar, feche-a "
-                     "e clique em “Abrir o acervo no Claude Code”; no primeiro uso, entre com a "
+                     "e clique em “Abrir no Claude Code”; no primeiro uso, entre com a "
                      "sua conta do Claude.")
 
     def abrir_cowork(self) -> None:
@@ -438,7 +471,7 @@ class PaginaCompartilhar(Pagina):
         from ..compartilhar import claude
 
         try:
-            if self.estado.get("desktop"):
+            if (self.estado.get("claude") or {}).get("desktop"):
                 claude.abrir_claude_desktop()
             else:
                 claude.instalar_claude_desktop()
@@ -469,7 +502,7 @@ class PaginaCompartilhar(Pagina):
             if resultado == "web":
                 self._recado("Info", "ChatGPT aberto no navegador",
                              "Pelo navegador, o ChatGPT não lê pastas do computador. Instale o "
-                             "app do ChatGPT para Windows para usar o modo Work com o acervo - "
+                             "app do ChatGPT para Windows para usar o modo Work com o acervo — "
                              "ou use “Gerar pacote para o ChatGPT”.",
                              [("Instalar o app do ChatGPT", servicos.instalar_chatgpt_desktop)])
             else:
@@ -478,6 +511,27 @@ class PaginaCompartilhar(Pagina):
                              "acervo (Ctrl+V; ele já está copiado). O ChatGPT lê o AGENTS.md "
                              "da pasta.")
         self._abrir_em_segundo_plano(lambda: servicos.abrir_chatgpt_work(acervo), feito)
+
+    def conectar_chatgpt(self) -> None:
+        acervo = self.cfg.pasta_acervo
+
+        def pronto(arquivo):
+            if arquivo is None:
+                dialogos.informar(self.janela.raiz, "Conectar ao ChatGPT",
+                                  "Esta versão do programa ainda não sabe conectar o acervo ao "
+                                  "ChatGPT. Use “Abrir no ChatGPT Work”.")
+                return
+            self._recado("Sucesso", "Acervo conectado ao ChatGPT",
+                         f"O conector de leitura foi registrado em {arquivo}. Feche e abra o app "
+                         "do ChatGPT: nos modos Work e Codex, ele passa a ter as ferramentas "
+                         "listar_acervo, ler_processo, buscar e ler_transcricao.")
+            self.ao_mostrar()
+
+        self.em_segundo_plano(self.tarefa_abrir, servicos.registrar_mcp_codex, acervo,
+                              ao_concluir=pronto,
+                              ao_falhar=lambda e: dialogos.erro(self.janela.raiz,
+                                                                "Não consegui conectar",
+                                                                _maiuscula(str(e))))
 
     def abrir_codex(self) -> None:
         from ..compartilhar import chatgpt

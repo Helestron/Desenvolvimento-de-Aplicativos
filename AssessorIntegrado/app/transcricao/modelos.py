@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 import threading
 import time
 import unicodedata
@@ -61,6 +62,7 @@ MAXIMO_NA_MEMORIA = 2
 
 _cache: "OrderedDict[tuple, object]" = OrderedDict()
 _trava = threading.RLock()
+_travas_download: dict[str, threading.Lock] = {}
 
 
 class ModeloAusente(RuntimeError):
@@ -115,6 +117,47 @@ def listar() -> list[dict]:
                        "instalado": instalado(nome), "pasta": pasta_do_modelo(nome),
                        "descricao": DESCRICAO.get(nome, "")})
     return linhas
+
+
+NO_WINDOWS = sys.platform == "win32"
+
+
+def _nome_curto_windows(texto: str) -> str | None:  # pragma: no cover - só no Windows
+    import ctypes
+    from ctypes import wintypes
+
+    funcao = ctypes.windll.kernel32.GetShortPathNameW
+    funcao.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+    funcao.restype = wintypes.DWORD
+    tamanho = funcao(texto, None, 0)
+    if not tamanho:
+        return None
+    buf = ctypes.create_unicode_buffer(tamanho)
+    return buf.value if funcao(texto, buf, tamanho) else None
+
+
+def caminho_nativo(caminho: Path | str) -> str:
+    """O caminho a entregar às bibliotecas em C++ (CTranslate2, sherpa-onnx).
+
+    Elas abrem o arquivo com o caminho em bytes, que o Windows lê na página
+    de código ANSI (cp1252): numa pasta com acento - "C:\\Users\\joão\\..." -
+    o "ã" em UTF-8 vira "Ã£" e o modelo "não existe". O nome curto 8.3 do
+    Windows (C:\\Users\\JOO~1\\...) é só ASCII e aponta para o mesmo lugar.
+    Fora do Windows, ou com caminho já ASCII, nada muda.
+    """
+    texto = str(caminho)
+    if not NO_WINDOWS or texto.isascii():
+        return texto
+    try:
+        curto = _nome_curto_windows(texto)
+    except Exception as erro:  # pragma: no cover
+        log.debug("GetShortPathNameW falhou: %s", erro)
+        curto = None
+    if curto and curto.isascii():
+        return curto
+    log.warning("o caminho %s tem acento e o Windows não deu um nome curto sem acento; "
+                "se o modelo não abrir, instale o programa em C:\\AssessorIntegrado.", texto)
+    return texto
 
 
 def threads_padrao(threads: int = 0) -> int:
@@ -212,8 +255,6 @@ def baixar(nome: str, progresso: Callable[[float, str], None] | None = None,
     Levanta ModeloAusente com mensagem para o usuário se não conseguir.
     """
     nome = nome_canonico(nome)
-    repo, mb = CATALOGO[nome]
-    pasta = pasta_do_modelo(nome)
 
     def avisar(fracao: float, texto: str) -> None:
         if progresso:
@@ -222,6 +263,23 @@ def baixar(nome: str, progresso: Callable[[float, str], None] | None = None,
             except Exception:  # pragma: no cover
                 pass
 
+    # Um download por modelo de cada vez: a tela de Configurações e a
+    # transcrição podem pedir o mesmo modelo juntas; quem chega depois
+    # espera e encontra o modelo pronto.
+    with _trava:
+        trava_modelo = _travas_download.setdefault(nome, threading.Lock())
+    if not trava_modelo.acquire(blocking=False):
+        avisar(0.0, f"Aguardando o download do modelo {nome}, já em andamento...")
+        trava_modelo.acquire()
+    try:
+        return _baixar(nome, avisar, tentativas)
+    finally:
+        trava_modelo.release()
+
+
+def _baixar(nome: str, avisar: Callable[[float, str], None], tentativas: int) -> Path:
+    repo, mb = CATALOGO[nome]
+    pasta = pasta_do_modelo(nome)
     if instalado(nome):
         avisar(1.0, f"Modelo {nome} já instalado.")
         return pasta
@@ -291,12 +349,19 @@ def carregar(nome: str, threads: int = 0,
         if chave in _cache:
             _cache.move_to_end(chave)
             return _cache[chave]
-        if not instalado(nome):
-            if not baixar_se_faltar:
-                raise ModeloAusente(
-                    f"O modelo '{nome}' não está instalado. Baixe-o em Configurações > "
-                    "Transcrição (ou rode: python -m app modelos baixar " + nome + ").")
-            baixar(nome, progresso)
+    if not instalado(nome):
+        if not baixar_se_faltar:
+            raise ModeloAusente(
+                f"O modelo '{nome}' não está instalado. Baixe-o em Configurações > "
+                "Transcrição (ou rode: python -m app modelos baixar " + nome + ").")
+        # FORA da trava geral: baixar o medium leva minutos, e com a trava a
+        # audiência ao vivo que começasse nesse meio-tempo ficava sem
+        # transcrição (o "small", já instalado, esperava o download do outro).
+        baixar(nome, progresso)
+    with _trava:
+        if chave in _cache:   # outra thread carregou enquanto baixávamos
+            _cache.move_to_end(chave)
+            return _cache[chave]
         preparar_rede()
         try:
             from faster_whisper import WhisperModel
@@ -312,7 +377,7 @@ def carregar(nome: str, threads: int = 0,
                 pass
         log.info("carregando o modelo Whisper '%s' (%d núcleos)...", nome, n_threads)
         try:
-            modelo = WhisperModel(str(pasta), device="cpu", compute_type="int8",
+            modelo = WhisperModel(caminho_nativo(pasta), device="cpu", compute_type="int8",
                                   cpu_threads=n_threads)
         except Exception as erro:
             raise ErroDoModelo(

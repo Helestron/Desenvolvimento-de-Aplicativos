@@ -116,8 +116,25 @@ class Dialogo(tk.Toplevel):
         self.deiconify()
         self.lift()
         self.after(60, self._prender)
+        # Os textos só quebram linha depois de saber a largura real: a
+        # altura certa é a medida DEPOIS de a janela aparecer.
+        self.after(30, self.ajustar_altura)
         if foco is not None:
             self.after(80, foco.focus_set)
+
+    def ajustar_altura(self) -> None:
+        if self._fechado:
+            return
+        try:
+            self.update_idletasks()
+            altura = self.winfo_reqheight()
+            if abs(altura - self.winfo_height()) <= 2:
+                return
+            y = self.raiz.winfo_rooty() + max(px(40), (self.raiz.winfo_height() - altura) // 3)
+            y = max(0, min(y, self.winfo_screenheight() - altura - px(40)))
+            self.geometry(f"{self.winfo_width()}x{altura}+{self.winfo_x()}+{y}")
+        except tk.TclError:
+            pass
 
     def _prender(self) -> None:
         try:
@@ -136,6 +153,13 @@ class Dialogo(tk.Toplevel):
         except tk.TclError:
             pass
         self.destroy()
+        # O diálogo e suas variáveis do Tk formam ciclos de referência. Se o
+        # coletor de lixo os recolhesse numa thread de trabalho, o tkinter
+        # chamaria o Tcl fora da thread principal ("main thread is not in
+        # main loop"). Recolhe aqui, na thread da janela.
+        import gc
+
+        gc.collect()
 
     def cancelar(self) -> None:
         self.fechar()
@@ -253,7 +277,7 @@ class DialogoColar(Dialogo):
 
     def __init__(self, raiz, ao_confirmar):
         super().__init__(raiz, "Colar a relação de processos",
-                         "Cole os números, um por linha - também serve a coluna copiada do "
+                         "Cole os números, um por linha — também serve a coluna copiada do "
                          "Excel ou um texto qualquer que contenha os números. Para processo "
                          "em segredo de justiça, acrescente a senha depois de ponto e vírgula.")
         self.ao_confirmar = ao_confirmar
@@ -262,8 +286,8 @@ class DialogoColar(Dialogo):
                              highlightthickness=1, highlightbackground=estilo.LINHA_FORTE,
                              highlightcolor=estilo.AZUL, undo=True)
         self.caixa.grid(row=0, column=0, sticky="nsew")
-        exemplo = ttk.Label(self.corpo, text="Exemplo:  0700123-45.2024.8.02.0001   ou   "
-                                             "0700123-45.2024.8.02.0001 ; senha123",
+        exemplo = ttk.Label(self.corpo, text="Exemplo:  0700123-83.2024.8.02.0001   ou   "
+                                             "0700123-83.2024.8.02.0001 ; senha123",
                             foreground=estilo.TINTA_FRACA, font=estilo.FONTE_NOTA)
         exemplo.grid(row=1, column=0, sticky="w", pady=(px(6), 0))
         self.botoes(("Cancelar", self.cancelar, "apoio"), ("Usar esta lista", self.confirmar,
@@ -353,9 +377,9 @@ class DialogoNumero(Dialogo):
             return None
         self.ok.state(["!disabled"])
         if n.digito_confere:
-            self.dica.configure(text=f"✓  {n.formatado}", foreground=estilo.VERDE)
+            self.dica.configure(text=f"{n.formatado} · número conferido", foreground=estilo.VERDE)
         else:
-            self.dica.configure(text=f"{n.formatado}: o dígito verificador não confere - "
+            self.dica.configure(text=f"{n.formatado}: o dígito verificador não confere — "
                                      "confira o número.", foreground=estilo.AMBAR_TINTA)
         return n
 
@@ -447,14 +471,7 @@ class Assistente(Dialogo):
         self.avancar.configure(text="Concluir" if ultimo else "Avançar")
         self._desenhar_indicador()
         if self.winfo_ismapped():
-            self._reajustar()
-
-    def _reajustar(self) -> None:
-        """Passo mais alto que o anterior: cresce o diálogo (nunca corta)."""
-        self.update_idletasks()
-        altura = self.winfo_reqheight()
-        if altura > self.winfo_height():
-            self.geometry(f"{self.winfo_width()}x{altura}")
+            self.after(30, self.ajustar_altura)
 
     def anterior(self) -> None:
         self._salvar_passo()
@@ -548,7 +565,7 @@ class Assistente(Dialogo):
 
         texto = ttk.Label(self.area, justify="left", text=(
             "É nesta pasta que ficam os PDFs dos processos e as transcrições das "
-            "audiências - e é ela que o Claude e o ChatGPT vão ler. Os processos em "
+            "audiências — e é ela que o Claude e o ChatGPT vão ler. Os processos em "
             "segredo de justiça ficam numa pasta separada, fora do acervo."))
         texto.grid(row=0, column=0, sticky="ew")
         estilo.acompanhar_largura(texto)

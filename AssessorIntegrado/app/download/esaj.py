@@ -63,6 +63,7 @@ URL_ENTRADA = "{base}/cpopg/open.do?servico=190101&gateway=true"
 ESPERA_PDF_S = 600            # até 10 min para o servidor montar um PDF grande
 INTERVALO_POLL_S = 3
 ESPERA_CONFIRMA_CODIGO_S = 25
+MAX_PECAS_SEGUIDAS_FALHANDO = 5   # peça a peça: desiste se as primeiras não vêm
 
 SELETORES_PADRAO: dict[str, list[str]] = {
     "login_usuario": ["#usernameForm", "input[name='username']", "#username",
@@ -153,9 +154,18 @@ def codigo_incidente(cd_principal: str, ordem: int) -> str:
 
 def marca_do_incidente(ordem: int) -> "re.Pattern[str]":
     """Como a página do principal se refere ao incidente de ordem N:
-    "(01)", "00001", "/1", "/01", "/0001" - mas não "/0100" nem "/10"."""
-    return re.compile(rf"\(0*{int(ordem)}\)|(?<!\d)0*{int(ordem):05d}(?!\d)"
-                      rf"|/0*{int(ordem)}(?!\d)")
+    "(01)", "00001", "/0001" e, colado ao número do processo, "...0001/01"
+    ou "...0001/1" - mas não "/0100" nem "/10".
+
+    O "/01" solto NÃO vale: o texto da linha do incidente traz datas
+    ("Recebido em 15/01/2024"), e "/01" casaria com qualquer data de
+    janeiro - o programa abriria OUTRO incidente e gravaria autos trocados
+    com o nome deste. Por isso a forma curta só conta logo depois dos 4
+    dígitos do foro, e nunca seguida de outra barra (como numa data).
+    """
+    n = int(ordem)
+    return re.compile(rf"\(0*{n:02d}\)|(?<!\d)0*{n:05d}(?!\d)"
+                      rf"|/0*{n:04d}(?![\d/])|(?<=\d{{4}})/0*{n}(?![\d/])")
 
 
 def codigo_na(texto: str) -> str | None:
@@ -192,11 +202,30 @@ def texto_indica_sigilo(texto: str) -> bool:
 
 
 def falha_de_rede(msg: str) -> bool:
+    """O arquivo não chegou por problema de caminho (rede, proxy, TLS), e
+    não por recusa do portal: vale tentar de novo ou por outro canal."""
     return bool(re.search(
         r"ETIMEDOUT|ECONNRESET|ECONNREFUSED|ECONNABORTED|EHOSTUNREACH"
         r"|ENETUNREACH|socket hang up|EAI_AGAIN|ERR_NETWORK|ERR_CONNECTION"
         r"|connect ENOENT|tunneling socket|ERR_PROXY|Timeout \d+ms exceeded"
-        r"|timed out", msg or "", re.I))
+        r"|timed out", msg or "", re.I)) or falha_de_caminho(msg)
+
+
+def falha_de_caminho(msg: str) -> bool:
+    """Falha que repetir pelo MESMO canal não resolve: passa-se direto ao
+    próximo (proxy do sistema, e por fim a própria janela do navegador).
+
+    Na rede do fórum é o caso comum. O canal direto do Playwright não usa o
+    proxy nem os certificados do Windows: o nome do portal não resolve fora
+    do proxy (ENOTFOUND) e a inspeção de TLS da rede apresenta um
+    certificado que só o navegador conhece. Na base, esses erros nem eram
+    reconhecidos como de rede, e o download falhava sem tentar os outros
+    caminhos.
+    """
+    return bool(re.search(
+        r"ENOTFOUND|ERR_NAME_NOT_RESOLVED|getaddrinfo|ERR_PROXY|tunneling socket"
+        r"|certificate|CERT_|ERR_SSL|EPROTO|ERR_TLS|SSL routines",
+        msg or "", re.I))
 
 
 def erro_transitorio(msg: str) -> bool:
@@ -552,15 +581,31 @@ class PortalESAJ:
         e negava a sessão para sempre. Só 'usuarioLogado' vale - os demais
         campos vêm preenchidos até para anônimos.
         """
-        alvo = f"{self.base}/esaj/api/auth/session?_={int(time.time() * 1000)}"
+        caminho = f"/esaj/api/auth/session?_={int(time.time() * 1000)}"
         try:
             resp = self.nav.contexto.request.get(
-                alvo, timeout=20000, headers={"Cache-Control": "no-cache"})
+                self.base + caminho, timeout=20000, headers={"Cache-Control": "no-cache"})
             if resp.status == 200:
                 dados = resp.json()
                 return isinstance(dados, dict) and dados.get("usuarioLogado") is True
+            return False
         except Exception as erro:
             log.debug("  sessao_ativa: %s", str(erro)[:120])
+            if not falha_de_rede(str(erro)):
+                return False
+        # O canal do contexto sai DIRETO, sem o proxy e sem os certificados
+        # do Windows: na rede do fórum ele nem alcança o portal, e a sessão
+        # pareceria sempre perdida (Pasta Digital recusada viraria "sessão
+        # caiu" e novo login, em vez de "sem acesso"). A aba usa o proxy.
+        try:
+            if not (self.pg.url or "").startswith(self.base):
+                return False
+            status, texto = self._buscar_texto(caminho, cabecalhos={"Cache-Control": "no-cache"})
+            if status == 200:
+                dados = json.loads(texto)
+                return isinstance(dados, dict) and dados.get("usuarioLogado") is True
+        except Exception as erro:
+            log.debug("  sessao_ativa pela aba: %s", str(erro)[:120])
         return False
 
     def _estado_sessao(self, pagina) -> bool | None:
@@ -841,6 +886,9 @@ class PortalESAJ:
     def entrar(self) -> None:
         """Garante uma sessão autenticada. Reaproveita a anterior se valer."""
         self._checar_cancelado()
+        # O canal pelo proxy leva uma CÓPIA dos cookies de quando foi criado:
+        # depois de um novo login, ele baixaria com a sessão velha.
+        self._descartar_canal_proxy()
         try:
             if self.modo == "certificado":
                 self._entrar_por_certificado()
@@ -1177,12 +1225,16 @@ class PortalESAJ:
                 .filter(x => /processo\.codigo=/.test(x.h))""")
         except Exception:
             pares = []
+        achados = []
         for par in pares or []:
             if numero.principal in (par.get("t") or ""):
                 cd = codigo_na(par.get("h"))
-                if cd:
-                    return cd
-        return None
+                if cd and cd not in achados:
+                    achados.append(cd)
+        # Principal e incidentes têm o mesmo número; o código do principal
+        # termina em 0000 (o do incidente N troca os 4 últimos por N). Pegar
+        # o primeiro da lista podia gravar um incidente com o nome do principal.
+        return next((c for c in achados if c.endswith("0000")), achados[0] if achados else None)
 
     def achar_codigo(self, numero: Numero) -> str:
         url = url_busca(self.base, numero)
@@ -1526,6 +1578,14 @@ class PortalESAJ:
             log.info("    (não consegui preparar o canal pelo proxy: %s)", str(erro)[:120])
         return self._canal_proxy
 
+    def _descartar_canal_proxy(self) -> None:
+        canal, self._canal_proxy = self._canal_proxy, None
+        if canal:
+            try:
+                canal.dispose()
+            except Exception:
+                pass
+
     def baixar_pelo_navegador(self, url: str) -> bytes:
         """Último recurso: buscar o arquivo dentro da própria aba."""
         b64 = self.pg.evaluate(
@@ -1567,6 +1627,12 @@ class PortalESAJ:
                     if not falha_de_rede(str(erro)):
                         raise
                     ultimo = erro
+                    if falha_de_caminho(str(erro)):
+                        # nome que não resolve, certificado da rede: insistir
+                        # no mesmo canal só gasta tempo
+                        log.info("    o canal %s não alcança o portal (%s); tentando outro "
+                                 "caminho...", nome, explicar_erro(str(erro))[:120])
+                        break
                     log.info("    falha de conexão no canal %s (tentativa %d/3); repetindo...",
                              nome, tentativa)
                     self._dormir(3 * tentativa)
@@ -1613,15 +1679,26 @@ class PortalESAJ:
         """Baixa cada peça e junta num PDF só. Devolve (páginas, peças que faltaram)."""
         partes: list[pdf.Parte] = []
         faltaram: list[dict] = []
+        vieram = 0
         for i, p in enumerate(pecas, 1):
             self._checar_cancelado()
             self.ctx.status(f"{rotulo}: baixando peça {i} de {len(pecas)}...")
             titulo = titulo_da_peca(p)
             dados = self.baixar_peca(p["parametros"])
             if dados:
+                vieram += 1
                 partes.append(pdf.Parte(titulo, dados, "pdf"))
             else:
                 faltaram.append(p)
+                if not vieram and len(faltaram) >= MAX_PECAS_SEGUIDAS_FALHANDO \
+                        and len(pecas) > MAX_PECAS_SEGUIDAS_FALHANDO:
+                    # Servidor fora: cada peça custa até ~40 s de insistência
+                    # (dois endereços, três tentativas). Num processo de 200
+                    # peças seriam horas para concluir que nada vem.
+                    raise RuntimeError(
+                        f"nem o PDF único nem as peças avulsas puderam ser baixados (as "
+                        f"{len(faltaram)} primeiras peças falharam; o servidor do tribunal "
+                        "parece fora do ar)")
                 partes.append(pdf.Parte(
                     "Documento não incluído",
                     (f"A peça \"{titulo}\" não pôde ser baixada do {self.nome}. "
@@ -1660,7 +1737,14 @@ class PortalESAJ:
             if len(dados) < 200 or pdf.e_html(dados):
                 log.warning("    gravação %s: resposta vazia ou tela de erro", nome)
                 continue
-            sistema.gravar_atomico(alvo, dados)
+            try:
+                sistema.gravar_atomico(alvo, dados)
+            except OSError as erro:
+                # Disco cheio ou nome recusado: o PDF já está gravado. Deixar o
+                # erro subir marcaria o processo como ERRO com o PDF na pasta -
+                # e, se sigiloso, ele nunca iria para a pasta de sigilosos.
+                log.warning("    gravação %s não pôde ser salva: %s", nome, erro)
+                continue
             salvas.append(str(alvo))
             log.info("    gravação: %s (%.1f MB)", nome, len(dados) / 1048576)
         return salvas

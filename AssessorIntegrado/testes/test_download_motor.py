@@ -254,6 +254,8 @@ class TestRelatorio(BaseMotor):
         self.assertEqual(resumo.itens[0].situacao, modelos.OK)
         self.assertEqual(resumo.relatorio.name, "relatorio (atualizado).csv")
         self.assertEqual(ler_relatorio(resumo.relatorio)[1][4], "OK")
+        self.assertEqual(list((self.destino / "_controle").glob("*.tmp")), [],
+                         "o .tmp da troca recusada não fica esquecido")
 
 
 class TestRetentativas(BaseMotor):
@@ -281,9 +283,11 @@ class TestRetentativas(BaseMotor):
         self.assertEqual(len(apoio.PortalFalso.todos[0].chamadas), 1)
 
     def test_nao_encontrado_nao_e_repetido(self):
-        resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["nao_encontrado"]},
+        # TJRS: só eProc, sem sistema alternativo (o TJAL procuraria no eProc)
+        resumo = self.rodar([TJRS1], roteiro={TJRS1.formatado: ["nao_encontrado"]},
                             tentativas=3)
         self.assertEqual(resumo.itens[0].situacao, modelos.NAO_ENCONTRADO)
+        self.assertEqual(len(apoio.PortalFalso.todos), 1)
         self.assertEqual(len(apoio.PortalFalso.todos[0].chamadas), 1)
 
     def test_sem_acesso_devolvido_pelo_portal(self):
@@ -459,6 +463,143 @@ class TestFabricas(unittest.TestCase):
         self.assertFalse(motor.fabrica_navegador_padrao(t, op2).visivel)
 
 
+class TestSistemaAlternativo(BaseMotor):
+    """TJAL, TJSP e TJAC estão em transição: o que o e-SAJ não acha pode
+    estar no eProc. A tela já promete isso ao mostrar o acesso ao eProc."""
+
+    def rodar_alt(self, numeros, roteiro=None, falha_alt=None, **opcoes):
+        """Como rodar(), mas o entrar() do portal alternativo (eProc) pode falhar."""
+        fp_base, fn = apoio.fabricas(roteiro)
+
+        def fp(nav, tribunal, op, ctx, credenciais):
+            portal = fp_base(nav, tribunal, op, ctx, credenciais)
+            if tribunal.sistema == "eproc" and falha_alt is not None:
+                portal.falha_entrar = [falha_alt]
+            return portal
+        self.opcoes = apoio.opcoes_de_teste(self.tmp, **opcoes)
+        return motor.executar(numeros, self.destino, self.opcoes, self.ctx,
+                              fabrica_portal=fp, fabrica_navegador=fn)
+
+    def test_nao_encontrado_no_esaj_e_baixado_do_eproc(self):
+        resumo = self.rodar_alt([TJAL1, TJAL2, TJAL3],
+                                roteiro={TJAL2.formatado: ["nao_encontrado", "ok"]})
+        r1, r2, r3 = resumo.itens
+        self.assertEqual([r.situacao for r in resumo.itens], [modelos.OK] * 3)
+        self.assertEqual((r1.sistema, r2.sistema, r3.sistema), ("esaj", "eproc", "esaj"),
+                         "o relatório diz em que sistema cada um foi achado")
+        esaj, eproc = apoio.PortalFalso.todos
+        self.assertEqual((esaj.tribunal.sistema, eproc.tribunal.sistema), ("esaj", "eproc"))
+        self.assertEqual([c[0] for c in eproc.chamadas], [TJAL2.formatado],
+                         "só o não encontrado vai ao eProc")
+        self.assertEqual(len(apoio.NavegadorFalso.instancias), 2, "outro navegador, outro login")
+        self.assertTrue((self.destino / f"{TJAL2.nome_arquivo}.pdf").exists())
+        linhas = ler_relatorio(resumo.relatorio)[1:]
+        self.assertEqual([(l[1], l[3], l[4]) for l in linhas],
+                         [(TJAL1.formatado, "esaj", "OK"), (TJAL2.formatado, "eproc", "OK"),
+                          (TJAL3.formatado, "esaj", "OK")])
+
+    def test_nao_encontrado_nos_dois(self):
+        resumo = self.rodar_alt([TJAL1], roteiro={TJAL1.formatado: ["nao_encontrado"] * 2})
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.NAO_ENCONTRADO)
+        self.assertEqual(r.sistema, "esaj")
+        self.assertIn("nem no eProc do TJAL", r.detalhe)
+
+    def test_alternativo_que_nao_entra_mantem_o_nao_encontrado(self):
+        resumo = self.rodar_alt([TJAL1, TJAL2], roteiro={TJAL1.formatado: ["nao_encontrado"]},
+                                falha_alt=modelos.LoginFalhou("o eProc recusou a senha"))
+        r1, r2 = resumo.itens
+        self.assertEqual(r1.situacao, modelos.NAO_ENCONTRADO,
+                         "um login recusado no eProc não pode virar ERRO de quem o e-SAJ não achou")
+        self.assertIn("não encontrado no 1º grau", r1.detalhe)
+        self.assertIn("login falhou: o eProc recusou a senha", r1.detalhe)
+        self.assertEqual(r1.sistema, "esaj")
+        self.assertEqual(r2.situacao, modelos.OK)
+        self.assertEqual(apoio.PortalFalso.todos[1].chamadas, [])
+
+    def test_modulo_do_eproc_ausente_mantem_o_nao_encontrado(self):
+        fp_base, fn = apoio.fabricas({TJAL1.formatado: ["nao_encontrado"]})
+
+        def fp(nav, tribunal, op, ctx, credenciais):
+            if tribunal.sistema == "eproc":
+                raise modelos.PortalIndisponivel("o módulo do eProc não está presente")
+            return fp_base(nav, tribunal, op, ctx, credenciais)
+        resumo = motor.executar([TJAL1], self.destino, apoio.opcoes_de_teste(self.tmp), self.ctx,
+                                fabrica_portal=fp, fabrica_navegador=fn)
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.NAO_ENCONTRADO)
+        self.assertIn("módulo do eProc", r.detalhe)
+
+    def test_erro_no_alternativo_diz_onde_foi(self):
+        resumo = self.rodar_alt([TJAL1], roteiro={TJAL1.formatado: ["nao_encontrado", "erro"]},
+                                tentativas=1)
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.ERRO)
+        self.assertEqual(r.sistema, "eproc")
+        self.assertIn("não encontrado no e-SAJ; no eProc: o portal demorou demais", r.detalhe)
+
+    def test_desfecho_definitivo_no_alternativo_leva_o_sistema_certo(self):
+        resumo = self.rodar_alt([TJAL1], roteiro={TJAL1.formatado: ["nao_encontrado",
+                                                                  "nao_encontrado_sem_acesso"]})
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.SEM_ACESSO)
+        self.assertEqual(r.sistema, "eproc")
+
+    def test_parar_no_principal_nao_abre_o_alternativo(self):
+        resumo = self.rodar_alt([TJAL1, TJAL2], roteiro={TJAL1.formatado: ["nao_encontrado"],
+                                                       TJAL2.formatado: ["cancelar"]})
+        self.assertEqual(len(apoio.PortalFalso.todos), 1)
+        self.assertEqual(resumo.itens[0].situacao, modelos.NAO_ENCONTRADO)
+        self.assertEqual(resumo.itens[1].situacao, modelos.CANCELADO)
+
+    def test_progresso_nao_anda_para_tras(self):
+        self.rodar_alt([TJAL1, TJAL2], roteiro={TJAL1.formatado: ["nao_encontrado", "ok"]})
+        feitos = [p[0] for p in self.ctx.progressos]
+        self.assertEqual(feitos, sorted(feitos), feitos)
+        self.assertEqual(self.ctx.progressos[-1][:2], (2, 2))
+
+    def test_tribunal_sem_alternativo_nao_reabre(self):
+        self.rodar_alt([TJRS1], roteiro={TJRS1.formatado: ["nao_encontrado"]})
+        self.assertEqual(len(apoio.PortalFalso.todos), 1)
+
+
+class TestSemSenhaGuardada(BaseMotor):
+    def test_modo_senha_sem_senha_entra_manualmente(self):
+        """A tela avisa: 'sem a senha, o navegador abre na tela de entrada e
+        você entra manualmente'. O motor tem de cumprir a promessa."""
+        resumo = self.rodar([TJAL1], cofre=apoio.CofreFalso())
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+        portal = apoio.PortalFalso.todos[0]
+        nav = apoio.NavegadorFalso.instancias[0]
+        self.assertEqual(portal.opcoes.modo_login("esaj"), "manual")
+        self.assertTrue(nav.opcoes.navegador_visivel("esaj"), "o usuário precisa da janela")
+        self.assertEqual(self.opcoes.modo_login("esaj"), "senha",
+                         "a troca vale só para o grupo; as opções do lote ficam como estavam")
+
+    def test_com_senha_guardada_continua_no_modo_senha(self):
+        self.rodar([TJAL1], cofre=apoio.CofreFalso({"esaj:TJAL": ("u", "s")}))
+        portal = apoio.PortalFalso.todos[0]
+        self.assertEqual(portal.opcoes.modo_login("esaj"), "senha")
+        self.assertFalse(apoio.NavegadorFalso.instancias[0].opcoes.navegador_visivel("esaj"))
+
+
+class TestEventosParaATela(BaseMotor):
+    def test_linha_em_curso_nao_volta_a_aguardando(self):
+        """A tela marca 'baixando…' ao receber o progresso; um item com
+        situação vazia logo depois a fazia voltar a 'aguardando'."""
+        eventos = []
+        ctx = self.ctx
+        progresso_original, item_original = ctx.progresso, ctx.item
+        ctx.progresso = lambda f, t, a: (eventos.append(("progresso", a)),
+                                         progresso_original(f, t, a))
+        ctx.item = lambda r: (eventos.append(("item", r.numero, r.situacao)), item_original(r))
+        self.rodar([TJAL1, TJAL2])
+        for numero in (TJAL1.formatado, TJAL2.formatado):
+            inicio = eventos.index(("progresso", numero))
+            depois = [e for e in eventos[inicio:] if e[0] == "item" and e[1] == numero]
+            self.assertEqual(depois, [("item", numero, modelos.OK)], eventos)
+
+
 class TestPreparoParaIA(BaseMotor):
     def test_preparo_chamado_ao_fim_e_nunca_derruba(self):
         chamadas = []
@@ -478,6 +619,20 @@ class TestPreparoParaIA(BaseMotor):
                                         fabrica_portal=fp, fabrica_navegador=fn, cfg=cfg)
         self.assertEqual(chamadas, [cfg])
         self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+
+    def test_parar_nao_espera_o_preparo(self):
+        chamadas = []
+        falso = types.ModuleType("app.compartilhar.preparo")
+        falso.atualizar_contexto = lambda cfg, *a, **k: chamadas.append(cfg)
+        fp, fn = apoio.fabricas({TJAL2.formatado: ["cancelar"]})
+        opcoes = apoio.opcoes_de_teste(self.tmp, atualizar_ia=True)
+        with mock.patch.dict(sys.modules, {"app.compartilhar.preparo": falso}):
+            import app.compartilhar as pacote
+            with mock.patch.object(pacote, "preparo", falso, create=True):
+                resumo = motor.executar([TJAL1, TJAL2], self.destino, opcoes, self.ctx,
+                                        fabrica_portal=fp, fabrica_navegador=fn, cfg=object())
+        self.assertEqual(len(resumo.baixados), 1)
+        self.assertEqual(chamadas, [], "depois de 'Parar' o programa fica livre na hora")
 
     def test_sem_baixados_nao_prepara(self):
         chamadas = []

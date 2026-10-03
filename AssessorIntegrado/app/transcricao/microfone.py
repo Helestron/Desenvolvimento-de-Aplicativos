@@ -185,6 +185,7 @@ class Reamostrador:
     """
 
     LOBULOS = 8
+    LOTE = 16384   # amostras de saída por vez (memória limitada a poucos MB)
 
     def __init__(self, origem: int, destino: int = TAXA):
         self.origem = int(origem)
@@ -221,12 +222,18 @@ class Reamostrador:
         n_fim = -(-limite // self.q) if limite > 0 else 0
         if n_fim <= self._n:
             return np.zeros(0, dtype=np.float32)
-        ns = np.arange(self._n, n_fim, dtype=np.int64)
-        pos = ns * self.q
-        i0 = pos // self.p
-        fase = pos % self.p
-        idx = (i0 - self.meia + 1 - self._base)[:, None] + self._desloc[None, :]
-        y = np.einsum("ij,ij->i", self._buf[idx], self._tabela[fase]).astype(np.float32)
+        y = np.empty(int(n_fim - self._n), dtype=np.float32)
+        # Em lotes: as matrizes de índices e de pesos têm ~50 colunas por
+        # amostra de saída. De uma vez só, 2 min de WAV a 44,1 kHz já pediam
+        # 1,5 GB, e uma audiência inteira estourava a memória (MemoryError).
+        for ini in range(self._n, int(n_fim), self.LOTE):
+            fim = min(int(n_fim), ini + self.LOTE)
+            pos = np.arange(ini, fim, dtype=np.int64) * self.q
+            i0 = pos // self.p
+            fase = pos % self.p
+            idx = (i0 - self.meia + 1 - self._base)[:, None] + self._desloc[None, :]
+            y[ini - self._n:fim - self._n] = np.einsum("ij,ij->i", self._buf[idx],
+                                                       self._tabela[fase])
         self._n = int(n_fim)
         prox = (self._n * self.q) // self.p
         corte = max(0, prox - self.meia + 1 - self._base)

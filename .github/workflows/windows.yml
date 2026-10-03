@@ -1,0 +1,396 @@
+# ============================================================================
+#  Assessor Integrado - instalação e testes no Windows de verdade
+#
+#  O job "windows" faz o que o usuário faz: pega o ZIP de distribuição,
+#  extrai numa pasta COM ESPAÇO E ACENTO (C:\Teste Área\Assessor Integrado),
+#  marca os arquivos como baixados da internet e dá "dois cliques" no
+#  INSTALAR.bat (modo silencioso). Depois instala de novo (tem de ser
+#  idempotente), roda a suíte de testes com o Python instalado, a verificação
+#  completa, uma transcrição ao vivo de ponta a ponta com fala sintetizada,
+#  a interface (com capturas de tela), o servidor MCP, o cofre de senhas
+#  (DPAPI) e, por fim, o DESINSTALAR.bat.
+#
+#  Regra deste arquivo: os scripts dos passos ("run:") só têm ASCII - o
+#  runner os grava em arquivo temporário, e acento ali sai trocado no cmd e
+#  no PowerShell 5.1. Texto com acento entra por "env:".
+# ============================================================================
+name: Windows
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Instalação e testes no Windows
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      PASTA: 'C:\Teste Área\Assessor Integrado'
+      PROCESSO: '0700123-45.2024.8.02.0001'
+      FALA: >-
+        Bom dia a todos. Está aberta a audiência de instrução e julgamento.
+        Presentes o autor, o réu e os advogados das partes.
+        Passo a palavra à testemunha, que foi devidamente compromissada.
+        A testemunha declarou que viu o acidente na esquina da rua principal,
+        por volta das dez horas da manhã, e que o carro vinha em alta velocidade.
+      PYTHONIOENCODING: utf-8
+    defaults:
+      run:
+        working-directory: AssessorIntegrado
+
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Gerar o ZIP de distribuição
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $destino = Join-Path $env:RUNNER_TEMP 'dist'
+          powershell -NoProfile -ExecutionPolicy Bypass -File instalador\empacotar.ps1 -Destino $destino
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $zip = Get-ChildItem -LiteralPath $destino -Filter 'AssessorIntegrado-*.zip' | Select-Object -First 1
+          if (-not $zip) { Write-Host 'O empacotador terminou sem gerar o ZIP.'; exit 1 }
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "ZIP=$($zip.FullName)`nZIP_NOME=$($zip.BaseName)`n")
+
+      - name: Extrair numa pasta com espaço e acento, como baixado da internet
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pai = Split-Path -Parent $env:PASTA
+          New-Item -ItemType Directory -Force -Path $pai | Out-Null
+          Expand-Archive -LiteralPath $env:ZIP -DestinationPath $pai -Force
+          Rename-Item -LiteralPath (Join-Path $pai 'AssessorIntegrado') -NewName (Split-Path -Leaf $env:PASTA)
+          # Marca da web (Zone.Identifier): o Explorer grava esta marca ao extrair um ZIP baixado.
+          $marcados = 0
+          foreach ($f in @(Get-ChildItem -LiteralPath $env:PASTA -Recurse -File)) {
+            Set-Content -LiteralPath $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
+            $marcados++
+          }
+          Write-Host "Pronto: $env:PASTA ($marcados arquivos com a marca de baixados da internet)."
+
+      - name: Instalar (INSTALAR.bat -Silencioso)
+        shell: cmd
+        timeout-minutes: 45
+        run: |
+          cd /d "%PASTA%"
+          call INSTALAR.bat -Silencioso
+
+      - name: Conferir a instalação
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location -LiteralPath $env:PASTA
+          foreach ($f in @('runtime\python\python.exe', 'runtime\python\pythonw.exe', 'runtime\estado.json',
+                           'runtime\verificacao.json', 'config.ini', 'Acervo\Processos', 'Acervo\Transcricoes')) {
+            if (-not (Test-Path -LiteralPath $f)) { throw "Faltou $f" }
+          }
+          Copy-Item -LiteralPath 'runtime\verificacao.json' -Destination 'Logs\verificacao-da-instalacao.json'
+          Get-Content -LiteralPath 'runtime\estado.json' -Encoding UTF8
+          $estado = Get-Content -LiteralPath 'runtime\estado.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($estado.resultado -eq 'falha') { throw 'O instalador terminou com falha.' }
+          # A marca da web saiu dos arquivos do programa?
+          $ainda = @(@(Get-ChildItem -LiteralPath $env:PASTA -File) + @(Get-ChildItem -LiteralPath 'instalador' -File) |
+                     Where-Object { Get-Item -LiteralPath $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue })
+          if ($ainda.Count -gt 0) { throw ('Arquivos ainda marcados: ' + ($ainda.Name -join ', ')) }
+          # Atalhos apontando para esta pasta.
+          $shell = New-Object -ComObject WScript.Shell
+          foreach ($pasta in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+            $lnk = Join-Path $pasta 'Assessor Integrado.lnk'
+            if (-not (Test-Path -LiteralPath $lnk)) { throw "Faltou o atalho $lnk" }
+            $a = $shell.CreateShortcut($lnk)
+            Write-Host "$lnk -> $($a.TargetPath) $($a.Arguments)"
+            if ($a.TargetPath -ne (Join-Path $env:PASTA 'runtime\python\pythonw.exe')) { throw 'Atalho com alvo errado' }
+            if ($a.Arguments -notlike '*iniciar.pyw*') { throw 'Atalho sem o iniciar.pyw' }
+          }
+
+      - name: Instalar de novo (tem de pular o que já está feito)
+        shell: cmd
+        timeout-minutes: 20
+        run: |
+          cd /d "%PASTA%"
+          call INSTALAR.bat -Silencioso
+
+      - name: Conferir que a segunda instalação não refez nada
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $logs = @(Get-ChildItem -LiteralPath (Join-Path $env:PASTA 'Logs') -Filter 'instalacao-*.log' |
+                    Where-Object { $_.Name -notlike '*-pip.log' } | Sort-Object Name)
+          if ($logs.Count -lt 2) { throw 'Faltam os registros das duas rodadas do instalador.' }
+          # Sem -Encoding: o Get-Content reconhece o BOM do registro (UTF-8 ou UTF-16); e o
+          # "j.{1,3}" aceita o "ja" acentuado em qualquer das duas leituras.
+          $texto = Get-Content -LiteralPath $logs[-1].FullName -Raw
+          foreach ($trecho in @('Python 3\.12\.\d+ j.{1,3} instalado', 'Bibliotecas j.{1,3} instaladas', 'Modelo j.{1,3} instalado')) {
+            if ($texto -notmatch $trecho) { throw "Faltou no registro da segunda rodada: $trecho" }
+          }
+          Write-Host 'Segunda rodada: nada foi baixado de novo.'
+
+      - name: Testes de unidade (com o Python instalado)
+        shell: cmd
+        timeout-minutes: 30
+        run: |
+          cd /d "%PASTA%"
+          runtime\python\python.exe -m unittest discover -s testes -t . -v
+
+      - name: Verificação completa
+        shell: cmd
+        timeout-minutes: 15
+        run: |
+          cd /d "%PASTA%"
+          runtime\python\python.exe -m app verificar --completo --json Logs\verificacao-completa.json
+
+      - name: Gerar fala sintetizada (System.Speech, WAV 16 kHz mono)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Speech
+          $voz = New-Object System.Speech.Synthesis.SpeechSynthesizer
+          $vozes = @($voz.GetInstalledVoices() | Where-Object { $_.Enabled } | ForEach-Object { $_.VoiceInfo })
+          foreach ($v in $vozes) { Write-Host ("Voz: {0} ({1})" -f $v.Name, $v.Culture) }
+          if ($vozes.Count -eq 0) { throw 'Nenhuma voz do System.Speech neste runner.' }
+          $pt = $vozes | Where-Object { $_.Culture.Name -like 'pt*' } | Select-Object -First 1
+          if ($pt) { $voz.SelectVoice($pt.Name) }
+          $formato = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo -ArgumentList 16000, ([System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen), ([System.Speech.AudioFormat.AudioChannel]::Mono)
+          $wav = Join-Path $env:PASTA 'fala.wav'
+          $voz.SetOutputToWaveFile($wav, $formato)
+          $voz.Rate = -1
+          $voz.Speak($env:FALA)
+          $voz.SetOutputToNull()
+          $voz.Dispose()
+          $tamanho = (Get-Item -LiteralPath $wav).Length
+          Write-Host ("fala.wav: {0:N0} bytes (~{1:N1} s)" -f $tamanho, ($tamanho / 32000))
+          if ($tamanho -lt 64000) { throw 'A fala sintetizada ficou curta demais.' }
+
+      - name: Transcrição ao vivo de ponta a ponta (fala.wav no lugar do microfone)
+        shell: cmd
+        timeout-minutes: 15
+        run: |
+          cd /d "%PASTA%"
+          runtime\python\python.exe -m app transcrever --ao-vivo --processo 0700123-45.2024.8.02.0001 --wav fala.wav
+          if errorlevel 1 exit /b 1
+          if not exist "Acervo\Transcricoes\%PROCESSO%.docx" (
+            echo Faltou o DOCX Acervo\Transcricoes\%PROCESSO%.docx
+            exit /b 1
+          )
+          runtime\python\python.exe -c "import docx, re, sys; t = '\n'.join(p.text for p in docx.Document(sys.argv[1]).paragraphs); print(t); ok = sys.argv[2] in t and re.search(r'\[\d\d:\d\d:\d\d\]', t); sys.exit(0 if ok else 1)" "Acervo\Transcricoes\%PROCESSO%.docx" %PROCESSO%
+
+      - name: Interface (abre, percorre as telas, salva capturas e fecha)
+        shell: cmd
+        timeout-minutes: 10
+        run: |
+          cd /d "%PASTA%"
+          runtime\python\python.exe -m app --teste-interface
+          if errorlevel 1 exit /b 1
+          dir /b Logs\captura-*.png
+
+      - name: Servidor MCP (mensagens JSON-RPC pela entrada padrão) e registro no Claude Desktop
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $script = Join-Path $env:RUNNER_TEMP 'teste_mcp.py'
+          Set-Content -LiteralPath $script -Encoding Ascii -Value @'
+          import json, os, subprocess, sys
+          pasta = os.environ["PASTA"]
+          sys.path.insert(0, pasta)
+          acervo = os.path.join(pasta, "Acervo")
+          python = os.path.join(pasta, "runtime", "python", "python.exe")
+          env = dict(os.environ, PYTHONPATH=pasta, PYTHONIOENCODING="utf-8")
+          mensagens = [
+              {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+               "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                          "clientInfo": {"name": "ci", "version": "1"}}},
+              {"jsonrpc": "2.0", "method": "notifications/initialized"},
+              {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+              {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+               "params": {"name": "listar_acervo", "arguments": {}}},
+              {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+               "params": {"name": "ler_transcricao", "arguments": {"numero": os.environ["PROCESSO"]}}},
+              {"jsonrpc": "2.0", "id": 5, "method": "ping"},
+          ]
+          entrada = "".join(json.dumps(m) + "\n" for m in mensagens).encode("utf-8")
+          # Como o Claude Desktop faz: outra pasta de trabalho, PYTHONPATH apontando o programa.
+          r = subprocess.run([python, "-m", "app.compartilhar.mcp_servidor", "--pasta", acervo],
+                             input=entrada, capture_output=True, env=env,
+                             cwd=os.environ["RUNNER_TEMP"], timeout=180)
+          sys.stderr.write(r.stderr.decode("utf-8", "replace"))
+          respostas = {}
+          for linha in r.stdout.decode("utf-8").splitlines():
+              if linha.strip():
+                  d = json.loads(linha)
+                  respostas[d["id"]] = d
+          assert sorted(respostas) == [1, 2, 3, 4, 5], respostas
+          assert respostas[1]["result"]["serverInfo"]["name"] == "assessor-integrado", respostas[1]
+          nomes = {t["name"] for t in respostas[2]["result"]["tools"]}
+          assert {"listar_acervo", "ler_processo", "buscar", "ler_transcricao"} <= nomes, nomes
+          assert not respostas[3]["result"]["isError"], respostas[3]
+          assert not respostas[4]["result"]["isError"], respostas[4]
+          print(respostas[3]["result"]["content"][0]["text"][:3000])
+          print(respostas[4]["result"]["content"][0]["text"][:3000])
+          from app.compartilhar import claude
+          alterados = claude.registrar_mcp(acervo)
+          assert claude.mcp_registrado(), "o conector ficou sem registro"
+          print("Registrado em:", [str(a) for a in alterados])
+          print("MCP OK")
+          '@
+          & (Join-Path $env:PASTA 'runtime\python\python.exe') $script
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Cofre de senhas (DPAPI)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $script = Join-Path $env:RUNNER_TEMP 'teste_dpapi.py'
+          Set-Content -LiteralPath $script -Encoding Ascii -Value @'
+          import os, sys, tempfile
+          sys.path.insert(0, os.environ["PASTA"])
+          from app.nucleo.cofre_senhas import CofreSenhas
+          arquivo = os.path.join(tempfile.mkdtemp(), "credenciais.json")
+          cofre = CofreSenhas(arquivo)
+          senha = "s3nh@ de teste \u00e7\u00e3o"
+          cofre.guardar("esaj:TJAL", "usuario.teste", senha)
+          bruto = open(arquivo, encoding="utf-8").read()
+          assert "dpapi:" in bruto and "s3nh@" not in bruto, bruto
+          assert cofre.obter("esaj:TJAL") == ("usuario.teste", senha)
+          assert cofre.portais() == ["esaj:TJAL"]
+          cofre.apagar("esaj:TJAL")
+          assert cofre.obter("esaj:TJAL") == ("", "")
+          print("DPAPI OK")
+          '@
+          & (Join-Path $env:PASTA 'runtime\python\python.exe') $script
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Desinstalar (DESINSTALAR.bat -Silencioso mantém os dados)
+        shell: cmd
+        run: |
+          cd /d "%PASTA%"
+          call DESINSTALAR.bat -Silencioso
+
+      - name: Conferir a desinstalação
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location -LiteralPath $env:PASTA
+          if (Test-Path -LiteralPath 'runtime') { throw 'A pasta runtime ficou.' }
+          if (-not (Test-Path -LiteralPath "Acervo\Transcricoes\$env:PROCESSO.docx")) { throw 'O acervo deveria ter sido mantido.' }
+          foreach ($pasta in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+            if (Test-Path -LiteralPath (Join-Path $pasta 'Assessor Integrado.lnk')) { throw "O atalho ficou em $pasta" }
+          }
+          $cfg = Join-Path $env:APPDATA 'Claude\claude_desktop_config.json'
+          if ((Test-Path -LiteralPath $cfg) -and ((Get-Content -LiteralPath $cfg -Raw) -match 'assessor-integrado')) {
+            throw 'O conector continuou registrado no Claude Desktop.'
+          }
+          Write-Host 'Desinstalador conferido: tudo certo.'
+
+      - name: Juntar registros e capturas
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $destino = Join-Path $env:RUNNER_TEMP 'artefatos'
+          New-Item -ItemType Directory -Force -Path $destino | Out-Null
+          if (Test-Path -LiteralPath $env:PASTA) {
+            Copy-Item -LiteralPath (Join-Path $env:PASTA 'Logs') -Destination $destino -Recurse -Force -ErrorAction SilentlyContinue
+            Copy-Item -LiteralPath (Join-Path $env:PASTA 'fala.wav') -Destination $destino -ErrorAction SilentlyContinue
+            Copy-Item -LiteralPath (Join-Path $env:PASTA 'Acervo\Transcricoes') -Destination $destino -Recurse -Force -ErrorAction SilentlyContinue
+            Copy-Item -LiteralPath (Join-Path $env:PASTA 'config.ini') -Destination $destino -ErrorAction SilentlyContinue
+          }
+          $capturas = Join-Path $env:RUNNER_TEMP 'capturas'
+          New-Item -ItemType Directory -Force -Path $capturas | Out-Null
+          Get-ChildItem -LiteralPath (Join-Path $destino 'Logs') -Filter 'captura-*.png' -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $capturas
+          exit 0
+
+      - name: Publicar registros
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: registros-windows
+          path: ${{ runner.temp }}/artefatos
+          if-no-files-found: warn
+
+      - name: Publicar capturas de tela
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capturas-de-tela
+          path: ${{ runner.temp }}/capturas
+          if-no-files-found: warn
+
+      - name: Publicar o ZIP de distribuição
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NOME }}
+          path: |
+            ${{ env.ZIP }}
+            ${{ env.ZIP }}.sha256
+          if-no-files-found: error
+
+  linux:
+    name: Testes de unidade no Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: AssessorIntegrado
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Bibliotecas do sistema (PortAudio e tela virtual)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libportaudio2 xvfb
+
+      - name: Bibliotecas Python
+        run: |
+          # O requisitos.txt trava as rodas do Windows; aqui vale a lista direta,
+          # sem o msvc-runtime (que existe apenas para Windows).
+          sed '/msvc-runtime/d' instalador/requisitos.in > "$RUNNER_TEMP/requisitos-linux.txt"
+          python -m pip install --disable-pip-version-check -r "$RUNNER_TEMP/requisitos-linux.txt"
+
+      - name: Testes de unidade
+        run: xvfb-run -a python -m unittest discover -s testes -t . -v
+
+      - name: Verificação (o que é só do Windows vira aviso)
+        run: python -m app verificar --json "$RUNNER_TEMP/verificacao.json"
+
+  publicar:
+    name: Publicar a versão (tags v*)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Baixar o ZIP testado
+        uses: actions/download-artifact@v4
+        with:
+          pattern: AssessorIntegrado-*
+          path: dist
+          merge-multiple: true
+
+      - name: Criar a versão no GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITULO: Assessor Integrado ${{ github.ref_name }}
+          NOTAS: >-
+            Baixe o arquivo AssessorIntegrado-<versão>.zip, extraia a pasta (botão direito >
+            Extrair Tudo) e dê dois cliques em INSTALAR.bat. A instalação não pede administrador.
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$TITULO" --notes "$NOTAS"

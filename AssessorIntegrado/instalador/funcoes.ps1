@@ -420,10 +420,26 @@ function Encerrar-Arvore {
     # Mata o processo e os filhos dele (o pip abre outros Pythons).
     param([int]$Id)
     try {
-        $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+        $taskkill = Programa-DoWindows 'taskkill.exe'
         Start-Process -FilePath $taskkill -ArgumentList ('/T /F /PID ' + $Id) -WindowStyle Hidden -Wait
     } catch {
         try { Stop-Process -Id $Id -Force -ErrorAction Stop } catch { }
+    }
+}
+
+function Mover-ComPaciencia {
+    # Antivírus examinam o arquivo recém-baixado (ou a pasta recém-extraída)
+    # e o seguram por alguns segundos; renomear nesse meio-tempo dá "acesso
+    # negado". Tenta de novo por até 20 segundos antes de desistir.
+    param([string]$Origem, [string]$Destino)
+    for ($i = 1; $i -le 10; $i++) {
+        try {
+            Move-Item -LiteralPath $Origem -Destination $Destino -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($i -eq 10) { throw }
+            Start-Sleep -Seconds 2
+        }
     }
 }
 
@@ -437,7 +453,7 @@ function Remover-Pasta {
     if (Test-Path -LiteralPath $Pasta) {
         $alvo = $Pasta
         if (-not $Pasta.StartsWith('\\')) { $alvo = '\\?\' + $Pasta }
-        $cmd = Join-Path $env:SystemRoot 'System32\cmd.exe'
+        $cmd = Programa-DoWindows 'cmd.exe'
         try { $null = Executar $cmd @('/d', '/c', 'rd', '/s', '/q', $alvo) } catch { }
     }
     return (-not (Test-Path -LiteralPath $Pasta))
@@ -567,13 +583,33 @@ function Baixar {
         }
     }
     if ((Test-Path -LiteralPath $parte) -and (Confere-Hash $parte $Sha256)) {
-        Move-Item -LiteralPath $parte -Destination $Destino -Force
+        Mover-ComPaciencia $parte $Destino
         return
     }
     throw ('não foi possível baixar ' + $Descricao + ' de ' + $Url)
 }
 
 # ------------------------------------------------------- Windows: diversos
+
+function Pasta-DoWindows {
+    # C:\Windows (ou onde estiver). Nunca vazio: um Join-Path com $null
+    # derrubaria o instalador com mensagem em inglês antes de ele começar.
+    foreach ($v in @($env:SystemRoot, $env:windir)) { if ($v) { return $v } }
+    return 'C:\Windows'
+}
+
+function Programa-DoWindows {
+    # Caminho completo de um programa de System32 (tar, curl, robocopy...).
+    # Concatenação, e não Join-Path: o Join-Path confere se a unidade (C:)
+    # existe, e nos testes fora do Windows ela não existe.
+    param([string]$Nome)
+    return ((Pasta-DoWindows).TrimEnd('\') + '\System32\' + $Nome)
+}
+
+function Versao-DoWindows {
+    # Número da compilação do Windows (17763 = Windows 10 1809).
+    return [Environment]::OSVersion.Version.Build
+}
 
 function Achar-Navegador {
     # Google Chrome ou Microsoft Edge instalados (o Edge vem em todo

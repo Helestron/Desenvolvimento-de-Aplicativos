@@ -27,7 +27,7 @@ GUIAS = (
     ("cartao-transcrever", "Transcrever audiência", (
         "Digite o número do processo e escolha o microfone (Testar mostra o nível do som).",
         "Clique no botão redondo para iniciar. Marque quem está falando com os botões F1 a F8 "
-        "- clique duas vezes num botão para trocar o nome.",
+        "— clique duas vezes num botão para trocar o nome.",
         "Ao encerrar, o documento do Word fica na pasta Transcricoes, com o número do processo "
         "no nome. A gravação fica guardada para conferência.",
     )),
@@ -35,7 +35,7 @@ GUIAS = (
         "Clique em “Preparar arquivos para IA”: o programa extrai o texto dos autos (com a "
         "folha marcada) e escreve as instruções de trabalho na pasta do acervo.",
         "Abra o acervo no Claude Code, no Cowork ou no ChatGPT Work. O caminho e o pedido "
-        "inicial vão copiados - cole com Ctrl+V.",
+        "inicial vão copiados — cole com Ctrl+V.",
         "A IA é apoio: confira sempre as folhas citadas e revise o que ela sugerir.",
     )),
 )

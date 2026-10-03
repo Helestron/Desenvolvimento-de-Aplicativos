@@ -49,6 +49,7 @@ log = logging.getLogger("interface.janela")
 
 LARGURA, ALTURA = 1180, 760
 MINIMO = (980, 660)
+LARGURA_TRILHO = 1060      # abaixo disto, a barra lateral mostra só ícones
 TICK_MS = 100
 FATIA_S = 0.04            # tempo máximo de um tique esvaziando a fila
 ESPERA_FECHAR_S = 120     # o DOCX da audiência pode levar um pouco para fechar
@@ -141,6 +142,7 @@ class Janela:
         self.painel.grid(row=0, column=1, sticky="nsew", padx=(0, px(12)), pady=px(12))
         self.painel.columnconfigure(0, weight=1)
         self.painel.rowconfigure(0, weight=1)
+        r.bind("<Configure>", self._largura_mudou, add="+")
 
         for definicao in PAGINAS:
             if definicao is None:
@@ -157,6 +159,12 @@ class Janela:
             pagina.grid(row=0, column=0, sticky="nsew")
             self.paginas[nome] = pagina
             self.barra.adicionar(nome, titulo, icone)
+
+    def _largura_mudou(self, evento) -> None:
+        """Abaixo de ~1060 px (de projeto), a barra lateral vira trilho."""
+        if evento.widget is not self.raiz:
+            return
+        self.barra.definir_compacta(evento.width < px(LARGURA_TRILHO))
 
     def _ligar_log(self) -> None:
         self._ponte = registro.PonteDeLog(self.fila)
@@ -315,7 +323,7 @@ class Janela:
         if pendentes:
             texto = ("Há trabalho em andamento:\n\n" + "\n".join(f"•  {p}" for p in pendentes)
                      + "\n\nFechar mesmo assim? O que estiver em andamento é interrompido "
-                       "com segurança - a transcrição da audiência é salva antes.")
+                       "com segurança — a transcrição da audiência é salva antes.")
             if not dialogos.confirmar(self.raiz, "Fechar o Assessor Integrado", texto):
                 return
         self._fechando = True
@@ -341,6 +349,17 @@ class Janela:
         if self._ponte is not None:
             logging.getLogger().removeHandler(self._ponte)
             self._ponte = None
+        # Os after() pendentes (o laço da fila, cronômetros, animações)
+        # disparariam depois da destruição, contra comandos que não existem
+        # mais ("invalid command name"): cancela todos antes.
+        try:
+            for pendente in self.raiz.tk.splitlist(self.raiz.tk.call("after", "info")):
+                try:
+                    self.raiz.tk.call("after", "cancel", pendente)
+                except tk.TclError:
+                    pass
+        except tk.TclError:
+            pass
         try:
             self.raiz.destroy()
         except tk.TclError:

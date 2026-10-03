@@ -220,6 +220,36 @@ class TestGravarEAnexar(apoio.PastaTemporaria):
             self.assertEqual([t[1] for t in doc.get_toc()], ["Inicial", "Decisão", "Ofício"])
         self.assertFalse((self.tmp / "autos.pdf.parcial").exists())
 
+    def test_arquivo_preso_por_um_instante_nao_derruba_a_gravacao(self):
+        """OneDrive, indexador e antivírus seguram o arquivo recém-gravado por
+        um instante; o motor tomaria o PermissionError por "PDF aberto"."""
+        real = pdf.os.replace
+        falhas = [PermissionError(13, "Acesso negado")] * 2
+
+        def replace(origem, destino):
+            if falhas:
+                raise falhas.pop()
+            return real(origem, destino)
+        destino = self.tmp / "p.pdf"
+        with mock.patch.object(pdf, "ESPERA_TROCA_S", 0), \
+                mock.patch.object(pdf.os, "replace", replace):
+            self.assertEqual(pdf.gravar(destino, apoio.pdf_bytes(2)), 2)
+        self.assertEqual(pdf.contar_paginas(destino), 2)
+        self.assertFalse((self.tmp / "p.pdf.parcial").exists())
+
+    def test_pdf_aberto_no_leitor_ainda_avisa(self):
+        destino = self.tmp / "p.pdf"
+        tentativas = []
+
+        def replace(origem, destino):
+            tentativas.append(1)
+            raise PermissionError(13, "Acesso negado")
+        with mock.patch.object(pdf, "ESPERA_TROCA_S", 0), \
+                mock.patch.object(pdf.os, "replace", replace):
+            with self.assertRaises(PermissionError):
+                pdf.juntar([pdf.Parte("Inicial", apoio.pdf_bytes(1))], destino)
+        self.assertEqual(len(tentativas), pdf.TENTATIVAS_TROCA)
+
     def test_contar_e_valido(self):
         bom = self.tmp / "bom.pdf"
         bom.write_bytes(apoio.pdf_bytes(3))

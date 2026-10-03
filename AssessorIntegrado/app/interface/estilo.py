@@ -307,15 +307,35 @@ def imagem(nome: str, tamanho: int, selo: str | None = None) -> tk.PhotoImage | 
                     d.ellipse((cx - r - 5, cy - r - 5, cx + r + 5, cy + r + 5), fill=MOLDURA)
                     d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=selo)
                     img = grande.resize((tamanho, tamanho), Image.LANCZOS)
-                foto = ImageTk.PhotoImage(img)
+                foto = ImageTk.PhotoImage(img, master=_raiz)
             else:
-                foto = tk.PhotoImage(file=str(arquivo))
+                foto = tk.PhotoImage(file=str(arquivo), master=_raiz)
                 fator = max(1, round(foto.width() / max(1, tamanho)))
                 if fator > 1:
                     foto = foto.subsample(fator, fator)
         except Exception as erro:
             log.debug("ícone %s indisponível: %s", nome, erro)
             foto = None
+    _cache_imagens[chave] = foto
+    return foto
+
+
+def ponto(cor: str, fundo: str = PAPEL) -> tk.PhotoImage | None:
+    """Bolinha colorida de 8 px (estado). Desenhada, e não um caractere '●':
+    nem toda fonte tem o glifo, e sem ele o Tk mostra '\\u25cf'."""
+    chave = ("ponto", cor, fundo)
+    if chave in _cache_imagens:
+        return _cache_imagens[chave]
+    foto = None
+    try:
+        from PIL import Image, ImageDraw, ImageTk
+
+        t, e = px(8), 4
+        img = Image.new("RGBA", (t * e, t * e), fundo)
+        ImageDraw.Draw(img).ellipse((0, 0, t * e - 1, t * e - 1), fill=cor)
+        foto = ImageTk.PhotoImage(img.resize((t, t), Image.LANCZOS), master=_raiz)
+    except Exception:
+        foto = None
     _cache_imagens[chave] = foto
     return foto
 
@@ -349,7 +369,7 @@ def _pilula(largura: int, altura: int, fundo, contorno, raio: int | None = None,
     if fundo is not None or contorno:
         d.rounded_rectangle(caixa, radius=r, fill=fundo, outline=contorno,
                             width=max(1, round(e * FATOR)) if contorno else 0)
-    foto = ImageTk.PhotoImage(img.resize((largura, altura), Image.LANCZOS))
+    foto = ImageTk.PhotoImage(img.resize((largura, altura), Image.LANCZOS), master=_raiz)
     _imagens.append(foto)
     return foto
 
@@ -476,7 +496,7 @@ def _abas(estilo: ttk.Style) -> None:
     def aba(fundo: str, cor: str, espessura: int):
         img = Image.new("RGBA", (L, A), fundo)
         ImageDraw.Draw(img).rectangle((0, A - espessura, L, A), fill=cor)
-        foto = ImageTk.PhotoImage(img)
+        foto = ImageTk.PhotoImage(img, master=_raiz)
         _imagens.append(foto)
         return foto
 
@@ -519,7 +539,7 @@ def _indicadores(estilo: ttk.Style) -> None:
                 d.ellipse((c, c, T - c, T - c), fill=cor_cheia)
             else:
                 d.ellipse((m, m, T - m, T - m), outline=cor_borda, width=w)
-        foto = ImageTk.PhotoImage(img.resize((t, t), Image.LANCZOS))
+        foto = ImageTk.PhotoImage(img.resize((t, t), Image.LANCZOS), master=_raiz)
         _imagens.append(foto)
         return foto
 
@@ -612,8 +632,11 @@ def familia_texto() -> str:
 # --------------------------------------------------------------------- tema
 def _novo_interpretador(raiz: tk.Misc) -> None:
     """Imagens e fontes pertencem a um interpretador Tcl. Uma segunda janela
-    Tk() no mesmo processo (os testes fazem isso) precisa das suas."""
-    global _interpretador
+    Tk() no mesmo processo (os testes fazem isso) precisa das suas - e toda
+    imagem é criada com master explícito: sem ele, o Tk usa a "janela padrão",
+    que pode ser outra (e a imagem "não existe" na janela nova)."""
+    global _interpretador, _raiz
+    _raiz = raiz
     if _interpretador is not raiz.tk:
         _interpretador = raiz.tk
         _imagens.clear()
@@ -624,6 +647,7 @@ def _novo_interpretador(raiz: tk.Misc) -> None:
 
 
 _interpretador = None
+_raiz: tk.Misc | None = None
 _ao_trocar_interpretador: list = []
 
 
@@ -717,7 +741,7 @@ def aplicar(raiz: tk.Tk) -> ttk.Style:
         barra = f"{orient}.TScrollbar"
         estilo.configure(barra, background=LINHA, troughcolor=PAPEL, bordercolor=PAPEL,
                          lightcolor=LINHA, darkcolor=LINHA, arrowcolor=TINTA_FRACA,
-                         relief="flat", borderwidth=0, gripcount=0, arrowsize=px(12))
+                         relief="flat", borderwidth=0, gripcount=0, arrowsize=px(9))
         estilo.map(barra, background=[("active", LINHA_FORTE), ("pressed", APAGADO)],
                    lightcolor=[("active", LINHA_FORTE)], darkcolor=[("active", LINHA_FORTE)])
         estilo.layout(barra, [(f"{orient}.Scrollbar.trough", {"sticky": "nsew", "children": [
@@ -819,6 +843,8 @@ def acompanhar_largura(rotulo, folga: int = 4) -> None:
     1366x768 e deixava linhas curtas em monitor grande.
     """
     def ajustar(evento):
+        if evento.width <= 1:          # ainda não desenhado: nada a medir
+            return
         largura = max(px(80), evento.width - px(folga))
         if abs(int(str(rotulo.cget("wraplength") or 0)) - largura) > 2:
             rotulo.configure(wraplength=largura)

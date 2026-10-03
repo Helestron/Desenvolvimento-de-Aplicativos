@@ -26,6 +26,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Callable
@@ -152,6 +153,20 @@ def _baixar(url: str, destino: Path, sha256: str | None,
             return destino
         except Cancelado:
             raise
+        except urllib.error.HTTPError as erro:
+            ultimo = erro
+            if erro.code == 416 and parcial.exists():
+                # "Range" além do fim: o .part já veio inteiro (o programa caiu
+                # antes de conferir e renomear). Sem tratar, TODA tentativa
+                # repetia o mesmo pedido e a instalação nunca mais terminava.
+                if sha256 and _sha256(parcial) == sha256:
+                    os.replace(parcial, destino)
+                    return destino
+                parcial.unlink(missing_ok=True)
+                continue   # recomeça do zero, sem esperar
+            log.warning("download de %s falhou (tentativa %d): %s", destino.name, tentativa, erro)
+            if tentativa < tentativas:
+                time.sleep(min(20, 3 * tentativa))
         except Exception as erro:
             ultimo = erro
             log.warning("download de %s falhou (tentativa %d): %s", destino.name, tentativa, erro)
@@ -170,6 +185,9 @@ def _instalar_biblioteca(progresso: Callable[[float, str], None]) -> None:
     progresso(0.02, "Instalando o componente sherpa-onnx (alguns minutos)...")
     env = dict(os.environ)
     env.setdefault("PIP_CACHE_DIR", str(caminhos.RUNTIME / "pip-cache"))
+    # Saída do pip em UTF-8: no Windows, por cano, ela sai em cp1252 e a
+    # mensagem de erro mostrada ao usuário vinha com os acentos trocados.
+    env["PYTHONIOENCODING"] = "utf-8"
     cmd = [str(caminhos.python_exe(False)), "-m", "pip", "install", "--require-hashes",
            "--only-binary=:all:", "--prefer-binary", "--no-warn-script-location",
            "--disable-pip-version-check", "--retries", "10", "--timeout", "60",
@@ -272,14 +290,16 @@ def diarizar(audio16k: np.ndarray, num_falantes: int = 0, *, limiar: float = LIM
     duracao = audio.size / TAXA
     if duracao < 1.0:
         return [(0.0, duracao, 0)] if duracao > 0 else []
+    from .modelos import caminho_nativo   # pasta com acento no Windows (ver lá)
+
     n_threads = threads or max(1, (os.cpu_count() or 2) // 2)
     config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
         segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
             pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
-                model=str(modelo_segmentacao())),
+                model=caminho_nativo(modelo_segmentacao())),
             num_threads=n_threads),
         embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-            model=str(modelo_embedding()), num_threads=n_threads),
+            model=caminho_nativo(modelo_embedding()), num_threads=n_threads),
         clustering=sherpa_onnx.FastClusteringConfig(
             num_clusters=int(num_falantes) if num_falantes and num_falantes > 0 else -1,
             threshold=float(limiar)),

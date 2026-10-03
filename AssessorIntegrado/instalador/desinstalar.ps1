@@ -124,6 +124,7 @@ function Remover-ConectorClaudeJson {
 function Remover-ConectorCodexToml {
     # Reserva, sem Python: tira a tabela [mcp_servers.assessor-integrado] do
     # config.toml do Codex/ChatGPT, com cópia de segurança.
+    if (-not $env:USERPROFILE) { return }
     $arq = Join-Path (Join-Path $env:USERPROFILE '.codex') 'config.toml'
     if (-not (Test-Path -LiteralPath $arq)) { return }
     $texto = [IO.File]::ReadAllText($arq, [Text.Encoding]::UTF8)
@@ -156,7 +157,7 @@ function Apagar-DadosDoUsuario {
         $apagar = Perguntar 'Apagar também esta pasta? Ela vai para a Lixeira.' $false
     }
     if (-not $apagar) {
-        Mostrar-Info ('Mantido: ' + $Pasta)
+        Mostrar-Info ('Mantida: ' + $Pasta)
         return
     }
     try {
@@ -165,8 +166,8 @@ function Apagar-DadosDoUsuario {
         } else {
             Mandar-ParaLixeira $Pasta
         }
-        $script:Feitos += ($Descricao + ' apagado(s)')
-        Mostrar-Ok ('Apagado: ' + $Pasta)
+        $script:Feitos += $Descricao
+        Mostrar-Ok ('Apagada: ' + $Pasta)
     } catch {
         $script:Problemas += ('Não foi possível apagar ' + $Pasta + ': ' + $_.Exception.Message)
         Mostrar-Aviso ('Não foi possível apagar ' + $Pasta + '.')
@@ -239,13 +240,13 @@ function Desinstalar {
             if (-not $script:ModoSilencioso) {
                 Write-Host ''
                 Write-Host ('   Senhas guardadas e sessões do navegador: ' + $local)
-                $apagar = Perguntar 'Apagar também? (Recomendado se o computador vai mudar de dono.)' $false
+                $apagar = Perguntar 'Apagar também? (Recomendado se o computador for passar para outra pessoa.)' $false
             }
             if ($apagar) {
                 if (Remover-Pasta $local) { Mostrar-Ok 'Senhas e sessões apagadas.' }
                 else { $script:Problemas += ('Não foi possível apagar ' + $local + ' (navegador do programa aberto?).') }
             } else {
-                Mostrar-Info ('Mantido: ' + $local)
+                Mostrar-Info ('Mantida: ' + $local)
             }
         }
     }
@@ -262,6 +263,11 @@ function Desinstalar {
     Write-Host '   deles, apague a pasta inteira.'
     if ($script:Problemas.Count -gt 0) { return 10 }
     return 0
+}
+
+# Ponto de teste (ver instalar.ps1): dublês para rodar fora do Windows.
+if ($env:ASSESSOR_INSTALADOR_DUBLES -and (Test-Path -LiteralPath $env:ASSESSOR_INSTALADOR_DUBLES)) {
+    . $env:ASSESSOR_INSTALADOR_DUBLES
 }
 
 $codigoSaida = 0

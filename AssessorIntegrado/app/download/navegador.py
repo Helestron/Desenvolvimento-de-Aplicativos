@@ -354,6 +354,7 @@ class Navegador:
         self._pw = None
         self._contexto = None
         self._pagina = None
+        self._esquecer = False
 
     # ----------------------------------------------------------- atributos
     @property
@@ -578,7 +579,7 @@ class Navegador:
             log.debug("  não restaurei a sessão anterior: %s", str(erro)[:120])
 
     def _guardar_sessao(self) -> None:
-        if self._contexto is None:
+        if self._contexto is None or self._esquecer:
             return
         try:
             estado = self._contexto.storage_state()
@@ -590,7 +591,12 @@ class Navegador:
             log.debug("  não guardei a sessão: %s", str(erro)[:120])
 
     def esquecer_sessao(self) -> None:
-        """Apaga a sessão guardada (ex.: depois de um login recusado)."""
+        """Apaga a sessão guardada (ex.: depois de um login recusado).
+
+        E não a grava de novo ao fechar: sem isso, o fechar() logo em
+        seguida regravava os mesmos cookies, e o apagar não valia nada.
+        """
+        self._esquecer = True
         try:
             self.arquivo_sessao.unlink()
         except OSError:

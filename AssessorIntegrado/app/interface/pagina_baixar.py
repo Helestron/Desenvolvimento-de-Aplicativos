@@ -112,6 +112,8 @@ class PaginaBaixar(Pagina):
                  justify="left", wraplength=px(560)).grid(row=1, column=1, sticky="ew")
         self.quadro_tabela, self.arvore = componentes.tabela(corpo, COLUNAS, altura=8)
         self.arvore.bind("<Double-1>", self._abrir_linha)
+        componentes.DicaTabela(self.arvore, ("obs", "situacao", "tribunal"))
+        self._notas: dict[str, str] = {}    # observação fixa de cada linha (lista)
 
         # ------------------------------------------------------- passo 2
         secao(corpo, "Acesso aos portais", 2,
@@ -296,6 +298,7 @@ class PaginaBaixar(Pagina):
                 obs, tag = "dígito verificador não confere", "aviso"
             if self.leitura.senhas.get(n.formatado):
                 obs = (obs + "; " if obs else "") + "senha informada na lista"
+            self._notas[n.formatado] = obs
             arv.insert("", "end", iid=n.formatado, tags=(tag,),
                        values=(i, n.formatado, tribunais.descrever(n), situacao, "", obs))
 
@@ -332,7 +335,7 @@ class PaginaBaixar(Pagina):
             exemplos = ", ".join(n.formatado for n in errados[:3])
             mais = "…" if len(errados) > 3 else ""
             avisos.append(f"{plural(len(errados), 'número tem', 'números têm')} o dígito "
-                          f"verificador errado - provável erro de digitação ({exemplos}{mais}). "
+                          f"verificador errado — provável erro de digitação ({exemplos}{mais}). "
                           "Confira na relação antes de baixar.")
         if leitura.corrompidos:
             avisos.append(f"{plural(len(leitura.corrompidos), 'linha')} da planilha "
@@ -484,7 +487,7 @@ class PaginaBaixar(Pagina):
             except Exception as erro:
                 dialogos.erro(self.janela.raiz, "Abrir o PDF", str(erro))
 
-    def iniciar(self, numeros: list | None = None) -> None:
+    def iniciar(self, numeros: list | None = None, pular_baixados: bool = False) -> None:
         if self.tarefa.ativa:
             return
         numeros = list(numeros if numeros is not None else self.numeros)
@@ -497,7 +500,7 @@ class PaginaBaixar(Pagina):
             resposta = messagebox.askyesnocancel(
                 "Dígito verificador",
                 f"{plural(len(errados), 'número tem', 'números têm')} o dígito verificador "
-                "errado - provavelmente erro de digitação, e o portal pode abrir OUTRO processo "
+                "errado — provavelmente erro de digitação, e o portal pode abrir OUTRO processo "
                 "ou nenhum.\n\nSim: baixar todos mesmo assim.\nNão: deixar esses de fora.",
                 parent=self.janela.raiz)
             if resposta is None:
@@ -519,6 +522,8 @@ class PaginaBaixar(Pagina):
         except Exception as erro:
             self.janela.erro_inesperado(erro)
             return
+        if pular_baixados:
+            opcoes.pular_baixados = True
         destino = self._destino()
         senhas = dict(self.leitura.senhas) if self.leitura is not None else {}
         cofre = servicos.CofreMisto(self.janela.cofre(), self.janela.credenciais_sessao)
@@ -556,16 +561,14 @@ class PaginaBaixar(Pagina):
             self._atualizar_rodape()
 
     def tentar_de_novo(self) -> None:
-        if self.resumo is None:
+        """Roda a relação INTEIRA de novo, pulando o que já está na pasta.
+
+        Rodar só os que falharam regravaria o relatório do lote só com eles;
+        assim ele continua completo, e os baixados passam em segundos.
+        """
+        if self.resumo is None or not self.resumo.a_refazer():
             return
-        numeros = []
-        for texto in self.resumo.a_refazer():
-            try:
-                numeros.append(cnj.ler(texto))
-            except cnj.NumeroInvalido:
-                continue
-        if numeros:
-            self.iniciar(numeros)
+        self.iniciar(pular_baixados=True)
 
     # ============================================================ eventos
     def ao_evento(self, tipo: str, dado) -> None:
@@ -626,7 +629,7 @@ class PaginaBaixar(Pagina):
             tag = "falha"
         else:
             tag = "aguardando"
-        obs = []
+        obs = [self._notas[iid]] if self._notas.get(iid) else []
         if r.sigiloso:
             obs.append("sigiloso (fora do acervo)")
         if r.incompleto:
@@ -638,7 +641,7 @@ class PaginaBaixar(Pagina):
             if r.tribunal and r.sistema else valores[2]
         valores[3] = r.rotulo
         valores[4] = r.paginas or ""
-        valores[5] = "; ".join(obs) if obs else valores[5]
+        valores[5] = "; ".join(obs)
         self.arvore.item(iid, values=valores, tags=(tag,))
 
     def _terminou(self, resumo) -> None:

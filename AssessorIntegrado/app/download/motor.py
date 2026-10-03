@@ -14,6 +14,12 @@ O que o motor garante, seja qual for o portal:
   acervo compartilhado com a IA - o PDF, a capa e as gravações;
 * falha passageira é repetida; sessão que cai é refeita; login recusado
   encerra só o grupo daquele tribunal, com o motivo em cada linha;
+* tribunal em transição (TJAL, TJSP, TJAC: e-SAJ e eProc): o que não for
+  achado no sistema principal é procurado no alternativo, com outro
+  navegador e outro login; o relatório diz em que sistema cada um foi achado;
+* portal no modo "senha" sem senha guardada: o navegador abre na tela de
+  entrada e o usuário entra à mão (é o que a tela promete ao avisar que
+  falta a senha), em vez de o grupo inteiro falhar;
 * "Parar" não perde o processo interrompido: ele fica pendente e entra na
   próxima rodada (na base, o processo cancelado no meio saía da retomada);
 * o relatório (_controle/relatorio.csv) é regravado depois de cada item:
@@ -30,6 +36,7 @@ import os
 import shutil
 import time
 from collections import OrderedDict
+from dataclasses import replace
 from pathlib import Path
 
 from ..nucleo import caminhos, cnj, tribunais
@@ -192,6 +199,14 @@ class _Lote:
         self.pasta_sigilosos = Path(opcoes.pasta_sigilosos) / self.destino.name
         self.inicio = time.monotonic()
         self._avisou_relatorio = False
+        self._interrompido = False
+        # Itens reabertos para o sistema alternativo: já contavam como feitos
+        # e continuam contando, para a barra de progresso não andar para trás.
+        self._reabertos: set[int] = set()
+        # Grupo do sistema alternativo em curso: índice -> (situação,
+        # detalhe, sistema) do sistema principal, para devolver o
+        # "não encontrado" se o alternativo nem puder ser consultado.
+        self._anteriores: dict[int, tuple[str, str, str]] = {}
 
         self.itens: list[ResultadoProcesso] = []
         self.numeros: list[Numero] = []
@@ -216,7 +231,7 @@ class _Lote:
         return len(self.itens)
 
     def feitos(self) -> int:
-        return sum(1 for r in self.itens if r.concluido)
+        return sum(1 for i, r in enumerate(self.itens) if r.concluido or i in self._reabertos)
 
     def _publicar(self, r: ResultadoProcesso) -> None:
         try:
@@ -255,14 +270,19 @@ class _Lote:
         """UTF-8 com BOM e ';' - o Excel brasileiro abre com acento e colunas
         certas num duplo clique. Gravação atômica."""
         dados = ("\ufeff" + self._linhas_csv()).encode("utf-8")
+        tmp = self.relatorio.with_name(self.relatorio.name + ".tmp")
         try:
             self.controle.mkdir(parents=True, exist_ok=True)
-            tmp = self.relatorio.with_name(self.relatorio.name + ".tmp")
             tmp.write_bytes(dados)
             os.replace(tmp, self.relatorio)
             return
         except PermissionError:
-            # relatório aberto no Excel: o Windows não deixa trocar o arquivo
+            # relatório aberto no Excel: o Windows não deixa trocar o arquivo.
+            # O .tmp já gravado ficaria esquecido em _controle.
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
             alternativo = self.controle / "relatorio (atualizado).csv"
             try:
                 tmp = alternativo.with_name(alternativo.name + ".tmp")
@@ -274,6 +294,10 @@ class _Lote:
                                 "atualizada em %s.", alternativo.name)
                 self.relatorio = alternativo
             except OSError as erro:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
                 log.warning("não consegui gravar o relatório: %s", erro)
         except OSError as erro:
             log.warning("não consegui gravar o relatório: %s", erro)
@@ -358,8 +382,15 @@ class _Lote:
         for i in indices:
             r = self.itens[i]
             if r.situacao == "":
-                r.situacao = situacao
-                r.detalhe = detalhe
+                if i in self._anteriores:
+                    # O sistema alternativo nem pôde ser consultado: vale o
+                    # "não encontrado" do principal, com o porquê.
+                    situacao_antes, detalhe_antes, sistema_antes = self._anteriores.pop(i)
+                    r.situacao, r.sistema = situacao_antes, sistema_antes
+                    r.detalhe = "; ".join(x for x in (detalhe_antes, detalhe) if x)
+                else:
+                    r.situacao = situacao
+                    r.detalhe = detalhe
                 self._concluir(r)
 
     def _credenciais(self, tribunal) -> tuple[str, str] | None:
@@ -371,6 +402,22 @@ class _Lote:
             log.warning("não consegui ler a senha guardada de %s: %s", tribunal.portal, erro)
             return None
         return (usuario, senha) if usuario and senha else None
+
+    def _opcoes_do_grupo(self, tribunal, credenciais) -> OpcoesDownload:
+        """As opções com que o grupo entra no portal.
+
+        Modo "senha" sem senha guardada vira "manual" só para este grupo: o
+        navegador abre VISÍVEL na tela de entrada e o usuário entra como de
+        costume (a tela de download promete exatamente isso quando avisa que
+        falta a senha). Com a sessão anterior ainda válida, o portal nem
+        chega a pedir nada.
+        """
+        sistema = tribunal.sistema
+        if self.opcoes.modo_login(sistema) != "senha" or credenciais is not None:
+            return self.opcoes
+        log.info("Sem usuário e senha guardados para o %s do %s: o navegador abre na tela "
+                 "de entrada para você entrar.", tribunal.nome_sistema, tribunal.sigla)
+        return replace(self.opcoes, login={**self.opcoes.login, sistema: "manual"})
 
     def executar(self) -> ResumoLote:
         from ..nucleo.energia import manter_acordado
@@ -392,10 +439,14 @@ class _Lote:
                     if self.ctx.cancelado():
                         break
                     self._grupo(tribunal, indices)
+                    self._no_alternativo(tribunal, indices)
         except KeyboardInterrupt:
             # Ctrl+C no terminal: para como o botão "Parar", sem perder nada
+            self._interrompido = True
             log.warning("Interrompido pelo teclado.")
         finally:
+            self._reabertos.clear()
+            self._anteriores.clear()
             for r in self.itens:
                 if r.situacao == "":
                     r.situacao = CANCELADO
@@ -409,9 +460,65 @@ class _Lote:
         resumo = ResumoLote(itens=self.itens, destino=self.destino, relatorio=self.relatorio,
                             minutos=round((time.monotonic() - self.inicio) / 60, 1))
         log.info("Fim do lote: %s Relatório: %s", resumo.texto(), self.relatorio)
-        if self.opcoes.atualizar_ia and resumo.baixados:
+        # Depois de "Parar" (ou Ctrl+C), o usuário quer o programa livre já:
+        # o preparo pode ler dezenas de PDFs. Fica para o botão "Preparar
+        # arquivos para IA" ou para o próximo lote.
+        parou = self._interrompido or self._cancelado()
+        if self.opcoes.atualizar_ia and resumo.baixados and not parou:
             self._preparar_ia()
         return resumo
+
+    def _cancelado(self) -> bool:
+        try:
+            return bool(self.ctx.cancelado())
+        except Exception:
+            return False
+
+    def _no_alternativo(self, tribunal, indices: list[int]) -> None:
+        """Procura no sistema alternativo o que o principal não achou.
+
+        Tribunais em transição (TJAL, TJSP, TJAC) têm processos no e-SAJ e
+        no eProc, e o número não diz em qual. O que voltou NAO_ENCONTRADO do
+        principal é reaberto e passa pelo grupo do alternativo (outro
+        navegador, outro login). Se o alternativo nem puder ser consultado
+        (login recusado, módulo ausente, portal fora), o item volta a
+        "não encontrado", com o motivo - e não vira um erro novo.
+        """
+        alt = getattr(tribunal, "alternativo", None)
+        if alt is None or not getattr(alt, "suportado", False) or self._cancelado():
+            return
+        reabrir = [i for i in indices if self.itens[i].situacao == NAO_ENCONTRADO]
+        if not reabrir:
+            return
+        log.info("%d processo(s) não achado(s) no %s do %s; procurando no %s.", len(reabrir),
+                 tribunal.nome_sistema, tribunal.sigla, alt.nome_sistema)
+        for i in reabrir:
+            r = self.itens[i]
+            self._anteriores[i] = (r.situacao, r.detalhe, r.sistema)
+            self._reabertos.add(i)
+            # sistema já trocado: o desfecho que o portal levantar como
+            # exceção (sem acesso, sigiloso) sai com o sistema certo
+            r.situacao, r.detalhe, r.sistema = "", "", alt.sistema
+        try:
+            self._grupo(alt, reabrir)
+        finally:
+            for i in reabrir:
+                r = self.itens[i]
+                antes = self._anteriores.pop(i, None)
+                self._reabertos.discard(i)
+                if antes is None:
+                    continue           # devolvido ao "não encontrado" do principal
+                if r.situacao == NAO_ENCONTRADO:
+                    r.sistema = antes[2]
+                    r.detalhe = (f"não encontrado no {tribunal.nome_sistema} nem no "
+                                 f"{alt.nome_sistema} do {tribunal.sigla}; confira o número")
+                    self._concluir(r)
+                elif r.situacao == ERRO:
+                    r.detalhe = (f"não encontrado no {tribunal.nome_sistema}; no "
+                                 f"{alt.nome_sistema}: {r.detalhe}")
+                    self._concluir(r)
+                elif r.situacao in ("", CANCELADO):
+                    r.sistema = antes[2]     # interrompido: nada se apurou no alternativo
 
     def _preparar_ia(self) -> None:
         """Atualiza INDICE.md, CLAUDE.md e os textos do acervo. Nunca falha o lote."""
@@ -434,10 +541,11 @@ class _Lote:
     # -------------------------------------------------------------- grupo
     def _grupo(self, tribunal, indices: list[int]) -> None:
         nome = f"{tribunal.nome_sistema} do {tribunal.sigla}"
+        credenciais = self._credenciais(tribunal)
+        opcoes = self._opcoes_do_grupo(tribunal, credenciais)
         try:
-            with self.fabrica_navegador(tribunal, self.opcoes) as nav:
-                portal = self.fabrica_portal(nav, tribunal, self.opcoes, self.ctx,
-                                             self._credenciais(tribunal))
+            with self.fabrica_navegador(tribunal, opcoes) as nav:
+                portal = self.fabrica_portal(nav, tribunal, opcoes, self.ctx, credenciais)
                 self.ctx.status(f"Entrando no {nome}...")
                 portal.entrar()
                 seguidos_fora = 0
@@ -511,7 +619,8 @@ class _Lote:
         relogins = 0
         ultimo: Exception | None = None
         res: ResultadoProcesso | None = None
-        self._publicar(r)
+        # Sem ctx.item(r) aqui: o item ainda não mudou, e a tela, que acabou de
+        # marcar a linha "baixando…" pelo progresso, a voltaria a "aguardando".
         while True:
             if self.ctx.cancelado():
                 raise Cancelado()

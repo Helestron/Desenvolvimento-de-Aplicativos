@@ -95,7 +95,7 @@ def _pedir_credenciais(grupos, opcoes, cofre) -> dict[str, tuple[str, str]]:
             continue
         if not _interativo():
             print(f"  (sem usuário e senha guardados para o {t.nome_sistema} do {t.sigla}: "
-                  "se a sessão anterior tiver expirado, o login vai falhar)")
+                  "se a sessão anterior tiver expirado, o navegador abre para você entrar)")
             continue
         print(f"\nAcesso ao {t.nome_sistema} do {t.sigla} (Enter em branco pula):")
         try:
@@ -198,6 +198,12 @@ def main(argv: list[str] | None = None, *, configurar_log: bool = True) -> int:
     except KeyboardInterrupt:
         print("\nInterrompido.")
         return 1
+    except (RuntimeError, OSError) as erro:
+        # ex.: pasta de destino que não pode ser criada (disco cheio, sem
+        # permissão, unidade de rede fora) - frase, e não rastro de pilha
+        log.error("o lote não pôde ser baixado: %s", erro)
+        print(f"\nNão foi possível baixar: {erro}")
+        return 2
 
     print("\n" + "=" * 60)
     print(f"Concluído em {resumo.minutos:.1f} min: {resumo.texto()}")

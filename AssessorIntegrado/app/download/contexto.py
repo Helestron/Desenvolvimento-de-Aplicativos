@@ -140,7 +140,12 @@ class ContextoTerminal(Contexto):
         try:
             texto = self._ler("  Código recebido (Enter em branco pede outro; "
                               "'sair' cancela): ")
-        except (EOFError, OSError, KeyboardInterrupt):
+        except KeyboardInterrupt:
+            # Ctrl+C aqui é "parar", como no resto do lote - e não "não tenho
+            # o código", que encerraria só este tribunal e seguiria adiante.
+            self.parar()
+            return None
+        except (EOFError, OSError):
             return None
         texto = (texto or "").strip()
         if texto.lower() in ("sair", "cancelar"):

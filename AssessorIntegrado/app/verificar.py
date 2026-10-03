@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -324,9 +325,10 @@ def checar_nativos() -> Item:
     if not falhas:
         nomes = [NOMES_AMIGAVEIS.get(m, m) + (f" {r['versao']}" if r.get("versao") else "")
                  for m, r in res.items() if m in ("ctranslate2", "onnxruntime", "av")]
-        return Item("Componentes nativos (DLLs)", OK,
-                    f"Os {len(res)} componentes carregaram (" + ", ".join(nomes) + ").",
-                    codigo="dlls")
+        detalhe = "O componente carregou" if len(res) == 1 else f"Os {len(res)} componentes carregaram"
+        if nomes:
+            detalhe += " (" + ", ".join(nomes) + ")"
+        return Item("Componentes nativos (DLLs)", OK, detalhe + ".", codigo="dlls")
     partes = [f"{NOMES_AMIGAVEIS.get(m, m)}: {r['erro']}" for m, r in falhas.items()]
     texto = " ".join(r["erro"] for r in falhas.values())
     if "AVX" in texto or "instrução ilegal" in texto:
@@ -666,7 +668,8 @@ def checar_pastas(cfg) -> Item:
             return Item("Pastas de trabalho", FALHA, f"Não foi possível gravar em {pasta}: {erro}",
                         codigo="pastas", acao="Confira se a pasta existe, se o disco tem espaço e se não está protegido contra gravação.")
     return Item("Pastas de trabalho", OK,
-                f"O acervo ({_relativo(cfg.pasta_acervo)}), os sigilosos e os registros aceitam gravação.",
+                f"As pastas do acervo ({_relativo(cfg.pasta_acervo)}), dos processos sigilosos e dos "
+                "registros aceitam gravação.",
                 codigo="pastas")
 
 
@@ -688,7 +691,7 @@ def checar_local(cfg) -> Item:
     raiz = str(caminhos.RAIZ)
     if caminhos.dentro_do_onedrive(caminhos.RAIZ) or caminhos.dentro_do_onedrive(cfg.pasta_acervo):
         problemas.append("está dentro do OneDrive, cuja sincronização trava arquivos em uso")
-        acoes.append("instale em C:\\AssessorIntegrado (o INSTALAR.bat oferece mover)")
+        acoes.append("instale em C:\\AssessorIntegrado (o INSTALAR.bat oferece a mudança)")
     if len(raiz) > LIMITE_CAMINHO and not _caminhos_longos():
         problemas.append(f"tem caminho longo ({len(raiz)} caracteres; acima de {LIMITE_CAMINHO}, "
                          "algumas bibliotecas passam do limite do Windows)")
@@ -787,7 +790,7 @@ def checar_falantes(completo: bool = False) -> Item:
     disponivel, situacao = _falantes_situacao()
     acao = "Para instalar: Configurações > Transcrição > Instalar componente (cerca de 60 MB)."
     if not disponivel:
-        return Item(nome, AVISO, f"Componente {situacao}: a revisão final não separa as vozes sozinha.",
+        return Item(nome, AVISO, f"{situacao[:1].upper()}{situacao[1:]}: a revisão final não separa as vozes sozinha.",
                     obrigatorio=False, codigo="falantes", acao=acao)
     if completo:
         r = sondar_importacoes(["sherpa_onnx"], 120).get("sherpa_onnx", {})
@@ -905,7 +908,10 @@ def formatar_item(item: Item, largura: int = 100) -> str:
         rotulo = "FALHA*"
     linhas = [f"  {rotulo:<7}{item.nome:<34}{item.detalhe}"]
     if item.acao and item.situacao != OK:
-        linhas += textwrap.wrap("O que fazer: " + item.acao, width=largura,
+        # Espaço fixo entre o número e a unidade: a quebra de linha não deixa
+        # "60" numa linha e "MB" na outra.
+        acao = re.sub(r"(\d) (MB|GB|KB|s)\b", "\\1\u00a0\\2", item.acao)
+        linhas += textwrap.wrap("O que fazer: " + acao, width=largura,
                                 initial_indent=" " * 9, subsequent_indent=" " * 9)
     return "\n".join(linhas)
 

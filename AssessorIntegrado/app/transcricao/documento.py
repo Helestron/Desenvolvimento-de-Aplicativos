@@ -17,6 +17,7 @@ from __future__ import annotations
 import io
 import logging
 import re
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -129,6 +130,13 @@ def hms(segundos: float) -> str:
 def automatico(rotulo: str) -> bool:
     """O rótulo foi dado pela separação automática (FALANTE n)?"""
     return bool(RE_AUTOMATICO.match((rotulo or "").strip()))
+
+
+def e_marca(fala: Fala) -> bool:
+    """Marcação da gravação (pausa), não fala de ninguém: sem falante e sem
+    duração. Fala sem rótulo (gravação sem separação de vozes, ou ninguém
+    marcou quem falava) TEM duração e é fala normal."""
+    return not (fala.falante or "").strip() and (fala.fim - fala.inicio) < 0.01
 
 
 def agrupar(falas: list[Fala], pausa: float = PAUSA_AGRUPAR_S) -> list[Fala]:
@@ -362,7 +370,10 @@ def montar_docx(falas: list[Fala], meta: MetaAudiencia, *, marcar_tempo: bool = 
         if fala.falante or marcar_tempo:
             p.add_run(" — ").bold = True
         corpo = p.add_run(fala.texto)
-        if not fala.falante:  # marcação da gravação (pausa), não é fala de ninguém
+        # Só a marcação da gravação (pausa) sai em itálico. Antes, qualquer
+        # fala sem rótulo saía assim: a transcrição inteira de uma gravação
+        # sem separação de vozes ficava em itálico, como se fosse anotação.
+        if e_marca(fala):
             corpo.italic = True
 
     # --- rodapé: processo e "página N de M"
@@ -381,12 +392,36 @@ def montar_docx(falas: list[Fala], meta: MetaAudiencia, *, marcar_tempo: bool = 
     return buf.getvalue()
 
 
+ESPERAS_TRAVA_S = (0.2, 0.5)   # novas tentativas antes de desistir do nome
+
+
 def _gravar(destino: Path, dados: bytes) -> None:
+    # Antivírus corporativo, indexador e sincronizadores abrem o arquivo por
+    # um instante logo depois de gravado; a troca (os.replace) falha com
+    # PermissionError nesse intervalo. Sem repetir, o salvamento automático
+    # caía na "(cópia)" sem o Word estar aberto, e o documento final podia
+    # sair com outro nome que não o do processo.
+    for espera in (*ESPERAS_TRAVA_S, None):
+        try:
+            sistema.gravar_atomico(destino, dados)
+            return
+        except PermissionError:
+            _apagar_parcial(destino)
+            if espera is None:
+                raise
+            time.sleep(espera)
+        except BaseException:
+            _apagar_parcial(destino)
+            raise
+
+
+def _apagar_parcial(destino: Path) -> None:
+    # O próprio .parcial pode estar preso pelo antivírus: não apagá-lo não
+    # pode esconder o erro original (nem fingir uma trava que não existe).
     try:
-        sistema.gravar_atomico(destino, dados)
-    except BaseException:
         destino.with_name(destino.name + ".parcial").unlink(missing_ok=True)
-        raise
+    except OSError:
+        pass
 
 
 def gerar_docx(destino: Path, falas: list[Fala], meta: MetaAudiencia, *,
