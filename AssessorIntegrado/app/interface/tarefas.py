@@ -110,6 +110,8 @@ class Tarefa:
         self.thread: threading.Thread | None = None
         self.erro: BaseException | None = None
         self.inicio = 0.0
+        # False: consulta sem efeito em disco; o fechar não pergunta nem espera
+        self.essencial = True
 
     @property
     def ativa(self) -> bool:

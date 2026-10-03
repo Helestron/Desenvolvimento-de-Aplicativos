@@ -291,8 +291,14 @@ class PaginaBaixar(Pagina):
         self.vazio.grid_remove()
         self.quadro_tabela.grid(row=5, column=0, sticky="ew", pady=(px(10), 0))
         self.btn_limpar.state(["!disabled"])
+        # Uma consulta ao catálogo por TRIBUNAL, não por processo: com
+        # endereços corrigidos pelo usuário, cada consulta relê um JSON, e uma
+        # pauta de mil processos travava a janela por segundos.
+        catalogo: dict[str, tuple] = {}
         for i, n in enumerate(numeros, 1):
-            t = tribunais.por_numero(n)
+            if n.chave_tribunal not in catalogo:
+                catalogo[n.chave_tribunal] = (tribunais.por_numero(n), tribunais.descrever(n))
+            t, descricao = catalogo[n.chave_tribunal]
             situacao, tag, obs = "aguardando", "aguardando", ""
             if t is None or not t.suportado:
                 situacao, tag = "tribunal não suportado", "aviso"
@@ -302,7 +308,7 @@ class PaginaBaixar(Pagina):
                 obs = (obs + "; " if obs else "") + "senha informada na lista"
             self._notas[n.formatado] = obs
             arv.insert("", "end", iid=n.formatado, tags=(tag,),
-                       values=(i, n.formatado, tribunais.descrever(n), situacao, "", obs))
+                       values=(i, n.formatado, descricao, situacao, "", obs))
 
     def _resumir_lista(self) -> None:
         if self.leitura is None or not self.leitura.processos:
@@ -314,8 +320,11 @@ class PaginaBaixar(Pagina):
         numeros = leitura.processos
         por_tribunal: dict[str, int] = {}
         nao_suportados = 0
+        catalogo: dict[str, object] = {}
         for n in numeros:
-            t = tribunais.por_numero(n)
+            if n.chave_tribunal not in catalogo:
+                catalogo[n.chave_tribunal] = tribunais.por_numero(n)
+            t = catalogo[n.chave_tribunal]
             if t is None or not t.suportado:
                 nao_suportados += 1
                 continue

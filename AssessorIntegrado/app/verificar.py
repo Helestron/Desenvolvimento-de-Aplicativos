@@ -362,14 +362,13 @@ def _modelo_instalado(nome: str) -> tuple[bool, Path]:
 
 
 def _caminho_nativo(pasta: Path) -> str:
-    """O caminho do modelo como o programa o entrega ao CTranslate2.
+    """O caminho do modelo exatamente como o programa o entrega ao CTranslate2.
 
-    O CTranslate2 abre o model.bin com o caminho em bytes, que o Windows lê
-    em cp1252: numa pasta com acento ("C:\\Users\\João\\...", ou a do CI,
-    "C:\\Teste Área\\...") o modelo "não existe". O programa contorna isso
-    com o nome curto 8.3 (modelos.caminho_nativo); a verificação tem de
-    testar o modelo do MESMO jeito - senão reprova uma instalação que
-    funciona, e o instalador termina em vermelho.
+    Com acento na pasta ("C:\\Users\\João\\..."), o programa usa o nome curto
+    8.3 (modelos.caminho_nativo), por causa das bibliotecas em C++ que abrem
+    arquivos em ANSI. A verificação tem de carregar o modelo pelo MESMO
+    caminho: testando por outro, poderia aprovar o que o programa não abre,
+    ou reprovar o que ele abre.
     """
     try:
         return str(_modelos().caminho_nativo(pasta))
@@ -449,15 +448,13 @@ def checar_teste_transcricao(cfg) -> Item:
                         codigo="teste_transcricao")
     ultima = (erro.strip().splitlines() or [""])[-1]
     motivo = explicar_queda(None if estourou else codigo) if not ultima else ultima
+    acao = ("Apague a pasta " + _relativo(pasta) + " e rode o INSTALAR.bat de novo "
+            "(o modelo será baixado outra vez).")
     if not nativo.isascii():
-        # Acento no caminho e nenhum nome curto 8.3 neste disco: baixar de
-        # novo não resolveria.
-        acao = ("O caminho da pasta do programa tem acento, e este disco não oferece "
-                "nome curto sem acento. Instale o programa em C:\\AssessorIntegrado "
-                "(o INSTALAR.bat oferece a mudança).")
-    else:
-        acao = ("Apague a pasta " + _relativo(pasta) + " e rode o INSTALAR.bat de novo "
-                "(o modelo será baixado outra vez).")
+        # Acento no caminho e nenhum nome curto 8.3 neste disco: se a causa
+        # for essa, baixar de novo não resolve.
+        acao += (" Se persistir, instale o programa numa pasta sem acento no caminho, "
+                 "como C:\\AssessorIntegrado.")
     return Item(nome, FALHA, f"O modelo {ao_vivo} não funcionou: {motivo}",
                 codigo="teste_transcricao", acao=acao)
 

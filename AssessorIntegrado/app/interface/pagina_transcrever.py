@@ -1060,16 +1060,22 @@ class PaginaTranscrever(Pagina):
         if not caminho:
             return
         caminho = Path(caminho)
-        numero = servicos.numero_no_nome(caminho) or self._validar_numero()
+        numero = servicos.numero_no_nome(caminho)
 
         def seguir(n):
             self._transcrever_gravacao(caminho, n, titulo="Transcrevendo a gravação")
         if numero is not None:
             seguir(numero)
-        else:
-            dialogos.DialogoNumero(self.janela.raiz, "De que processo é esta gravação?",
-                                   "O nome do arquivo não traz o número do processo. Ele dá "
-                                   "nome ao documento.", seguir)
+            return
+        # Sem o número no nome do arquivo, PERGUNTA - com o do campo já
+        # escrito, para confirmar com Enter. Antes ele era usado em silêncio, e
+        # o campo quase sempre traz o processo da audiência ANTERIOR (é
+        # lembrado entre as sessões): o documento saía com o número errado.
+        atual = self._validar_numero()
+        dialogos.DialogoNumero(self.janela.raiz, "De que processo é esta gravação?",
+                               "O nome do arquivo não traz o número do processo. Ele dá "
+                               "nome ao documento.", seguir,
+                               inicial=atual.formatado if atual is not None else "")
 
     def _transcrever_gravacao(self, origem: Path, numero, rotulos=None, titulo: str = "") -> None:
         tarefa = self.tarefa_arquivo

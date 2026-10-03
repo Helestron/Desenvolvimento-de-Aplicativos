@@ -66,7 +66,7 @@ class Pagina(ttk.Frame):
 
     def trabalho_em_andamento(self) -> list[str]:
         """O que se perderia ao fechar agora (para a pergunta ao sair)."""
-        return [t.nome for t in self.tarefas if t.ativa]
+        return [t.nome for t in self.tarefas if t.ativa and t.essencial]
 
     def antes_de_fechar(self) -> None:
         """Pede a parada de tudo (a janela espera depois)."""
@@ -87,11 +87,22 @@ class Pagina(ttk.Frame):
     def ocupada(self) -> bool:
         return any(t.ativa for t in self.tarefas)
 
-    def nova_tarefa(self, nome: str, recursos: tuple = ()):
+    @property
+    def ocupada_ao_fechar(self) -> bool:
+        """Há trabalho que a janela deve esperar terminar antes de fechar?"""
+        return any(t.ativa and t.essencial for t in self.tarefas)
+
+    def nova_tarefa(self, nome: str, recursos: tuple = (), essencial: bool = True):
+        """essencial=False: consulta que não grava nada (estado da tela,
+        "o Claude está instalado?"). Fechar o programa não pergunta por ela
+        nem a espera - antes, fechar logo depois de abrir perguntava por
+        "Atualizar a tela inicial" e podia esperar o PortAudio por 2 minutos.
+        """
         from .tarefas import Tarefa
 
         t = Tarefa(nome, recursos, self.janela.recursos,
                    ao_terminar=lambda tarefa: self.postar("_tarefa_fim", tarefa))
+        t.essencial = essencial
         self.tarefas.append(t)
         return t
 

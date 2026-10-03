@@ -399,7 +399,7 @@ class Janela:
             except Exception:
                 log.exception("erro ao encerrar a página %s", pagina.nome)
         self._aguarde = None
-        if any(p.ocupada for p in self.paginas.values()):
+        if any(p.ocupada_ao_fechar for p in self.paginas.values()):
             self._aguarde = dialogos.DialogoAguarde(
                 self.raiz, "Encerrando com segurança",
                 "Salvando o que estava em andamento. Isto leva poucos segundos.")
@@ -420,7 +420,7 @@ class Janela:
         if self._audiencia_encerrando() and agora < limite_audiencia:
             esperar = True
         else:
-            esperar = any(p.ocupada for p in self.paginas.values()) and agora < limite
+            esperar = any(p.ocupada_ao_fechar for p in self.paginas.values()) and agora < limite
         if esperar:
             self.raiz.after(150, lambda: self._esperar_e_destruir(limite, limite_audiencia))
             return

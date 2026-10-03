@@ -194,6 +194,9 @@ class TestArquivosBat(unittest.TestCase):
     def test_desinstalar_chama_o_script(self):
         texto = (RAIZ / "DESINSTALAR.bat").read_text(encoding="ascii")
         self.assertIn('-File "%~dp0instalador\\desinstalar.ps1" %*', texto)
+        # Regra da TI que bloqueia scripts: mensagem clara, e não um erro do PowerShell em inglês.
+        for trecho in ("MachinePolicy", "LanguageMode", "goto :bloqueado"):
+            self.assertIn(trecho, texto)
 
     def test_parenteses_so_fora_de_blocos(self):
         # Dentro de um bloco "( ... )", um ")" num echo fecha o bloco antes da
@@ -280,11 +283,15 @@ class TestOutrosArquivos(unittest.TestCase):
                        "1. INSTALE", "2. ABRA", "3. USE", "Área de Trabalho"):
             self.assertIn(trecho, texto)
 
+    # O ZIP de distribuição não leva os arquivos do git (empacotar.ps1): no CI,
+    # a suíte roda da pasta extraída do ZIP, onde eles não existem.
+    @unittest.skipUnless((RAIZ / ".gitattributes").is_file(), "fora do repositório (ZIP de distribuição)")
     def test_gitattributes(self):
         texto = (RAIZ / ".gitattributes").read_text(encoding="utf-8")
         for regra in ("*.bat           text eol=crlf", "*.ps1           text eol=crlf", "*.png           binary"):
             self.assertIn(regra, texto)
 
+    @unittest.skipUnless((RAIZ / ".gitignore").is_file(), "fora do repositório (ZIP de distribuição)")
     def test_gitignore(self):
         texto = (RAIZ / ".gitignore").read_text(encoding="utf-8")
         for regra in ("/runtime/", "/Acervo/", "/Sigilosos/", "/Logs/", "/config.ini", "__pycache__/"):
@@ -467,22 +474,13 @@ class TestFuncoesPowerShell(unittest.TestCase):
         self.assertFalse(r["longo_ok"]["Mover"])
         self.assertTrue(r["rede"]["Rede"] and r["rede"]["Mover"])
 
-    def test_local_sem_gravacao_ou_com_acento_sem_nome_curto(self):
+    def test_local_sem_permissao_de_gravacao(self):
         r = ps_json(r"""
 Gravar-Saida @{
  sem = (Avaliar-Local 'C:\AssessorIntegrado' @() $false 100 $false);
- curto = (Avaliar-Local 'C:\Teste Área' @() $false 100 $true $true);
- normal = (Avaliar-Local 'C:\Teste Área' @() $false 100 $true $false);
- acento = (Tem-Acento 'C:\Users\João'); ascii = (Tem-Acento 'C:\AssessorIntegrado');
- inexistente = (Acento-SemNomeCurto 'C:\Pasta Que Não Existe\Área');
- so_ascii = (Acento-SemNomeCurto 'C:\AssessorIntegrado') }""")
+ com = (Avaliar-Local 'C:\AssessorIntegrado' @() $false 100 $true) }""")
         self.assertTrue(r["sem"]["SemGravacao"] and r["sem"]["Mover"])
-        self.assertTrue(r["curto"]["SemNomeCurto"] and r["curto"]["Mover"])
-        self.assertFalse(r["normal"]["Mover"])
-        self.assertTrue(r["acento"])
-        self.assertFalse(r["ascii"])
-        self.assertFalse(r["inexistente"], "na dúvida, não avisa")
-        self.assertFalse(r["so_ascii"])
+        self.assertFalse(r["com"]["SemGravacao"] or r["com"]["Mover"])
 
     def test_nome_do_modelo(self):
         r = ps_json("Gravar-Saida @{ a = (Nome-DoModelo 'Médio'); b = (Nome-DoModelo ' TURBO ');\n"

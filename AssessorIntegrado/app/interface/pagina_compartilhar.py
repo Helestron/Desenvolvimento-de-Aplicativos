@@ -40,7 +40,7 @@ class PaginaCompartilhar(Pagina):
         self.estado: dict = {}
         self._consultado = False
         self._vars: dict = {}
-        self.tarefa_estado = self.nova_tarefa("Conferir o Claude e o ChatGPT")
+        self.tarefa_estado = self.nova_tarefa("Conferir o Claude e o ChatGPT", essencial=False)
         self.tarefa = self.nova_tarefa("Preparar o acervo para a IA")
         self.tarefa_nuvem = self.nova_tarefa("Espelhar o acervo na nuvem", (NUVEM,))
         self.tarefa_abrir = self.nova_tarefa("Abrir a ferramenta de IA")

@@ -55,7 +55,7 @@ class PaginaInicio(Pagina):
     def montar(self) -> None:
         self._ultima_consulta = 0.0
         self._microfones: tuple[float, list | None, str] = (0.0, None, "")
-        self.tarefa_estado = self.nova_tarefa("Atualizar a tela inicial")
+        self.tarefa_estado = self.nova_tarefa("Atualizar a tela inicial", essencial=False)
         self.tarefa_modelo = None
 
         self.columnconfigure(0, weight=1)

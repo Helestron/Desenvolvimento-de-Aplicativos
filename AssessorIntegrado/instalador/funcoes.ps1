@@ -122,10 +122,8 @@ function Avaliar-Local {
     # $Gravavel = $false: sem permissão de gravar (ZIP extraído em "Arquivos
     # de Programas" pelo administrador, ou numa pasta de rede só de leitura) -
     # aí não há como instalar no lugar: o runtime fica dentro da pasta.
-    # $SemNomeCurto = $true: caminho com acento num disco sem nomes curtos
-    # 8.3 (ver Acento-SemNomeCurto) - o modelo de transcrição não abriria.
     param([string]$Caminho, [string[]]$RaizesOneDrive = @(), [bool]$CaminhosLongos = $false,
-          [int]$Limite = 100, [bool]$Gravavel = $true, [bool]$SemNomeCurto = $false)
+          [int]$Limite = 100, [bool]$Gravavel = $true)
     $noOneDrive = Esta-NoOneDrive $Caminho $RaizesOneDrive
     $longo = ($Caminho.Length -gt $Limite) -and (-not $CaminhosLongos)
     $rede = $Caminho.StartsWith('\\')
@@ -135,37 +133,7 @@ function Avaliar-Local {
         Longo        = $longo
         Rede         = $rede
         SemGravacao  = (-not $Gravavel)
-        SemNomeCurto = $SemNomeCurto
-        Mover        = ($noOneDrive -or $longo -or $rede -or (-not $Gravavel) -or $SemNomeCurto)
-    }
-}
-
-function Tem-Acento {
-    # Algum caractere fora do ASCII no texto?
-    param([AllowEmptyString()][string]$Texto)
-    return ([string]$Texto -match '[^\x00-\x7F]')
-}
-
-function Acento-SemNomeCurto {
-    # $true quando o caminho tem acento e o Windows não oferece para ele um
-    # nome curto 8.3 só em ASCII (C:\Users\JOO~1\...). As bibliotecas em C++
-    # do modelo de transcrição (CTranslate2) abrem arquivos com o caminho em
-    # ANSI; o programa contorna o acento com o nome curto, mas há discos em
-    # que a criação de nomes curtos está desligada - e então o modelo "não
-    # existe". Na dúvida (sem COM, pasta inexistente), $false: só avisa quem
-    # tem certeza.
-    param([string]$Caminho)
-    if (-not (Tem-Acento $Caminho)) { return $false }
-    try {
-        $fso = New-Object -ComObject Scripting.FileSystemObject
-        try {
-            $curto = [string]$fso.GetFolder($Caminho).ShortPath
-        } finally {
-            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($fso)
-        }
-        return (Tem-Acento $curto)
-    } catch {
-        return $false
+        Mover        = ($noOneDrive -or $longo -or $rede -or (-not $Gravavel))
     }
 }
 

@@ -47,8 +47,8 @@ class PaginaConfig(Pagina):
         self.tarefa_login = self.nova_tarefa("Testar o login", (NAVEGADOR,))
         self.tarefa_modelo = self.nova_tarefa("Baixar o modelo de transcrição")
         self.tarefa_falantes = self.nova_tarefa("Instalar a separação de falantes", (MODELO_REVISAO,))
-        self.tarefa_verificar = self.nova_tarefa("Verificar a instalação")
-        self.tarefa_conferir = self.nova_tarefa("Conferir os componentes")
+        self.tarefa_verificar = self.nova_tarefa("Verificar a instalação", essencial=False)
+        self.tarefa_conferir = self.nova_tarefa("Conferir os componentes", essencial=False)
         corpo, _, _ = componentes.estrutura(
             self, "Configurações", "Tudo é salvo na hora em que você muda — não é preciso "
             "reiniciar o programa.", rolavel=False)

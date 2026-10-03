@@ -731,18 +731,70 @@ class TesteJanela(unittest.TestCase):
                 self.j._fechando = False
         self.assertEqual(len(chamadas), 2, "nada de cópia nova durante o fechamento")
 
+    def test_fechar_logo_ao_abrir_nao_pergunta_pela_tela_inicial(self):
+        # A apuração da tela inicial (lista microfones, procura o Claude) é
+        # só consulta: fechar não pergunta por ela nem espera por ela.
+        inicio = self.j.paginas["inicio"]
+        liberar = threading.Event()
+        self.addCleanup(liberar.set)
+        inicio.tarefa_estado.iniciar(liberar.wait, 30)
+        self.assertEqual(self.j.paginas["inicio"].trabalho_em_andamento(), [])
+        with mock.patch("app.interface.dialogos.confirmar", return_value=True) as perguntou:
+            self.j.fechar()
+            self.assertTrue(self.bombear(ate=lambda: not self.j._viva(), limite=5))
+        perguntou.assert_not_called()
+
+    def test_pauta_grande_consulta_o_catalogo_por_tribunal(self):
+        # Cada consulta relê o JSON de endereços corrigidos: consultar por
+        # processo travava a janela ao abrir uma pauta de centenas.
+        from app.nucleo import tribunais
+
+        pagina = self.j.paginas["baixar"]
+        numeros = [_cnj(701000 + i) for i in range(400)]
+        leitura = listas.ler_texto("\n".join(numeros))
+        with mock.patch.object(tribunais, "por_numero", wraps=tribunais.por_numero) as consulta:
+            pagina._usar_leitura(leitura, "Pauta grande")
+        self.assertEqual(len(pagina.arvore.get_children()), 400)
+        self.assertLess(consulta.call_count, 20)
+        self.assertIn("TJAL", pagina.arvore.item(numeros[-1], "values")[2])
+
+    def test_gravacao_sem_numero_no_nome_pergunta_o_processo(self):
+        # O campo traz o processo da audiência anterior: usá-lo sem perguntar
+        # dava ao documento da gravação o número errado.
+        from app.interface import dialogos
+
+        pagina = self.j.paginas["transcrever"]
+        pagina.var_numero.set("0700123-83.2024.8.02.0001")
+        gravacao = self.dir / "audiencia da tarde.mp3"
+        gravacao.write_bytes(b"ID3")
+        with mock.patch("app.interface.pagina_transcrever.filedialog.askopenfilename",
+                        return_value=str(gravacao)), \
+                mock.patch("app.interface.servicos.transcrever_gravacao") as transcrever:
+            pagina.transcrever_arquivo()
+            self.bombear(0.2)
+            transcrever.assert_not_called()
+            caixa = next(w for w in self.raiz.winfo_children()
+                         if isinstance(w, dialogos.DialogoNumero))
+            self.assertEqual(caixa.texto.get(), "0700123-83.2024.8.02.0001", "já preenchido")
+            caixa.texto.set(_cnj(700777))
+            caixa.confirmar()
+            self.assertTrue(self.bombear(ate=lambda: transcrever.called))
+        self.assertEqual(transcrever.call_args[0][1].formatado, _cnj(700777))
+
     def test_endereco_do_portal_volta_ao_original(self):
         pagina = self.j.paginas["config"]
         self.j.mostrar("config")
+        pagina.abas.select(1)                         # Acessos
+        self.bombear(0.2)
         var = pagina._vars[("endereco", "esaj:TJAL")]
         original = var.get()
         entrada = next(w for w in self._descendentes(pagina) if isinstance(w, tk.ttk.Entry)
                        and str(w.cget("textvariable")) == str(var))
         with mock.patch("app.nucleo.tribunais.definir_endereco") as definir:
             var.set("https://novo.tjal.jus.br")
-            entrada.event_generate("<Return>")
+            entrada.event_generate("<FocusOut>")
             var.set(original)
-            entrada.event_generate("<Return>")
+            entrada.event_generate("<FocusOut>")
         self.assertEqual([c.args[2] for c in definir.call_args_list],
                          ["https://novo.tjal.jus.br", original])
 

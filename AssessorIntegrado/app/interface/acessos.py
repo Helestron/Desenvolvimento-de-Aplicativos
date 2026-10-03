@@ -239,8 +239,11 @@ def portais_da_lista(numeros) -> list:
     """
     from ..nucleo import tribunais
 
-    vistos, saida = set(), []
+    vistos, saida, chaves = set(), [], set()
     for n in numeros:
+        if n.chave_tribunal in chaves:          # uma consulta por tribunal
+            continue
+        chaves.add(n.chave_tribunal)
         t = tribunais.por_numero(n)
         if t is None or not t.suportado:
             continue

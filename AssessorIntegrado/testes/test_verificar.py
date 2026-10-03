@@ -198,11 +198,10 @@ class TestChecagens(unittest.TestCase):
             modelos.PASTA = antes
 
     def test_teste_de_transcricao_usa_o_caminho_nativo(self):
-        # Regressão: a sonda recebia o caminho com acento ("C:\\Teste Área\\...",
-        # o do CI; "C:\\Users\\João\\...", o de muitos usuários), que o
-        # CTranslate2 não abre no Windows. O programa usa o nome curto 8.3
-        # (modelos.caminho_nativo); a verificação tem de testar igual - senão
-        # reprova (FALHA obrigatória) uma instalação que funciona.
+        # Regressão: a sonda carregava o modelo pelo caminho longo, com acento
+        # ("C:\\Teste Área\\...", o do CI), enquanto o programa o carrega pelo
+        # nome curto 8.3 (modelos.caminho_nativo): a verificação testava um
+        # caminho que o programa não usa.
         longo = Path("C:/Teste \u00c1rea/runtime/modelos/whisper-small")
 
         class Modelos:
@@ -224,13 +223,14 @@ class TestChecagens(unittest.TestCase):
         self.assertEqual(item.situacao, OK, item.detalhe)
         self.assertEqual(chamadas[0][-1], "C:/TESTEA~1/runtime/modelos/whisper-small")
 
-        # Sem nome curto (disco com 8.3 desligado), a falha diz o que resolve.
+        # Sem nome curto (disco com 8.3 desligado), a falha sugere também uma pasta sem acento.
         Modelos.caminho_nativo = staticmethod(lambda p: str(longo))
         with mock.patch.object(verificar, "_modelos", lambda: Modelos), \
                 mock.patch.object(verificar, "rodar", lambda *a, **k: (1, "", "RuntimeError: Unable to open file 'model.bin'", False)):
             item = verificar.checar_teste_transcricao(self.cfg)
         self.assertEqual(item.situacao, FALHA)
-        self.assertIn("acento", item.acao)
+        self.assertIn("INSTALAR.bat", item.acao)
+        self.assertIn("sem acento", item.acao)
         self.assertIn("C:\\AssessorIntegrado", item.acao)
 
     def test_cofre(self):

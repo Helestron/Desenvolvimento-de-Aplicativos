@@ -319,7 +319,7 @@ function Avaliar-Pasta {
         }
     }
     $raizesOneDrive = @($env:OneDrive, $env:OneDriveCommercial, $env:OneDriveConsumer)
-    $local = Avaliar-Local $Raiz $raizesOneDrive (Caminhos-LongosAtivados) 100 (Pasta-Gravavel $Raiz) (Acento-SemNomeCurto $Raiz)
+    $local = Avaliar-Local $Raiz $raizesOneDrive (Caminhos-LongosAtivados) 100 (Pasta-Gravavel $Raiz)
     if (-not $local.Mover) {
         Mostrar-Ok 'Local adequado: fora do OneDrive e com caminho curto.'
         return $false
@@ -330,10 +330,6 @@ function Avaliar-Pasta {
     if ($local.SemGravacao) {
         Mostrar-Aviso 'Não há permissão para gravar nesta pasta, e o programa guarda dentro dela o'
         Mostrar-Dica 'Python, as bibliotecas e os registros.'
-    }
-    if ($local.SemNomeCurto) {
-        Mostrar-Aviso 'O caminho desta pasta tem acento, e este disco não oferece nome curto sem'
-        Mostrar-Dica 'acento: o modelo de transcrição não conseguiria abrir os próprios arquivos.'
     }
     if ($local.OneDrive) {
         Mostrar-Aviso 'Esta pasta fica dentro do OneDrive. A sincronização trava arquivos em uso'
@@ -356,9 +352,6 @@ function Avaliar-Pasta {
         if ($base) { $candidatas += (Join-Path $base 'AssessorIntegrado') }
     }
     foreach ($candidata in $candidatas) {
-        # Com acento sem nome curto, o destino tem de ser só ASCII (a pasta
-        # do usuário, "C:\Users\João", teria o mesmo problema).
-        if ($local.SemNomeCurto -and (Tem-Acento $candidata)) { continue }
         if (-not (Esta-NoOneDrive $candidata $raizesOneDrive) -and (Pasta-Gravavel $candidata)) {
             $sugerida = $candidata
             break
@@ -692,7 +685,12 @@ function Etapa-Bibliotecas {
     Mostrar-Info 'Na primeira vez, esta é a etapa mais demorada.'
     $codigo = Instalar-Requisitos $Requisitos
     if ($codigo -ne 0) {
-        Interromper 'As bibliotecas do programa não foram instaladas.' ('Confira a internet e rode o INSTALAR.bat de novo (o que já foi baixado é aproveitado). Se um antivírus estiver bloqueando, peça ao suporte para liberar a pasta ' + $Raiz + '. Detalhes em ' + $script:ArquivoLogPip + '.')
+        $oQueFazer = 'Confira a internet e rode o INSTALAR.bat de novo (o que já foi baixado é aproveitado). Se um antivírus estiver bloqueando, peça ao suporte para liberar a pasta ' + $Raiz + '.'
+        # O pip não sabe se autenticar em proxy com a senha do Windows (NTLM),
+        # comum em rede de tribunal; o curl e o PowerShell sabem - daí o Python
+        # baixado e as bibliotecas, não.
+        if ($script:Proxy) { $oQueFazer += ' A rede usa o proxy ' + $script:Proxy + ': se ele pedir senha, peça ao suporte de TI para liberar pypi.org e files.pythonhosted.org sem autenticação.' }
+        Interromper 'As bibliotecas do programa não foram instaladas.' ($oQueFazer + ' Detalhes em ' + $script:ArquivoLogPip + '.')
     }
     $erro = Bibliotecas-Erro
     if ($erro) {

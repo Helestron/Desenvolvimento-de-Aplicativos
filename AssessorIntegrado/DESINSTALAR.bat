@@ -55,10 +55,10 @@ goto :pausar
 :bloqueado
 echo.
 echo   Uma regra do setor de TI impede o PowerShell deste computador de
-echo   rodar o desinstalador. Para remover o programa sem ele: apague os
-echo   atalhos Assessor Integrado da Area de Trabalho e do Menu Iniciar e,
-echo   depois, a pasta inteira do programa (antes, copie para outro lugar
-echo   a pasta Acervo, se quiser guardar os processos e as transcricoes).
+echo   rodar o desinstalador. Para remover o programa sem ele, apague os
+echo   atalhos com o nome Assessor Integrado e, depois, a pasta inteira
+echo   do programa. Antes, se quiser guardar os processos baixados, copie
+echo   a pasta Acervo para outro lugar.
 echo.
 set "CODIGO=11"
 
