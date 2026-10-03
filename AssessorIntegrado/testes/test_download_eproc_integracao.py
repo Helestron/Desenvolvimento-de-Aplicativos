@@ -363,5 +363,116 @@ class TestEProcDeMentira(apoio.PastaTemporaria):
         self.assertEqual(r.documentos, 1)
 
 
+    # ------------------------------------------------------ regressões
+    # Defeitos achados na revisão; cada teste falhava antes da correção.
+    def test_sigiloso_nivel_2_com_capa_em_blocos(self):
+        # "Nível de Sigilo do Processo:" e "Sigiloso (Nível 2)" em elementos
+        # separados: passava por público, e o PDF ficava no acervo da IA
+        falso = ae.EProcFalso()
+        ctx = apoio.ContextoGravador(codigos=[ae.CODIGO])
+        with ae.navegador(falso, self.tmp) as nav:
+            portal = self.portal(nav, ctx)
+            portal.entrar()
+            r = portal.baixar(ae.P_SIG2, self.tmp / "out" / f"{ae.P_SIG2.nome_arquivo}.pdf")
+        self.assertEqual(r.situacao, modelos.OK, r.detalhe)
+        self.assertTrue(r.sigiloso)
+
+    def test_painel_de_magistrado_nao_e_recusa_de_login(self):
+        falso = ae.EProcFalso(painel_extra=(
+            "<p><a href='#'>Alterar senha</a></p><table class='infraTable'><tr><td>"
+            "5000500-11.2024.8.21.0001</td><td>Bloqueio SISBAJUD - conta bloqueada</td></tr>"
+            "<tr><td>5000600-22.2024.8.21.0001</td><td>Procuração inválida</td></tr></table>"))
+        ctx = apoio.ContextoGravador(codigos=[ae.CODIGO])
+        with ae.navegador(falso, self.tmp) as nav:
+            portal = self.portal(nav, ctx)
+            portal.entrar()
+            r = portal.baixar(ae.P_CONS, self.tmp / "out" / f"{ae.P_CONS.nome_arquivo}.pdf")
+        self.assertEqual(r.situacao, modelos.OK, r.detalhe)
+        self.assertEqual(falso.logins, 1)
+
+    def test_tela_que_nao_responde_nao_vira_nao_encontrado(self):
+        # Pesquisa rápida que não responde, com o "Nenhum registro encontrado"
+        # de uma tabela vazia do painel na tela, e consulta processual que não
+        # conclui: era NAO_ENCONTRADO (definitivo, sem nova tentativa) para um
+        # processo que existe.
+        falso = ae.EProcFalso(rapida_inerte=True, consulta_quebrada=True)
+        ctx = apoio.ContextoGravador(codigos=[ae.CODIGO])
+        alvo = self.tmp / "out" / f"{ae.P1.nome_arquivo}.pdf"
+        with ae.navegador(falso, self.tmp, espera_s=5) as nav:
+            portal = self.portal(nav, ctx, opcoes=self.opcoes(espera_s=5))
+            portal.entrar()
+            with self.assertRaises(RuntimeError) as caso:
+                portal.baixar(ae.P1, alvo)
+        self.assertNotIsInstance(caso.exception, modelos.ProcessoNaoEncontrado)
+        self.assertIn("consulta processual", str(caso.exception))
+
+    def test_download_completo_ignora_arquivo_de_outro_processo(self):
+        falso = ae.EProcFalso(completo_outros=True)
+        ctx = apoio.ContextoGravador(codigos=[ae.CODIGO])
+        alvo = self.tmp / "out" / f"{ae.P1.nome_arquivo}.pdf"
+        with ae.navegador(falso, self.tmp) as nav:
+            portal = self.portal(nav, ctx, modo="completo")
+            portal.entrar()
+            r = portal.baixar(ae.P1, alvo)
+        self.assertEqual(r.situacao, modelos.OK, r.detalhe)
+        self.assertIn("PDF completo gerado pelo próprio eProc", r.detalhe)
+        _, textos, _ = self.paginas(alvo)
+        self.assertEqual(r.paginas, 6)
+        self.assertFalse(any("OUTRO PROCESSO" in t for t in textos), "autos trocados no PDF")
+
+    def test_cancelar_depois_de_salvar_gravacao_nao_deixa_midia_solta(self):
+        falso = ae.EProcFalso()
+
+        class Parar(apoio.ContextoGravador):
+            def status(self, texto):
+                super().status(texto)
+                if "documento 2 de" in texto:
+                    self.cancelar()
+
+        ctx = Parar(codigos=[ae.CODIGO])
+        alvo = self.tmp / "out" / f"{ae.P_MID.nome_arquivo}.pdf"
+        with ae.navegador(falso, self.tmp) as nav:
+            portal = self.portal(nav, ctx, opcoes=self.opcoes(baixar_midias=True))
+            portal.entrar()
+            with self.assertRaises(modelos.Cancelado):
+                portal.baixar(ae.P_MID, alvo)
+        self.assertFalse(alvo.exists())
+        pasta = self.tmp / "out" / "_controle" / "midias" / ae.P_MID.nome_arquivo
+        self.assertFalse(pasta.exists() and any(pasta.iterdir()),
+                         "gravação de processo não baixado ficou no acervo")
+
+    def test_paginacao_nao_lida_fica_no_incompleto(self):
+        # Paginação que o programa não reconhece: só a página 1 (eventos 7 a
+        # 4) era lida, e os autos saíam sem a inicial como se estivessem
+        # completos.
+        falso = ae.EProcFalso()
+        ctx = apoio.ContextoGravador(codigos=[ae.CODIGO])
+        sel = dict(eproc.SELETORES_PADRAO, eventos_paginacao=["#paginacaoQueNaoExiste"])
+        alvo = self.tmp / "out" / f"{ae.P1.nome_arquivo}.pdf"
+        with ae.navegador(falso, self.tmp) as nav:
+            portal = PortalEProc(nav, self.tribunal, self.opcoes(), ctx, (ae.USUARIO, ae.SENHA),
+                                 seletores=sel)
+            portal.entrar()
+            r = portal.baixar(ae.P1, alvo)
+        self.assertEqual(r.situacao, modelos.OK, r.detalhe)
+        self.assertEqual(r.incompleto, "eventos 1 a 3 (não listados); ev. 4 PET1")
+        self.assertIn("os eventos 1 a 3 não apareceram", r.detalhe)
+        _, textos, _ = self.paginas(alvo)
+        self.assertIn("eventos 1 a 3", textos[0])
+
+    def test_paginacao_sem_onchange_usa_a_funcao_do_eproc(self):
+        falso = ae.EProcFalso(paginacao_sem_onchange=True)
+        ctx = apoio.ContextoGravador(codigos=[ae.CODIGO])
+        alvo = self.tmp / "out" / f"{ae.P1.nome_arquivo}.pdf"
+        with ae.navegador(falso, self.tmp) as nav:
+            portal = self.portal(nav, ctx)
+            portal.entrar()
+            r = portal.baixar(ae.P1, alvo)
+        self.assertEqual(r.situacao, modelos.OK, r.detalhe)
+        self.assertEqual(r.documentos, 7)
+        self.assertEqual(r.incompleto, "ev. 4 PET1")
+        self.assertIn(f"{ae.P1.digitos}:1", falso.paginas_pedidas)
+
+
 if __name__ == "__main__":
     unittest.main()

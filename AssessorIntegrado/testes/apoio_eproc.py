@@ -298,6 +298,12 @@ class EProcFalso:
     def _pagina_processo(self, sid: str, proc: ProcessoFalso, pagina: int) -> tuple:
         n = proc.numero
         proprio = self.link(sid, "processo_selecionar", f"proc:{n.digitos}", num_processo=n.digitos)
+        if proc.capa_em_blocos:
+            nivel = ("<div class='row'><div class='col'><label>Nível de Sigilo do Processo:"
+                     "</label></div><div class='col'><label id='txtNivelSigilo'>"
+                     f"{proc.sigilo}</label></div></div>")
+        else:
+            nivel = f"Nível de sigilo: <span id='txtNivelSigilo'>{proc.sigilo}</span>"
         capa = (
             "<fieldset id='fldCapa'><legend>Capa do Processo</legend>"
             f"Nº do processo: <span id='txtNumProcesso'>{n.formatado}</span><br>"
@@ -307,10 +313,7 @@ class EProcFalso:
             "Situação: <span id='txtSituacao'>MOVIMENTO</span><br>"
             "Órgão julgador: <span id='txtOrgaoJulgador'>Juízo da 1ª Vara Cível de Porto "
             "Alegre</span><br>Juiz(a): <span id='txtMagistrado'>FULANA DE TAL</span><br>"
-            + (f"<div class='row'><div class='col'><label>Nível de Sigilo do Processo:</label>"
-               f"</div><div class='col'><label id='txtNivelSigilo'>{proc.sigilo}</label></div>"
-               "</div></fieldset>" if proc.capa_em_blocos else
-               f"Nível de sigilo: <span id='txtNivelSigilo'>{proc.sigilo}</span></fieldset>")
+            f"{nivel}</fieldset>"
             "<table id='tblPartesERepresentantes' class='infraTable'><tr><th>AUTOR</th>"
             "<th>RÉU</th></tr><tr class='infraTrClara'><td class='autorReu'>"
             "<a class='infraNomeParte' data-parte='AUTOR'>MARIA DA SILVA</a> "
