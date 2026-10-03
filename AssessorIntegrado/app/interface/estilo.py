@@ -250,7 +250,7 @@ def piscar_na_barra(raiz: tk.Misc) -> None:
 def aplicar_icone(raiz: tk.Misc) -> bool:
     """Ícone próprio na barra de título, na barra de tarefas e nos diálogos."""
     posto = False
-    ico, png = RECURSOS / "assessor.ico", RECURSOS / "assessor.png"
+    ico = RECURSOS / "assessor.ico"
     if sys.platform == "win32" and ico.exists():
         try:
             raiz.iconbitmap(default=str(ico))

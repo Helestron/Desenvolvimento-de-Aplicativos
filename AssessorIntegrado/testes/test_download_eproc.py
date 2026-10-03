@@ -461,5 +461,283 @@ class TestPortalSemNavegador(apoio.PastaTemporaria):
                          ["https://eproc.jfrs.jus.br/eprocV2/"])
 
 
+
+# ============================================================ regressões
+# Defeitos achados na revisão do PortalEProc; cada teste falhava antes da correção.
+class _PaginaFalsa:
+    """Uma aba que só tem endereço e HTML (o bastante para ler e conferir)."""
+
+    def __init__(self, url: str = "", html: str = ""):
+        self.url = url
+        self.html = html
+
+    def content(self):
+        return self.html
+
+    def wait_for_load_state(self, *a, **k):
+        pass
+
+    def wait_for_timeout(self, ms):
+        pass
+
+    def evaluate(self, *a, **k):
+        return None
+
+
+class _NavPagina(_NavJanela):
+    def __init__(self, url: str = "", html: str = "", visivel: bool = True):
+        super().__init__(visivel=visivel)
+        self.pagina = _PaginaFalsa(url, html)
+
+
+class TestRegressoesSemNavegador(apoio.PastaTemporaria):
+    def setUp(self):
+        super().setUp()
+        self.tribunal = replace(tribunais.por_sigla("TJRS"), urls={"1g": ["https://e/eproc/"]})
+        self.n = apoio.numero("5001234", tr="21")
+
+    def portal(self, nav=None, **mudar):
+        opcoes = apoio.opcoes_de_teste(self.tmp, **mudar)
+        return PortalEProc(nav or _NavPagina(), self.tribunal, opcoes, apoio.ContextoGravador(),
+                           ("u", "s"), seletores=eproc.SELETORES_PADRAO)
+
+    # ---------------------------------------------------------- sigilo
+    def test_sigilo_com_rotulo_e_valor_em_linhas_separadas(self):
+        # A capa nova põe rótulo e valor em elementos separados; e "Sigiloso"
+        # não casava com "sigilo\b": o nível 2 passava por público e o PDF
+        # ficava no acervo compartilhado com a IA.
+        self.assertTrue(indica_sigilo("Nível de Sigilo do Processo:\nSigiloso (Nível 2)"))
+        self.assertTrue(indica_sigilo("Nível de sigilo do processo:\nRestrito Juiz (Nível 4)"))
+        self.assertTrue(indica_sigilo("Nível de Sigilo:\nSigiloso"))
+        self.assertTrue(indica_sigilo("Sigiloso (Nível 3)"))
+        self.assertFalse(indica_sigilo("Nível de Sigilo do Processo:\nSem Sigilo (Nível 0)"))
+        self.assertFalse(indica_sigilo("Nível de sigilo: Sem Sigilo (Nível 0)\nPrioridade: Idoso"))
+        # botão do perfil de magistrado não é declaração de sigilo
+        self.assertFalse(indica_sigilo("Alterar nível de sigilo\nAlterar prioridade"))
+        self.assertFalse(indica_sigilo("Deferida a quebra de sigilo bancário"))
+
+    # -------------------------------------------------------- encoding
+    def test_charset_so_no_meta_le_iso_8859_1_como_windows_1252(self):
+        # cabeçalho "text/html" sem charset: o <meta> manda, e Latin-1 é
+        # lido como Windows-1252 (aspas curvas e travessão do Word)
+        bruto = "<meta charset='iso-8859-1'><p>“Defiro” — citação</p>".encode("cp1252")
+        self.assertIn("“Defiro” — citação", decodificar_html(bruto, "text/html"))
+        self.assertIn("“Defiro” — citação", decodificar_html(bruto, ""))
+        http_equiv = ("<meta http-equiv='Content-Type' content='text/html; charset=ISO-8859-1'>"
+                      "<p>“x”</p>").encode("cp1252")
+        self.assertIn("“x”", decodificar_html(http_equiv))
+
+    # ------------------------------------------------------ ordem do ZIP
+    def test_partes_do_zip_em_ordem_numerica(self):
+        import pymupdf
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for i in (10, 2, 1):
+                z.writestr(f"processo_parte{i}.pdf", apoio.pdf_bytes(1, f"PARTE{i}"))
+        textos = []
+        for dados in eproc.pdfs_do_zip(buf.getvalue()):
+            with pymupdf.open(stream=dados, filetype="pdf") as d:
+                textos.append(d[0].get_text().split()[0])
+        self.assertEqual(textos, ["PARTE1", "PARTE2", "PARTE10"])
+
+    # ------------------------------------------------ Download Completo
+    def test_links_do_completo_so_deste_processo(self):
+        outro = apoio.numero("5009999", tr="21")
+        links = [{"href": "https://e/download72h/a/arquivo.pdf",
+                  "texto": f"{outro.formatado}  BAIXAR ARQUIVO"},
+                 {"href": "https://e/download72h/b/arquivo.pdf",
+                  "texto": f"{self.n.formatado}  BAIXAR ARQUIVO"}]
+        self.assertEqual(eproc.links_do_completo(links, self.n.digitos),
+                         ["https://e/download72h/b/arquivo.pdf"])
+        # só o de outro processo: nenhum (cai para a montagem por documentos)
+        self.assertEqual(eproc.links_do_completo(links[:1], self.n.digitos), [])
+        # página de um arquivo só, sem número por perto: vale
+        self.assertEqual(eproc.links_do_completo(
+            [{"href": "https://e/download72h/c/x.pdf", "texto": "BAIXAR ARQUIVO"}],
+            self.n.digitos), ["https://e/download72h/c/x.pdf"])
+        self.assertEqual(eproc.links_do_completo(
+            [f"https://e/x?acao=download_completo_download_pronto_enviar&num_processo="
+             f"{outro.digitos}&hash=1"], self.n.digitos), [])
+
+    # ------------------------------------------------- eventos e links
+    def test_eventos_ausentes(self):
+        def ev(n):
+            return Evento(n, "01/01/2024", "", "X")
+        self.assertEqual(eproc.eventos_ausentes([ev(7), ev(6), ev(5), ev(4)]), "1 a 3")
+        self.assertEqual(eproc.eventos_ausentes([ev(3), ev(2)]), "1")
+        self.assertEqual(eproc.eventos_ausentes([ev(3), ev(2), ev(1)]), "")
+        self.assertEqual(eproc.eventos_ausentes([ev(0)]), "")
+        texto = eproc.texto_capa(self.n, "eProc do TJRS", {}, [], 4, [], False, [], 0,
+                                 ausentes="1 a 3")
+        self.assertIn("os eventos 1 a 3 não apareceram", texto)
+
+    def test_link_por_script_e_icone_com_data_doc_diferente(self):
+        html = """<table id='tblEventos'><tr id='trEvento2'><td>2</td><td>02/02/2024 10:00</td>
+          <td><label class='infraEventoDescricao'>JUNTADA</label></td><td></td><td>
+          <a class='infraLinkDocumento' href='controlador.php?acao=acessar_documento&amp;doc=777&amp;hash=a'><img src='pdf.gif'></a>
+          <a class='infraLinkDocumento' data-doc='X777' data-mimetype='pdf'
+             href='controlador.php?acao=acessar_documento&amp;doc=777&amp;hash=a'>PET1</a>
+          <a class='infraLinkDocumento' href='#' data-mimetype='pdf'
+             onclick="window.open('controlador.php?acao=acessar_documento&amp;doc=778&amp;hash=b','_blank')">OUT2</a>
+          </td></tr></table>"""
+        (ev,) = ler_eventos(html)
+        self.assertEqual([(d.rotulo, d.mimetype) for d in ev.documentos],
+                         [("PET1", "pdf"), ("OUT2", "pdf")])
+        self.assertEqual(ev.documentos[1].href,
+                         "controlador.php?acao=acessar_documento&doc=778&hash=b")
+
+    def test_consulta_com_varios_resultados_e_nenhum_deste_numero(self):
+        varios = json.dumps({"resultados": [
+            {"numProcesso": "5009999-00.2024.8.21.0001", "linkProcessoAssinado": "a"},
+            {"numProcesso": "5008888-00.2024.8.21.0001", "linkProcessoAssinado": "b"}]})
+        self.assertIsNone(link_assinado_da_consulta(varios, self.n.digitos))
+        um = json.dumps({"resultados": [{"linkProcessoAssinado": "controlador.php?id=1"}]})
+        self.assertEqual(link_assinado_da_consulta(um, self.n.digitos), "controlador.php?id=1")
+
+    def test_nao_encontrado_com_foi_foram(self):
+        self.assertTrue(diz_nao_encontrado("Nenhum processo foi encontrado."))
+        self.assertTrue(diz_nao_encontrado("Processo não foi localizado"))
+        self.assertTrue(diz_nao_encontrado("Não foram localizados processos com esse número"))
+        self.assertFalse(diz_nao_encontrado("Processo encontrado: 1 resultado"))
+
+    # ---------------------------------------------------------- sessão
+    def test_sessao_ignora_campo_oculto_e_sessao_mal_decodificada(self):
+        self.assertEqual(motivo_sessao(
+            "<input type='hidden' id='txtUsuario' value='RS1'>"
+            "<input type='hidden' name='pwdSenha' value=''><p>Painel</p>"), "")
+        self.assertEqual(motivo_sessao(
+            "<textarea id='txaInfraMsg'>A sess�o foi encerrada.</textarea>"), "encerrada")
+
+    def test_estado_da_sessao_confirma_pela_janela(self):
+        # o canal direto sem os cookies da janela via a tela de login: sem a
+        # confirmação, era SessaoPerdida (e novo código) a cada processo
+        portal = self.portal(_NavPagina("https://e/eproc/controlador.php?acao=x&hash=1"))
+        portal._url_ancora = "https://e/eproc/controlador.php?acao=painel_adv_listar&hash=1"
+        login = b"<form><input id='txtUsuario'><input id='pwdSenha' type='password'></form>"
+        painel = b"<div id='divInfraBarraSistema'>Painel</div>"
+        canais = []
+
+        def buscar_por(canal, url, metodo, corpo, cabecalhos, prazo):
+            canais.append(canal)
+            return eproc.Resposta(200, url, "text/html", login if canal == "contexto" else painel,
+                                  canal)
+
+        portal._buscar_por = buscar_por
+        self.assertIs(portal._estado_sessao(), True)
+        self.assertEqual(canais, ["contexto", "pagina"])
+        self.assertEqual(portal._canais[0], "pagina")
+        # com a janela também na tela de login, a sessão caiu mesmo
+        portal2 = self.portal(_NavPagina("https://e/eproc/controlador.php?acao=x&hash=1"))
+        portal2._url_ancora = portal._url_ancora
+        portal2._buscar_por = lambda canal, *a: eproc.Resposta(200, a[0], "text/html", login,
+                                                               canal)
+        self.assertIs(portal2._estado_sessao(), False)
+
+    # ------------------------------------------------------ documentos
+    def test_html_do_documento_que_cita_outro_documento_nao_e_moldura(self):
+        # Um despacho (HTML de acessar_documento_implementacao) que traz o link
+        # de outro documento era tomado por moldura - e o PDF recebia o OUTRO.
+        portal = self.portal()
+        despacho = ("<html><body><p class='titulo'>DESPACHO</p><p>Vista do laudo (<a href="
+                    "'controlador.php?acao=acessar_documento_implementacao&amp;doc=9&amp;hash=z'>"
+                    "LAUDO1</a>). Intimem-se.</p></body></html>").encode("cp1252")
+        portal._buscar = lambda url, *a, **k: eproc.Resposta(
+            200, url, "text/html; charset=ISO-8859-1", despacho, "pagina")
+        doc = Documento(5, "01/02/2024", "", "DESPACHO", "DESPADEC1", "x", mimetype="html")
+        impl = "https://e/eproc/controlador.php?acao=acessar_documento_implementacao&doc=5&hash=h"
+        tipo, texto, _ = portal._interpretar(impl, doc)
+        self.assertEqual(tipo, "html")
+        self.assertIn("Vista do laudo", texto)
+        # a moldura (acao=acessar_documento) continua sendo seguida pelo script
+        moldura = "https://e/eproc/controlador.php?acao=acessar_documento&doc=5&hash=h"
+        self.assertEqual(portal._interpretar(moldura, doc)[0], "moldura")
+
+    # ------------------------------------------------- abrir processo
+    def test_nao_encontrado_so_quando_a_consulta_confirma(self):
+        portal = self.portal()
+        portal._pela_pesquisa_rapida = lambda n: "nao_encontrado"
+        # consulta que não concluiu: falha passageira (o motor tenta de novo),
+        # e não "não encontrado" definitivo - era o caso do "Nenhum registro
+        # encontrado" de uma tabela vazia do painel
+        portal._pela_consulta = lambda n: "desconhecido"
+        with self.assertRaises(RuntimeError) as caso:
+            portal._abrir_processo(self.n)
+        self.assertNotIsInstance(caso.exception, modelos.ProcessoNaoEncontrado)
+        portal._pela_consulta = lambda n: "indisponivel"
+        with self.assertRaises(modelos.ProcessoNaoEncontrado):
+            portal._abrir_processo(self.n)
+        portal._pela_pesquisa_rapida = lambda n: "desconhecido"
+        portal._pela_consulta = lambda n: "nao_encontrado"
+        with self.assertRaises(modelos.ProcessoNaoEncontrado):
+            portal._abrir_processo(self.n)
+
+    def test_conferencia_do_numero_sem_o_campo_da_capa(self):
+        outro = apoio.numero("5009999", tr="21")
+        # a lista de relacionados "continha" os 20 dígitos colados a outros números
+        colado = self.n.digitos[:10] + " " + self.n.digitos[10:]
+        nav = _NavPagina("https://e/eproc/controlador.php?acao=processo_selecionar&hash=1",
+                         f"<table id='tblEventos'></table><p>Relacionados: {colado}</p>")
+        with self.assertRaises(RuntimeError) as caso:
+            self.portal(nav)._chegou(self.n)
+        self.assertIn("autos trocados", str(caso.exception))
+        nav = _NavPagina("https://e/eproc/controlador.php?acao=processo_selecionar&num_processo="
+                         f"{outro.digitos}&hash=1", f"<p>{self.n.formatado}</p>")
+        with self.assertRaises(RuntimeError):
+            self.portal(nav)._chegou(self.n)
+        nav = _NavPagina("https://e/eproc/controlador.php?acao=processo_selecionar&hash=1",
+                         f"<table id='tblEventos'></table><h1>Processo {self.n.formatado}</h1>")
+        self.portal(nav)._chegou(self.n)
+
+    def test_ancora_nao_e_o_post_da_escolha_de_perfil(self):
+        painel = "controlador.php?acao=painel_adv_listar&hash=abc"
+        nav = _NavPagina("https://e/eproc/controlador.php?acao=pessoa_usuario_logar"
+                         "&acao_origem=entrar&id_usuario=10&hash=x",
+                         f"<a href='{painel.replace('&', '&amp;')}'>Painel</a>")
+        self.assertEqual(self.portal(nav)._ancora(), "https://e/eproc/" + painel)
+        normal = "https://e/eproc/controlador.php?acao=painel_adv_listar&hash=1"
+        self.assertEqual(self.portal(_NavPagina(normal, ""))._ancora(), normal)
+
+    # ------------------------------------------------------ paginação
+    def test_listar_todos_ainda_percorre_a_paginacao(self):
+        # "listar todos" que é só uma página maior: a página 2 era ignorada
+        portal = self.portal()
+        atual = [PAGINA_1]
+        portal._listar_todos = lambda: True
+        portal._html = lambda pagina=None: atual[0]
+        portal._valor_paginacao = lambda: "0"
+        portal._conferir_sessao_na_pagina = lambda pagina=None: None
+
+        def mudar(valor):
+            atual[0] = PAGINA_2
+            return True
+
+        portal._mudar_pagina = mudar
+        eventos = portal._todos_os_eventos(ler_eventos(PAGINA_1), "x")
+        self.assertEqual(sorted(e.numero for e in eventos), [1, 2, 3, 4, 5])
+
+    # ---------------------------------------------------------- login
+    def test_painel_logado_com_senha_e_bloqueada_no_texto_e_logado(self):
+        # O painel de um magistrado lista andamentos ("conta bloqueada",
+        # "procuração inválida") e tem "Alterar senha": lido como tela de
+        # login, dava "usuário bloqueado" com o login já feito.
+        nav = _NavPagina("https://e/eproc/controlador.php?acao=painel_adv_listar&hash=1")
+        portal = self.portal(nav)
+        portal._visivel = lambda chave, pagina=None, espera_ms=0: (
+            object() if chave == "pesquisa_rapida" else None)
+        portal._texto = lambda pagina=None: ("Alterar senha | Bloqueio SISBAJUD: conta bloqueada "
+                                             "| Procuração inválida | usuário bloqueado")
+        self.assertEqual(portal._etapa(apos_envio=True), "logado")
+        # fora da área logada, o mesmo texto é recusa
+        nav.pagina.url = "https://e/eproc/externo_controlador.php?acao=principal"
+        portal._visivel = lambda chave, pagina=None, espera_ms=0: None
+        self.assertEqual(portal._etapa(apos_envio=True), "bloqueado")
+
+    def test_certificado_com_a_janela_oculta_diz_certificado(self):
+        portal = self.portal(_NavPagina(visivel=False), login={"eproc": "certificado"})
+        with self.assertRaises(modelos.LoginFalhou) as caso:
+            portal._login_na_janela()
+        self.assertIn("login com certificado digital", str(caso.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

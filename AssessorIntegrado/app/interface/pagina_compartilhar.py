@@ -466,7 +466,7 @@ class PaginaCompartilhar(Pagina):
                              "“assessor-integrado” (ferramentas que só leem os autos, sem alterar nada).")
             else:
                 self._recado("Info", "O acervo já estava conectado",
-                             "Se o conector não aparece, feche o Claude Desktop pela bandeja do "
+                             "Se o conector não aparecer, feche o Claude Desktop pela bandeja do "
                              "Windows (perto do relógio) e abra de novo.")
             self.ao_mostrar()
 

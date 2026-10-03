@@ -574,9 +574,11 @@ def checar_teste_navegador(cfg) -> Item:
     if not erros:
         ultima = (erro.strip().splitlines() or [explicar_queda(None if estourou else codigo)])[-1]
         erros.append(ultima)
-    situacao = FALHA if NO_WINDOWS else AVISO
-    return Item(nome, situacao, "Nenhum navegador abriu. " + "; ".join(erros),
-                obrigatorio=NO_WINDOWS, codigo="teste_navegador",
+    # Aviso, e não falha: sem navegador, só o download fica de fora - a
+    # transcrição e o compartilhamento funcionam, e a instalação não pode
+    # sair "em vermelho" por uma regra da TI que bloqueie o modo invisível.
+    return Item(nome, AVISO, "Nenhum navegador abriu. " + "; ".join(erros),
+                obrigatorio=False, codigo="teste_navegador",
                 acao=("Feche janelas do navegador que tenham travado, reinicie o computador e "
                       "tente de novo; se persistir, rode o INSTALAR.bat de novo."))
 

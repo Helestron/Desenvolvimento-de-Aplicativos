@@ -244,7 +244,8 @@ def baixar_modelo(nome: str, progresso: Callable[[float, str], None] | None = No
 
 
 def transcrever_gravacao(origem: Path, numero, cfg, progresso, cancelado, *,
-                         rotulos_manuais=None, destino: Path | None = None, tipo: str = "") -> Path:
+                         rotulos_manuais=None, destino: Path | None = None, tipo: str = "",
+                         participantes: dict | None = None) -> Path:
     try:
         from ..transcricao import arquivo
     except ImportError as erro:
@@ -254,7 +255,8 @@ def transcrever_gravacao(origem: Path, numero, cfg, progresso, cancelado, *,
         try:
             from ..transcricao.documento import MetaAudiencia
 
-            meta = MetaAudiencia(numero=numero.formatado if numero else "", tipo=tipo)
+            meta = MetaAudiencia(numero=numero.formatado if numero else "", tipo=tipo,
+                                 participantes=dict(participantes or {}))
         except Exception:
             meta = None
     extra = {"meta": meta} if meta is not None else {}
@@ -289,7 +291,14 @@ def instalar_falantes(progresso: Callable[[float, str], None] | None = None,
 
 
 def numero_no_nome(caminho: Path):
-    """O número CNJ escrito no nome do arquivo, se houver."""
+    """O número CNJ do arquivo: no nome (inclusive o dependente "-NN") ou na
+    pasta (as mídias baixadas ficam em _controle/midias/<número>/)."""
+    try:
+        from ..transcricao import arquivo
+
+        return arquivo.numero_do_caminho(Path(caminho))
+    except (ImportError, AttributeError):
+        pass
     try:
         return cnj.ler(Path(caminho).stem)
     except cnj.NumeroInvalido:

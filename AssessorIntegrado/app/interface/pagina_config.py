@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 import tkinter as tk
-from pathlib import Path
 from tkinter import ttk
 
 from .. import NOME, __version__

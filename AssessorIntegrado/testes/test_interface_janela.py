@@ -189,8 +189,20 @@ class TesteJanela(unittest.TestCase):
 
     def test_atalhos_de_pagina(self):
         self.j.mostrar("baixar")
-        self.raiz.event_generate("<Control-Key-3>")
+        try:
+            self.raiz.deiconify()
+            self.raiz.focus_force()
+        except tk.TclError:
+            pass
         self.bombear(0.05)
+        self.raiz.event_generate("<Control-Key-3>", when="tail")
+        self.bombear(0.1)
+        if self.j.atual != "transcrever" and sys.platform == "win32":
+            # No Windows, tecla gerada por programa só chega à janela que tem
+            # o foco do teclado - e o runner do CI não tem sessão interativa.
+            # Lá o atalho é conferido pela própria ligação (abaixo).
+            self.assertIn("<Control-Key-3>", self.raiz.bind_all())
+            self.skipTest("teclado sintético sem foco no Windows do CI")
         self.assertEqual(self.j.atual, "transcrever")
 
     def test_relacao_e_eventos_do_lote(self):
@@ -604,6 +616,32 @@ class TesteJanela(unittest.TestCase):
             self.j.fechar()
             self.assertTrue(self.bombear(ate=lambda: not self.j._viva(), limite=15))
         self.assertTrue(criadas[0].encerrada.is_set(), "o DOCX final é gravado antes de fechar")
+
+    def test_fechar_de_novo_forca_a_saida_se_algo_travar(self):
+        # A espera pela audiência é longa; clicar no X de novo (depois de
+        # alguns segundos) oferece fechar mesmo assim.
+        liberar = threading.Event()
+        self.addCleanup(liberar.set)
+
+        class SessaoTravada(SessaoFalsa):
+            def encerrar(self, refinar=False):
+                liberar.wait(30)
+                return super().encerrar(refinar)
+
+        def fabrica(numero, cfg, eventos, **kw):
+            return SessaoTravada(numero, cfg, eventos, pasta=self.dir, **kw)
+
+        self._gravando(fabrica)
+        with mock.patch("app.interface.dialogos.confirmar", return_value=True) as perguntou:
+            self.j.fechar()
+            self.bombear(0.3)
+            self.assertTrue(self.j._viva(), "espera a audiência")
+            self.j.fechar()                       # cedo demais: ignora
+            self.assertEqual(perguntou.call_count, 1)
+            self.j._fechando_desde -= 10
+            self.j.fechar()
+            self.assertEqual(perguntou.call_count, 2)
+            self.assertTrue(self.bombear(ate=lambda: not self.j._viva(), limite=3))
 
     def test_rodape_do_download_nao_refaz_o_parar_a_cada_evento(self):
         # Destruir e recriar o "Parar" a cada status do motor fazia o botão

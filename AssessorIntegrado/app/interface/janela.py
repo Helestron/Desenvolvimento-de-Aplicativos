@@ -151,7 +151,6 @@ class Janela:
         r.minsize(min(px(MINIMO[0]), largura), min(px(MINIMO[1]), altura))
 
     def _montar(self) -> None:
-        import importlib
 
         r = self.raiz
         r.configure(background=estilo.MOLDURA)
@@ -379,6 +378,7 @@ class Janela:
     # -------------------------------------------------------------- fechar
     def fechar(self) -> None:
         if self._fechando:
+            self._forcar_fechamento()
             return
         pendentes = []
         for pagina in self.paginas.values():
@@ -393,6 +393,7 @@ class Janela:
             if not dialogos.confirmar(self.raiz, "Fechar o Assessor Integrado", texto):
                 return
         self._fechando = True
+        self._fechando_desde = time.monotonic()
         for pagina in self.paginas.values():
             try:
                 pagina.antes_de_fechar()
@@ -407,6 +408,23 @@ class Janela:
         self._esperar_e_destruir(agora + ESPERA_FECHAR_S, agora + ESPERA_AUDIENCIA_S)
 
     _fechar = fechar          # nome da base (WM_DELETE_WINDOW)
+
+    def _forcar_fechamento(self) -> None:
+        """O X clicado de novo enquanto se espera o trabalho terminar.
+
+        A espera pela audiência pode ser longa (ESPERA_AUDIENCIA_S): se algo
+        travou, o usuário precisa de uma saída que não seja o Gerenciador de
+        Tarefas. O diário da audiência permite recuperar o que faltar.
+        """
+        if time.monotonic() - getattr(self, "_fechando_desde", time.monotonic()) < 5:
+            return
+        if dialogos.confirmar(
+                self.raiz, "Fechar agora",
+                "O programa ainda está salvando o que estava em andamento.\n\nFechar agora "
+                "mesmo assim? Se for a audiência, o documento pode ficar incompleto; o que foi "
+                "falado fica no diário e se recupera em “Recuperar transcrição interrompida”."):
+            log.warning("fechamento forçado pelo usuário com trabalho em andamento")
+            self.destruir()
 
     def _audiencia_encerrando(self) -> bool:
         pagina = self.paginas.get("transcrever")

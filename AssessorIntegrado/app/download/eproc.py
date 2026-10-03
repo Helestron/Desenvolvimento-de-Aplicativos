@@ -48,6 +48,7 @@ descendente e ">".
 from __future__ import annotations
 
 import base64
+import codecs
 import configparser
 import functools
 import html as _html
@@ -551,6 +552,16 @@ def parametros(url: str) -> dict[str, str]:
     return {k: v[0] for k, v in urllib.parse.parse_qs(consulta, keep_blank_values=True).items()}
 
 
+_RE_LINK_DOCUMENTO = re.compile(
+    r"""((?:[\w.:/-]*/)?controlador\.php\?acao=acessar_documento[^'"\s<>)]*)""")
+
+
+def _link_no_script(texto: str) -> str:
+    """O endereço de documento escrito num onclick ("window.open('...')")."""
+    m = _RE_LINK_DOCUMENTO.search(_html.unescape(texto or ""))
+    return m.group(1) if m else ""
+
+
 def ler_eventos(fonte, sel: dict | None = None) -> list[Evento]:
     """Os eventos (com seus documentos) de UMA página do processo.
 
@@ -583,22 +594,34 @@ def ler_eventos(fonte, sel: dict | None = None) -> list[Evento]:
         for a in buscar(tr, sel.get("evento_documento", [])):
             href = (a.attr("href") or "").strip()
             if not href or href == "#" or href.lower().startswith("javascript"):
-                continue
-            chave = a.attr("data-doc") or parametros(href).get("doc") or href
+                # link que abre o documento por script (onclick/window.open):
+                # o endereço assinado está no próprio atributo
+                href = _link_no_script(" ".join(
+                    (a.attr("onclick"), a.attr("href"), a.attr("data-href"), a.attr("data-url"))))
+                if not href:
+                    continue
+            # O ícone e o texto do mesmo documento são dois links, e o data-doc
+            # nem sempre é igual ao parâmetro doc do endereço: vale qualquer
+            # das chaves para reconhecer o repetido.
+            chaves = [k for k in (a.attr("data-doc"), parametros(href).get("doc"), href) if k]
+            chave = chaves[0]
             rotulo = limpar(a.texto() or a.attr("title"))[:80]
-            existente = por_chave.get(chave)
+            existente = next((por_chave[k] for k in chaves if k in por_chave), None)
             if existente is not None:
                 # o primeiro link era o ícone: o rótulo e o tipo vêm do outro
                 existente.rotulo = existente.rotulo or rotulo
                 existente.mimetype = existente.mimetype or (a.attr("data-mimetype") or "").lower()
                 existente.titulo = existente.titulo or limpar(a.attr("title"))
+                for k in chaves:
+                    por_chave.setdefault(k, existente)
                 continue
             doc = Documento(evento=numero, data=data, hora=hora, descricao=descricao,
                             rotulo=rotulo, href=href,
                             mimetype=(a.attr("data-mimetype") or "").strip().lower(),
                             titulo=limpar(a.attr("title")), id=chave,
                             ordem=len(evento.documentos))
-            por_chave[chave] = doc
+            for k in chaves:
+                por_chave.setdefault(k, doc)
             evento.documentos.append(doc)
         for doc in evento.documentos:
             doc.rotulo = doc.rotulo or doc.titulo[:80] or f"documento {doc.ordem + 1}"
@@ -673,6 +696,22 @@ def juntar_paginas(*paginas: list[Evento]) -> list[Evento]:
         for e in lista:
             unidos.setdefault(e.chave, e)
     return list(unidos.values())
+
+
+def eventos_ausentes(eventos: list[Evento]) -> str:
+    """"1 a 3" quando a lista lida começa depois do evento 1.
+
+    O eProc mostra os eventos do mais novo para o mais antigo e numera-os a
+    partir de 1: se o menor número lido é 4, as páginas com os eventos 1 a 3
+    (a petição inicial!) não foram lidas - paginação que mudou de jeito, por
+    exemplo. Melhor dizer isso no relatório que entregar autos sem o começo
+    como se estivessem completos.
+    """
+    numeros = [e.numero for e in eventos if e.numero > 0]
+    if not numeros or min(numeros) <= 1:
+        return ""
+    menor = min(numeros)
+    return "1" if menor == 2 else f"1 a {menor - 1}"
 
 
 def titulo_do_documento(doc: Documento) -> str:
@@ -755,6 +794,12 @@ _FRASES_NAO_ENCONTRADO = ("processo nao encontrado", "nenhum processo encontrado
                           "nenhum registro encontrado", "processo nao localizado",
                           "nao foi encontrado nenhum processo", "nao existe processo",
                           "nenhum resultado encontrado")
+# variações com "foi/foram" ("Nenhum processo foi encontrado", "Processo não
+# foi localizado", "Não foram localizados processos")
+_RE_NAO_ENCONTRADO = re.compile(
+    r"\bnenhum\w*\s+(?:processo|registro|resultado)s?\s+(?:foi\s+|foram\s+)?(?:encontrad|localizad)"
+    r"|\bprocessos?\s+nao\s+(?:foi\s+|foram\s+)?(?:encontrad|localizad)"
+    r"|\bnao\s+(?:foi|foram)\s+(?:encontrad|localizad)")
 _FRASES_SEM_ACESSO = ("acesso integra do processo", "vista sem procuracao",
                       "nao possui permissao", "sem permissao", "acesso negado",
                       "acesso nao autorizado", "nao tem acesso", "acesso restrito",
@@ -763,7 +808,7 @@ _FRASES_SEM_ACESSO = ("acesso integra do processo", "vista sem procuracao",
 
 def diz_nao_encontrado(texto: str) -> bool:
     t = sem_acento(texto)
-    return any(f in t for f in _FRASES_NAO_ENCONTRADO)
+    return any(f in t for f in _FRASES_NAO_ENCONTRADO) or bool(_RE_NAO_ENCONTRADO.search(t))
 
 
 def diz_sem_acesso(texto: str) -> bool:
@@ -775,16 +820,36 @@ def indica_sigilo(texto: str) -> bool:
     """A página do processo (sem a lista de eventos) se declara sigilosa?
 
     "Segredo de justiça", "processo sigiloso" ou um nível de sigilo de 1 a 9
-    ("Sigilo: Nível 2"). "Sem Sigilo (Nível 0)" não é sigilo; e a lista de
-    eventos fica de fora, porque "Retirado o segredo de justiça" é andamento
-    de processo público.
+    ("Sigilo: Nível 2", "Nível de sigilo do processo: Sigiloso (Nível 2)",
+    "Restrito Juiz (Nível 4)"). "Sem Sigilo (Nível 0)" não é sigilo; e a
+    lista de eventos fica de fora, porque "Retirado o segredo de justiça" é
+    andamento de processo público.
+
+    Na capa, rótulo e valor costumam estar em elementos separados, e o
+    innerText os põe em LINHAS diferentes ("Nível de Sigilo do Processo:" /
+    "Sigiloso (Nível 2)"): a busca não pode parar na quebra de linha. E
+    "Sigiloso" não é "sigilo" seguido de fronteira de palavra - a primeira
+    versão perdia exatamente o nível 2, e o PDF ia para o acervo compartilhado.
     """
     t = sem_acento(texto)
     if "segredo de justi" in t:
         return True
     if re.search(r"\bprocesso\s+sigiloso\b", t):
         return True
-    return bool(re.search(r"sigilo\b[^\n]{0,60}?\bnivel\s*[1-9]", t))
+    for m in re.finditer(r"\bsigil\w*", t):
+        # o PRIMEIRO "nível N" depois da palavra: em "Sem Sigilo (Nível 0)" é o 0
+        nivel = re.search(r"\bnivel\s*(\d)", t[m.end():m.end() + 80])
+        if nivel and nivel.group(1) != "0":
+            return True
+    # "Nível de sigilo: Sigiloso" / "Restrito Juiz", sem o número. Exige os
+    # dois-pontos do rótulo da capa: um botão "Alterar nível de sigilo" (perfil
+    # de magistrado) não é declaração de sigilo.
+    m = re.search(r"\bnivel\s+de\s+sigilo\b[^:\n]{0,40}:\s*([^\n:]{1,60})(?:\n|$)", t)
+    if m:
+        valor = m.group(1).strip()
+        if valor and not re.match(r"(sem\s+sigilo|publico|nenhum|nao\b|0\b|\(?nivel\s*0)", valor):
+            return True
+    return False
 
 
 def motivo_sessao(html: str, url: str = "", sel: dict | None = None) -> str:
@@ -801,15 +866,21 @@ def motivo_sessao(html: str, url: str = "", sel: dict | None = None) -> str:
     if raiz is not None and "txaInfraMsg" in bruto:
         mensagem = next((n.texto() for n in raiz.elementos()
                          if n.attrs.get("id") == "txaInfraMsg"), "")
-        if re.search(r"sessao\b.{0,40}?(encerrad|expir|finalizad|invalid|terminad)",
+        # "sess\S{0,3}o": também a "sessão" de uma página decodificada errado
+        # ("sess�o"), que de outro modo passaria por documento
+        if re.search(r"sess\S{0,3}o\b.{0,40}?(encerrad|expir|finalizad|invalid|terminad)",
                      sem_acento(mensagem)):
             return "encerrada"
     if raiz is not None:
+        def campo(seletores) -> bool:
+            # campo oculto (type=hidden) com o mesmo id não é tela de login
+            return any(n.tag != "input" or n.attr("type").strip().lower() != "hidden"
+                       for n in buscar(raiz, seletores))
+
         fortes = ["input#txtUsuario", "input#pwdSenha", "form#kc-form-login",
                   "input[name='pwdSenha']"]
-        if primeiro(raiz, fortes) is not None or (
-                primeiro(raiz, sel.get("login_senha", [])) is not None
-                and primeiro(raiz, sel.get("login_usuario", [])) is not None):
+        if campo(fortes) or (campo(sel.get("login_senha", []))
+                             and campo(sel.get("login_usuario", []))):
             return "login"
     u = (url or "").lower()
     if "externo_controlador.php" in u and "msg=" in u:
@@ -847,12 +918,18 @@ def url_implementacao(href: str) -> str:
                                     partes.fragment))
 
 
-def src_do_iframe(html: str, url_base: str, sel: dict | None = None) -> str:
+def src_do_iframe(html: str, url_base: str, sel: dict | None = None,
+                  so_iframe: bool = False) -> str:
     """O endereço do conteúdo dentro da moldura do documento.
 
     Pela ordem: o src do iframe#conteudoIframe; os campos ocultos doc,
     evento, key, nome_documento e hash da própria moldura; o endereço
     escrito no JavaScript da página.
+
+    ``so_iframe``: só o iframe da moldura vale. É o caso de um HTML que já
+    veio de acessar_documento_implementacao - é o próprio documento, e um
+    despacho ou certidão que CITA o link de outro documento não pode ser
+    trocado por ele.
     """
     sel = sel or SELETORES_PADRAO
     raiz = ler_html(html or "")
@@ -861,6 +938,8 @@ def src_do_iframe(html: str, url_base: str, sel: dict | None = None) -> str:
         src = no.attr("src").strip()
         if src and not src.lower().startswith(("about:", "javascript")):
             return urllib.parse.urljoin(url_base, src)
+    if so_iframe:
+        return ""
     campos: dict[str, str] = {}
     for inp in raiz.elementos():
         nome = inp.attr("name")
@@ -913,13 +992,29 @@ def link_assinado_da_consulta(texto: str, digitos: str) -> str | None:
     for r in candidatos:
         if digitos and digitos in re.sub(r"\D", "", json.dumps(r, ensure_ascii=False)):
             return str(r["linkProcessoAssinado"])
-    return str(candidatos[0]["linkProcessoAssinado"]) if candidatos else None
+    # Um resultado só: foi o que o portal achou para o número pedido (a página
+    # aberta ainda é conferida pelos 20 dígitos). Vários, e nenhum com o
+    # número: não se escolhe um ao acaso.
+    return str(candidatos[0]["linkProcessoAssinado"]) if len(candidatos) == 1 else None
 
 
 # ------------------------------------------------------ tipos de conteúdo
 def charset_de(content_type: str) -> str:
     m = re.search(r"charset\s*=\s*[\"']?([\w.:-]+)", content_type or "", re.I)
     return m.group(1).lower() if m else ""
+
+
+def _codec_html(nome: str) -> str:
+    """O codec Python de um charset declarado; Latin-1 e ASCII viram
+    Windows-1252 (o que os navegadores fazem). "" se desconhecido."""
+    try:
+        codec = codecs.lookup((nome or "").strip()).name
+    except (LookupError, ValueError):
+        return ""
+    return "cp1252" if codec in ("iso8859-1", "latin-1", "ascii") else codec
+
+
+_RE_META_CHARSET = re.compile(rb"""charset\s*=\s*["']?([A-Za-z0-9_.:-]+)""", re.I)
 
 
 def decodificar_html(dados: bytes | str, content_type: str = "") -> str:
@@ -929,15 +1024,20 @@ def decodificar_html(dados: bytes | str, content_type: str = "") -> str:
     ISO-8859-1 é lido como Windows-1252, como fazem os navegadores: os
     documentos colados do Word trazem aspas curvas e travessões nos códigos
     0x80-0x9F, que o Latin-1 puro transformaria em caracteres de controle.
+    Vale também quando o charset só está no <meta> da página (cabeçalho
+    "text/html" sem charset): pdf.decodificar leria esse Latin-1 ao pé da
+    letra.
     """
     if isinstance(dados, str):
         return dados
     dados = dados or b""
     if dados.startswith(b"\xef\xbb\xbf"):
         return dados[3:].decode("utf-8", errors="replace")
-    cs = charset_de(content_type)
-    if cs in ("iso-8859-1", "latin-1", "latin1", "iso8859-1", "us-ascii", "ascii"):
-        cs = "cp1252"
+    cs = _codec_html(charset_de(content_type)) if charset_de(content_type) else ""
+    if not cs:
+        m = _RE_META_CHARSET.search(dados[:4096])
+        if m:
+            cs = _codec_html(m.group(1).decode("ascii", errors="ignore"))
     if cs:
         try:
             return dados.decode(cs, errors="replace")
@@ -1025,11 +1125,18 @@ def extensao_da_midia(dados: bytes, content_type: str = "", mimetype: str = "") 
     return ".bin"
 
 
+def _ordem_natural(nome: str) -> list:
+    """"parte2" antes de "parte10" (a ordem alfabética pura os inverte)."""
+    return [(0, int(p), "") if p.isdigit() else (1, 0, p.lower())
+            for p in re.split(r"(\d+)", nome or "") if p]
+
+
 def pdfs_do_zip(dados: bytes) -> list[bytes]:
-    """Os PDFs de um ZIP (processo grande sai em partes), na ordem dos nomes."""
+    """Os PDFs de um ZIP (processo grande sai em partes), na ordem das partes:
+    "parte2.pdf" vem antes de "parte10.pdf"."""
     saida = []
     with zipfile.ZipFile(io.BytesIO(dados)) as z:
-        for nome in sorted(z.namelist()):
+        for nome in sorted(z.namelist(), key=_ordem_natural):
             if nome.lower().endswith(".pdf"):
                 conteudo = z.read(nome)
                 if pdf.e_pdf(conteudo):
@@ -1037,10 +1144,44 @@ def pdfs_do_zip(dados: bytes) -> list[bytes]:
     return saida
 
 
+_RE_CNJ_SOLTO = re.compile(r"(?<!\d)\d{7}-?\d{2}\.?\d{4}\.?\d\.?\d{2}\.?\d{4}(?!\d)")
+
+
+def links_do_completo(links: list, digitos: str) -> list[str]:
+    """Dos links "baixar arquivo" da página do Download Completo, os DESTE processo.
+
+    ``links``: [{"href": ..., "texto": texto da linha em volta}]. A página pode
+    listar também arquivos gerados antes para outros processos: link cuja
+    linha (ou endereço) traz outro número CNJ, e não este, fica de fora -
+    juntá-lo seria gravar autos trocados. Sem número nenhum por perto, o link
+    vale (é a página de um arquivo só).
+    """
+    proprios: list[str] = []
+    neutros: list[str] = []
+    for item in links or []:
+        if isinstance(item, str):
+            item = {"href": item, "texto": ""}
+        href = str((item or {}).get("href") or "")
+        if not href or href in proprios or href in neutros:
+            continue
+        texto = str(item.get("texto") or "")
+        numeros = {re.sub(r"\D", "", n) for n in _RE_CNJ_SOLTO.findall(texto)}
+        numeros |= set(re.findall(r"(?:num_processo|numProcesso|txtNumProcesso)=(\d{20})", href))
+        if not numeros:
+            neutros.append(href)
+        elif digitos in numeros:
+            proprios.append(href)
+        else:
+            log.info("    Download Completo: ignorado um arquivo de outro processo (%s).",
+                     ", ".join(sorted(numeros))[:80])
+    return proprios or neutros
+
+
 # ------------------------------------------------------------- capa (PDF)
 def texto_capa(numero: Numero, portal: str, capa: dict, partes: list[str], n_eventos: int,
                docs: list[Documento], sigiloso: bool, faltaram: list[Documento],
-               midias: int, completo: bool = False, quando: datetime | None = None) -> str:
+               midias: int, completo: bool = False, quando: datetime | None = None,
+               ausentes: str = "") -> str:
     """A primeira página do PDF: quem é o processo e como ler o arquivo."""
     quando = quando or datetime.now()
     linhas = [f"PROCESSO {numero.formatado}",
@@ -1058,6 +1199,11 @@ def texto_capa(numero: Numero, portal: str, capa: dict, partes: list[str], n_eve
                    "(Download Completo)."]
     else:
         linhas += [f"Eventos: {n_eventos}", f"Documentos: {len(docs)}"]
+        if ausentes:
+            linhas.append(f"ATENÇÃO: {'o evento' if ausentes == '1' else 'os eventos'} "
+                          f"{ausentes} não {'apareceu' if ausentes == '1' else 'apareceram'} "
+                          "na lista lida do portal; os documentos deles NÃO estão neste "
+                          "arquivo. Confira no eProc.")
         if faltaram:
             linhas.append(f"Documentos não incluídos ({len(faltaram)}): "
                           f"{descrever_faltantes(faltaram)} — cada um tem uma página de aviso "
@@ -1146,6 +1292,10 @@ def normalizar_base(url: str) -> str:
     return urllib.parse.urlunsplit((partes.scheme, partes.netloc, caminho, "", ""))
 
 
+# ações de entrada: o endereço em que o login termina não serve de âncora
+_RE_ACAO_DE_ENTRADA = re.compile(r"logar|login|entrar|sso|retorno|autentica|perfil", re.I)
+
+
 def _erro_transitorio(msg: str) -> bool:
     return bool(re.search(r"Execution context was destroyed|Target closed|Target page"
                           r"|Session closed|has been closed|net::ERR_ABORTED"
@@ -1186,7 +1336,7 @@ _JS_TEXTO_SEM = r"""(seletores) => {
 
 _JS_PAGINAR = r"""(a) => {
     const el = a.s ? document.querySelector(a.s) : null;
-    if (el && el.options) {
+    if (!a.funcao && el && el.options) {
         const i = Array.from(el.options).findIndex(o => o.value === a.v);
         if (i >= 0) {
             el.selectedIndex = i;
@@ -1200,13 +1350,17 @@ _JS_PAGINAR = r"""(a) => {
 }"""
 
 _JS_LINKS_COMPLETO = r"""() => {
-    const vistos = [];
+    const vistos = [], saida = [];
     document.querySelectorAll('a[href]').forEach(a => {
         const h = a.href || '';
-        if ((/download_completo_download_pronto_enviar|\/download72h\//).test(h) && !vistos.includes(h))
-            vistos.push(h);
+        if (!(/download_completo_download_pronto_enviar|\/download72h\//).test(h) || vistos.includes(h))
+            return;
+        vistos.push(h);
+        let linha = a.closest('tr, li, p');
+        if (!linha) linha = (a.parentElement && a.parentElement !== document.body) ? a.parentElement : a;
+        saida.push({href: h, texto: String(linha.innerText || '').slice(0, 2000)});
     });
-    return vistos;
+    return saida;
 }"""
 
 _JS_DESMARCAR = r"""(a) => {
@@ -1480,7 +1634,16 @@ class PortalEProc:
             return "captcha"
         if "acao_retorno=login_invalido" in url:
             return "recusado"
-        if apos_envio:
+        interna = bool(re.search(r"(?<!externo_)controlador\.php", url, re.I))
+        # Área logada com a barra de pesquisa: é logado - ANTES de olhar o
+        # texto. O painel de um magistrado lista andamentos de centenas de
+        # processos ("conta bloqueada" do SISBAJUD, "procuração inválida") e
+        # o menu tem "Alterar senha": lido como tela de login, isso dava
+        # "usuário bloqueado" ou "senha recusada" com o login já feito. Pelo
+        # mesmo motivo, o texto só é lido fora da área logada.
+        if interna and self._visivel("pesquisa_rapida", pagina) is not None:
+            return "logado"
+        if apos_envio and not interna:
             texto = self._texto(pagina)
             limpo = sem_acento(texto)
             if re.search(r"usuario (esta )?bloqueado|conta (esta )?bloqueada|account is "
@@ -1496,11 +1659,7 @@ class PortalEProc:
         if (self._visivel("login_usuario", pagina) is not None
                 or self._visivel("login_senha", pagina) is not None):
             return "login"
-        interna = bool(re.search(r"(?<!externo_)controlador\.php", url, re.I))
-        # Área logada com a barra de pesquisa: é logado, mesmo que algum botão
-        # da tela tenha data-descricao. Sem ela, botões de perfil mandam.
-        if interna and self._visivel("pesquisa_rapida", pagina) is not None:
-            return "logado"
+        # Sem a barra de pesquisa, botões de perfil (data-descricao) mandam.
         if self._visivel("perfil", pagina) is not None:
             return "perfil"
         if interna:
@@ -1844,9 +2003,10 @@ class PortalEProc:
 
     def _login_na_janela(self) -> None:
         if not self._janela_visivel():
+            jeito = "com certificado digital" if self.modo_login == "certificado" else "manual"
             raise LoginFalhou(
-                f"o login manual no {self.nome} precisa da janela do navegador, que está oculta. "
-                "Marque 'Mostrar navegador' e tente de novo.")
+                f"o login {jeito} no {self.nome} precisa da janela do navegador, que está "
+                "oculta. Marque 'Mostrar navegador' e tente de novo.")
         self._restaurar_janela()
         minutos = max(1, int(self.opcoes.espera_login_min))
         if self.modo_login == "certificado":
@@ -1870,12 +2030,33 @@ class PortalEProc:
             "navegador acabou. Tente de novo (o prazo se ajusta em Configurações: "
             "espera_login_minutos).")
 
+    def _ancora(self) -> str:
+        """Um link desta sessão para voltar à área logada (e testar a sessão).
+
+        O endereço em que o login termina nem sempre se pode abrir de novo:
+        a escolha de perfil (acao=pessoa_usuario_logar) é um POST, e o
+        retorno do SSO leva um código de uso único - repetido, ele pede login
+        ou troca o perfil. Nesses casos vale o link do painel da página.
+        """
+        url = self._url()
+        acao = parametros(url).get("acao", "")
+        interna = re.search(r"(?<!externo_)controlador\.php", url, re.I)
+        if interna and acao and not _RE_ACAO_DE_ENTRADA.search(acao):
+            return url
+        for a in ler_html(self._html()).elementos():
+            href = a.attr("href") if a.tag == "a" else ""
+            acao_link = parametros(href).get("acao", "") if "controlador.php" in href else ""
+            if ("hash=" in href and re.search(r"painel|principal", acao_link)
+                    and "externo_controlador" not in href):
+                return urllib.parse.urljoin(url, href)
+        return url
+
     def _pos_login(self) -> None:
         # A página em que o login termina pode ser um redirecionamento; a
         # âncora (link desta sessão para voltar à área logada) é a que tem a
         # barra de pesquisa.
         self._esperar(lambda: self._visivel("pesquisa_rapida") is not None, 5000)
-        self._url_ancora = self._url()
+        self._url_ancora = self._ancora()
         self._logado = True
         self._ouvir_avisos(self.pg)
         self._minimizar()
@@ -1902,10 +2083,27 @@ class PortalEProc:
             return None
         if resp.status >= 500:
             return None
-        if resp.status >= 400:
-            return False
-        texto = decodificar_html(resp.dados, resp.tipo)
-        return not motivo_sessao(texto, resp.url, self.sel)
+        if resp.status < 400 and not motivo_sessao(decodificar_html(resp.dados, resp.tipo),
+                                                   resp.url, self.sel):
+            return True
+        if resp.canal == "contexto":
+            # O canal direto pode não levar os cookies da janela (cookie
+            # particionado, perfil novo): sem confirmar pela própria janela,
+            # isso virava "sessão perdida" e um novo login com código a cada
+            # processo.
+            try:
+                outra = self._buscar(alvo, prazo_ms=20000, canais=["pagina"])
+            except Cancelado:
+                raise
+            except Exception as erro:
+                log.debug("  sessão (pela janela): %s", str(erro)[:160])
+                return False
+            if outra.status < 400 and not motivo_sessao(
+                    decodificar_html(outra.dados, outra.tipo), outra.url, self.sel):
+                log.info("    (o canal direto não levou a sessão; sigo pela janela do navegador)")
+                self._canais = ["pagina", "contexto"]
+                return True
+        return False
 
     def _sessao_ativa(self) -> bool:
         return self._estado_sessao() is True
@@ -1914,9 +2112,22 @@ class PortalEProc:
         self._logado = False
         return SessaoPerdida(f"a sessão do {self.nome} caiu ({motivo})")
 
-    def _conferir_sessao_na_pagina(self, pagina=None) -> None:
+    def _motivo_na_pagina(self, pagina=None) -> str:
+        """motivo_sessao da página aberta no navegador."""
         pagina = pagina or self.pg
-        motivo = motivo_sessao(self._html(pagina), self._url(pagina), self.sel)
+        url = self._url(pagina)
+        motivo = motivo_sessao(self._html(pagina), url, self.sel)
+        if (motivo == "login" and re.search(r"(?<!externo_)controlador\.php", url, re.I)
+                and self._visivel("login_senha", pagina) is None
+                and self._visivel("login_usuario", pagina) is None):
+            # Campos de login escondidos numa página da área logada (janela
+            # de "entrar de novo" que só aparece quando a sessão vence) não
+            # são a tela de login: na página viva, só conta o que se vê.
+            return ""
+        return motivo
+
+    def _conferir_sessao_na_pagina(self, pagina=None) -> None:
+        motivo = self._motivo_na_pagina(pagina)
         if not motivo:
             return
         if motivo == "sem_assinatura" and self._sessao_ativa():
@@ -2056,7 +2267,11 @@ class PortalEProc:
             r.detalhe = "; ".join(self._notas)
             return
         eventos = self._todos_os_eventos(info["eventos"], rotulo)
-        self._montar_documentos(numero, destino, r, info, eventos)
+        ausentes = eventos_ausentes(eventos)
+        if ausentes:
+            log.warning("    a lista lida começa depois do evento 1: faltam os eventos %s "
+                        "(paginação?).", ausentes)
+        self._montar_documentos(numero, destino, r, info, eventos, ausentes)
         self._gravar_capa_txt(numero, destino, info, eventos, r.sigiloso)
         r.detalhe = "; ".join(self._notas)
 
@@ -2092,7 +2307,12 @@ class PortalEProc:
         if consulta == "sem_acesso":
             raise SemAcesso("o eProc não liberou este processo para o seu usuário (acesso sem "
                             "procuração ou restrito). Peça vista no portal")
-        if "nao_encontrado" in (rapida, consulta):
+        # "Não encontrado" é definitivo (não se tenta de novo): vale o que a
+        # consulta processual disse; a pesquisa rápida sozinha só basta quando
+        # não há consulta processual nesta tela. Consulta que não concluiu é
+        # falha passageira, e não processo inexistente.
+        if consulta == "nao_encontrado" or (rapida == "nao_encontrado"
+                                            and consulta == "indisponivel"):
             grau = "2º grau" if self.grau == "2g" else "1º grau"
             raise ProcessoNaoEncontrado(
                 f"não encontrado no {grau} do {self.nome}. Confira o número; se o processo "
@@ -2117,7 +2337,8 @@ class PortalEProc:
         campo.fill(numero.digitos)
         marca = self._marcar()
         campo.press("Enter")
-        self._esperar(lambda: self._trocou(marca) or bool(self._avisos_portal), self.espera_ms)
+        mudou = self._esperar(lambda: self._trocou(marca) or bool(self._avisos_portal),
+                              self.espera_ms)
         self._esperar_carga()
         # A resposta pode ser uma página que se redireciona sozinha (por
         # script) para a do processo: dá-se um instante antes de desistir.
@@ -2128,6 +2349,10 @@ class PortalEProc:
             return resultado[0] != "desconhecido"
 
         self._esperar(pronto, 3000)
+        if resultado[0] == "nao_encontrado" and not mudou:
+            # A página nem trocou: o "Nenhum registro encontrado" é o de uma
+            # tabela vazia do painel (padrão do InfraPHP), não a resposta.
+            return "desconhecido"
         return resultado[0]
 
     def _na_pagina_do_processo(self, raiz: No) -> bool:
@@ -2244,9 +2469,11 @@ class PortalEProc:
             campo.press("Enter")
         # Espera a resposta (página nova, ou resultados no lugar) antes de ler:
         # a tela da consulta, vazia, pode dizer "nenhum registro encontrado".
-        self._esperar(lambda: self._trocou(marca) or bool(self.pg.evaluate(
-            "() => { const r = document.querySelector('#divAreaResultadosAjax');"
-            " return !!(r && r.innerText.trim()); }")), self.espera_ms)
+        mudou = self._esperar(lambda: self._trocou(marca) or bool(self._avisos_portal)
+                              or bool(self.pg.evaluate(
+                                  "() => { const r = document.querySelector("
+                                  "'#divAreaResultadosAjax'); return !!(r && r.innerText.trim());"
+                                  " }")), self.espera_ms)
         self._esperar_carga()
         resultado = ["desconhecido"]
 
@@ -2255,6 +2482,8 @@ class PortalEProc:
             return resultado[0] != "desconhecido"
 
         self._esperar(pronto, 3000)
+        if resultado[0] == "nao_encontrado" and not mudou:
+            return "desconhecido"       # a tela da consulta, ainda vazia, não é resposta
         return resultado[0]
 
     def _chegou(self, numero: Numero) -> None:
@@ -2263,13 +2492,28 @@ class PortalEProc:
         raiz = ler_html(self._html())
         no = primeiro(raiz, self.sel.get("capa_numero", []))
         achados = re.sub(r"\D", "", no.texto() or no.attr("value")) if no is not None else ""
+        trocados = "não baixei, para não gravar autos trocados"
         if achados:
             if numero.digitos not in achados:
-                raise RuntimeError(f"a página aberta é de outro processo ({no.texto()[:40]}); "
-                                   "não baixei, para não gravar autos trocados")
-        elif numero.digitos not in re.sub(r"\D", "", raiz.texto()):
-            raise RuntimeError("a página aberta pelo eProc não traz este número de processo; "
-                               "não baixei, para não gravar autos trocados")
+                raise RuntimeError(f"a página aberta é de outro processo "
+                                   f"({(no.texto() or achados)[:40]}); {trocados}")
+        else:
+            # Sem o campo do número (layout novo): o número do próprio link,
+            # se houver; senão, o número inteiro escrito na página. NÃO vale
+            # juntar todos os dígitos da página - a lista de processos
+            # relacionados, colada a outros números, "conteria" este.
+            p = parametros(self._url())
+            do_link = re.sub(r"\D", "", p.get("num_processo") or p.get("txtNumProcesso") or "")
+            if len(do_link) == 20:
+                if do_link != numero.digitos:
+                    raise RuntimeError(f"a página aberta é de outro processo ({do_link}); "
+                                       f"{trocados}")
+            else:
+                texto = raiz.texto()
+                if (numero.formatado not in texto
+                        and not re.search(rf"(?<!\d){numero.digitos}(?!\d)", texto)):
+                    raise RuntimeError("a página aberta pelo eProc não traz este número de "
+                                       f"processo; {trocados}")
         self._url_processo = self._url()
 
     def _voltar_ao_processo(self, numero: Numero) -> None:
@@ -2329,10 +2573,11 @@ class PortalEProc:
     def _todos_os_eventos(self, primeiros: list[Evento], rotulo: str) -> list[Evento]:
         """Os eventos de TODAS as páginas (o eProc mostra uma de cada vez)."""
         if self._listar_todos():
-            raiz = ler_html(self._html())
-            todos = ler_eventos(raiz, self.sel)
-            if len(todos) >= len(primeiros):
-                return juntar_paginas(todos, primeiros)
+            todos = ler_eventos(ler_html(self._html()), self.sel)
+            # "Listar todos" pode ser só uma página maior: a paginação, se
+            # ainda houver, é percorrida do mesmo jeito (senão os eventos
+            # mais antigos - a inicial - ficavam de fora sem aviso).
+            primeiros = juntar_paginas(todos, primeiros)
         valores, marcado = opcoes_de_paginacao(ler_html(self._html()), self.sel)
         if len(valores) <= 1:
             return primeiros
@@ -2386,25 +2631,40 @@ class PortalEProc:
         # opções são value="0" rótulo "1", value="1" rótulo "2"...: pedir a
         # página "1" abria a primeira de novo.
         try:
-            self.pg.evaluate(_JS_PAGINAR, {"s": seletor, "v": valor})
+            modo = self.pg.evaluate(_JS_PAGINAR, {"s": seletor, "v": valor, "funcao": False})
         except Exception:
-            pass                 # a página trocou durante a chamada: é o esperado
+            modo = "navegando"   # a página trocou durante a chamada: é o esperado
 
         def pronto():
             # Com navegação, a página nova; sem ela (paginação por ajax), o
             # seletor no valor pedido. Nos dois casos, a lista tem de mudar.
-            if not self._trocou(marca) and self._valor_paginacao() != valor:
+            trocou = self._trocou(marca)
+            if trocou and self._motivo_na_pagina():
+                return True      # a sessão caiu: quem chama confere e avisa já
+            if not trocou and self._valor_paginacao() != valor:
                 return False
             agora = {e.chave for e in ler_eventos(ler_html(self._html()), self.sel)}
             return bool(agora) and agora != antes
 
-        ok = self._esperar(pronto, self.espera_ms)
+        if modo == "seletor":
+            # Select sem onchange (há versões com um botão ao lado): se a lista
+            # não mudar logo, chama-se a função de paginação do próprio eProc.
+            ok = self._esperar(pronto, min(self.espera_ms, 5000))
+            if not ok:
+                log.debug("  paginação: o seletor não trocou a página; chamando alterarPagina.")
+                try:
+                    self.pg.evaluate(_JS_PAGINAR, {"s": seletor, "v": valor, "funcao": True})
+                except Exception:
+                    pass
+                ok = self._esperar(pronto, self.espera_ms)
+        else:
+            ok = self._esperar(pronto, self.espera_ms)
         self._esperar_carga()
         return ok
 
     # ------------------------------------------------------ documentos
     def _montar_documentos(self, numero: Numero, destino: Path, r: ResultadoProcesso,
-                           info: dict, eventos: list[Evento]) -> None:
+                           info: dict, eventos: list[Evento], ausentes: str = "") -> None:
         rotulo = numero.formatado
         docs = ordenar_documentos(eventos)
         if not docs:
@@ -2419,65 +2679,89 @@ class PortalEProc:
         faltaram: list[Documento] = []
         midias_salvas: list[str] = []
         midias_fora = 0
+        obtidos = 0
         pasta_midias = destino.parent / "_controle" / "midias" / numero.nome_arquivo
-        for i, doc in enumerate(docs, 1):
-            self._checar_cancelado()
-            if i > 1 and PAUSA_DOCUMENTOS_S:
-                self._dormir(PAUSA_DOCUMENTOS_S)
-            titulo = titulo_do_documento(doc)
-            self.ctx.status(f"{rotulo}: documento {i} de {len(docs)} "
-                            f"(evento {doc.evento}, {doc.rotulo})...")
-            if doc.mimetype in MIMETYPES_MIDIA and not self.opcoes.baixar_midias:
-                midias_fora += 1
-                partes.append(pdf.Parte(titulo, self._aviso_midia(doc, None).encode("utf-8"),
-                                        "aviso"))
-                continue
-            try:
-                tipo, dados, extra = self._obter_documento(doc)
-            except _FalhaDocumento as erro:
-                faltaram.append(doc)
-                log.warning("    %s não veio: %s", doc.rotulo, str(erro)[:200])
-                partes.append(pdf.Parte(titulo, self._aviso_falha(doc, str(erro)).encode("utf-8"),
-                                        "aviso"))
-                continue
-            if tipo == "midia":
-                caminho = None
-                if self.opcoes.baixar_midias:
-                    caminho = self._salvar_midia(doc, dados, extra, pasta_midias)
-                if caminho:
-                    midias_salvas.append(str(caminho))
-                else:
+        try:
+            for i, doc in enumerate(docs, 1):
+                self._checar_cancelado()
+                if i > 1 and PAUSA_DOCUMENTOS_S:
+                    self._dormir(PAUSA_DOCUMENTOS_S)
+                titulo = titulo_do_documento(doc)
+                self.ctx.status(f"{rotulo}: documento {i} de {len(docs)} "
+                                f"(evento {doc.evento}, {doc.rotulo})...")
+                if doc.mimetype in MIMETYPES_MIDIA and not self.opcoes.baixar_midias:
                     midias_fora += 1
-                aviso = self._aviso_midia(doc, caminho, destino.parent,
-                                          falhou=self.opcoes.baixar_midias and caminho is None)
-                partes.append(pdf.Parte(titulo, aviso.encode("utf-8"), "aviso"))
-            elif tipo == "html":
-                partes.append(pdf.Parte(titulo, html_em_utf8(dados), "html"))
-            elif tipo == "imagem":
-                try:
-                    partes.append(pdf.Parte(titulo, pdf.imagem_para_pdf(dados), "pdf"))
-                except Exception as erro:
-                    faltaram.append(doc)
-                    motivo = f"a imagem não pôde ser convertida ({str(erro)[:120]})"
-                    log.warning("    %s: %s", doc.rotulo, motivo)
-                    partes.append(pdf.Parte(titulo, self._aviso_falha(doc, motivo).encode("utf-8"),
+                    partes.append(pdf.Parte(titulo, self._aviso_midia(doc, None).encode("utf-8"),
                                             "aviso"))
-            else:
-                partes.append(pdf.Parte(titulo, dados, tipo))
-        if len(faltaram) == len(docs):
-            raise RuntimeError("nenhum documento do processo pôde ser baixado")
-        self._checar_cancelado()
-        capa = texto_capa(numero, self.nome, info["capa"], info["partes"], len(eventos), docs,
-                          r.sigiloso, faltaram, len(midias_salvas) + midias_fora)
-        partes.insert(0, pdf.Parte(TITULO_CAPA, capa.encode("utf-8"), "texto"))
-        self.ctx.status(f"{rotulo}: montando o PDF ({len(docs)} documentos)...")
-        r.paginas = pdf.juntar(partes, destino)
+                    continue
+                try:
+                    tipo, dados, extra = self._obter_documento(doc)
+                except _FalhaDocumento as erro:
+                    faltaram.append(doc)
+                    log.warning("    %s não veio: %s", doc.rotulo, str(erro)[:200])
+                    partes.append(pdf.Parte(titulo, self._aviso_falha(doc, str(erro)).encode(
+                        "utf-8"), "aviso"))
+                    continue
+                if tipo == "midia":
+                    caminho = None
+                    if self.opcoes.baixar_midias:
+                        caminho = self._salvar_midia(doc, dados, extra, pasta_midias)
+                    if caminho:
+                        midias_salvas.append(str(caminho))
+                        obtidos += 1
+                    else:
+                        midias_fora += 1
+                    aviso = self._aviso_midia(doc, caminho, destino.parent,
+                                              falhou=self.opcoes.baixar_midias and caminho is None)
+                    partes.append(pdf.Parte(titulo, aviso.encode("utf-8"), "aviso"))
+                elif tipo == "html":
+                    partes.append(pdf.Parte(titulo, html_em_utf8(dados), "html"))
+                    obtidos += 1
+                elif tipo == "imagem":
+                    try:
+                        partes.append(pdf.Parte(titulo, pdf.imagem_para_pdf(dados), "pdf"))
+                        obtidos += 1
+                    except Exception as erro:
+                        faltaram.append(doc)
+                        motivo = f"a imagem não pôde ser convertida ({str(erro)[:120]})"
+                        log.warning("    %s: %s", doc.rotulo, motivo)
+                        partes.append(pdf.Parte(titulo, self._aviso_falha(doc, motivo).encode(
+                            "utf-8"), "aviso"))
+                else:
+                    partes.append(pdf.Parte(titulo, dados, tipo))
+                    obtidos += 1
+            if faltaram and not obtidos:
+                # Só páginas de aviso (as gravações não baixadas também são
+                # aviso): isso não são os autos - é falha, e o motor tenta de novo.
+                raise RuntimeError("nenhum documento do processo pôde ser baixado")
+            self._checar_cancelado()
+            capa = texto_capa(numero, self.nome, info["capa"], info["partes"], len(eventos), docs,
+                              r.sigiloso, faltaram, len(midias_salvas) + midias_fora,
+                              ausentes=ausentes)
+            partes.insert(0, pdf.Parte(TITULO_CAPA, capa.encode("utf-8"), "texto"))
+            self.ctx.status(f"{rotulo}: montando o PDF ({len(docs)} documentos)...")
+            r.paginas = pdf.juntar(partes, destino)
+        except BaseException:
+            # Sem o PDF, as gravações já salvas ficariam soltas no acervo
+            # compartilhado - e, de processo sigiloso, fora do alcance do motor,
+            # que só as leva para a pasta de sigilosos junto com o PDF pronto.
+            self._apagar_midias(midias_salvas, pasta_midias)
+            raise
         log.info("    salvo: %s (%d páginas)", destino.name, r.paginas)
+        incompleto = []
+        if ausentes:
+            incompleto.append(f"evento {ausentes} (não listado)" if ausentes == "1"
+                              else f"eventos {ausentes} (não listados)")
+            self._notas.append(
+                ("o evento 1 não apareceu" if ausentes == "1" else
+                 f"os eventos {ausentes} não apareceram")
+                + " na lista do portal (confira no eProc)")
         if faltaram:
-            r.incompleto = descrever_faltantes(faltaram)
+            incompleto.append(descrever_faltantes(faltaram))
             self._notas.append(
                 plural(len(faltaram), "documento não veio e tem", "documentos não vieram e têm")
                 + " página de aviso no lugar")
+        r.incompleto = "; ".join(incompleto)
         if midias_salvas:
             r.midias = midias_salvas
             self._notas.append(plural(len(midias_salvas), "gravação salva", "gravações salvas")
@@ -2485,6 +2769,18 @@ class PortalEProc:
         if midias_fora:
             self._notas.append(plural(midias_fora, "gravação", "gravações") + " nos autos, "
                                + ("não baixada" if midias_fora == 1 else "não baixadas"))
+
+    @staticmethod
+    def _apagar_midias(caminhos: list[str], pasta: Path) -> None:
+        for c in caminhos:
+            try:
+                Path(c).unlink()
+            except OSError:
+                pass
+        try:
+            pasta.rmdir()            # só se ficou vazia
+        except OSError:
+            pass
 
     def _aviso_falha(self, doc: Documento, motivo: str) -> str:
         return (f"O documento {doc.rotulo} do evento {doc.evento} não pôde ser baixado do "
@@ -2597,7 +2893,8 @@ class PortalEProc:
                 return ("falha", "o eProc recusou o link do documento")
             if resp.status >= 400:
                 return ("falha", f"o portal recusou o documento (HTTP {resp.status})", resp.status)
-            src = src_do_iframe(texto, resp.url, self.sel)
+            conteudo = parametros(url).get("acao") == "acessar_documento_implementacao"
+            src = src_do_iframe(texto, resp.url, self.sel, so_iframe=conteudo)
             if src:
                 return ("moldura", src)
             marcas_do_sistema = ("divInfraBarraSistema", "txtNumProcessoPesquisaRapida",
@@ -2696,7 +2993,13 @@ class PortalEProc:
                                                           "digitos": numero.digitos})
             except Exception:
                 caixas = {}
-            if (caixas or {}).get("desmarcadas"):
+            caixas = caixas if isinstance(caixas, dict) else {}
+            if caixas.get("caixas", 0) > 1 and not caixas.get("principal"):
+                # Vários processos marcados e nenhum é este: gerar assim daria
+                # erro no eProc - ou um arquivo com os autos de outro processo.
+                raise RuntimeError("não identifiquei este processo entre os marcados para o "
+                                   "Download Completo")
+            if caixas.get("desmarcadas"):
                 n = caixas["desmarcadas"]
                 log.info("    %s no Download Completo (com dois marcados, o eProc dá erro).",
                          plural(n, "processo relacionado desmarcado",
@@ -2714,11 +3017,13 @@ class PortalEProc:
             self._checar_cancelado()
             try:
                 self._conferir_sessao_na_pagina()
-                links = self.pg.evaluate(_JS_LINKS_COMPLETO) or []
+                achados = self.pg.evaluate(_JS_LINKS_COMPLETO) or []
             except (SessaoPerdida, Cancelado):
                 raise
             except Exception:
-                links = []        # a página se recarrega sozinha enquanto gera
+                achados = []      # a página se recarrega sozinha enquanto gera
+            # só os arquivos DESTE processo (a página pode listar outros)
+            links = links_do_completo(achados, numero.digitos)
             if links:
                 break
             texto = sem_acento(self._texto())

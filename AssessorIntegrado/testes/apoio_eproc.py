@@ -55,6 +55,8 @@ P_NAO = apoio.numero("5000003", tr="21", origem="0001")   # não existe
 P_CONS = apoio.numero("5000004", tr="21", origem="0001")  # só a consulta processual acha
 P_SIGOK = apoio.numero("5000005", tr="21", origem="0001")  # sigiloso, com acesso
 P_EXP = apoio.numero("5000006", tr="21", origem="0001")   # a sessão cai no 2º documento
+P_MID = apoio.numero("5000007", tr="21", origem="0001")   # gravação antes dos documentos
+P_SIG2 = apoio.numero("5000008", tr="21", origem="0001")  # "Sigiloso (Nível 2)", capa em blocos
 RELACIONADO = apoio.numero("5000099", tr="21", origem="0001")
 
 
@@ -93,6 +95,7 @@ class ProcessoFalso:
     pela_rapida: bool = True
     completo: bool = True
     expirar_no_doc: int = 0
+    capa_em_blocos: bool = False   # rótulo e valor da capa em elementos (linhas) separados
 
 
 def _pdf(paginas, rotulo):
@@ -140,16 +143,39 @@ def processos_padrao() -> dict[str, ProcessoFalso]:
         EventoFalso(3, "09/02/2024 10:00:00", "RÉPLICA", [
             DocFalso("REPLICA1", "pdf", _pdf(1, "EXP-REPLICA1"), "application/pdf")]),
     ], expirar_no_doc=2, completo=False)
-    return {p.numero.digitos: p for p in (p1, sig, cons, sigok, exp)}
+    mid = ProcessoFalso(P_MID, [
+        EventoFalso(1, "03/03/2024 10:00:00", "GRAVAÇÃO DE AUDIÊNCIA", [
+            DocFalso("VIDEO1", "mp4", video, "video/mp4")]),
+        EventoFalso(2, "04/03/2024 10:00:00", "PETIÇÃO", [
+            DocFalso("PET1", "pdf", _pdf(1, "MID-PET1"), "application/pdf")]),
+        EventoFalso(3, "05/03/2024 10:00:00", "PETIÇÃO", [
+            DocFalso("PET2", "pdf", _pdf(1, "MID-PET2"), "application/pdf")]),
+    ], completo=False)
+    sig2 = ProcessoFalso(P_SIG2, [EventoFalso(1, "06/03/2024 10:00:00", "PETIÇÃO INICIAL", [
+        DocFalso("INIC1", "pdf", _pdf(1, "SIG2-INIC1"), "application/pdf")])],
+        sigilo="Sigiloso (Nível 2)", capa_em_blocos=True, completo=False)
+    return {p.numero.digitos: p for p in (p1, sig, cons, sigok, exp, mid, sig2)}
 
 
 class EProcFalso:
     """O estado do eProc falso e o atendimento de cada requisição."""
 
     def __init__(self, estilo: str = "legado", captcha: bool = False, perfis=None,
-                 processos: dict | None = None):
+                 processos: dict | None = None, painel_extra: str = "",
+                 rapida_inerte: bool = False, consulta_quebrada: bool = False,
+                 completo_outros: bool = False, paginacao_sem_onchange: bool = False):
         self.estilo = estilo
         self.captcha = captcha
+        # texto a mais no painel (o de um magistrado lista andamentos de outros processos)
+        self.painel_extra = painel_extra
+        # a pesquisa rápida não responde (Enter não faz nada)
+        self.rapida_inerte = rapida_inerte
+        # a consulta processual não conclui (ajax com erro, botão sem efeito)
+        self.consulta_quebrada = consulta_quebrada
+        # a página do Download Completo lista também o arquivo de outro processo
+        self.completo_outros = completo_outros
+        # o select da paginação não tem onchange (há um botão "Ir" ao lado)
+        self.paginacao_sem_onchange = paginacao_sem_onchange
         self.perfis = list(perfis or [])
         self.processos = processos if processos is not None else processos_padrao()
         self.docs: dict[str, tuple[ProcessoFalso, EventoFalso, DocFalso]] = {}
@@ -198,9 +224,10 @@ class EProcFalso:
         return 200, corpo.encode("utf-8"), "text/html; charset=utf-8", dict(cabecalhos or {})
 
     def _topo(self, sid: str) -> str:
+        inerte = "onsubmit='return false' " if self.rapida_inerte else ""
         return (
             "<div id='divInfraBarraSistema'><form id='frmPesquisaRapida' method='get' "
-            "action='controlador.php'><input type='hidden' name='acao' "
+            f"{inerte}action='controlador.php'><input type='hidden' name='acao' "
             "value='processo_pesquisa_rapida'>"
             f"<input type='hidden' name='hash' value='{self.assinar(sid, 'pesquisa')}'>"
             "<input type='text' id='txtNumProcessoPesquisaRapida' "
@@ -262,7 +289,10 @@ class EProcFalso:
 
     def _painel(self, sid: str) -> tuple:
         return self._html(f"{self._topo(sid)}<div id='divInfraAreaTela'><h1>Painel do "
-                          "Usuário</h1><p>Processos com prazo em aberto: 0</p></div>")
+                          "Usuário</h1><p>Processos com prazo em aberto: 0</p>"
+                          "<table class='infraTable'><caption>Intimações</caption><tr><td>"
+                          "Nenhum registro encontrado.</td></tr></table>"
+                          f"{self.painel_extra}</div>")
 
     # ------------------------------------------------------------ processo
     def _pagina_processo(self, sid: str, proc: ProcessoFalso, pagina: int) -> tuple:
@@ -277,7 +307,10 @@ class EProcFalso:
             "Situação: <span id='txtSituacao'>MOVIMENTO</span><br>"
             "Órgão julgador: <span id='txtOrgaoJulgador'>Juízo da 1ª Vara Cível de Porto "
             "Alegre</span><br>Juiz(a): <span id='txtMagistrado'>FULANA DE TAL</span><br>"
-            f"Nível de sigilo: <span id='txtNivelSigilo'>{proc.sigilo}</span></fieldset>"
+            + (f"<div class='row'><div class='col'><label>Nível de Sigilo do Processo:</label>"
+               f"</div><div class='col'><label id='txtNivelSigilo'>{proc.sigilo}</label></div>"
+               "</div></fieldset>" if proc.capa_em_blocos else
+               f"Nível de sigilo: <span id='txtNivelSigilo'>{proc.sigilo}</span></fieldset>")
             "<table id='tblPartesERepresentantes' class='infraTable'><tr><th>AUTOR</th>"
             "<th>RÉU</th></tr><tr class='infraTrClara'><td class='autorReu'>"
             "<a class='infraNomeParte' data-parte='AUTOR'>MARIA DA SILVA</a> "
@@ -314,8 +347,13 @@ class EProcFalso:
                 f"aria-label='SERVIDOR'>USR01</label></td><td>{conteudo}</td></tr>")
         opcoes = "".join(f"<option value='{i}'{' selected' if i == pagina else ''}>{i + 1}</option>"
                          for i in range(total))
-        paginacao = (f"<select id='selPaginacaoT' onchange='alterarPagina(this.value)'>{opcoes}"
-                     "</select>") if total > 1 else ""
+        if self.paginacao_sem_onchange:
+            paginacao = (f"<select id='selPaginacaoT'>{opcoes}</select><button type='button' "
+                         "onclick=\"alterarPagina(document.getElementById('selPaginacaoT')"
+                         ".value)\">Ir</button>") if total > 1 else ""
+        else:
+            paginacao = (f"<select id='selPaginacaoT' onchange='alterarPagina(this.value)'>"
+                         f"{opcoes}</select>") if total > 1 else ""
         botao = ""
         if proc.completo:
             destino = self.link(sid, "selecionar_processos_agendar_arquivo_completo",
@@ -433,6 +471,8 @@ class EProcFalso:
         form = urllib.parse.parse_qs(req.post_data or "", keep_blank_values=True, encoding="cp1252")
         sid = self._cookie(req)
         estado = self.sessoes.get(sid, "")
+        if caminho.startswith("download72h/outro/"):
+            return 200, _pdf(3, "OUTRO PROCESSO"), "application/pdf", {}
         if caminho.startswith("download72h/"):
             return 200, _pdf(5, "COMPLETO"), "application/pdf", {}
         if caminho in ("", "index.php") and req.method == "GET":
@@ -499,6 +539,8 @@ class EProcFalso:
         if caminho == "controlador_ajax.php":
             if acao != "processos_consulta_por_numprocesso" or not self._confere(sid, q, "ajax", url):
                 return 403, b"{}", "application/json", {}
+            if self.consulta_quebrada:
+                return 500, b"<html><body>Erro interno</body></html>", "text/html", {}
             digitos = (form.get("numNrProcesso") or [""])[0]
             proc = self.processos.get(digitos)
             if proc is None:
@@ -600,6 +642,19 @@ class EProcFalso:
             if self.completo_consultas < 2:
                 return self._html("<meta http-equiv='refresh' content='1'>Arquivo em "
                                   "processamento...")
+            if self.completo_outros:
+                # a lista dos arquivos gerados: o de outro processo vem primeiro
+                digitos = self.completo_marcados[-1][0].split("|")[1] if self.completo_marcados \
+                    else ""
+                proprio = next((p.numero.formatado for p in self.processos.values()
+                                if p.numero.digitos == digitos), digitos)
+                return self._html(
+                    f"{self._topo(sid)}<p>DOCUMENTO COMPLETO GERADO COM SUCESSO</p>"
+                    "<table class='infraTable'><tr><th>Processo</th><th>Arquivo</th></tr>"
+                    f"<tr><td>{RELACIONADO.formatado}</td><td><a href='{BASE}download72h/outro/"
+                    "arquivo.pdf'>BAIXAR ARQUIVO</a></td></tr>"
+                    f"<tr><td>{proprio}</td><td><a href='{BASE}download72h/"
+                    f"{uuid.uuid4().hex}/arquivo.pdf'>BAIXAR ARQUIVO</a></td></tr></table>")
             return self._html(
                 f"{self._topo(sid)}<p>DOCUMENTO COMPLETO GERADO COM SUCESSO</p>"
                 f"<a href='{BASE}download72h/{uuid.uuid4().hex}/arquivo.pdf'>BAIXAR ARQUIVO</a>")
