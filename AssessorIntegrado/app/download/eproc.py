@@ -80,7 +80,8 @@ PAUSA_DOCUMENTOS_S = 0.5      # entre um documento e outro: rajada parece abuso
 ESPERA_COMPLETO_MIN = 8       # Download Completo: depois disso, monta por documentos
 INTERVALO_COMPLETO_S = 3.0    # consulta da página de "gerando o arquivo"
 MAX_CODIGOS = 5               # códigos do autenticador por login
-MAX_ENVIOS_SENHA = 3          # voltas à tela de senha antes de desistir
+MAX_ENVIOS_SENHA = 2          # envios da senha sem resposta clara (o eProc bloqueia o
+                              # usuário depois de poucas tentativas erradas)
 MODOS_PDF = ("documentos", "completo")
 TITULO_CAPA = "Capa — dados do processo"
 TITULO_COMPLETO = "Autos completos (arquivo gerado pelo eProc)"
@@ -959,6 +960,39 @@ def src_do_iframe(html: str, url_base: str, sel: dict | None = None,
     return ""
 
 
+_RE_REDIRECIONA = re.compile(
+    r"""location(?:\.href)?\s*=\s*['"]([^'"]+)['"]|location\.(?:replace|assign)\(\s*['"]([^'"]+)['"]""")
+
+
+def conteudo_embutido(html: str, url_base: str) -> str:
+    """Página-casca: quase sem texto, com o documento num iframe, frame,
+    embed ou object (ou só um redirecionamento). Devolve o endereço do
+    documento de verdade; "" se a página é o próprio documento.
+
+    Sem isto, a casca (uma página em branco) entrava no PDF no lugar do
+    documento - e sem aviso nenhum, porque "veio".
+    """
+    raiz = ler_html(html or "")
+    if len(raiz.texto()) > 300:
+        return ""
+    for no in raiz.elementos():
+        alvo = ""
+        if no.tag in ("iframe", "frame", "embed"):
+            alvo = no.attr("src")
+        elif no.tag == "object":
+            alvo = no.attr("data")
+        elif no.tag == "meta" and no.attr("http-equiv").strip().lower() == "refresh":
+            m = re.search(r"url\s*=\s*['\"]?([^'\";]+)", no.attr("content"), re.I)
+            alvo = m.group(1) if m else ""
+        alvo = alvo.strip()
+        if alvo and not alvo.lower().startswith(("about:", "javascript", "data:", "#")):
+            return urllib.parse.urljoin(url_base, alvo)
+    m = _RE_REDIRECIONA.search(html or "")
+    if m:
+        return urllib.parse.urljoin(url_base, _html.unescape(m.group(1) or m.group(2)))
+    return ""
+
+
 _RE_AJAX_CONSULTA = re.compile(
     r"controlador_ajax\.php\?acao_ajax=processos_consulta_por_numprocesso(?:&amp;|&)hash=[0-9A-Za-z]+")
 
@@ -1640,10 +1674,15 @@ class PortalEProc:
         # processos ("conta bloqueada" do SISBAJUD, "procuração inválida") e
         # o menu tem "Alterar senha": lido como tela de login, isso dava
         # "usuário bloqueado" ou "senha recusada" com o login já feito. Pelo
-        # mesmo motivo, o texto só é lido fora da área logada.
+        # mesmo motivo, o texto só é lido fora da área logada - ou quando a
+        # página mostra os campos de login (erro devolvido num endereço interno:
+        # sem reconhecer a recusa, a senha errada seria reenviada, e o eProc
+        # bloqueia o usuário depois de poucas tentativas).
         if interna and self._visivel("pesquisa_rapida", pagina) is not None:
             return "logado"
-        if apos_envio and not interna:
+        campos_login = (self._visivel("login_usuario", pagina) is not None
+                        or self._visivel("login_senha", pagina) is not None)
+        if apos_envio and (not interna or campos_login):
             texto = self._texto(pagina)
             limpo = sem_acento(texto)
             if re.search(r"usuario (esta )?bloqueado|conta (esta )?bloqueada|account is "
@@ -1656,8 +1695,7 @@ class PortalEProc:
                 return "recusado"
         if self._visivel("senha_nova", pagina) is not None:
             return "senha_expirada"
-        if (self._visivel("login_usuario", pagina) is not None
-                or self._visivel("login_senha", pagina) is not None):
+        if campos_login:
             return "login"
         # Sem a barra de pesquisa, botões de perfil (data-descricao) mandam.
         if self._visivel("perfil", pagina) is not None:
@@ -2318,6 +2356,9 @@ class PortalEProc:
                 f"não encontrado no {grau} do {self.nome}. Confira o número; se o processo "
                 "estiver em outro grau ou sistema, baixe-o pelo portal.")
         self.nav.diagnosticar(f"eproc-abrir-{numero.nome_arquivo}")
+        if rapida == "nao_encontrado":
+            raise RuntimeError("a pesquisa rápida não achou o processo, e a consulta processual "
+                               "não respondeu para confirmar (veja Logs\\diagnostico)")
         raise RuntimeError("não consegui abrir o processo nem pela pesquisa rápida nem pela "
                            "consulta processual (o portal pode ter mudado: veja Logs\\diagnostico)")
 
@@ -2349,7 +2390,7 @@ class PortalEProc:
             return resultado[0] != "desconhecido"
 
         self._esperar(pronto, 3000)
-        if resultado[0] == "nao_encontrado" and not mudou:
+        if resultado[0] in ("nao_encontrado", "sem_acesso") and not mudou:
             # A página nem trocou: o "Nenhum registro encontrado" é o de uma
             # tabela vazia do painel (padrão do InfraPHP), não a resposta.
             return "desconhecido"
@@ -2482,7 +2523,7 @@ class PortalEProc:
             return resultado[0] != "desconhecido"
 
         self._esperar(pronto, 3000)
-        if resultado[0] == "nao_encontrado" and not mudou:
+        if resultado[0] in ("nao_encontrado", "sem_acesso") and not mudou:
             return "desconhecido"       # a tela da consulta, ainda vazia, não é resposta
         return resultado[0]
 
@@ -2599,7 +2640,7 @@ class PortalEProc:
 
     def _listar_todos(self) -> bool:
         """Se a versão do eProc tiver "listar todos os eventos" (seletor
-        configurável), usa-o: uma página só, sem paginação."""
+        configurável), usa-o: menos páginas a percorrer (ou nenhuma)."""
         if not self.sel.get("eventos_listar_todos"):
             return False
         botao = self._visivel("eventos_listar_todos", espera_ms=0)
@@ -2842,12 +2883,14 @@ class PortalEProc:
         candidatos = [url_implementacao(href)] if url_implementacao(href) != href else []
         for url in candidatos + [href]:
             achado = tentar(url)
-            if achado is None:
-                continue
-            if achado[0] == "moldura":
+            # moldura -> conteúdo (que ainda pode ser uma casca com o arquivo
+            # num frame): no máximo três saltos, e nunca o mesmo endereço duas vezes
+            saltos = 0
+            while achado is not None and achado[0] == "moldura" and saltos < 3:
                 achado = tentar(achado[1])
-                if achado is None or achado[0] == "moldura":
-                    continue
+                saltos += 1
+            if achado is None or achado[0] == "moldura":
+                continue
             return achado
         # Último recurso: a moldura aberta numa aba, lida depois dos scripts.
         # Se a própria moldura foi recusada pelo servidor, a aba não ajuda.
@@ -2856,6 +2899,8 @@ class PortalEProc:
         src = self._src_pela_aba(href)
         if src:
             achado = tentar(src)
+            if achado is not None and achado[0] == "moldura":
+                achado = tentar(achado[1])
             if achado is not None and achado[0] != "moldura":
                 return achado
         raise _FalhaDocumento("; ".join(dict.fromkeys(motivos))
@@ -2901,6 +2946,9 @@ class PortalEProc:
                                  "txaInfraMsg", "divInfraCaptcha")
             if any(marca in texto for marca in marcas_do_sistema):
                 return ("falha", "o portal devolveu uma página de aviso em vez do documento")
+            embutido = conteudo_embutido(texto, resp.url)
+            if embutido and embutido not in (url, resp.url):
+                return ("moldura", embutido)
             return ("html", texto, ".html")
         if tipo in ("pdf", "imagem", "texto"):
             return (tipo, resp.dados, "")

@@ -652,6 +652,43 @@ class TestRegressoesSemNavegador(apoio.PastaTemporaria):
         moldura = "https://e/eproc/controlador.php?acao=acessar_documento&doc=5&hash=h"
         self.assertEqual(portal._interpretar(moldura, doc)[0], "moldura")
 
+    def test_casca_com_o_documento_num_frame_e_seguida(self):
+        # A página de acessar_documento_implementacao pode ser só uma casca com
+        # o arquivo num frame/embed: ela entrava no PDF como "o documento"
+        # (uma página em branco), sem aviso.
+        base = "https://e/eproc/controlador.php?acao=acessar_documento_implementacao&doc=5&hash=h"
+        self.assertEqual(eproc.conteudo_embutido(
+            "<html><body><embed src='arquivo.php?id=5&amp;h=1' type='application/pdf'>"
+            "</body></html>", base), "https://e/eproc/arquivo.php?id=5&h=1")
+        self.assertEqual(eproc.conteudo_embutido(
+            "<html><body><iframe name='x' src='visualizar.php?d=5'></iframe></body></html>", base),
+            "https://e/eproc/visualizar.php?d=5")
+        self.assertEqual(eproc.conteudo_embutido(
+            "<script>location.replace('baixar.php?d=5');</script>Redirecionando...", base),
+            "https://e/eproc/baixar.php?d=5")
+        # documento de verdade (certidão curta, despacho com imagem): é ele mesmo
+        self.assertEqual(eproc.conteudo_embutido("<p>Certifico que intimei a parte.</p>", base), "")
+        longo = "<p>" + "Texto do despacho. " * 30 + "</p><iframe src='x.php'></iframe>"
+        self.assertEqual(eproc.conteudo_embutido(longo, base), "")
+        portal = self.portal()
+        respostas = {base: b"<html><body><embed src='arquivo.php?id=5'></body></html>",
+                     "https://e/eproc/arquivo.php?id=5": apoio.pdf_bytes(1, "LAUDO")}
+        portal._buscar = lambda url, *a, **k: eproc.Resposta(
+            200, url, "application/pdf" if url.endswith("id=5") else "text/html",
+            respostas[url], "pagina")
+        doc = Documento(5, "01/02/2024", "", "LAUDO", "LAUDO1", base, mimetype="pdf")
+        tipo, dados, _ = portal._obter_documento(doc)
+        self.assertEqual(tipo, "pdf")
+        self.assertTrue(dados.startswith(b"%PDF"))
+
+    def test_recusa_num_endereco_interno_com_os_campos_de_login(self):
+        nav = _NavPagina("https://e/eproc/controlador.php?acao=principal&msg=x")
+        portal = self.portal(nav)
+        portal._visivel = lambda chave, pagina=None, espera_ms=0: (
+            object() if chave in ("login_usuario", "login_senha") else None)
+        portal._texto = lambda pagina=None: "Usuário ou senha inválidos."
+        self.assertEqual(portal._etapa(apos_envio=True), "recusado")
+
     # ------------------------------------------------- abrir processo
     def test_nao_encontrado_so_quando_a_consulta_confirma(self):
         portal = self.portal()
