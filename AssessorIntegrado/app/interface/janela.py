@@ -1,0 +1,771 @@
+"""A janela do Assessor Integrado.
+
+    ┌──────────────┬──────────────────────────────────────────────┐
+    │ Assessor     │                                              │
+    │ Integrado    │   Início: três cartões grandes               │
+    │              │   (Baixar · Transcrever · Compartilhar)      │
+    │ ▣ Início     │                                              │
+    │ ▣ Baixar  ●  │   ou a página da função escolhida            │
+    │ ▣ Transcr.   │                                              │
+    │ ▣ Compart.   │                                              │
+    │ ──────────   │                                              │
+    │ ▣ Config.    │                                              │
+    │ ▣ Ajuda      │                                              │
+    └──────────────┴──────────────────────────────────────────────┘
+
+Cada página roda o próprio trabalho numa thread (tarefas.Tarefa) e recebe
+os eventos dele pela fila desta janela, consumida a cada 100 ms com
+after() - as threads nunca tocam no Tk. O ponto na barra lateral mostra o
+que está em andamento, mesmo com outra página aberta.
+
+Correções em relação à base: janela 1180x760 centrada (a base abria
+maximizada à força, ruim em notebook de 1366x768), escala pelo DPI real (a
+base fixava 1.2), ícone próprio na barra de tarefas (AppUserModelID),
+registro com limite de linhas, e o fechar que salva a audiência em
+andamento ANTES de destruir a janela (a base esperava 2 s e o .docx podia
+ficar truncado).
+"""
+
+from __future__ import annotations
+
+import collections
+import logging
+import queue
+import shutil
+import subprocess
+import sys
+import time
+import tkinter as tk
+from pathlib import Path
+from tkinter import ttk
+
+from .. import NOME, __version__
+from ..nucleo import caminhos, config, registro, sistema
+from . import componentes, dialogos, estilo
+from .estilo import px
+from .tarefas import Recursos
+
+log = logging.getLogger("interface.janela")
+
+LARGURA, ALTURA = 1180, 760
+MINIMO = (980, 660)
+LARGURA_TRILHO = 1060      # abaixo disto, a barra lateral mostra só ícones
+TICK_MS = 100
+FATIA_S = 0.04            # tempo máximo de um tique esvaziando a fila
+ESPERA_FECHAR_S = 120     # downloads, cópias e demais trabalhos interrompidos
+# A audiência ao vivo transcreve, ao encerrar, a fila que ainda estiver
+# atrasada (computador lento: minutos) antes de gravar o DOCX final. Matar o
+# processo no meio deixava só o documento parcial; a janela espera mais por ela.
+ESPERA_AUDIENCIA_S = 15 * 60
+
+# (nome, módulo, classe); None = separador na barra lateral
+PAGINAS = (
+    ("inicio", "pagina_inicio", "PaginaInicio"),
+    ("baixar", "pagina_baixar", "PaginaBaixar"),
+    ("transcrever", "pagina_transcrever", "PaginaTranscrever"),
+    ("compartilhar", "pagina_compartilhar", "PaginaCompartilhar"),
+    None,
+    ("config", "pagina_config", "PaginaConfig"),
+    ("ajuda", "pagina_ajuda", "PaginaAjuda"),
+)
+NOMES = tuple(d[0] for d in PAGINAS if d is not None)
+ROTULOS = {"inicio": ("Início", "inicio"), "baixar": ("Baixar processos", "baixar"),
+           "transcrever": ("Transcrever audiência", "transcrever"),
+           "compartilhar": ("Compartilhar com IA", "compartilhar"),
+           "config": ("Configurações", "config"), "ajuda": ("Ajuda", "ajuda")}
+
+
+class _Paginas(dict):
+    """As páginas já montadas; pedir uma que falta a monta na hora.
+
+    get() e a iteração NÃO montam: quem só consulta (indicadores, fechar)
+    vê apenas as páginas que já existem - as outras não têm trabalho nenhum.
+    """
+
+    def __init__(self, janela: "Janela"):
+        super().__init__()
+        self._janela = janela
+
+    def __missing__(self, nome: str):
+        return self._janela._construir(nome)
+
+
+class PaginaComErro(componentes.Pagina):
+    """Lugar de uma página que não conseguiu abrir: o resto do programa
+    funciona, e o usuário sabe o que fazer."""
+
+    def __init__(self, pai, janela, nome, titulo, icone, erro):
+        self.nome, self.titulo, self.icone, self._erro = nome, titulo, icone, erro
+        super().__init__(pai, janela)
+
+    def montar(self) -> None:
+        corpo, _, _ = componentes.estrutura(self, self.titulo, rolavel=False)
+        faixa = componentes.Faixa(corpo, "Erro", titulo="Esta parte do programa não abriu.",
+                                  texto=f"{self._erro}\n\nRode o INSTALAR.bat de novo. Se "
+                                        "continuar, envie a pasta Logs ao suporte.")
+        faixa.grid(row=0, column=0, sticky="ew")
+        corpo.columnconfigure(0, weight=1)
+
+
+class Janela:
+    def __init__(self, raiz: tk.Tk, cfg=None, teste: bool = False):
+        self.raiz = raiz
+        self.cfg = cfg or config.carregar()
+        self.teste = teste
+        self.fila: queue.Queue = queue.Queue()
+        self.recursos = Recursos()
+        # Senhas digitadas sem "Lembrar": valem só enquanto o programa está aberto.
+        self.credenciais_sessao: dict[str, tuple[str, str]] = {}
+        self.paginas: _Paginas = _Paginas(self)
+        self.atual: str | None = None
+        self.registro_geral: collections.deque = collections.deque(maxlen=componentes.MAX_LINHAS_REGISTRO)
+        self.codigo_saida = 0
+        self._fechando = False
+        self._ponte: logging.Handler | None = None
+        self._cofre = None
+
+        raiz.title(NOME)
+        # Exceção dentro de um botão ou evento: o Tk a imprime no stderr, que
+        # sob o pythonw é o os.devnull - o erro sumia (nem tela, nem Logs) e o
+        # botão parecia "não fazer nada".
+        self._ultimo_erro_tk = -1e9
+        raiz.report_callback_exception = self._erro_no_tk
+        estilo.aplicar_icone(raiz)
+        self._geometria()
+        self._montar()
+        componentes.instalar_roda(raiz)
+        self._ligar_log()
+        self._atalhos()
+        raiz.protocol("WM_DELETE_WINDOW", self.fechar)
+        self.mostrar("inicio")
+        raiz.after(TICK_MS, self._consumir)
+        raiz.after(250, self._construir_restantes)
+        if not teste and not self.cfg.flag("interface", "assistente_concluido"):
+            raiz.after(500, self.abrir_assistente)
+
+    # ------------------------------------------------------------ montagem
+    def _geometria(self) -> None:
+        r = self.raiz
+        largura_tela, altura_tela = r.winfo_screenwidth(), r.winfo_screenheight()
+        # Em notebook a 150% a janela "de projeto" pode passar da tela: encolhe.
+        largura = min(px(LARGURA), int(largura_tela * 0.94))
+        altura = min(px(ALTURA), int(altura_tela * 0.88))
+        x = max(0, (largura_tela - largura) // 2)
+        y = max(0, (altura_tela - altura) // 2 - px(16))
+        r.geometry(f"{largura}x{altura}+{x}+{y}")
+        r.minsize(min(px(MINIMO[0]), largura), min(px(MINIMO[1]), altura))
+
+    def _montar(self) -> None:
+
+        r = self.raiz
+        r.configure(background=estilo.MOLDURA)
+        r.columnconfigure(1, weight=1)
+        r.rowconfigure(0, weight=1)
+        self.barra = componentes.BarraLateral(r, self.mostrar, __version__)
+        self.barra.grid(row=0, column=0, sticky="ns")
+        self.painel = ttk.Frame(r, style="Painel.TFrame", padding=px(7))
+        self.painel.grid(row=0, column=1, sticky="nsew", padx=(0, px(12)), pady=px(12))
+        self.painel.columnconfigure(0, weight=1)
+        self.painel.rowconfigure(0, weight=1)
+        r.bind("<Configure>", self._largura_mudou, add="+")
+
+        for definicao in PAGINAS:
+            if definicao is None:
+                self.barra.separador()
+                continue
+            nome = definicao[0]
+            titulo, icone = ROTULOS[nome]
+            self.barra.adicionar(nome, titulo, icone)
+
+    def _construir(self, nome: str) -> componentes.Pagina:
+        """Monta a página na primeira vez em que é pedida.
+
+        A janela abre só com a tela inicial pronta; as demais páginas são
+        montadas logo depois, uma a uma, no tempo ocioso (_construir_restantes)
+        - ou na hora, se o usuário clicar antes. Em computador modesto, montar
+        tudo de uma vez segurava a primeira imagem da janela por segundos.
+        """
+        import importlib
+
+        definicao = next((d for d in PAGINAS if d is not None and d[0] == nome), None)
+        if definicao is None:
+            raise KeyError(nome)
+        _, modulo, classe = definicao
+        titulo, icone = ROTULOS[nome]
+        try:
+            mod = importlib.import_module(f"{__package__}.{modulo}")
+            pagina = getattr(mod, classe)(self.painel, self)
+        except Exception as erro:          # uma página quebrada não derruba a janela
+            log.exception("a página %s não abriu", nome)
+            pagina = PaginaComErro(self.painel, self, nome, titulo, icone, erro)
+        pagina.grid(row=0, column=0, sticky="nsew")
+        if self.atual is not None and self.atual in self.paginas:
+            self.paginas[self.atual].tkraise()     # a nova não cobre a que está à vista
+        dict.__setitem__(self.paginas, nome, pagina)
+        return pagina
+
+    def _construir_restantes(self) -> None:
+        for nome in NOMES:
+            if nome not in self.paginas:
+                try:
+                    self.paginas[nome]
+                except Exception:
+                    log.exception("falha ao montar a página %s", nome)
+                if self._viva():
+                    self.raiz.after(30, self._construir_restantes)
+                return
+
+    def pagina(self, nome: str) -> componentes.Pagina:
+        """A página, montada se ainda não estiver."""
+        return self.paginas[nome]
+
+    def _largura_mudou(self, evento) -> None:
+        """Abaixo de ~1060 px (de projeto), a barra lateral vira trilho."""
+        if evento.widget is not self.raiz:
+            return
+        self.barra.definir_compacta(evento.width < px(LARGURA_TRILHO))
+
+    def _ligar_log(self) -> None:
+        self._ponte = registro.PonteDeLog(self.fila)
+        logging.getLogger().addHandler(self._ponte)
+        if logging.getLogger().level > logging.INFO or logging.getLogger().level == 0:
+            logging.getLogger().setLevel(logging.INFO)
+
+    def _atalhos(self) -> None:
+        for i, nome in enumerate(NOMES, 1):
+            self.raiz.bind_all(f"<Control-Key-{i}>", lambda _e, n=nome: self.mostrar(n))
+        for k in range(1, 13):
+            self.raiz.bind_all(f"<Key-F{k}>", self._tecla_funcao)
+
+    def _tecla_funcao(self, evento):
+        pagina = self.paginas.get(self.atual or "")
+        if pagina is not None and pagina.atalho(evento):
+            return "break"
+        if evento.keysym == "F1":
+            self.mostrar("ajuda")
+            return "break"
+        return None
+
+    # ------------------------------------------------------------- navegação
+    def mostrar(self, nome: str) -> None:
+        if nome not in NOMES or nome == self.atual:
+            return
+        pagina = self.paginas[nome]
+        anterior = self.paginas.get(self.atual or "")
+        if anterior is not None:
+            try:
+                anterior.ao_esconder()
+            except Exception:
+                log.exception("erro ao sair da página %s", self.atual)
+        pagina.tkraise()
+        self.atual = nome
+        self.barra.selecionar(nome)
+        try:
+            pagina.ao_mostrar()
+        except Exception:
+            log.exception("erro ao abrir a página %s", nome)
+
+    def abrir_assistente(self) -> None:
+        def concluido():
+            # A tela inicial (saudação) e a página à vista, que pode ser a de
+            # Configurações ("Refazer o assistente inicial"): o assistente
+            # acabou de gravar nome, unidade, pasta e acessos.
+            for nome in dict.fromkeys(("inicio", self.atual or "")):
+                pagina = self.paginas.get(nome)
+                if pagina is not None:
+                    try:
+                        pagina.ao_mostrar()
+                    except Exception:
+                        log.exception("erro ao atualizar a página %s", nome)
+        try:
+            dialogos.Assistente(self, ao_concluir=concluido)
+        except Exception:
+            log.exception("o assistente de primeiro uso não abriu")
+
+    # --------------------------------------------------------------- apoio
+    def cofre(self):
+        if self._cofre is None:
+            from . import servicos
+
+            self._cofre = servicos.cofre()
+        return self._cofre
+
+    def audiencia_na_tela(self) -> bool:
+        """A página Transcrever está à vista com uma audiência em curso?
+
+        Nesse caso nada troca de página sozinho (código de verificação de um
+        download em paralelo, por exemplo): os atalhos F1 a F8 só valem na
+        página Transcrever, e o magistrado está marcando quem fala.
+        """
+        if self.atual != "transcrever":
+            return False
+        pagina = self.paginas.get("transcrever")
+        return getattr(pagina, "situacao", "") in ("iniciando", "gravando", "pausada")
+
+    def sigilosos_no_acervo(self) -> list[Path]:
+        """Os PDFs sigilosos que um lote não conseguiu tirar do acervo e que
+        ainda estão lá. Com eles, nada de espelho na nuvem (de nenhuma página)."""
+        baixar = self.paginas.get("baixar")
+        try:
+            return list(baixar.sigilosos_no_acervo()) if baixar is not None else []
+        except Exception:
+            return []
+
+    def postar(self, pagina: str, tipo: str, dado=None) -> None:
+        """Seguro em qualquer thread."""
+        self.fila.put(("evento", (pagina, tipo, dado)))
+
+    def erro_inesperado(self, erro: BaseException) -> None:
+        from .servicos import ComponenteAusente
+
+        if isinstance(erro, ComponenteAusente):
+            dialogos.erro(self.raiz, "Componente ausente", str(erro))
+            return
+        dialogos.erro(self.raiz, "Algo deu errado",
+                      f"{erro}\n\nOs detalhes ficaram no registro (pasta Logs).")
+
+    def _erro_no_tk(self, tipo, valor, rastro) -> None:
+        """Exceção não tratada num comando do Tk: vai para o registro e, fora
+        do teste, aparece ao usuário (no máximo uma caixa a cada 10 s, para
+        um erro repetido num evento de desenho não virar uma enxurrada)."""
+        log.error("erro não tratado na interface", exc_info=(tipo, valor, rastro))
+        if self.teste or self._fechando:
+            return
+        agora = time.monotonic()
+        if agora - self._ultimo_erro_tk < 10:
+            return
+        self._ultimo_erro_tk = agora
+        try:
+            self.erro_inesperado(valor)
+        except Exception:
+            pass
+
+    def atualizar_indicadores(self) -> None:
+        em_andamento = []
+        for nome, pagina in self.paginas.items():
+            try:
+                indicador = pagina.indicador()
+            except Exception:
+                indicador = None
+            self.barra.indicar(nome, indicador)
+            if pagina.ocupada:
+                em_andamento.append(pagina.titulo)
+        if em_andamento:
+            self.barra.estado("Em andamento: " + ", ".join(em_andamento) + ".")
+        else:
+            self.barra.estado("")
+
+    # -------------------------------------------------------------- a fila
+    def _consumir(self) -> None:
+        """Traz para a tela o que as threads produziram (a cada 100 ms).
+
+        Esvazia a fila por no máximo 40 ms por vez - numa enxurrada de
+        eventos a janela continua respondendo - e junta as linhas de
+        registro para inserir de uma vez só.
+        """
+        if not self._viva():
+            return
+        inicio = time.monotonic()
+        linhas: list = []
+        try:
+            while time.monotonic() - inicio < FATIA_S:
+                try:
+                    tipo, dado = self.fila.get_nowait()
+                except queue.Empty:
+                    break
+                if tipo == "log":
+                    linhas.append(dado)
+                    continue
+                if tipo == "evento":
+                    nome, t, d = dado
+                    pagina = self.paginas.get(nome)
+                    if pagina is None:
+                        continue
+                    try:
+                        pagina.tratar_evento(t, d)
+                    except Exception:
+                        log.exception("erro ao tratar o evento %s da página %s", t, nome)
+            if linhas:
+                self._distribuir(linhas)
+            self.atualizar_indicadores()
+        except Exception:
+            log.exception("erro no laço da janela")
+        finally:
+            if self._viva():
+                self.raiz.after(TICK_MS, self._consumir)
+
+    def _distribuir(self, linhas: list) -> None:
+        por_marca: dict[str, list] = {}
+        for marca, texto, nivel in linhas:
+            self.registro_geral.append((texto, nivel))
+            por_marca.setdefault(marca, []).append((texto, nivel))
+        for pagina in self.paginas.values():
+            if pagina.marca_log and pagina.marca_log in por_marca:
+                try:
+                    pagina.receber_log(por_marca[pagina.marca_log])
+                except Exception:
+                    pass
+
+    def _viva(self) -> bool:
+        try:
+            return bool(self.raiz.winfo_exists())
+        except tk.TclError:
+            return False
+
+    # -------------------------------------------------------------- fechar
+    def fechar(self) -> None:
+        if self._fechando:
+            self._forcar_fechamento()
+            return
+        pendentes = []
+        for pagina in self.paginas.values():
+            try:
+                pendentes += pagina.trabalho_em_andamento()
+            except Exception:
+                pass
+        if pendentes:
+            texto = ("Há trabalho em andamento:\n\n" + "\n".join(f"•  {p}" for p in pendentes)
+                     + "\n\nFechar mesmo assim? O que estiver em andamento é interrompido "
+                       "com segurança — a transcrição da audiência é salva antes.")
+            if not dialogos.confirmar(self.raiz, "Fechar o Assessor Integrado", texto):
+                return
+        self._fechando = True
+        self._fechando_desde = time.monotonic()
+        for pagina in self.paginas.values():
+            try:
+                pagina.antes_de_fechar()
+            except Exception:
+                log.exception("erro ao encerrar a página %s", pagina.nome)
+        self._aguarde = None
+        if any(p.ocupada_ao_fechar for p in self.paginas.values()):
+            self._aguarde = dialogos.DialogoAguarde(
+                self.raiz, "Encerrando com segurança",
+                "Salvando o que estava em andamento. Isto leva poucos segundos.")
+        agora = time.monotonic()
+        self._esperar_e_destruir(agora + ESPERA_FECHAR_S, agora + ESPERA_AUDIENCIA_S)
+
+    _fechar = fechar          # nome da base (WM_DELETE_WINDOW)
+
+    def _forcar_fechamento(self) -> None:
+        """O X clicado de novo enquanto se espera o trabalho terminar.
+
+        A espera pela audiência pode ser longa (ESPERA_AUDIENCIA_S): se algo
+        travou, o usuário precisa de uma saída que não seja o Gerenciador de
+        Tarefas. O diário da audiência permite recuperar o que faltar.
+        """
+        if time.monotonic() - getattr(self, "_fechando_desde", time.monotonic()) < 5:
+            return
+        if dialogos.confirmar(
+                self.raiz, "Fechar agora",
+                "O programa ainda está salvando o que estava em andamento.\n\nFechar agora "
+                "mesmo assim? Se for a audiência, o documento pode ficar incompleto; o que foi "
+                "falado fica no diário e se recupera em “Recuperar transcrição interrompida”."):
+            log.warning("fechamento forçado pelo usuário com trabalho em andamento")
+            self.destruir()
+
+    def _audiencia_encerrando(self) -> bool:
+        pagina = self.paginas.get("transcrever")
+        tarefa = getattr(pagina, "tarefa_sessao", None)
+        return bool(tarefa is not None and tarefa.ativa)
+
+    def _esperar_e_destruir(self, limite: float, limite_audiencia: float | None = None) -> None:
+        agora = time.monotonic()
+        if limite_audiencia is None:
+            limite_audiencia = limite
+        if self._audiencia_encerrando() and agora < limite_audiencia:
+            esperar = True
+        else:
+            esperar = any(p.ocupada_ao_fechar for p in self.paginas.values()) and agora < limite
+        if esperar:
+            self.raiz.after(150, lambda: self._esperar_e_destruir(limite, limite_audiencia))
+            return
+        self.destruir()
+
+    def destruir(self) -> None:
+        if self._ponte is not None:
+            logging.getLogger().removeHandler(self._ponte)
+            self._ponte = None
+        # Os after() pendentes (o laço da fila, cronômetros, animações)
+        # disparariam depois da destruição, contra comandos que não existem
+        # mais ("invalid command name"): cancela todos antes.
+        try:
+            for pendente in self.raiz.tk.splitlist(self.raiz.tk.call("after", "info")):
+                try:
+                    self.raiz.tk.call("after", "cancel", pendente)
+                except tk.TclError:
+                    pass
+        except tk.TclError:
+            pass
+        try:
+            self.raiz.destroy()
+        except tk.TclError:
+            pass
+
+    # ------------------------------------------------- teste de interface
+    def percorrer(self, pasta: Path | None, ao_fim=None) -> None:
+        """Visita todas as páginas (e os diálogos principais), salva uma
+        captura de cada uma em <pasta>/captura-<nome>.png e fecha.
+
+        Usado por `python -m app --teste-interface` e pelo CI do Windows:
+        prova que cada tela abre e desenha sem erro.
+        """
+        passos: list = []
+        for nome in NOMES:
+            passos.append(("pagina", nome))
+            if nome == "config":
+                aba = getattr(self.paginas[nome], "abas", None)
+                if aba is not None:
+                    for i in range(1, len(aba.tabs())):
+                        passos.append(("aba", i))
+        passos += [("codigo", None), ("assistente", None)]
+        self.capturas: list[Path] = []
+        self.falhas_teste: list[str] = []
+
+        def proximo(i=0):
+            if i >= len(passos):
+                self.codigo_saida = 1 if self.falhas_teste else 0
+                if ao_fim:
+                    ao_fim()
+                else:
+                    self.destruir()
+                return
+            tipo, valor = passos[i]
+            alvo = self.raiz
+            nome_captura = ""
+            try:
+                if tipo == "pagina":
+                    self.mostrar(valor)
+                    nome_captura = valor
+                elif tipo == "aba":
+                    self.paginas["config"].abas.select(valor)
+                    nome_captura = f"config-{valor + 1}"
+                elif tipo == "codigo":
+                    from .tarefas import PedidoCodigo
+                    self.mostrar("baixar")
+                    pedido = PedidoCodigo("Código de verificação do e-SAJ",
+                                          "O e-SAJ enviou um código para o seu e-mail. "
+                                          "Digite-o abaixo para continuar o download.", 180)
+                    alvo = dialogos.DialogoCodigo(self.raiz, pedido)
+                    nome_captura = "codigo"
+                elif tipo == "assistente":
+                    self.mostrar("inicio")
+                    alvo = dialogos.Assistente(self)
+                    nome_captura = "assistente"
+            except Exception as erro:
+                log.exception("teste de interface: %s %s falhou", tipo, valor)
+                self.falhas_teste.append(f"{tipo} {valor}: {erro}")
+
+            def capturar_e_seguir():
+                try:
+                    self.raiz.update()
+                    if pasta is not None and nome_captura:
+                        destino = Path(pasta) / f"captura-{nome_captura}.png"
+                        if capturar(alvo, destino):
+                            self.capturas.append(destino)
+                except Exception as erro:
+                    log.warning("captura de %s falhou: %s", nome_captura, erro)
+                if alvo is not self.raiz:
+                    try:
+                        alvo.fechar()
+                    except Exception:
+                        pass
+                proximo(i + 1)
+            # tempo para as threads de estado responderem e a tela assentar
+            self.raiz.after(700 if tipo == "pagina" else 400, capturar_e_seguir)
+
+        proximo()
+
+
+def capturar(janela: tk.Misc, destino: Path) -> bool:
+    """Salva a imagem da janela em PNG. Devolve False (sem erro) se não houver
+    como capturar neste sistema."""
+    janela.update()
+    x, y = janela.winfo_rootx(), janela.winfo_rooty()
+    largura, altura = janela.winfo_width(), janela.winfo_height()
+    if largura < 10 or altura < 10:
+        return False
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        from PIL import ImageGrab
+
+        extra = {"all_screens": True} if sys.platform == "win32" else {}
+        imagem = ImageGrab.grab(bbox=(x, y, x + largura, y + altura), **extra)
+        imagem.save(destino)
+        return True
+    except Exception as erro:
+        log.debug("ImageGrab indisponível (%s); tentando o ImageMagick", erro)
+    if shutil.which("import"):
+        try:
+            subprocess.run(["import", "-window", "root", "-crop",
+                            f"{largura}x{altura}+{x}+{y}", "+repage", str(destino)],
+                           check=True, timeout=30, capture_output=True)
+            return destino.exists()
+        except Exception as erro:
+            log.debug("import falhou: %s", erro)
+    return False
+
+
+IDADE_TEMP_S = 3600
+
+
+def limpar_relacoes_baixadas(agora: float | None = None) -> int:
+    """Apaga as relações baixadas por link que sobraram de outras execuções.
+
+    Elas podem trazer a coluna de senhas dos processos sigilosos, em texto
+    puro, no perfil do usuário (as senhas dos portais ficam cifradas). A
+    tela já apaga o arquivo logo depois de lê-lo; isto recolhe o que ficou
+    de versões anteriores, de uma queda no meio ou da linha de comando
+    (TEMP\\relacoes). Só o que tem mais de uma hora: um comando em curso
+    não perde o arquivo que acabou de baixar.
+    """
+    agora = time.time() if agora is None else agora
+    apagados = 0
+    for pasta in (caminhos.TEMP / "listas", caminhos.TEMP / "relacoes"):
+        try:
+            arquivos = [p for p in pasta.iterdir() if p.is_file()]
+        except OSError:
+            continue
+        for p in arquivos:
+            try:
+                if agora - p.stat().st_mtime > IDADE_TEMP_S:
+                    p.unlink()
+                    apagados += 1
+            except OSError:
+                pass
+    if apagados:
+        log.info("Apaguei %d relação(ões) baixada(s) por link que tinham sobrado.", apagados)
+    return apagados
+
+
+# ============================================================ instância única
+MUTEX_JANELA = "Local\\AssessorIntegrado.Janela"
+ERRO_JA_EXISTE = 183           # ERROR_ALREADY_EXISTS
+SW_RESTORE = 9
+CLASSE_JANELA_TK = "TkTopLevel"   # a moldura de toda janela de primeiro nível do Tk
+_mutex = None                  # o handle vive enquanto o programa estiver aberto
+
+
+def _api_windows():
+    """(kernel32, user32, ultimo_erro) pelo ctypes, com os tipos certos em
+    64 bits. Separado para os testes porem dublês no lugar."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    user32.FindWindowW.restype = wintypes.HWND
+    user32.FindWindowW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR)
+    user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+    user32.IsIconic.argtypes = (wintypes.HWND,)
+    user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+    return kernel32, user32, ctypes.get_last_error
+
+
+def instancia_unica(titulo: str = NOME, api=None) -> bool:
+    """True: esta é a única janela do programa (pode abrir). False: já havia
+    uma aberta - ela foi trazida à frente, e esta não deve abrir outra.
+
+    Duas janelas brigariam pelo microfone e pelos perfis do navegador (o
+    Chrome não abre o mesmo perfil duas vezes). Um mutex nomeado na sessão
+    do Windows marca a janela aberta; o sistema o solta quando o processo
+    termina, mesmo numa queda. Fora do Windows, não faz nada. Na dúvida
+    (ctypes falhou), abre: melhor duas janelas que nenhuma.
+    """
+    global _mutex
+    if api is None:
+        if not sistema.NO_WINDOWS:
+            return True
+        try:
+            api = _api_windows()
+        except Exception as erro:
+            log.warning("não consegui conferir se o programa já está aberto: %s", erro)
+            return True
+    kernel32, user32, ultimo_erro = api
+    try:
+        handle = kernel32.CreateMutexW(None, False, MUTEX_JANELA)
+        erro = ultimo_erro()
+    except Exception as e:
+        log.warning("não consegui conferir se o programa já está aberto: %s", e)
+        return True
+    if not handle:
+        log.warning("não consegui criar o marcador de janela aberta (erro %s)", erro)
+        return True
+    if erro != ERRO_JA_EXISTE:
+        _mutex = handle
+        return True
+    try:
+        kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+    log.info("O programa já está aberto: trago a janela à frente em vez de abrir outra.")
+    try:
+        hwnd = user32.FindWindowW(CLASSE_JANELA_TK, titulo) or user32.FindWindowW(None, titulo)
+        if hwnd:
+            # Minimizada, volta ao tamanho de antes; maximizada, continua
+            # maximizada (SW_RESTORE numa janela maximizada a encolheria).
+            if user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, SW_RESTORE)
+            user32.SetForegroundWindow(hwnd)
+        else:
+            log.info("a janela já aberta ainda não apareceu (está abrindo)")
+    except Exception as e:
+        log.warning("não consegui trazer a janela aberta à frente: %s", e)
+    return False
+
+
+def executar(teste: bool = False, pasta_capturas: Path | None = None, cfg=None) -> int:
+    """Abre a janela (bloqueia até fechar). Devolve o código de saída.
+
+    Com teste=True percorre as páginas, salva capturas em Logs\\ e fecha
+    sozinho - é o teste de interface do CI. Sem teste, se o programa já
+    estiver aberto, traz aquela janela à frente e sai (código 0).
+    """
+    registro.preparar_saidas()
+    try:
+        registro.configurar(console=teste)
+    except Exception:
+        pass
+    if not teste and not instancia_unica():
+        return 0
+    sistema.id_do_aplicativo()          # ícone próprio na barra de tarefas (bug B9)
+    estilo.consciencia_de_dpi()         # antes de criar a janela
+    import threading
+
+    threading.Thread(target=limpar_relacoes_baixadas, name="limpar-temp", daemon=True).start()
+    try:
+        raiz = tk.Tk(className="AssessorIntegrado")
+    except tk.TclError as erro:
+        log.error("não foi possível abrir a janela: %s", erro)
+        print(f"Não foi possível abrir a janela: {erro}", file=sys.stderr)
+        return 1
+    raiz.withdraw()
+    try:
+        estilo.aplicar(raiz)
+        janela = Janela(raiz, cfg=cfg, teste=teste)
+    except Exception:
+        log.exception("a janela não pôde ser montada")
+        raiz.destroy()
+        raise
+    raiz.deiconify()
+    estilo.pintar_barra_de_titulo(raiz)
+    if teste:
+        destino = Path(pasta_capturas) if pasta_capturas else caminhos.LOGS
+
+        def salvaguarda():
+            # se algo travar, o CI não fica esperando para sempre
+            if janela._viva():
+                log.error("teste de interface: tempo esgotado")
+                janela.codigo_saida = 1
+                janela.destruir()
+        raiz.after(120_000, salvaguarda)
+        raiz.after(400, lambda: janela.percorrer(destino))
+    raiz.mainloop()
+    if teste:
+        n = len(getattr(janela, "capturas", []))
+        falhas = getattr(janela, "falhas_teste", [])
+        print(f"Teste de interface: {len(NOMES)} página(s), {n} captura(s)"
+              + (f", {len(falhas)} falha(s): {'; '.join(falhas)}" if falhas else ", sem falhas."))
+    return janela.codigo_saida

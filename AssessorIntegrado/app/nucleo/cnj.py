@@ -1,0 +1,188 @@
+"""Leitura e validação de números de processo no padrão CNJ.
+
+Formato: NNNNNNN-DD.AAAA.J.TR.OOOO
+         |       |  |    | |  |
+         |       |  |    | |  +-- órgão de origem (foro), 4 dígitos
+         |       |  |    | +----- tribunal, 2 dígitos (02 = Alagoas)
+         |       |  |    +------- segmento (8 = Justiça Estadual, 4 = Federal)
+         |       |  +------------ ano do ajuizamento
+         |       +--------------- dígito verificador
+         +----------------------- número sequencial na origem
+
+Herdado do Assessor SAJ (app/esaj/numero.py), com duas novidades: o número
+sabe dizer de que tribunal é (``chave_tribunal``), o que deixa o programa
+escolher sozinho entre e-SAJ e eProc, e a extração de uma lista preserva a
+ordem em que os números aparecem no documento.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, replace
+
+# Aceita o número com ou sem pontuação, e também os 20 dígitos corridos.
+# O separador aceita hífen, ponto, espaço e os travessões que o Word põe
+# sozinho no lugar do hífen ("0700123–45.2024...").
+_SEP = r"[-.\s\u2010-\u2015]?"
+_PADRAO = re.compile(
+    rf"(?<!\d)(\d{{7}}){_SEP}(\d{{2}}){_SEP}(\d{{4}}){_SEP}(\d){_SEP}(\d{{2}}){_SEP}(\d{{4}})"
+    r"(?:\s*/\s*(\d{1,4}))?"          # dependente: /01, /0003 (o e-SAJ usa 4 dígitos)
+    r"(?!\d)"
+)
+
+
+class NumeroInvalido(ValueError):
+    """O texto informado não contém um número de processo reconhecível."""
+
+
+@dataclass(frozen=True)
+class Numero:
+    sequencial: str   # NNNNNNN
+    digito: str       # DD
+    ano: str          # AAAA
+    segmento: str     # J
+    tribunal: str     # TR
+    origem: str       # OOOO  (o foro, usado na consulta do e-SAJ)
+    dependente: str = ""   # 01, 02... quando o número traz /NN
+
+    @property
+    def principal(self) -> str:
+        """0700123-45.2024.8.02.0001 — o número sem o sufixo."""
+        return (f"{self.sequencial}-{self.digito}.{self.ano}"
+                f".{self.segmento}.{self.tribunal}.{self.origem}")
+
+    @property
+    def formatado(self) -> str:
+        """Como aparece nos autos, com o sufixo do dependente se houver."""
+        if self.dependente:
+            return f"{self.principal}/{self.dependente}"
+        return self.principal
+
+    @property
+    def e_dependente(self) -> bool:
+        return bool(self.dependente)
+
+    @property
+    def digitos(self) -> str:
+        """Os 20 dígitos sem pontuação."""
+        return (self.sequencial + self.digito + self.ano
+                + self.segmento + self.tribunal + self.origem)
+
+    @property
+    def unificado(self) -> str:
+        """0700123-45.2024 — o campo 'numeroDigitoAnoUnificado' do e-SAJ."""
+        return f"{self.sequencial}-{self.digito}.{self.ano}"
+
+    @property
+    def foro(self) -> str:
+        """0001 — o campo 'foroNumeroUnificado' do e-SAJ."""
+        return self.origem
+
+    @property
+    def chave_tribunal(self) -> str:
+        """'8.02' — segmento e tribunal, a chave do catálogo de tribunais."""
+        return f"{self.segmento}.{self.tribunal}"
+
+    @property
+    def nome_arquivo(self) -> str:
+        """Nome do arquivo de saída, sem extensão.
+
+        O Windows não aceita '/' em nome de arquivo: o dependente vira
+        '-NN'. Assim o PDF do incidente não sobrescreve o do principal.
+        """
+        if self.dependente:
+            return f"{self.principal}-{self.dependente}"
+        return self.principal
+
+    @property
+    def digito_confere(self) -> bool:
+        """Confere o dígito verificador pela regra da Resolução CNJ 65/2008."""
+        corpo = (self.sequencial + self.ano + self.segmento
+                 + self.tribunal + self.origem)
+        esperado = 98 - (int(corpo + "00") % 97)
+        return esperado == int(self.digito)
+
+    def __str__(self) -> str:  # pragma: no cover - conveniência de log
+        return self.formatado
+
+
+def _montar(m: re.Match) -> Numero:
+    partes = list(m.groups())
+    # '/0003' e '/3' são o mesmo dependente: guarda-se sempre com 2 dígitos
+    sufixo = ""
+    if partes[6] is not None:
+        sufixo = (partes[6].strip().lstrip("0") or "0").zfill(2)
+    return Numero(*partes[:6], dependente=sufixo)
+
+
+def ler(texto: str) -> Numero:
+    """Extrai o primeiro número CNJ de um texto qualquer."""
+    m = _PADRAO.search(texto or "")
+    if not m:
+        raise NumeroInvalido(
+            f"número de processo não reconhecido em '{(texto or '').strip()}'")
+    return _montar(m)
+
+
+# No NOME DE ARQUIVO o dependente vem como "-NN" (Numero.nome_arquivo), porque
+# o Windows não aceita "/". Sem ler o sufixo, o PDF do incidente
+# ("...0001-01.pdf") e o do principal ("...0001.pdf") teriam a mesma chave.
+_DEPENDENTE_NO_NOME = re.compile(r"-(?:inc)?0*(\d{1,4})(?=$|[\s._()\[\]])", re.I)
+
+
+def ler_nome_arquivo(texto: str) -> Numero:
+    """O número CNJ de um nome de arquivo ou pasta, com o dependente "-NN".
+
+    Aceita também a barra ("/01") e o que vier depois do número, como
+    " (2)" ou " 2025-03-10 14h00 - revisão".
+    """
+    m = _PADRAO.search(texto or "")
+    if not m:
+        raise NumeroInvalido(
+            f"número de processo não reconhecido em '{(texto or '').strip()}'")
+    numero = _montar(m)
+    if not numero.dependente:
+        d = _DEPENDENTE_NO_NOME.match(texto[m.end():])
+        if d:
+            numero = replace(numero, dependente=(d.group(1).lstrip("0") or "0").zfill(2))
+    return numero
+
+
+def chave(n: Numero) -> str:
+    """Identidade do processo para deduplicar: dígitos + dependente."""
+    return n.digitos + (n.dependente or "")
+
+
+def extrair_todos(texto: str) -> list[Numero]:
+    """Todos os números CNJ do texto, na ordem em que aparecem, sem repetir.
+
+    Usado na leitura de planilhas e documentos: a relação pode trazer o
+    número no meio de uma frase, numa célula com outras informações, com ou
+    sem pontuação.
+    """
+    vistos: set[str] = set()
+    saida: list[Numero] = []
+    for m in _PADRAO.finditer(texto or ""):
+        n = _montar(m)
+        k = chave(n)
+        if k not in vistos:
+            vistos.add(k)
+            saida.append(n)
+    return saida
+
+
+def ler_lista(texto: str) -> list[Numero]:
+    """Lê vários números de um texto livre, ignorando linhas em branco e
+    comentários iniciados por '#' ou ';'. Repetidos são descartados."""
+    numeros: list[Numero] = []
+    vistos: set[str] = set()
+    for linha in (texto or "").splitlines():
+        limpa = linha.strip()
+        if not limpa or limpa[0] in "#;":
+            continue
+        for n in extrair_todos(limpa):
+            k = chave(n)
+            if k not in vistos:
+                vistos.add(k)
+                numeros.append(n)
+    return numeros
