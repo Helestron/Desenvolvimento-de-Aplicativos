@@ -87,8 +87,9 @@ class ContextoTerminal(Contexto):
             self._print(f"  {texto}")
 
     def progresso(self, feitos: int, total: int, atual: str) -> None:
-        if atual:
-            self._print(f"[{feitos + 1}/{total}] {atual}")
+        # O motor já registra "[n/total] número" no log, que no terminal
+        # aparece na tela; repetir aqui só duplicaria a linha.
+        pass
 
     def item(self, r: ResultadoProcesso) -> None:
         if not r.situacao:

@@ -1,0 +1,34 @@
+﻿ASSESSOR INTEGRADO - COMECE AQUI
+================================
+
+Baixa processos do e-SAJ e do eProc (um PDF por processo), transcreve
+audiências ao vivo pelo microfone e compartilha o acervo com o Claude e o
+ChatGPT.
+
+
+1. INSTALE
+
+   Dê dois cliques em INSTALAR.bat e aguarde a mensagem final. Na primeira
+   vez, leva de 10 a 25 minutos, conforme a internet. Não é preciso ser
+   administrador: tudo fica dentro desta pasta.
+
+2. ABRA
+
+   Use o atalho "Assessor Integrado", na Área de Trabalho ou no Menu
+   Iniciar (ou o arquivo "Assessor Integrado.bat", nesta pasta).
+
+3. USE
+
+   A tela inicial mostra as três funções: Baixar processos, Transcrever
+   audiência e Compartilhar com IA. Os PDFs e as transcrições ficam na
+   pasta Acervo.
+
+
+Se algo der errado, rode o INSTALAR.bat de novo: ele continua de onde
+parou e conserta o que faltar, sem apagar os seus arquivos.
+
+Dica: prefira uma pasta fora do OneDrive e de caminho curto, como
+C:\AssessorIntegrado (o instalador oferece a mudança).
+
+Manual completo: MANUAL.md, nesta pasta, e a página Ajuda do programa.
+Para remover o programa: DESINSTALAR.bat.

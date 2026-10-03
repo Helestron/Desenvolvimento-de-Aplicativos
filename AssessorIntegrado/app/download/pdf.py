@@ -112,6 +112,10 @@ def html_para_pdf(html: str) -> bytes:
     """
     fitz = _pymupdf()
     limpo = _SCRIPTS.sub(" ", html or "")
+    # O texto já chega decodificado; o motor de HTML o recebe em UTF-8, e um
+    # <meta charset=iso-8859-1> esquecido no documento o faria decodificar
+    # de novo ("DecisÃ£o").
+    limpo = re.sub(r"charset\s*=\s*[\"']?[\w.:-]+", "charset=utf-8", limpo, flags=re.I)
     try:
         story = fitz.Story(html=limpo, user_css=_CSS)
         dados = _story_para_pdf(story)
@@ -122,61 +126,146 @@ def html_para_pdf(html: str) -> bytes:
     return texto_para_pdf(_texto_de_html(html))
 
 
+def _fontes():
+    """Helvetica (Nimbus Sans) como fonte Unicode: a fonte "base 14" comum
+    só conhece o Latin-1 e troca travessão e aspas curvas por "·"."""
+    fitz = _pymupdf()
+    return fitz.Font("helv"), fitz.Font("hebo")
+
+
+def _quebrar(linha: str, largura: float, tamanho: float, fonte) -> list[str]:
+    """Quebra uma linha em pedaços que cabem na largura (por palavra)."""
+    medir = lambda t: fonte.text_length(t, fontsize=tamanho)  # noqa: E731
+    if not linha.strip():
+        return [""]
+    saida, atual = [], ""
+    for palavra in linha.split(" "):
+        candidata = f"{atual} {palavra}" if atual else palavra
+        if medir(candidata) <= largura:
+            atual = candidata
+            continue
+        if atual:
+            saida.append(atual)
+        # palavra maior que a linha (endereço, código): corta por letra
+        while medir(palavra) > largura and len(palavra) > 1:
+            corte = len(palavra)
+            while corte > 1 and medir(palavra[:corte]) > largura:
+                corte -= 1
+            saida.append(palavra[:corte])
+            palavra = palavra[corte:]
+        atual = palavra
+    saida.append(atual)
+    return saida
+
+
+def _escrever(blocos: list[tuple[str, float, bool]], moldura: bool = False) -> bytes:
+    """Escreve blocos (texto, tamanho, negrito) em páginas A4, linha a linha.
+
+    Linha a linha, e não pelo motor de HTML: aquele junta "fi" e "fl" numa
+    letra só (ligadura), e o texto extraído depois sai "Certiﬁco" - que
+    nenhuma busca acha.
+    """
+    fitz = _pymupdf()
+    normal, negrito = _fontes()
+    largura = A4[0] - 2 * MARGEM
+    linhas: list[tuple[str, float, object]] = []
+    for texto, tamanho, forte in blocos:
+        fonte = negrito if forte else normal
+        for bruta in (texto or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+            bruta = bruta.replace("\t", "    ")
+            linhas += [(t, tamanho, fonte) for t in _quebrar(bruta, largura, tamanho, fonte)]
+    doc = fitz.open()
+    try:
+        pagina, escritor, y = None, None, A4[1]
+        for linha, tamanho, fonte in linhas or [("(vazio)", 10.0, normal)]:
+            altura = tamanho * 1.4
+            if pagina is None or y + altura > A4[1] - MARGEM:
+                if escritor is not None:
+                    escritor.write_text(pagina)
+                pagina = doc.new_page(width=A4[0], height=A4[1])
+                if moldura:
+                    pagina.draw_rect(fitz.Rect(MARGEM - 10, MARGEM - 10, A4[0] - MARGEM + 10,
+                                               A4[1] - MARGEM + 10),
+                                     color=(0.77, 0.13, 0.12), width=1.2)
+                escritor = fitz.TextWriter(pagina.rect)
+                y = MARGEM
+            if linha:
+                escritor.append((MARGEM, y + tamanho), linha, font=fonte, fontsize=tamanho)
+            y += altura
+        if escritor is not None:
+            escritor.write_text(pagina)
+        try:
+            doc.subset_fonts()        # só as letras usadas: KB em vez de 300 KB
+        except Exception:
+            pass
+        return doc.tobytes(deflate=True, garbage=3)
+    finally:
+        doc.close()
+
+
 def texto_para_pdf(texto: str, titulo: str = "") -> bytes:
     """Texto puro em PDF A4, com quebra de linha e de página."""
-    fitz = _pymupdf()
-    corpo = "".join(f"<p>{_html.escape(linha) or '&#160;'}</p>"
-                    for linha in (texto or "").splitlines()) or "<p>(vazio)</p>"
-    cabeca = f"<h1>{_html.escape(titulo)}</h1>" if titulo else ""
-    try:
-        return _story_para_pdf(fitz.Story(html=cabeca + corpo, user_css=_CSS))
-    except Exception:
-        # reserva mínima: linhas escritas à mão, página a página
-        doc = fitz.open()
-        linhas = ([titulo, ""] if titulo else []) + (texto or "").splitlines()
-        por_pagina = int((A4[1] - 2 * MARGEM) // 13)
-        for i in range(0, max(1, len(linhas)), por_pagina):
-            pagina = doc.new_page(width=A4[0], height=A4[1])
-            y = MARGEM
-            for linha in linhas[i:i + por_pagina]:
-                pagina.insert_text((MARGEM, y), linha[:110], fontsize=9)
-                y += 13
-        dados = doc.tobytes()
-        doc.close()
-        return dados
+    blocos = [(titulo, 12.0, True), ("", 10.0, False)] if titulo else []
+    return _escrever(blocos + [(texto or "", 10.0, False)])
 
 
 def imagem_para_pdf(dados: bytes) -> bytes:
-    """Imagem (foto de documento, digitalização) numa página A4, sem distorcer."""
+    """Imagem (foto, digitalização) em páginas A4, sem distorcer.
+
+    TIFF de várias páginas - formato comum de digitalização - vira várias
+    páginas; abrir só a primeira perderia o resto do documento em silêncio.
+    """
     fitz = _pymupdf()
     with fitz.open(stream=dados) as img:
-        largura, altura = img[0].rect.width, img[0].rect.height
-    deitada = largura > altura
-    tamanho = (A4[1], A4[0]) if deitada else A4
+        if img.page_count < 1:
+            raise ValueError("a imagem não tem conteúdo")
+        convertido = img.convert_to_pdf()
     doc = fitz.open()
-    pagina = doc.new_page(width=tamanho[0], height=tamanho[1])
-    area = pagina.rect + (MARGEM / 2, MARGEM / 2, -MARGEM / 2, -MARGEM / 2)
-    pagina.insert_image(area, stream=dados, keep_proportion=True)
-    saida = doc.tobytes(deflate=True)
-    doc.close()
-    return saida
+    try:
+        with fitz.open("pdf", convertido) as fonte:
+            for i, original in enumerate(fonte):
+                deitada = original.rect.width > original.rect.height
+                tamanho = (A4[1], A4[0]) if deitada else A4
+                pagina = doc.new_page(width=tamanho[0], height=tamanho[1])
+                area = pagina.rect + (MARGEM / 2, MARGEM / 2, -MARGEM / 2, -MARGEM / 2)
+                pagina.show_pdf_page(area, fonte, i, keep_proportion=True)
+        return doc.tobytes(deflate=True, garbage=3)
+    finally:
+        doc.close()
 
 
 def pagina_aviso(titulo: str, texto: str) -> bytes:
     """Página que ocupa o lugar de um documento que não pôde ser incluído."""
-    fitz = _pymupdf()
-    doc = fitz.open()
-    pagina = doc.new_page(width=A4[0], height=A4[1])
-    caixa = fitz.Rect(MARGEM, MARGEM, A4[0] - MARGEM, A4[1] - MARGEM)
-    pagina.draw_rect(caixa + (-8, -8, 8, 8), color=(0.77, 0.13, 0.12), width=1.2)
-    conteudo = f"{titulo}\n\n{texto}".strip()
-    sobra = pagina.insert_textbox(caixa, conteudo, fontsize=12, fontname="helv")
-    if sobra < 0:                    # texto longo: letra menor
-        pagina.clean_contents()
-        pagina.insert_textbox(caixa, conteudo[:3000], fontsize=8, fontname="helv")
-    dados = doc.tobytes()
-    doc.close()
-    return dados
+    return _escrever([(titulo or "Aviso", 14.0, True), ("", 10.0, False),
+                      ((texto or "")[:6000], 11.0, False)], moldura=True)
+
+
+_CHARSET = re.compile(rb"""charset\s*=\s*["']?([A-Za-z0-9_.:-]+)""", re.I)
+
+
+def decodificar(dados: bytes | str, html: bool = False) -> str:
+    """Bytes de documento em texto, na codificação certa.
+
+    Portal em PHP (o eProc, por exemplo) costuma servir ISO-8859-1: lido
+    como UTF-8, "ação" vira "a��o". Vale o charset declarado; sem ele,
+    UTF-8 se for válido, senão Windows-1252 (que cobre o Latin-1).
+    """
+    if isinstance(dados, str):
+        return dados
+    dados = dados or b""
+    if dados.startswith(b"\xef\xbb\xbf"):
+        return dados[3:].decode("utf-8", errors="replace")
+    if html:
+        m = _CHARSET.search(dados[:4096])
+        if m:
+            try:
+                return dados.decode(m.group(1).decode("ascii"), errors="replace")
+            except LookupError:
+                pass
+    try:
+        return dados.decode("utf-8")
+    except UnicodeDecodeError:
+        return dados.decode("cp1252", errors="replace")
 
 
 def _como_pdf(parte: Parte) -> bytes:
@@ -186,18 +275,13 @@ def _como_pdf(parte: Parte) -> bytes:
             raise ValueError("o conteúdo recebido não é um PDF")
         return parte.dados
     if tipo == "html":
-        return html_para_pdf(parte.dados.decode("utf-8", errors="replace")
-                             if isinstance(parte.dados, bytes) else str(parte.dados))
+        return html_para_pdf(decodificar(parte.dados, html=True))
     if tipo == "imagem":
         return imagem_para_pdf(parte.dados)
     if tipo == "texto":
-        texto = (parte.dados.decode("utf-8", errors="replace")
-                 if isinstance(parte.dados, bytes) else str(parte.dados))
-        return texto_para_pdf(texto)
+        return texto_para_pdf(decodificar(parte.dados))
     if tipo == "aviso":
-        texto = (parte.dados.decode("utf-8", errors="replace")
-                 if isinstance(parte.dados, bytes) else str(parte.dados))
-        return pagina_aviso(parte.titulo, texto)
+        return pagina_aviso(parte.titulo, decodificar(parte.dados))
     raise ValueError(f"tipo de documento desconhecido: {parte.tipo}")
 
 
@@ -305,11 +389,14 @@ def anexar(alvo: Path, novas: list[bytes], titulos: list[str] | None = None) -> 
         doc.close()
 
 
-def gravar(destino: Path, dados: bytes, marcadores: list[tuple[str, int]] | None = None) -> int:
+def gravar(destino: Path, dados: bytes, marcadores: list[tuple[str, int]] | None = None,
+           exigir_paginas: int | None = None) -> int:
     """Grava um PDF recebido pronto (o do servidor), com marcadores opcionais.
 
-    Devolve o número de páginas. Se os marcadores não puderem ser postos,
-    o PDF é gravado assim mesmo: o conteúdo é o que importa.
+    Devolve o número de páginas. Os marcadores só entram se o PDF tiver
+    exatamente ``exigir_paginas`` páginas (quando informado): com contagem
+    diferente, cairiam em páginas erradas - e marcador errado é pior que
+    nenhum. Se não puderem ser postos, o PDF é gravado assim mesmo.
     """
     if not e_pdf(dados):
         raise ValueError("o arquivo recebido não é um PDF")
@@ -324,7 +411,9 @@ def gravar(destino: Path, dados: bytes, marcadores: list[tuple[str, int]] | None
         doc = fitz.open(str(tmp))
         try:
             paginas = len(doc)
-            toc = [[1, t[:200], int(p)] for t, p in (marcadores or []) if 1 <= int(p) <= paginas]
+            confere = not exigir_paginas or exigir_paginas == paginas
+            toc = [[1, t[:200], int(p)] for t, p in (marcadores or [])
+                   if confere and 1 <= int(p) <= paginas]
             if toc:
                 doc.set_toc(toc)
                 # Salvamento incremental: só acrescenta o sumário ao fim do
@@ -342,6 +431,14 @@ def gravar(destino: Path, dados: bytes, marcadores: list[tuple[str, int]] | None
         log.debug("marcadores não aplicados (%s); o PDF vai como veio", str(erro)[:160])
         tmp.write_bytes(dados)
         paginas = contar_paginas(tmp) or paginas
+    if not paginas:
+        # PDF truncado ou corrompido não substitui nada: no lugar dele ficaria
+        # um arquivo que parece baixado e não abre.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise ValueError("o PDF recebido está corrompido (não abre)")
     os.replace(tmp, destino)
     return paginas
 

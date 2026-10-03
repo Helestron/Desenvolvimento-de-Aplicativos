@@ -1,0 +1,567 @@
+"""O ÚNICO ponto em que a interface chama o download, a transcrição, a
+verificação e as funções de compartilhamento que podem não existir ainda.
+
+Por que um módulo só: as telas não importam app.download.motor,
+app.transcricao.* nem app.verificar diretamente. Se uma assinatura mudar,
+ou se um pacote faltar na instalação, o ajuste é aqui - e a tela recebe uma
+exceção ComponenteAusente com a frase pronta para o usuário ("rode o
+INSTALAR.bat de novo"), em vez de um ImportError cru.
+
+Tudo é importado DENTRO das funções: a janela abre em menos de 2 s mesmo
+sem faster-whisper, Playwright ou PyMuPDF. Quase tudo aqui é lento (disco,
+áudio, rede) e deve ser chamado de uma thread de trabalho - nunca da
+thread do Tk.
+"""
+
+from __future__ import annotations
+
+import csv
+import importlib.util
+import logging
+import os
+import shutil
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Callable
+
+from ..nucleo import caminhos, cnj, sistema
+
+log = logging.getLogger("interface.servicos")
+
+DICA_INSTALAR = "Rode o INSTALAR.bat de novo (ele completa a instalação sem apagar nada)."
+
+
+class ComponenteAusente(RuntimeError):
+    """Parte do programa não está instalada; a mensagem diz o que fazer."""
+
+
+def _ausente(erro: ImportError, funcao: str) -> ComponenteAusente:
+    nome = getattr(erro, "name", "") or str(erro)
+    return ComponenteAusente(
+        f"O componente de {funcao} não está instalado ({nome}). {DICA_INSTALAR}")
+
+
+# =================================================================== download
+def opcoes_download(cfg):
+    from ..download.modelos import OpcoesDownload
+
+    return OpcoesDownload.de_config(cfg)
+
+
+def baixar_lote(numeros, destino: Path, opcoes, ctx, senhas: dict | None, cofre, cfg):
+    """Roda o lote inteiro (bloqueia). Devolve o ResumoLote do motor."""
+    try:
+        from ..download import motor
+    except ImportError as erro:
+        raise _ausente(erro, "download de processos") from erro
+    return motor.executar(numeros, Path(destino), opcoes, ctx, senhas=senhas, cofre=cofre, cfg=cfg)
+
+
+def testar_login(tribunal, opcoes, ctx, credenciais: tuple[str, str] | None) -> None:
+    """Abre o navegador do portal e faz só o login (bloqueia).
+
+    Usa as mesmas fábricas do motor: o teste passa exatamente pelo caminho
+    que o download vai usar.
+    """
+    try:
+        from ..download import motor
+    except ImportError as erro:
+        raise _ausente(erro, "download de processos") from erro
+    nav = motor.fabrica_navegador_padrao(tribunal, opcoes)
+    with nav:
+        portal = motor.fabrica_portal_padrao(nav, tribunal, opcoes, ctx, credenciais)
+        portal.entrar()
+
+
+def cofre():
+    from ..nucleo.cofre_senhas import CofreSenhas
+
+    return CofreSenhas(caminhos.ARQUIVO_SENHAS)
+
+
+class CofreMisto:
+    """O cofre de senhas, mais as credenciais digitadas agora sem "Lembrar".
+
+    O motor só chama obter(portal); assim a senha que o usuário não quis
+    guardar vale para este lote e não vai para o disco.
+    """
+
+    def __init__(self, base, extras: dict[str, tuple[str, str]] | None = None):
+        self.base = base
+        self.extras = dict(extras or {})
+
+    def obter(self, portal: str) -> tuple[str, str]:
+        if portal in self.extras:
+            return self.extras[portal]
+        try:
+            return self.base.obter(portal) if self.base is not None else ("", "")
+        except Exception:
+            return "", ""
+
+
+@dataclass
+class InfoLote:
+    nome: str
+    pasta: Path
+    relatorio: Path
+    quando: datetime
+    total: int = 0
+    baixados: int = 0
+    falhas: int = 0
+    situacoes: dict[str, int] = field(default_factory=dict)
+
+
+_FALHAS = {"ERRO", "NAO_ENCONTRADO", "SEM_ACESSO", "NAO_SUPORTADO", "SIGILOSO_SEM_SENHA"}
+
+
+def ler_relatorio(relatorio: Path) -> InfoLote | None:
+    """Resumo de um _controle/relatorio.csv (gravado pelo motor)."""
+    try:
+        texto = relatorio.read_text(encoding="utf-8-sig")
+        quando = datetime.fromtimestamp(relatorio.stat().st_mtime)
+    except OSError:
+        return None
+    pasta = relatorio.parent.parent
+    info = InfoLote(nome=pasta.name, pasta=pasta, relatorio=relatorio, quando=quando)
+    for linha in csv.DictReader(texto.splitlines(), delimiter=";"):
+        situacao = (linha.get("situacao") or "").strip().upper()
+        info.total += 1
+        info.situacoes[situacao] = info.situacoes.get(situacao, 0) + 1
+        if situacao in ("OK", "JA_BAIXADO"):
+            info.baixados += 1
+        elif situacao in _FALHAS:
+            info.falhas += 1
+    return info
+
+
+def ultimos_lotes(cfg, limite: int = 5) -> list[InfoLote]:
+    pasta = cfg.pasta_processos
+    try:
+        relatorios = list(pasta.glob("*/_controle/relatorio.csv"))
+    except OSError:
+        return []
+    relatorios.sort(key=lambda p: _mtime(p), reverse=True)
+    saida = []
+    for r in relatorios[:limite]:
+        info = ler_relatorio(r)
+        if info is not None:
+            saida.append(info)
+    return saida
+
+
+def _mtime(p: Path) -> float:
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+# ================================================================ transcrição
+def nova_sessao(numero, cfg, eventos: Callable[[str, object], None], *, tipo: str = "",
+                participantes: dict[str, str] | None = None, falante: str = ""):
+    """Cria (sem iniciar) a sessão ao vivo. iniciar() e encerrar() bloqueiam:
+    chame-os de uma thread de trabalho."""
+    try:
+        from ..transcricao.ao_vivo import SessaoAoVivo
+    except ImportError as erro:
+        raise _ausente(erro, "transcrição") from erro
+    return SessaoAoVivo(numero, cfg, eventos, tipo=tipo, participantes=participantes,
+                        falante=falante)
+
+
+def recuperaveis(cfg) -> list[Path]:
+    try:
+        from ..transcricao import ao_vivo
+    except ImportError:
+        return []
+    try:
+        return list(ao_vivo.recuperaveis(cfg))
+    except Exception as erro:
+        log.warning("não consegui procurar transcrições interrompidas: %s", erro)
+        return []
+
+
+def recuperar(jsonl: Path) -> Path:
+    try:
+        from ..transcricao import ao_vivo
+    except ImportError as erro:
+        raise _ausente(erro, "transcrição") from erro
+    return ao_vivo.recuperar(jsonl)
+
+
+def listar_microfones() -> list:
+    """Entradas de áudio (Entrada: indice, nome, padrao, taxa). Lenta: PortAudio."""
+    try:
+        from ..transcricao import microfone
+    except ImportError as erro:
+        raise _ausente(erro, "microfone") from erro
+    return list(microfone.listar_entradas())
+
+
+def abrir_teste_microfone(dispositivo, ao_nivel: Callable[[float], None],
+                          ao_aviso: Callable[[str], None] | None = None):
+    """Liga o microfone só para medir o nível (botão Testar). Devolve o objeto
+    de captura, que a tela desliga com parar()."""
+    try:
+        from ..transcricao import microfone
+    except ImportError as erro:
+        raise _ausente(erro, "microfone") from erro
+    captura = microfone.Captura(dispositivo if dispositivo not in ("", None) else None,
+                                lambda _bloco: None, ao_nivel, ao_aviso)
+    captura.iniciar()
+    return captura
+
+
+def modelos_disponiveis() -> list[dict]:
+    """[{'nome', 'mb', 'instalado', 'descricao'...}] do catálogo Whisper."""
+    try:
+        from ..transcricao import modelos
+    except ImportError:
+        return []
+    try:
+        return modelos.listar()
+    except Exception as erro:
+        log.debug("catálogo de modelos indisponível: %s", erro)
+        return []
+
+
+def modelo_instalado(nome: str) -> bool:
+    try:
+        from ..transcricao import modelos
+
+        return bool(modelos.instalado(nome))
+    except Exception:
+        return False
+
+
+def baixar_modelo(nome: str, progresso: Callable[[float, str], None] | None = None) -> Path:
+    try:
+        from ..transcricao import modelos
+    except ImportError as erro:
+        raise _ausente(erro, "transcrição") from erro
+    return modelos.baixar(nome, progresso)
+
+
+def transcrever_gravacao(origem: Path, numero, cfg, progresso, cancelado, *,
+                         rotulos_manuais=None, destino: Path | None = None, tipo: str = "") -> Path:
+    try:
+        from ..transcricao import arquivo
+    except ImportError as erro:
+        raise _ausente(erro, "transcrição de gravações") from erro
+    meta = None
+    if tipo:
+        try:
+            from ..transcricao.documento import MetaAudiencia
+
+            meta = MetaAudiencia(numero=numero.formatado if numero else "", tipo=tipo)
+        except Exception:
+            meta = None
+    extra = {"meta": meta} if meta is not None else {}
+    return arquivo.transcrever_arquivo(origem, numero, cfg, progresso, cancelado,
+                                       rotulos_manuais=rotulos_manuais, destino=destino, **extra)
+
+
+def excecao_cancelado(erro: BaseException) -> bool:
+    """O erro é o "Cancelado" de algum módulo (o usuário pediu para parar)?"""
+    return type(erro).__name__ == "Cancelado"
+
+
+def falantes_situacao() -> tuple[bool, str]:
+    """(disponível, frase) da separação automática de falantes."""
+    try:
+        from ..transcricao import falantes
+    except ImportError:
+        return False, "não instalada"
+    try:
+        return bool(falantes.disponivel()), falantes.situacao()
+    except Exception as erro:
+        return False, f"indisponível ({erro})"
+
+
+def instalar_falantes(progresso: Callable[[float, str], None] | None = None,
+                      cancelado: Callable[[], bool] | None = None) -> None:
+    try:
+        from ..transcricao import falantes
+    except ImportError as erro:
+        raise _ausente(erro, "separação de falantes") from erro
+    falantes.instalar(progresso, cancelado=cancelado)
+
+
+def numero_no_nome(caminho: Path):
+    """O número CNJ escrito no nome do arquivo, se houver."""
+    try:
+        return cnj.ler(Path(caminho).stem)
+    except cnj.NumeroInvalido:
+        return None
+
+
+def transcricoes_recentes(cfg, limite: int = 5) -> list[Path]:
+    pasta = cfg.pasta_transcricoes
+    try:
+        docs = [p for p in pasta.glob("*.docx")
+                if not p.name.startswith("~$") and not p.name.endswith((".parcial", ".tmp"))]
+    except OSError:
+        return []
+    docs.sort(key=_mtime, reverse=True)
+    return docs[:limite]
+
+
+# ================================================================ verificação
+@dataclass
+class ItemVerificacao:
+    nome: str
+    situacao: str          # ok | aviso | falha
+    detalhe: str = ""
+    obrigatorio: bool = False
+
+
+def verificar_instalacao(completo: bool = False) -> list:
+    """Itens de app.verificar (nome, situacao, detalhe, obrigatorio).
+
+    Enquanto o módulo não existir (ou se quebrar), faz a conferência mínima
+    daqui mesmo: os pacotes e o modelo de transcrição.
+    """
+    try:
+        from .. import verificar
+    except ImportError:
+        return _verificacao_minima()
+    return list(verificar.verificar(completo=completo))
+
+
+PACOTES = (
+    ("playwright", "download de processos", True),
+    ("pymupdf", "montagem dos PDFs", True),
+    ("openpyxl", "leitura de planilhas do Excel", True),
+    ("docx", "documentos do Word", True),
+    ("faster_whisper", "transcrição de audiências", True),
+    ("sounddevice", "microfone", True),
+    ("soundfile", "gravação do áudio", True),
+    ("PIL", "ícones e botões da janela", False),
+)
+
+
+def _pacote_presente(nome: str) -> bool:
+    try:
+        if nome == "pymupdf":
+            return bool(importlib.util.find_spec("pymupdf") or importlib.util.find_spec("fitz"))
+        return importlib.util.find_spec(nome) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _verificacao_minima() -> list[ItemVerificacao]:
+    itens = [ItemVerificacao("Python", "ok", sys.version.split()[0], True)]
+    for nome, funcao, obrigatorio in PACOTES:
+        ok = _pacote_presente(nome)
+        itens.append(ItemVerificacao(f"Componente: {funcao}", "ok" if ok else
+                                     ("falha" if obrigatorio else "aviso"),
+                                     nome if ok else f"{nome} ausente. {DICA_INSTALAR}",
+                                     obrigatorio))
+    return itens
+
+
+@dataclass
+class Pendencia:
+    """Algo da instalação que falta, para o aviso amarelo da tela inicial."""
+    chave: str             # "pacotes" | "modelo"
+    texto: str
+    acao: str = ""         # rótulo do botão
+
+
+def pendencias(cfg) -> list[Pendencia]:
+    """O que falta para as três funções. Rápido (só procura arquivos), mas
+    chame fora da thread do Tk."""
+    faltam = [funcao for nome, funcao, obrigatorio in PACOTES
+              if obrigatorio and not _pacote_presente(nome)]
+    saida = []
+    if faltam:
+        saida.append(Pendencia("pacotes", "Faltam componentes do programa: " + ", ".join(faltam)
+                               + ". " + DICA_INSTALAR, "Abrir a pasta do programa"))
+    modelo = cfg.texto("transcricao", "modelo_ao_vivo") or "small"
+    if _pacote_presente("faster_whisper") and not modelo_instalado(modelo):
+        saida.append(Pendencia("modelo", f"O modelo de transcrição “{modelo}” ainda não foi "
+                                         "baixado. Sem ele, a transcrição ao vivo não começa.",
+                               "Baixar agora"))
+    return saida
+
+
+# ============================================================ compartilhar
+PROMPT_PADRAO = (
+    "Você vai trabalhar no acervo judicial desta pasta. Leia primeiro o CLAUDE.md "
+    "(ou o AGENTS.md) e o INDICE.md. Depois, aguarde a minha tarefa.")
+
+LOJA_CHATGPT = "ms-windows-store://pdp/?productid=9PLM9XGG6VKS"
+SITE_CHATGPT_APP = "https://openai.com/chatgpt/download/"
+
+
+def prompt_inicial() -> str:
+    try:
+        from ..compartilhar import claude
+
+        return getattr(claude, "PROMPT_INICIAL", "") or PROMPT_PADRAO
+    except ImportError:
+        return PROMPT_PADRAO
+
+
+def abrir_endereco(url: str) -> None:
+    """Abre link comum ou protocolo de aplicativo (claude://, codex://)."""
+    if sistema.NO_WINDOWS and not url.startswith(("http://", "https://")):
+        os.startfile(url)  # type: ignore[attr-defined]
+        return
+    sistema.abrir_endereco(url)
+
+
+def abrir_no_cowork(pasta: Path) -> str:
+    """Abre o Cowork já na pasta. Devolve o que foi feito:
+
+    'cowork'   o link claude://cowork/new foi aberto;
+    'desktop'  esta versão do programa não sabe montar o link: abriu o app;
+    'baixar'   o Claude Desktop não está instalado: abriu a página de download.
+    """
+    from ..compartilhar import claude
+
+    if not claude.claude_desktop_instalado():
+        claude.abrir_claude_desktop()          # sem o app, cai na página de download
+        return "baixar"
+    try:
+        # Com 'folder' no link, o texto de 'q' se perde (falha conhecida do
+        # app): o pedido vai pela área de transferência, e o link leva só a pasta.
+        url = claude.url_cowork(Path(pasta), "")
+    except AttributeError:
+        claude.abrir_claude_desktop()
+        return "desktop"
+    try:
+        abrir_endereco(url)
+    except OSError as erro:
+        log.info("o link do Cowork não abriu (%s); abrindo o app", erro)
+        claude.abrir_claude_desktop()
+        return "desktop"
+    return "cowork"
+
+
+def gerar_plugin_cowork(destino: Path) -> Path | None:
+    from ..compartilhar import claude
+
+    fn = getattr(claude, "gerar_plugin_cowork", None)
+    return fn(Path(destino)) if fn else None
+
+
+def chatgpt_desktop_instalado() -> bool | None:
+    """True/False; None quando esta versão não sabe detectar."""
+    from ..compartilhar import chatgpt
+
+    fn = getattr(chatgpt, "chatgpt_desktop_instalado", None)
+    if fn is None:
+        return _chatgpt_desktop_por_pasta()
+    try:
+        return bool(fn())
+    except Exception:
+        return None
+
+
+def _chatgpt_desktop_por_pasta() -> bool | None:
+    local = os.environ.get("LOCALAPPDATA")
+    if not local:
+        return None
+    try:
+        return any((Path(local) / "Packages").glob("OpenAI.ChatGPT*"))
+    except OSError:
+        return None
+
+
+def abrir_chatgpt_work(pasta: Path) -> str:
+    """Abre o ChatGPT para o modo Work. Devolve 'app', 'codex' ou 'web'.
+
+    Não há como entregar a pasta ao Work por linha de comando garantida: a
+    tela sempre mostra o plano B (Ctrl+O e colar o caminho, já copiado).
+    """
+    from ..compartilhar import chatgpt
+
+    fn = getattr(chatgpt, "abrir_chatgpt_work", None)
+    if fn is not None:
+        resultado = fn(Path(pasta))
+        return resultado if isinstance(resultado, str) else "app"
+    if chatgpt_desktop_instalado():
+        try:
+            import urllib.parse
+
+            url = "codex://threads/new?" + urllib.parse.urlencode(
+                [("path", str(Path(pasta).resolve()))], quote_via=urllib.parse.quote)
+            abrir_endereco(url)
+            return "codex"
+        except OSError:
+            pass
+    chatgpt.abrir_chatgpt()
+    return "web"
+
+
+def instalar_chatgpt_desktop() -> None:
+    try:
+        abrir_endereco(LOJA_CHATGPT)
+    except OSError:
+        sistema.abrir_endereco(SITE_CHATGPT_APP)
+
+
+def registrar_mcp_codex(pasta: Path) -> list[Path] | None:
+    from ..compartilhar import chatgpt
+
+    fn = getattr(chatgpt, "registrar_mcp_codex", None)
+    return fn(Path(pasta)) if fn else None
+
+
+def estado_ia(cfg) -> dict:
+    """Tudo o que a página Compartilhar mostra (procura arquivos: fora do Tk)."""
+    from ..compartilhar import chatgpt, claude, nuvem
+
+    estado: dict = {}
+    try:
+        estado.update(claude.estado())
+    except Exception as erro:
+        log.debug("estado do Claude: %s", erro)
+    try:
+        estado.update(chatgpt.estado())
+    except Exception as erro:
+        log.debug("estado do ChatGPT: %s", erro)
+    estado["chatgpt_desktop"] = chatgpt_desktop_instalado()
+    estado["tem_registrar_codex"] = hasattr(chatgpt, "registrar_mcp_codex")
+    try:
+        estado["nuvens"] = nuvem.detectar()
+    except Exception:
+        estado["nuvens"] = {}
+    try:
+        estado["mcp_acervo"] = claude.mcp_registrado(cfg.pasta_acervo)
+    except Exception:
+        estado["mcp_acervo"] = False
+    estado["acervo"] = resumo_acervo(cfg)
+    return estado
+
+
+def resumo_acervo(cfg) -> dict:
+    """Quantos processos e transcrições há, e quando o acervo foi preparado."""
+    from ..compartilhar.mcp_servidor import Acervo
+
+    raiz = cfg.pasta_acervo
+    try:
+        ac = Acervo(raiz)
+        pdfs = ac.pdfs()
+        trans = ac.transcricoes()
+    except Exception:
+        pdfs, trans = {}, {}
+    indice = raiz / "INDICE.md"
+    preparado = datetime.fromtimestamp(_mtime(indice)) if indice.exists() else None
+    return {"processos": len(pdfs), "transcricoes": sum(len(v) for v in trans.values()),
+            "preparado": preparado}
+
+
+def area_de_trabalho() -> Path:
+    """Onde salvar o pacote do ChatGPT por padrão: ao lado do acervo."""
+    return Path.home() / "Desktop" if (Path.home() / "Desktop").is_dir() else Path.home()
+
+
+def copiar_para(destino_pasta: Path, arquivo: Path) -> Path:
+    destino_pasta.mkdir(parents=True, exist_ok=True)
+    alvo = sistema.destino_livre(destino_pasta, arquivo.stem, arquivo.suffix)
+    shutil.copy2(arquivo, alvo)
+    return alvo

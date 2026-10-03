@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from ..nucleo import caminhos
+
 
 # ------------------------------------------------------------------ exceções
 class LoginFalhou(RuntimeError):
@@ -160,14 +162,14 @@ class OpcoesDownload:
     separar_sigilosos: bool = True
     baixar_midias: bool = False
     mostrar_navegador: bool = False
-    navegador: str = "auto"               # auto | chrome | msedge | chromium
+    navegador: str = "auto"               # auto | chrome | msedge | chromium | caminho do .exe
     pausa: float = 3.0                    # segundos entre um processo e outro
     tentativas: int = 2
     espera_s: int = 60                    # resposta de cada página do portal
     espera_login_min: int = 10            # código por e-mail, certificado, manual
     salvar_diagnostico: bool = True
-    pasta_sigilosos: Path = field(default_factory=lambda: Path("Sigilosos"))
-    pasta_diagnostico: Path = field(default_factory=lambda: Path("Logs") / "diagnostico")
+    pasta_sigilosos: Path = field(default_factory=lambda: caminhos.RAIZ / "Sigilosos")
+    pasta_diagnostico: Path = field(default_factory=lambda: caminhos.LOGS / "diagnostico")
     login: dict[str, str] = field(default_factory=lambda: {"esaj": "senha", "eproc": "senha"})
     espera_tela_codigo_s: int = 45        # quanto esperar o portal abrir a tela do código
     atualizar_ia: bool = True             # ao fim, preparar os arquivos para a IA
@@ -182,10 +184,10 @@ class OpcoesDownload:
 
     @classmethod
     def de_config(cls, cfg) -> "OpcoesDownload":
-        from ..nucleo import caminhos
-
-        navegador = (cfg.texto("download", "navegador") or "auto").lower()
-        if navegador not in ("auto", "chrome", "msedge", "chromium"):
+        navegador = (cfg.texto("download", "navegador") or "auto").strip().strip('"')
+        if navegador.lower() in ("auto", "chrome", "msedge", "chromium"):
+            navegador = navegador.lower()
+        elif not Path(navegador).is_file():     # aceita o caminho de um navegador
             navegador = "auto"
         return cls(
             pular_baixados=cfg.flag("download", "pular_baixados"),
@@ -248,6 +250,11 @@ class ResumoLote:
         """
         return [r.numero for r in self.itens
                 if r.pendente or (r.situacao in FALHAS and r.situacao != NAO_SUPORTADO)]
+
+    def numeros_a_refazer(self) -> list:
+        """O mesmo que a_refazer(), já como Numero (pronto para executar())."""
+        from ..nucleo import cnj
+        return [cnj.ler(n) for n in self.a_refazer()]
 
     def texto(self) -> str:
         """Uma frase para o fim do lote: '35 baixados, 2 já estavam na pasta…'."""

@@ -6,6 +6,9 @@
 
 # Transcricao (traz ctranslate2, onnxruntime, av/PyAV e tokenizers)
 faster-whisper==1.2.1
+# O PyAV 19 removeu o parametro metadata_errors que o faster-whisper 1.2.1
+# usa ao abrir arquivo de audio (TypeError em decode_audio). Testado: 15 a 18 ok.
+av<19
 huggingface-hub
 sounddevice
 soundfile

@@ -200,6 +200,7 @@ def escolher_canais(preferencia: str = "auto", certificado: bool = False,
 
 
 def nome_do_canal(canal: str | None) -> str:
+    """Nome do navegador para mensagens ao usuário."""
     return {"chrome": "Google Chrome", "msedge": "Microsoft Edge"}.get(
         canal or "", "Chromium (navegador do programa)")
 
@@ -333,7 +334,7 @@ class Navegador:
     def __init__(self, perfil: Path, *, visivel: bool = False, canal: str = "auto",
                  espera_s: int = 60, pasta_downloads: Path | None = None,
                  pasta_diagnostico: Path | None = None, certificado: bool = False,
-                 salvar_diagnostico: bool = True):
+                 salvar_diagnostico: bool = True, executavel: str | Path | None = None):
         self.perfil_base = Path(perfil)
         # O perfil do certificado é uma cópia do Chrome do usuário: fica ao
         # lado, para nunca misturar com o perfil do login por senha.
@@ -346,6 +347,9 @@ class Navegador:
         self.pasta_diagnostico = Path(pasta_diagnostico) if pasta_diagnostico else None
         self.certificado = certificado
         self.salvar_diagnostico = salvar_diagnostico
+        # Caminho de um navegador Chromium qualquer (Chrome portátil, por
+        # exemplo): usado no lugar do Chromium do programa.
+        self.executavel = Path(executavel) if executavel else None
         self.canal: str | None = None
         self._pw = None
         self._contexto = None
@@ -400,7 +404,10 @@ class Navegador:
     # ---------------------------------------------------------------- ciclo
     def abrir(self) -> "Navegador":
         os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(caminhos.NAVEGADORES))
-        canais = escolher_canais(self.preferencia, self.certificado)
+        if self.executavel is not None and not self.certificado:
+            canais: list[str | None] = [None]
+        else:
+            canais = escolher_canais(self.preferencia, self.certificado)
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as erro:
@@ -408,11 +415,13 @@ class Navegador:
                 "o componente de navegação automática (Playwright) não está "
                 "instalado. Rode o INSTALAR.bat de novo.") from erro
 
-        if self.certificado:
-            user_data = preparar_perfil_certificado(self.perfil)
-        else:
-            user_data = None
-        self.perfil.mkdir(parents=True, exist_ok=True)
+        try:
+            user_data = preparar_perfil_certificado(self.perfil) if self.certificado else None
+            self.perfil.mkdir(parents=True, exist_ok=True)
+        except OSError as erro:
+            raise PortalIndisponivel(
+                f"não consegui preparar a pasta do navegador em {self.perfil} "
+                f"({erro.strerror or erro}). Confira o espaço em disco e as permissões.") from erro
         try:
             self.pasta_downloads.mkdir(parents=True, exist_ok=True)
         except OSError:
@@ -440,19 +449,23 @@ class Navegador:
 
         if len(canais) > 1 and self.canal != canais[0]:
             log.info("  usando o %s.", self.nome_navegador)
-        self._contexto.set_default_timeout(self.espera_ms)
         try:
+            self._contexto.set_default_timeout(self.espera_ms)
             self._contexto.set_default_navigation_timeout(self.espera_ms)
-        except Exception:
-            pass
-        # caixas nativas (alert/confirm) travariam o lote esperando um clique,
-        # e podem nascer em qualquer aba - inclusive nas que o portal abre
-        self._contexto.on("page", self._preparar_aba)
-        for aba in list(self._contexto.pages):
-            self._preparar_aba(aba)
-        self._restaurar_sessao()
-        self._pagina = (self._contexto.pages[0] if self._contexto.pages
-                        else self._contexto.new_page())
+            # caixas nativas (alert/confirm) travariam o lote esperando um
+            # clique, e podem nascer em qualquer aba - inclusive nas que o
+            # portal abre sozinho
+            self._contexto.on("page", self._preparar_aba)
+            for aba in list(self._contexto.pages):
+                self._preparar_aba(aba)
+            self._restaurar_sessao()
+            self._pagina = (self._contexto.pages[0] if self._contexto.pages
+                            else self._contexto.new_page())
+        except Exception as erro:
+            self.fechar()
+            raise PortalIndisponivel(
+                f"o navegador abriu, mas não respondeu ({explicar_erro(str(erro))}). "
+                "Tente de novo; se persistir, reinicie o computador.") from erro
         return self
 
     def _lancar(self, canal: str | None, user_data: Path | None, falhas: list[str]) -> bool:
@@ -464,7 +477,8 @@ class Navegador:
         pasta.mkdir(parents=True, exist_ok=True)
         ignorar = ["--enable-automation"]
         if self.certificado:
-            # o Playwright desliga as extensões por padrão; o Web Signer é uma
+            # o Playwright desliga as extensões por padrão, e o Web Signer
+            # (que conversa com o token) é uma extensão
             ignorar.append("--disable-extensions")
         modos = ["normal"] if self.visivel else ["normal", "fora-da-tela"]
         for modo in modos:
@@ -473,6 +487,9 @@ class Navegador:
             if modo == "fora-da-tela":
                 headless = False
                 args.append(FORA_DA_TELA)
+            extra = {}
+            if canal is None and self.executavel is not None:
+                extra["executable_path"] = str(self.executavel)
             try:
                 self._contexto = self._pw.chromium.launch_persistent_context(
                     user_data_dir=str(pasta),
@@ -483,6 +500,7 @@ class Navegador:
                     args=args,
                     ignore_default_args=ignorar,
                     viewport={"width": 1366, "height": 900},
+                    **extra,
                 )
                 return True
             except Exception as erro:

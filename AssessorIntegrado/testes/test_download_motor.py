@@ -1,0 +1,557 @@
+"""O motor do download, com portal e navegador de mentira.
+
+Cobre o que o magistrado sente: a ordem da relação, os grupos por
+tribunal, o que já estava baixado, o sigiloso fora do acervo, o relatório
+que o Excel abre, a insistência no que falhou por instabilidade, o "Parar"
+que não perde nada e o login recusado que não derruba o resto.
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+import sys
+import types
+import unittest
+from unittest import mock
+
+from app.download import modelos, motor
+
+from testes import apoio_download as apoio
+
+TJAL1 = apoio.numero("0700001", tr="02")
+TJAL2 = apoio.numero("0700002", tr="02")
+TJAL3 = apoio.numero("0700003", tr="02")
+TJRS1 = apoio.numero("5000001", tr="21")      # eProc
+TJBA1 = apoio.numero("8000001", tr="05")      # sistema 'outro'
+TRT1 = apoio.numero("0100001", j="5", tr="01")  # fora do catálogo
+
+
+def ler_relatorio(caminho):
+    bruto = caminho.read_bytes()
+    assert bruto.startswith(b"\xef\xbb\xbf"), "relatório sem BOM: o Excel estraga os acentos"
+    texto = bruto.decode("utf-8-sig")
+    return list(csv.reader(io.StringIO(texto), delimiter=";"))
+
+
+class BaseMotor(apoio.PastaTemporaria):
+    def setUp(self):
+        super().setUp()
+        self.destino = self.tmp / "Acervo" / "Processos" / "Lote de teste"
+        self.ctx = apoio.ContextoGravador()
+        p = mock.patch.object(motor, "ESPERA_ENTRE_TENTATIVAS_S", 0.0)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def rodar(self, numeros, roteiro=None, falha_entrar=None, senhas=None, cofre=None,
+              **opcoes):
+        fp, fn = apoio.fabricas(roteiro, falha_entrar)
+        self.opcoes = apoio.opcoes_de_teste(self.tmp, **opcoes)
+        return motor.executar(numeros, self.destino, self.opcoes, self.ctx, senhas=senhas,
+                              cofre=cofre, fabrica_portal=fp, fabrica_navegador=fn)
+
+    def item(self, resumo, numero):
+        return next(r for r in resumo.itens if r.numero == numero.formatado)
+
+
+class TestOrdemEGrupos(BaseMotor):
+    def test_ordem_preservada_e_grupos_por_tribunal(self):
+        lista = [TJAL1, TJRS1, TJAL2, TJBA1, TJAL3]
+        resumo = self.rodar(lista)
+        self.assertEqual([r.numero for r in resumo.itens], [n.formatado for n in lista])
+        self.assertEqual([r.ordem for r in resumo.itens], [1, 2, 3, 4, 5])
+        # um portal (e um navegador) por tribunal, na ordem da 1ª aparição
+        portais = apoio.PortalFalso.todos
+        self.assertEqual([p.tribunal.sigla for p in portais], ["TJAL", "TJRS"])
+        self.assertEqual([c[0] for c in portais[0].chamadas],
+                         [TJAL1.formatado, TJAL2.formatado, TJAL3.formatado])
+        self.assertEqual(portais[1].chamadas[0][0], TJRS1.formatado)
+        self.assertTrue(all(n.fechado for n in apoio.NavegadorFalso.instancias))
+        self.assertEqual(len(resumo.baixados), 4)
+        for n in (TJAL1, TJAL2, TJAL3, TJRS1):
+            self.assertTrue((self.destino / f"{n.nome_arquivo}.pdf").exists())
+        # nada além dos PDFs na raiz do lote (o resto vai para _controle)
+        soltos = {p.name for p in self.destino.iterdir() if p.is_file()}
+        self.assertEqual(soltos, {f"{n.nome_arquivo}.pdf" for n in (TJAL1, TJAL2, TJAL3, TJRS1)})
+
+    def test_tribunal_nao_suportado_e_desconhecido(self):
+        resumo = self.rodar([TJBA1, TRT1, TJAL1])
+        ba, trt, al = resumo.itens
+        self.assertEqual(ba.situacao, modelos.NAO_SUPORTADO)
+        self.assertIn("TJBA", ba.detalhe)
+        self.assertIn("portal do tribunal", ba.detalhe)
+        self.assertEqual(trt.situacao, modelos.NAO_SUPORTADO)
+        self.assertIn("catálogo", trt.detalhe)
+        self.assertEqual(al.situacao, modelos.OK)
+        self.assertEqual([p.tribunal.sigla for p in apoio.PortalFalso.todos], ["TJAL"])
+        # não suportado não entra no "tentar de novo": repetir não muda nada
+        self.assertNotIn(TJBA1.formatado, resumo.a_refazer())
+
+    def test_so_nao_suportados_nao_abre_navegador(self):
+        resumo = self.rodar([TJBA1])
+        self.assertEqual(apoio.NavegadorFalso.instancias, [])
+        self.assertEqual(resumo.itens[0].situacao, modelos.NAO_SUPORTADO)
+
+    def test_repetido_na_relacao_baixa_uma_vez(self):
+        resumo = self.rodar([TJAL1, TJAL2, TJAL1])
+        self.assertEqual(len(resumo.itens), 2)
+        self.assertEqual(len(apoio.PortalFalso.todos[0].chamadas), 2)
+
+    def test_progresso_e_itens_chegam_ao_contexto(self):
+        self.rodar([TJAL1, TJAL2])
+        atuais = [p[2] for p in self.ctx.progressos]
+        self.assertIn(TJAL1.formatado, atuais)
+        self.assertIn(TJAL2.formatado, atuais)
+        self.assertEqual(self.ctx.progressos[-1][:2], (2, 2))
+        self.assertIn((TJAL2.formatado, modelos.OK), self.ctx.itens)
+
+
+class TestJaBaixados(BaseMotor):
+    def test_pula_o_que_ja_esta_na_pasta(self):
+        self.destino.mkdir(parents=True)
+        (self.destino / f"{TJAL1.nome_arquivo}.pdf").write_bytes(apoio.pdf_bytes(3))
+        resumo = self.rodar([TJAL1, TJAL2])
+        r1 = self.item(resumo, TJAL1)
+        self.assertEqual(r1.situacao, modelos.JA_BAIXADO)
+        self.assertEqual(r1.paginas, 3)
+        self.assertFalse(r1.sigiloso)
+        self.assertEqual([c[0] for c in apoio.PortalFalso.todos[0].chamadas], [TJAL2.formatado])
+
+    def test_pula_o_que_esta_na_pasta_de_sigilosos(self):
+        sig = self.tmp / "Sigilosos" / self.destino.name
+        sig.mkdir(parents=True)
+        (sig / f"{TJAL1.nome_arquivo}.pdf").write_bytes(apoio.pdf_bytes(1))
+        resumo = self.rodar([TJAL1])
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.JA_BAIXADO)
+        self.assertTrue(r.sigiloso)
+        self.assertEqual(apoio.PortalFalso.todos[0].chamadas, [])
+
+    def test_arquivo_vazio_ou_quebrado_nao_conta_como_baixado(self):
+        self.destino.mkdir(parents=True)
+        (self.destino / f"{TJAL1.nome_arquivo}.pdf").write_bytes(b"")
+        resumo = self.rodar([TJAL1])
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+
+    def test_rebaixar_quando_pedido(self):
+        self.destino.mkdir(parents=True)
+        (self.destino / f"{TJAL1.nome_arquivo}.pdf").write_bytes(apoio.pdf_bytes(3))
+        resumo = self.rodar([TJAL1], pular_baixados=False)
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+        self.assertEqual(resumo.itens[0].paginas, 2)
+
+
+class TestSigilosos(BaseMotor):
+    def test_sigiloso_sai_do_acervo_com_capa_e_gravacoes(self):
+        resumo = self.rodar([TJAL1, TJAL2], roteiro={TJAL1.formatado: ["ok_sigiloso"]})
+        r = self.item(resumo, TJAL1)
+        self.assertEqual(r.situacao, modelos.OK)
+        self.assertTrue(r.sigiloso)
+        nome = TJAL1.nome_arquivo
+        sig = self.tmp / "Sigilosos" / self.destino.name
+        self.assertTrue((sig / f"{nome}.pdf").exists())
+        self.assertTrue((sig / "_controle" / f"{nome}_capa.txt").exists())
+        self.assertTrue((sig / "_controle" / "midias" / nome / "audiencia.mp3").exists())
+        # nada do sigiloso fica no acervo compartilhado com a IA
+        self.assertFalse((self.destino / f"{nome}.pdf").exists())
+        self.assertFalse((self.destino / "_controle" / f"{nome}_capa.txt").exists())
+        self.assertFalse((self.destino / "_controle" / "midias" / nome).exists())
+        self.assertEqual(r.arquivo, str(sig / f"{nome}.pdf"))
+        self.assertTrue(r.midias[0].startswith(str(sig)))
+        self.assertIn("sigilosos", r.detalhe)
+        self.assertEqual(len(resumo.sigilosos), 1)
+        # o público continua no acervo
+        self.assertTrue((self.destino / f"{TJAL2.nome_arquivo}.pdf").exists())
+
+    def test_sem_separar_o_sigiloso_fica(self):
+        resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["ok_sigiloso"]},
+                            separar_sigilosos=False)
+        self.assertTrue((self.destino / f"{TJAL1.nome_arquivo}.pdf").exists())
+        self.assertTrue(resumo.itens[0].sigiloso)
+
+    def test_sigiloso_sem_senha_nao_e_repetido(self):
+        resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["sigiloso_sem_senha"]})
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.SIGILOSO_SEM_SENHA)
+        self.assertTrue(r.sigiloso)
+        self.assertEqual(len(apoio.PortalFalso.todos[0].chamadas), 1)
+        self.assertIn(TJAL1.formatado, resumo.a_refazer())
+
+    def test_senha_da_lista_chega_ao_portal(self):
+        dep = apoio.numero("0700001", tr="02", dependente="01")
+        senhas = {TJAL1.formatado: "abc123", "outro": "x"}
+        self.rodar([TJAL1, dep, TJAL2], senhas=senhas)
+        chamadas = dict(apoio.PortalFalso.todos[0].chamadas)
+        self.assertEqual(chamadas[TJAL1.formatado], "abc123")
+        # o incidente herda a senha do principal (o ofício costuma valer para todos)
+        self.assertEqual(chamadas[dep.formatado], "abc123")
+        self.assertIsNone(chamadas[TJAL2.formatado])
+
+
+class TestSenhaDe(unittest.TestCase):
+    def test_grafias_do_dependente(self):
+        dep = apoio.numero("0700001", tr="02", dependente="01")
+        principal = dep.principal
+        self.assertEqual(motor.senha_de(dep, {f"{principal}/0001": "s1"}), "s1")
+        self.assertEqual(motor.senha_de(dep, {f"{principal}/01": "s2"}), "s2")
+        self.assertEqual(motor.senha_de(dep, {principal: "s3"}), "s3")
+        # a senha específica do incidente vence a do principal
+        self.assertEqual(motor.senha_de(dep, {principal: "geral", f"{principal}/1": "propria"}),
+                         "propria")
+
+    def test_principal_nao_herda_senha_de_incidente(self):
+        self.assertIsNone(motor.senha_de(TJAL1, {f"{TJAL1.principal}/01": "s"}))
+        self.assertIsNone(motor.senha_de(TJAL1, None))
+
+    def test_grafia_sem_pontuacao(self):
+        self.assertEqual(motor.senha_de(TJAL1, {TJAL1.digitos: "s"}), "s")
+
+
+class TestRelatorio(BaseMotor):
+    def test_csv_utf8_com_bom_e_ponto_e_virgula(self):
+        resumo = self.rodar([TJAL1, TJBA1, TJAL2],
+                            roteiro={TJAL2.formatado: ["ok_sigiloso"]})
+        self.assertEqual(resumo.relatorio, self.destino / "_controle" / "relatorio.csv")
+        linhas = ler_relatorio(resumo.relatorio)
+        self.assertEqual(linhas[0], ["ordem", "processo", "tribunal", "sistema", "situacao",
+                                     "paginas", "documentos", "arquivo", "sigiloso",
+                                     "incompleto", "detalhe", "data_hora"])
+        self.assertEqual([l[1] for l in linhas[1:]],
+                         [TJAL1.formatado, TJBA1.formatado, TJAL2.formatado])
+        self.assertEqual([l[4] for l in linhas[1:]], ["OK", "NAO_SUPORTADO", "OK"])
+        self.assertEqual(linhas[1][7], f"{TJAL1.nome_arquivo}.pdf")
+        self.assertEqual(linhas[1][8], "não")
+        self.assertEqual(linhas[3][8], "sim")
+        self.assertIn("pasta de sigilosos", linhas[3][7])
+        self.assertRegex(linhas[1][11], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+        # gravação atômica: nada de .tmp esquecido
+        self.assertEqual([p.name for p in (self.destino / "_controle").glob("*.tmp")], [])
+
+    def test_relatorio_regravado_a_cada_item(self):
+        visto = []
+        original = motor._Lote.salvar_relatorio
+
+        def espiao(lote):
+            original(lote)
+            visto.append(len([l for l in ler_relatorio(lote.relatorio)[1:] if l[4] == "OK"]))
+
+        with mock.patch.object(motor._Lote, "salvar_relatorio", espiao):
+            self.rodar([TJAL1, TJAL2, TJAL3])
+        self.assertIn(1, visto)
+        self.assertIn(2, visto)
+        self.assertEqual(visto[-1], 3)
+
+    def test_relatorio_aberto_no_excel_nao_derruba_o_lote(self):
+        real = motor.os.replace
+
+        def replace(origem, destino):
+            if str(destino).endswith("relatorio.csv"):
+                raise PermissionError("arquivo aberto em outro programa")
+            return real(origem, destino)
+
+        with mock.patch.object(motor.os, "replace", replace):
+            resumo = self.rodar([TJAL1])
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+        self.assertEqual(resumo.relatorio.name, "relatorio (atualizado).csv")
+        self.assertEqual(ler_relatorio(resumo.relatorio)[1][4], "OK")
+
+
+class TestRetentativas(BaseMotor):
+    def test_falha_passageira_e_repetida(self):
+        resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["erro", "ok"]}, tentativas=2)
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+        self.assertEqual(len(apoio.PortalFalso.todos[0].chamadas), 2)
+
+    def test_esgotadas_as_tentativas_vira_erro_com_motivo(self):
+        resumo = self.rodar([TJAL1, TJAL2], roteiro={TJAL1.formatado: ["erro", "erro"]},
+                            tentativas=2)
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.ERRO)
+        self.assertIn("demorou demais", r.detalhe)
+        self.assertEqual(resumo.itens[1].situacao, modelos.OK, "um erro não para o lote")
+        self.assertEqual(resumo.falhas, [r])
+        self.assertIn(TJAL1.formatado, resumo.a_refazer())
+
+    def test_pdf_aberto_no_leitor_explica_e_nao_insiste(self):
+        resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["pdf_aberto", "ok"]},
+                            tentativas=3)
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.ERRO)
+        self.assertIn("aberto em outro programa", r.detalhe)
+        self.assertEqual(len(apoio.PortalFalso.todos[0].chamadas), 1)
+
+    def test_nao_encontrado_nao_e_repetido(self):
+        resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["nao_encontrado"]},
+                            tentativas=3)
+        self.assertEqual(resumo.itens[0].situacao, modelos.NAO_ENCONTRADO)
+        self.assertEqual(len(apoio.PortalFalso.todos[0].chamadas), 1)
+
+    def test_sem_acesso_devolvido_pelo_portal(self):
+        resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["sem_acesso"]})
+        self.assertEqual(resumo.itens[0].situacao, modelos.SEM_ACESSO)
+
+    def test_sessao_perdida_entra_de_novo_e_repete(self):
+        resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["sessao", "ok"]}, tentativas=1)
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+        self.assertEqual(apoio.PortalFalso.todos[0].entradas, 2)
+
+    def test_sessao_que_nunca_volta_tem_limite(self):
+        resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["sessao"] * 10})
+        self.assertEqual(resumo.itens[0].situacao, modelos.ERRO)
+        self.assertEqual(apoio.PortalFalso.todos[0].entradas, 1 + motor.MAX_RELOGINS)
+
+    def test_portal_fora_do_ar_desiste_do_grupo(self):
+        lista = [apoio.numero(f"07000{i:02d}", tr="02") for i in range(6)]
+        roteiro = {n.formatado: ["indisponivel"] * 5 for n in lista}
+        resumo = self.rodar(lista + [TJRS1], roteiro=roteiro, tentativas=1)
+        chamadas = apoio.PortalFalso.todos[0].chamadas
+        self.assertEqual(len(chamadas), motor.MAX_INDISPONIVEL_SEGUIDOS)
+        self.assertTrue(all(r.situacao == modelos.ERRO for r in resumo.itens[:6]))
+        self.assertIn("parou de responder", resumo.itens[5].detalhe)
+        self.assertEqual(resumo.itens[6].situacao, modelos.OK, "o outro tribunal segue")
+
+
+class TestCancelamento(BaseMotor):
+    def test_parar_nao_perde_o_item_interrompido(self):
+        resumo = self.rodar([TJAL1, TJAL2, TJAL3],
+                            roteiro={TJAL2.formatado: ["cancelar"]})
+        r1, r2, r3 = resumo.itens
+        self.assertEqual(r1.situacao, modelos.OK)
+        self.assertEqual(r2.situacao, modelos.CANCELADO)
+        self.assertIn("próxima vez", r2.detalhe)
+        self.assertEqual(r3.situacao, modelos.CANCELADO)
+        self.assertEqual([r.numero for r in resumo.pendentes], [TJAL2.formatado, TJAL3.formatado])
+        self.assertEqual(resumo.a_refazer(), [TJAL2.formatado, TJAL3.formatado])
+        self.assertEqual(resumo.numeros_a_refazer(), [TJAL2, TJAL3])
+        self.assertTrue(resumo.cancelado)
+        self.assertEqual([l[4] for l in ler_relatorio(resumo.relatorio)[1:]],
+                         ["OK", "CANCELADO", "CANCELADO"])
+        self.assertTrue(apoio.NavegadorFalso.instancias[0].fechado)
+        self.assertFalse((self.destino / f"{TJAL2.nome_arquivo}.pdf").exists())
+
+    def test_parar_logo_depois_de_um_sigiloso_ainda_o_protege(self):
+        resumo = self.rodar([TJAL1, TJAL2], roteiro={TJAL1.formatado: ["ok_sigiloso_e_parar"]})
+        r1, r2 = resumo.itens
+        self.assertEqual(r1.situacao, modelos.OK)
+        sig = self.tmp / "Sigilosos" / self.destino.name
+        self.assertTrue((sig / f"{TJAL1.nome_arquivo}.pdf").exists())
+        self.assertFalse((self.destino / f"{TJAL1.nome_arquivo}.pdf").exists())
+        self.assertEqual(r2.situacao, modelos.CANCELADO)
+
+    def test_cancelado_antes_de_comecar_outro_grupo(self):
+        resumo = self.rodar([TJAL1, TJRS1], roteiro={TJAL1.formatado: ["cancelar"]})
+        self.assertEqual(len(apoio.PortalFalso.todos), 1, "o grupo do TJRS nem abre")
+        self.assertEqual(resumo.itens[1].situacao, modelos.CANCELADO)
+
+    def test_ctrl_c_no_terminal_para_sem_perder(self):
+        resumo = self.rodar([TJAL1, TJAL2], roteiro={TJAL2.formatado: ["teclado"]})
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+        self.assertEqual(resumo.itens[1].situacao, modelos.CANCELADO)
+        self.assertTrue(resumo.relatorio.exists())
+
+    def test_parcial_esquecido_e_limpo(self):
+        self.destino.mkdir(parents=True)
+        parcial = self.destino / f"{TJAL1.nome_arquivo}.pdf.parcial"
+        parcial.write_bytes(b"%PDF-1.4 meio")
+        self.rodar([TJAL1], roteiro={TJAL1.formatado: ["cancelar"]})
+        self.assertFalse(parcial.exists())
+
+
+class TestLogin(BaseMotor):
+    def test_login_recusado_marca_o_grupo_e_segue_os_outros(self):
+        falha = {"TJAL": [modelos.LoginFalhou("o e-SAJ recusou o usuário ou a senha")]}
+        resumo = self.rodar([TJAL1, TJRS1, TJAL2], falha_entrar=falha)
+        al1, rs, al2 = resumo.itens
+        for r in (al1, al2):
+            self.assertEqual(r.situacao, modelos.ERRO)
+            self.assertTrue(r.detalhe.startswith("login falhou:"), r.detalhe)
+            self.assertIn("recusou", r.detalhe)
+        self.assertEqual(rs.situacao, modelos.OK)
+        self.assertEqual(apoio.PortalFalso.todos[0].chamadas, [])
+        self.assertTrue(self.ctx.avisos, "o usuário é avisado do login recusado")
+
+    def test_login_que_cai_no_meio_do_grupo(self):
+        falha = {"TJAL": [None, modelos.LoginFalhou("a senha expirou")]}
+        resumo = self.rodar([TJAL1, TJAL2, TJAL3], falha_entrar=falha,
+                            roteiro={TJAL2.formatado: ["sessao"]})
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+        for r in resumo.itens[1:]:
+            self.assertEqual(r.situacao, modelos.ERRO)
+            self.assertIn("login falhou: a senha expirou", r.detalhe)
+
+    def test_login_falhou_levantado_pelo_baixar(self):
+        resumo = self.rodar([TJAL1, TJAL2], roteiro={TJAL1.formatado: ["login"]})
+        self.assertTrue(all(r.situacao == modelos.ERRO for r in resumo.itens))
+
+    def test_portal_indisponivel_ao_entrar(self):
+        falha = {"TJAL": [modelos.PortalIndisponivel("sem internet")]}
+        resumo = self.rodar([TJAL1], falha_entrar=falha)
+        self.assertEqual(resumo.itens[0].situacao, modelos.ERRO)
+        self.assertIn("portal indisponível: sem internet", resumo.itens[0].detalhe)
+
+    def test_credenciais_do_cofre_chegam_ao_portal(self):
+        cofre = apoio.CofreFalso({"esaj:TJAL": ("12345678900", "s3nh@%;")})
+        self.rodar([TJAL1, TJRS1], cofre=cofre)
+        al, rs = apoio.PortalFalso.todos
+        self.assertEqual(al.credenciais, ("12345678900", "s3nh@%;"))
+        self.assertIsNone(rs.credenciais, "sem senha guardada para o eProc")
+        self.assertIn("esaj:TJAL", cofre.pedidos)
+
+    def test_login_manual_nao_consulta_o_cofre(self):
+        cofre = apoio.CofreFalso({"esaj:TJAL": ("u", "s")})
+        self.rodar([TJAL1], cofre=cofre, login={"esaj": "manual", "eproc": "senha"})
+        self.assertIsNone(apoio.PortalFalso.todos[0].credenciais)
+        self.assertEqual(cofre.pedidos, [])
+
+
+class TestFabricas(unittest.TestCase):
+    def test_portal_esaj(self):
+        from app.download.esaj import PortalESAJ
+        from app.nucleo import tribunais
+        t = tribunais.por_sigla("TJAL")
+        p = motor.fabrica_portal_padrao(apoio.NavegadorFalso(), t, modelos.OpcoesDownload(),
+                                        apoio.ContextoGravador(), ("u", "s"))
+        self.assertIsInstance(p, PortalESAJ)
+        self.assertEqual(p.base, "https://www2.tjal.jus.br")
+
+    def test_eproc_ausente_explica(self):
+        from app.nucleo import tribunais
+        t = tribunais.por_sigla("TJRS")
+        with mock.patch.dict(sys.modules, {"app.download.eproc": None}):
+            with self.assertRaises(modelos.PortalIndisponivel) as caso:
+                motor.fabrica_portal_padrao(apoio.NavegadorFalso(), t, modelos.OpcoesDownload(),
+                                            apoio.ContextoGravador(), None)
+        self.assertIn("eProc", str(caso.exception))
+
+    def test_eproc_presente_e_usado(self):
+        from app.nucleo import tribunais
+        falso = types.ModuleType("app.download.eproc")
+
+        class PortalEProc:
+            def __init__(self, *args):
+                self.args = args
+        falso.PortalEProc = PortalEProc
+        t = tribunais.por_sigla("TJRS")
+        with mock.patch.dict(sys.modules, {"app.download.eproc": falso}):
+            p = motor.fabrica_portal_padrao("nav", t, "op", "ctx", ("u", "s"))
+        self.assertIsInstance(p, PortalEProc)
+        self.assertEqual(p.args, ("nav", t, "op", "ctx", ("u", "s")))
+
+    def test_sistema_outro(self):
+        from app.nucleo import tribunais
+        with self.assertRaises(modelos.PortalIndisponivel):
+            motor.fabrica_portal_padrao(None, tribunais.por_sigla("TJBA"),
+                                        modelos.OpcoesDownload(), None, None)
+
+    def test_navegador_padrao_segue_as_opcoes(self):
+        from app.download.navegador import Navegador
+        from app.nucleo import caminhos, tribunais
+        t = tribunais.por_sigla("TJAL")
+        op = modelos.OpcoesDownload(login={"esaj": "certificado"}, navegador="msedge", espera_s=30)
+        nav = motor.fabrica_navegador_padrao(t, op)
+        self.assertIsInstance(nav, Navegador)
+        self.assertEqual(nav.perfil_base, caminhos.PERFIS / "esaj-TJAL")
+        self.assertTrue(nav.certificado)
+        self.assertTrue(nav.visivel, "certificado exige a janela visível (PIN do token)")
+        self.assertEqual(nav.preferencia, "msedge")
+        self.assertEqual(nav.espera_s, 30)
+        op2 = modelos.OpcoesDownload()
+        self.assertFalse(motor.fabrica_navegador_padrao(t, op2).visivel)
+
+
+class TestPreparoParaIA(BaseMotor):
+    def test_preparo_chamado_ao_fim_e_nunca_derruba(self):
+        chamadas = []
+        falso = types.ModuleType("app.compartilhar.preparo")
+
+        def atualizar_contexto(cfg, *a, **k):
+            chamadas.append(cfg)
+            raise RuntimeError("disco cheio")
+        falso.atualizar_contexto = atualizar_contexto
+        fp, fn = apoio.fabricas()
+        opcoes = apoio.opcoes_de_teste(self.tmp, atualizar_ia=True)
+        cfg = object()
+        with mock.patch.dict(sys.modules, {"app.compartilhar.preparo": falso}):
+            import app.compartilhar as pacote
+            with mock.patch.object(pacote, "preparo", falso, create=True):
+                resumo = motor.executar([TJAL1], self.destino, opcoes, self.ctx,
+                                        fabrica_portal=fp, fabrica_navegador=fn, cfg=cfg)
+        self.assertEqual(chamadas, [cfg])
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+
+    def test_sem_baixados_nao_prepara(self):
+        chamadas = []
+        falso = types.ModuleType("app.compartilhar.preparo")
+        falso.atualizar_contexto = lambda cfg, *a, **k: chamadas.append(cfg)
+        fp, fn = apoio.fabricas()
+        opcoes = apoio.opcoes_de_teste(self.tmp, atualizar_ia=True)
+        with mock.patch.dict(sys.modules, {"app.compartilhar.preparo": falso}):
+            motor.executar([TJBA1], self.destino, opcoes, self.ctx,
+                           fabrica_portal=fp, fabrica_navegador=fn, cfg=object())
+        self.assertEqual(chamadas, [])
+
+
+class TestOpcoes(apoio.PastaTemporaria):
+    def test_de_config(self):
+        from app.nucleo import config
+        cfg = config.Config(self.tmp / "config.ini")
+        op = modelos.OpcoesDownload.de_config(cfg)
+        self.assertTrue(op.pular_baixados)
+        self.assertTrue(op.separar_sigilosos)
+        self.assertEqual(op.navegador, "auto")
+        self.assertEqual(op.tentativas, 2)
+        self.assertEqual(op.login, {"esaj": "senha", "eproc": "senha"})
+        self.assertTrue(op.pasta_sigilosos.is_absolute())
+        cfg.definir("esaj", "login", "Certificado")
+        cfg.definir("eproc", "login", "qualquer coisa")
+        cfg.definir("download", "tentativas", "0")
+        cfg.definir("download", "pausa_entre_processos", "1,5")
+        cfg.definir("download", "navegador", "MSEdge")
+        op = modelos.OpcoesDownload.de_config(cfg)
+        self.assertEqual(op.modo_login("esaj"), "certificado")
+        self.assertEqual(op.modo_login("eproc"), "senha")
+        self.assertEqual(op.tentativas, 1)
+        self.assertEqual(op.pausa, 1.5)
+        self.assertEqual(op.navegador, "msedge")
+        self.assertTrue(op.navegador_visivel("esaj"))
+        self.assertFalse(op.navegador_visivel("eproc"))
+
+    def test_caminho_de_navegador(self):
+        from app.nucleo import config
+        exe = self.tmp / "chrome.exe"
+        exe.write_bytes(b"MZ")
+        cfg = config.Config(self.tmp / "config.ini")
+        cfg.definir("download", "navegador", str(exe))
+        op = modelos.OpcoesDownload.de_config(cfg)
+        self.assertEqual(op.navegador, str(exe))
+        from app.nucleo import tribunais
+        nav = motor.fabrica_navegador_padrao(tribunais.por_sigla("TJAL"), op)
+        self.assertEqual(nav.executavel, exe)
+        cfg.definir("download", "navegador", str(self.tmp / "nao-existe.exe"))
+        self.assertEqual(modelos.OpcoesDownload.de_config(cfg).navegador, "auto")
+
+
+class TestResumo(unittest.TestCase):
+    def test_texto_e_listas(self):
+        R = modelos.ResultadoProcesso
+        itens = [R(1, "a", "TJAL", "esaj", modelos.OK),
+                 R(2, "b", "TJAL", "esaj", modelos.OK, sigiloso=True),
+                 R(3, "c", "TJAL", "esaj", modelos.JA_BAIXADO),
+                 R(4, "d", "TJAL", "esaj", modelos.ERRO),
+                 R(5, "e", "TJAL", "esaj", modelos.CANCELADO)]
+        resumo = modelos.ResumoLote(itens, destino=None, relatorio=None)
+        self.assertEqual(len(resumo.baixados), 2)
+        self.assertEqual(len(resumo.pulados), 1)
+        self.assertEqual(len(resumo.falhas), 1)
+        self.assertEqual(len(resumo.sigilosos), 1)
+        self.assertEqual([r.numero for r in resumo.pendentes], ["e"])
+        self.assertEqual(resumo.a_refazer(), ["d", "e"])
+        texto = resumo.texto()
+        self.assertIn("2 baixados", texto)
+        self.assertIn("1 já estava na pasta", texto)
+        self.assertIn("1 com problema", texto)
+        self.assertIn("1 em segredo de justiça", texto)
+
+
+if __name__ == "__main__":
+    unittest.main()

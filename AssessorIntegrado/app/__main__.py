@@ -6,6 +6,7 @@
     python -m app transcrever ARQUIVO     transcreve uma gravação
     python -m app modelos baixar small    baixa um modelo de transcrição
     python -m app falantes instalar       instala a separação automática de falantes
+    python -m app microfones              lista os microfones
     python -m app verificar [--completo]  confere a instalação
     python -m app mcp --pasta ACERVO      servidor MCP do acervo (para o Claude/ChatGPT)
     python -m app preparar                prepara o acervo para a IA (textos e índice)
@@ -47,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         from .download import cli
 
         return cli.main(resto)
-    if comando in ("transcrever", "modelos", "falantes"):
+    if comando in ("transcrever", "modelos", "falantes", "microfones"):
         from .transcricao import cli
 
         return cli.main([comando] + resto)
