@@ -126,6 +126,17 @@ def _em_uso(diario: Path) -> bool:
     return False
 
 
+def sessao_aberta(diario: Path) -> bool:
+    """A audiência deste diário está sendo gravada agora, nesta janela do
+    programa ou em outra? Quem mexe nos arquivos dela (o download, ao levar
+    para a pasta de sigilosos a transcrição de um processo sigiloso) tem de
+    esperar que ela termine."""
+    with _trava_ativos:
+        if _chave(diario) in _ativos:
+            return True
+    return _em_uso(diario)
+
+
 def _chave(p: Path) -> str:
     try:
         return str(Path(p).resolve()).lower()

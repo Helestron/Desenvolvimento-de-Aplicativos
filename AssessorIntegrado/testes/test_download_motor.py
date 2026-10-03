@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest import mock
 
 from app.download import modelos, motor
+from app.nucleo import config
 
 from testes import apoio_download as apoio
 
@@ -53,6 +54,14 @@ class BaseMotor(apoio.PastaTemporaria):
         self.destino = self.tmp / "Acervo" / "Processos" / "Lote de teste"
         self.ctx = apoio.ContextoGravador()
         p = mock.patch.object(motor, "ESPERA_ENTRE_TENTATIVAS_S", 0.0)
+        p.start()
+        self.addCleanup(p.stop)
+        # Sem cfg, o motor lê o config.ini; nos testes, o do temporário - nunca
+        # o acervo de verdade de quem roda os testes.
+        self.cfg = config.Config(self.tmp / "config.ini")
+        self.cfg.definir("geral", "pasta_acervo", str(self.tmp / "Acervo"))
+        self.cfg.definir("geral", "pasta_sigilosos", str(self.tmp / "Sigilosos"))
+        p = mock.patch.object(config, "carregar", lambda *a, **k: self.cfg)
         p.start()
         self.addCleanup(p.stop)
 
@@ -372,6 +381,143 @@ class TestSigiloForaDoAcervo(BaseMotor):
                                 fabrica_portal=fp, fabrica_navegador=fn)
         self.assertEqual(resumo.itens[0].situacao, modelos.ERRO)
         self.assertTrue(resumo.itens[0].sigiloso)
+
+
+class TestTranscricoesDoSigiloso(BaseMotor):
+    """Processo sigiloso: as transcrições de audiência já feitas também saem
+    do acervo (<acervo>/Transcricoes -> <sigilosos>/Transcricoes)."""
+
+    def setUp(self):
+        super().setUp()
+        self.nome = TJAL1.nome_arquivo
+        self.inc = apoio.numero("0700001", tr="02", dependente="01")
+        self.trans = self.tmp / "Acervo" / "Transcricoes"
+        self.audio = self.trans / "_audio"
+        self.sig = self.tmp / "Sigilosos" / "Transcricoes"
+        self.audio.mkdir(parents=True)
+        self.sessao = f"{self.nome} 2026-09-16 14h00"
+
+    def escrever(self, pasta, nome, texto=None):
+        caminho = pasta / nome
+        caminho.parent.mkdir(parents=True, exist_ok=True)
+        caminho.write_text(texto if texto is not None else nome, encoding="utf-8")
+        return caminho
+
+    def conteudos(self, pasta):
+        return sorted(p.read_text(encoding="utf-8") for p in pasta.iterdir() if p.is_file())
+
+    def test_transcricoes_vao_junto_sem_sobrescrever_e_sem_o_incidente(self):
+        n, inc, sessao = self.nome, self.inc.nome_arquivo, self.sessao
+        for nome in (f"{n}.docx", f"{n} (2).docx", f"{inc}.docx", f"{inc} (2).docx",
+                     f"{TJAL2.nome_arquivo}.docx"):
+            self.escrever(self.trans, nome)
+        for nome in (f"{sessao}.flac", f"{sessao}.jsonl", f"{sessao}.trava",
+                     f"{sessao} - revisão.docx", f"{inc} 2026-09-16 15h00.flac",
+                     f"{inc} 2026-09-16 15h00.jsonl"):
+            self.escrever(self.audio, nome)
+        # o que já está na pasta de sigilosos não pode ser sobrescrito
+        self.escrever(self.sig, f"{n}.docx", "antigo")
+        self.escrever(self.sig / "_audio", f"{sessao}.jsonl", "diário antigo")
+
+        resumo = self.rodar([TJAL1, TJAL2], roteiro={TJAL1.formatado: ["ok_sigiloso"]})
+        r = self.item(resumo, TJAL1)
+        self.assertEqual(r.situacao, modelos.OK, r.detalhe)
+        # no acervo, só o que é do incidente e do outro processo
+        self.assertEqual(sorted(p.name for p in self.trans.iterdir() if p.is_file()),
+                         sorted([f"{inc}.docx", f"{inc} (2).docx", f"{TJAL2.nome_arquivo}.docx"]))
+        self.assertEqual(sorted(p.name for p in self.audio.iterdir()),
+                         sorted([f"{inc} 2026-09-16 15h00.flac", f"{inc} 2026-09-16 15h00.jsonl"]))
+        # na pasta de sigilosos: tudo, sem perder o que já estava lá
+        self.assertEqual(self.conteudos(self.sig), sorted(["antigo", f"{n}.docx", f"{n} (2).docx"]))
+        self.assertEqual((self.sig / f"{n}.docx").read_text(encoding="utf-8"), "antigo")
+        # a gravação, o diário e a trava continuam com o mesmo nome entre si
+        audio_sig = self.sig / "_audio"
+        self.assertEqual((audio_sig / f"{sessao}.jsonl").read_text(encoding="utf-8"),
+                         "diário antigo")
+        for final in (".flac", ".jsonl", ".trava"):
+            self.assertEqual((audio_sig / f"{sessao} (2){final}").read_text(encoding="utf-8"),
+                             f"{sessao}{final}")
+        self.assertTrue((audio_sig / f"{sessao} - revisão.docx").exists())
+        self.assertIn("6 arquivos de transcrição de audiência levados para a pasta de sigilosos",
+                      r.detalhe)
+        self.assertEqual(resumo.sigilosos_no_acervo, [])
+        # o público não mexe nas transcrições
+        self.assertTrue((self.trans / f"{TJAL2.nome_arquivo}.docx").exists())
+
+    def test_incidente_sigiloso_nao_leva_as_do_principal(self):
+        n, inc = self.nome, self.inc.nome_arquivo
+        self.escrever(self.trans, f"{n}.docx")
+        self.escrever(self.trans, f"{inc}.docx")
+        self.escrever(self.audio, f"{n} 2026-09-16 14h00.flac")
+        self.escrever(self.audio, f"{inc} 2026-09-16 15h00.flac")
+        resumo = self.rodar([self.inc], roteiro={self.inc.formatado: ["ok_sigiloso"]})
+        r = resumo.itens[0]
+        self.assertEqual(sorted(p.name for p in self.trans.iterdir() if p.is_file()), [f"{n}.docx"])
+        self.assertEqual([p.name for p in self.audio.iterdir()], [f"{n} 2026-09-16 14h00.flac"])
+        self.assertTrue((self.sig / f"{inc}.docx").exists())
+        self.assertTrue((self.sig / "_audio" / f"{inc} 2026-09-16 15h00.flac").exists())
+        self.assertIn("2 arquivos de transcrição de audiência levados", r.detalhe)
+
+    def test_ao_retirar_copia_antiga_do_acervo_com_cfg_da_tela(self):
+        # já baixado na pasta de sigilosos: a rodada seguinte leva a transcrição
+        lote_sig = self.tmp / "Sigilosos" / self.destino.name
+        lote_sig.mkdir(parents=True)
+        (lote_sig / f"{self.nome}.pdf").write_bytes(apoio.pdf_bytes(2))
+        self.escrever(self.trans, f"{self.nome}.docx")
+        fp, fn = apoio.fabricas()
+        opcoes = apoio.opcoes_de_teste(self.tmp)
+        with mock.patch.object(config, "carregar", side_effect=AssertionError("cfg foi dado")):
+            resumo = motor.executar([TJAL1], self.destino, opcoes, self.ctx,
+                                    fabrica_portal=fp, fabrica_navegador=fn, cfg=self.cfg)
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.JA_BAIXADO, r.detalhe)
+        self.assertFalse((self.trans / f"{self.nome}.docx").exists())
+        self.assertTrue((self.sig / f"{self.nome}.docx").exists())
+        self.assertIn("1 arquivo de transcrição de audiência levado para a pasta de sigilosos",
+                      r.detalhe)
+
+    def test_audiencia_sendo_gravada_fica_e_e_avisada(self):
+        from app.transcricao import ao_vivo
+        sessao = self.sessao
+        self.escrever(self.trans, f"{self.nome}.docx")
+        flac = self.escrever(self.audio, f"{sessao}.flac")
+        diario = self.escrever(self.audio, f"{sessao}.jsonl")
+        trava = ao_vivo._travar(diario.with_suffix(ao_vivo.SUFIXO_TRAVA))   # "outra janela"
+        try:
+            resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["ok_sigiloso"]})
+        finally:
+            ao_vivo._soltar(trava)
+        r = resumo.itens[0]
+        self.assertTrue(flac.exists() and diario.exists(), "a gravação em curso não sai do lugar")
+        self.assertTrue((self.trans / f"{self.nome}.docx").exists())
+        self.assertFalse(self.sig.exists())
+        self.assertEqual(r.situacao, modelos.ERRO)
+        self.assertIn("audiência sendo gravada", r.detalhe)
+        self.assertIn(str(flac), resumo.sigilosos_no_acervo)
+
+    def test_transcricao_aberta_no_word_e_falha_e_avisada(self):
+        self.escrever(self.trans, f"{self.nome}.docx")
+        self.escrever(self.audio, f"{self.sessao}.flac")
+        original = motor._mover
+
+        def falha(origem, destino, *a):
+            if Path(origem).suffix == ".docx":
+                raise PermissionError(13, "Acesso negado")
+            return original(origem, destino, *a)
+        with mock.patch.object(motor, "_mover", falha):
+            resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["ok_sigiloso"]})
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.ERRO)
+        self.assertIn("arquivo de transcrição no acervo que não pôde ser levado", r.detalhe)
+        self.assertIn(f"{self.nome}.docx", r.detalhe)
+        self.assertIn("1 arquivo de transcrição de audiência levado", r.detalhe)
+        self.assertEqual(resumo.sigilosos_no_acervo, [str(self.trans / f"{self.nome}.docx")])
+        self.assertTrue(any("sigiloso" in t.lower() for t, _ in self.ctx.avisos))
+
+    def test_sem_separar_sigilosos_nada_se_move(self):
+        self.escrever(self.trans, f"{self.nome}.docx")
+        self.rodar([TJAL1], roteiro={TJAL1.formatado: ["ok_sigiloso"]}, separar_sigilosos=False)
+        self.assertTrue((self.trans / f"{self.nome}.docx").exists())
 
 
 class TestMover(apoio.PastaTemporaria):

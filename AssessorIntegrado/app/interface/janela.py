@@ -302,6 +302,15 @@ class Janela:
         pagina = self.paginas.get("transcrever")
         return getattr(pagina, "situacao", "") in ("iniciando", "gravando", "pausada")
 
+    def sigilosos_no_acervo(self) -> list[Path]:
+        """Os PDFs sigilosos que um lote não conseguiu tirar do acervo e que
+        ainda estão lá. Com eles, nada de espelho na nuvem (de nenhuma página)."""
+        baixar = self.paginas.get("baixar")
+        try:
+            return list(baixar.sigilosos_no_acervo()) if baixar is not None else []
+        except Exception:
+            return []
+
     def postar(self, pagina: str, tipo: str, dado=None) -> None:
         """Seguro em qualquer thread."""
         self.fila.put(("evento", (pagina, tipo, dado)))
@@ -628,17 +637,99 @@ def limpar_relacoes_baixadas(agora: float | None = None) -> int:
     return apagados
 
 
+# ============================================================ instância única
+MUTEX_JANELA = "Local\\AssessorIntegrado.Janela"
+ERRO_JA_EXISTE = 183           # ERROR_ALREADY_EXISTS
+SW_RESTORE = 9
+CLASSE_JANELA_TK = "TkTopLevel"   # a moldura de toda janela de primeiro nível do Tk
+_mutex = None                  # o handle vive enquanto o programa estiver aberto
+
+
+def _api_windows():
+    """(kernel32, user32, ultimo_erro) pelo ctypes, com os tipos certos em
+    64 bits. Separado para os testes porem dublês no lugar."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    user32.FindWindowW.restype = wintypes.HWND
+    user32.FindWindowW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR)
+    user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+    user32.IsIconic.argtypes = (wintypes.HWND,)
+    user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+    return kernel32, user32, ctypes.get_last_error
+
+
+def instancia_unica(titulo: str = NOME, api=None) -> bool:
+    """True: esta é a única janela do programa (pode abrir). False: já havia
+    uma aberta - ela foi trazida à frente, e esta não deve abrir outra.
+
+    Duas janelas brigariam pelo microfone e pelos perfis do navegador (o
+    Chrome não abre o mesmo perfil duas vezes). Um mutex nomeado na sessão
+    do Windows marca a janela aberta; o sistema o solta quando o processo
+    termina, mesmo numa queda. Fora do Windows, não faz nada. Na dúvida
+    (ctypes falhou), abre: melhor duas janelas que nenhuma.
+    """
+    global _mutex
+    if api is None:
+        if not sistema.NO_WINDOWS:
+            return True
+        try:
+            api = _api_windows()
+        except Exception as erro:
+            log.warning("não consegui conferir se o programa já está aberto: %s", erro)
+            return True
+    kernel32, user32, ultimo_erro = api
+    try:
+        handle = kernel32.CreateMutexW(None, False, MUTEX_JANELA)
+        erro = ultimo_erro()
+    except Exception as e:
+        log.warning("não consegui conferir se o programa já está aberto: %s", e)
+        return True
+    if not handle:
+        log.warning("não consegui criar o marcador de janela aberta (erro %s)", erro)
+        return True
+    if erro != ERRO_JA_EXISTE:
+        _mutex = handle
+        return True
+    try:
+        kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+    log.info("O programa já está aberto: trago a janela à frente em vez de abrir outra.")
+    try:
+        hwnd = user32.FindWindowW(CLASSE_JANELA_TK, titulo) or user32.FindWindowW(None, titulo)
+        if hwnd:
+            # Minimizada, volta ao tamanho de antes; maximizada, continua
+            # maximizada (SW_RESTORE numa janela maximizada a encolheria).
+            if user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, SW_RESTORE)
+            user32.SetForegroundWindow(hwnd)
+        else:
+            log.info("a janela já aberta ainda não apareceu (está abrindo)")
+    except Exception as e:
+        log.warning("não consegui trazer a janela aberta à frente: %s", e)
+    return False
+
+
 def executar(teste: bool = False, pasta_capturas: Path | None = None, cfg=None) -> int:
     """Abre a janela (bloqueia até fechar). Devolve o código de saída.
 
     Com teste=True percorre as páginas, salva capturas em Logs\\ e fecha
-    sozinho - é o teste de interface do CI.
+    sozinho - é o teste de interface do CI. Sem teste, se o programa já
+    estiver aberto, traz aquela janela à frente e sai (código 0).
     """
     registro.preparar_saidas()
     try:
         registro.configurar(console=teste)
     except Exception:
         pass
+    if not teste and not instancia_unica():
+        return 0
     sistema.id_do_aplicativo()          # ícone próprio na barra de tarefas (bug B9)
     estilo.consciencia_de_dpi()         # antes de criar a janela
     import threading

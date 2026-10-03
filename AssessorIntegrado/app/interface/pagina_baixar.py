@@ -798,6 +798,11 @@ class PaginaBaixar(Pagina):
                 self._espelhar()
 
     # ------------------------------------------------- sigiloso no acervo
+    def sigilosos_no_acervo(self) -> list[Path]:
+        """Para as outras páginas (janela.sigilosos_no_acervo): o espelho
+        delas também não pode levar o sigiloso preso no acervo."""
+        return list(self._sigilos_ainda_no_acervo())
+
     def _sigilos_ainda_no_acervo(self) -> list[Path]:
         """Os PDFs sigilosos que não puderam sair do acervo e ainda estão lá
         (movidos à mão, saem da lista)."""

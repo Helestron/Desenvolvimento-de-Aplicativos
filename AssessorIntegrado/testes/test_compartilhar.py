@@ -148,6 +148,33 @@ class TestPreparo(BaseAcervo):
         self.assertEqual(rel.textos_novos, 0)
         self.assertEqual((self.raiz / "CLAUDE.md").read_text(encoding="utf-8"), "minhas regras")
 
+    def test_regra_do_sigilo_segue_a_configuracao(self):
+        # Regressão: o CLAUDE.md/AGENTS.md dizia sempre que os sigilosos "não
+        # estão nesta pasta" - falso com a separação desligada.
+        def contexto(cfg):
+            for nome in ("CLAUDE.md", "AGENTS.md"):
+                (self.raiz / nome).unlink(missing_ok=True)
+            preparo.atualizar_contexto(cfg, raiz=self.raiz, extrair_texto=False)
+            textos_ = [(self.raiz / n).read_text(encoding="utf-8") for n in ("CLAUDE.md", "AGENTS.md")]
+            self.assertEqual(textos_[0], textos_[1])
+            return textos_[0]
+
+        separados = "segredo de justiça não estão nesta pasta"
+        self.assertIn(separados, contexto(None))        # sem configuração: o padrão, que separa
+        cfg = config.Config(Path(self.dir.name) / "config.ini")
+        cfg.definir("geral", "pasta_sigilosos", str(Path(self.dir.name) / "Sigilosos"))
+        self.assertIn(separados, contexto(cfg))
+        cfg.definir("download", "separar_sigilosos", False)
+        texto = contexto(cfg)
+        self.assertNotIn(separados, texto)
+        self.assertIn("**Esta pasta pode conter processos em segredo de justiça**", texto)
+        self.assertIn("sem autorização expressa do\n   magistrado", texto)
+        self.assertRegex(texto, r"\n5\. \*\*Esta pasta[^\n]*\n(   \S[^\n]*\n)+6\. ")
+        # Criado o arquivo, o programa não o reescreve (o usuário pode tê-lo editado)
+        cfg.definir("download", "separar_sigilosos", True)
+        preparo.atualizar_contexto(cfg, raiz=self.raiz, extrair_texto=False)
+        self.assertNotIn(separados, (self.raiz / "CLAUDE.md").read_text(encoding="utf-8"))
+
     def test_pdf_corrompido_nao_derruba(self):
         (self.raiz / "Processos" / "Lote 1" / "0700123-45.2024.8.02.0001.pdf").write_bytes(b"lixo")
         rel = preparo.atualizar_contexto(raiz=self.raiz)
@@ -258,6 +285,75 @@ class TestSigilo(BaseAcervo):
         self.assertEqual(set(ac.transcricoes()), {NUM})
         with self.assertRaises(LookupError):
             ac.ler_processo(SIGILOSO)
+
+
+class TestRecorte(BaseAcervo):
+    """O que não é acervo, mesmo estando debaixo dele: as pastas do programa
+    (registros, runtime, senhas) e o que só chega lá por link ou junção que
+    leva para fora."""
+
+    OUTRO = "0700555-25.2024.8.02.0001"
+
+    def setUp(self):
+        super().setUp()
+        self.fora = Path(self.dir.name) / "Fora"
+        _pdf(self.fora / f"{self.OUTRO}.pdf", ["AUTOS DE FORA DO ACERVO"])
+        self.nuvem = Path(self.dir.name) / "Nuvem"
+
+    def _ligar(self, link: Path, alvo: Path) -> None:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.symlink(alvo, link, target_is_directory=alvo.is_dir())
+        except (OSError, NotImplementedError) as erro:   # Windows sem o modo de desenvolvedor
+            self.skipTest(f"sem permissão para criar link simbólico: {erro}")
+
+    def _espelhados(self) -> list[str]:
+        nuvem.espelhar(self.raiz, self.nuvem, sigilosos=None)
+        return [p.name for p in (self.nuvem / nuvem.SUBPASTA).rglob("*") if p.is_file()]
+
+    def test_pastas_do_programa_dentro_do_acervo_ficam_de_fora(self):
+        # Acervo apontado (por engano) para uma pasta acima da do programa
+        logs, runtime, local = self.raiz / "Logs", self.raiz / "runtime", self.raiz / "Local"
+        _pdf(logs / "diagnostico" / f"{self.OUTRO}.pdf", ["TELA DO PORTAL"])
+        _docx(runtime / "temp" / f"{SIGILOSO}.docx", ["RASCUNHO"])
+        (local / "perfis").mkdir(parents=True)
+        (local / "credenciais.json").write_text("{}", encoding="utf-8")
+        with mock.patch.object(mcp_servidor.caminhos, "LOGS", logs), \
+                mock.patch.object(mcp_servidor.caminhos, "RUNTIME", runtime), \
+                mock.patch.object(mcp_servidor.caminhos, "LOCAL", local):
+            ac = mcp_servidor.Acervo(self.raiz, sigilosos=None)
+            self.assertEqual(set(ac.pdfs()), {NUM})
+            self.assertEqual(set(ac.transcricoes()), {NUM})
+            espelhados = self._espelhados()
+        self.assertIn(f"{NUM}.pdf", espelhados)
+        for nome in (f"{self.OUTRO}.pdf", f"{SIGILOSO}.docx", "credenciais.json"):
+            self.assertNotIn(nome, espelhados)
+
+    def test_link_de_arquivo_para_fora_do_acervo_fica_de_fora(self):
+        self._ligar(self.raiz / "Processos" / "Lote 1" / f"{self.OUTRO}.pdf",
+                    self.fora / f"{self.OUTRO}.pdf")
+        self.assertEqual(set(mcp_servidor.Acervo(self.raiz, sigilosos=None).pdfs()), {NUM})
+        self.assertNotIn(f"{self.OUTRO}.pdf", self._espelhados())
+
+    def test_link_de_pasta_ou_juncao_para_fora_do_acervo_fica_de_fora(self):
+        # No Windows, a junção é seguida pela varredura; o Recorte confere o
+        # caminho real de cada arquivo.
+        self._ligar(self.raiz / "Processos" / "Lote 2", self.fora)
+        recorte = mcp_servidor.Recorte(self.raiz)
+        self.assertFalse(recorte.aceita(self.raiz / "Processos" / "Lote 2" / f"{self.OUTRO}.pdf"))
+        self.assertTrue(recorte.aceita(self.raiz / "Processos" / "Lote 1" / f"{NUM}.pdf"))
+        self.assertEqual(set(mcp_servidor.Acervo(self.raiz, sigilosos=None).pdfs()), {NUM})
+        self.assertNotIn(f"{self.OUTRO}.pdf", self._espelhados())
+
+    def test_link_dentro_do_acervo_vale_mas_nao_abre_a_pasta_de_sigilosos(self):
+        dentro = self.raiz / "Sigilosos"
+        _pdf(dentro / "Lote 1" / f"{SIGILOSO}.pdf", ["SEGREDO"])
+        self._ligar(self.raiz / "Processos" / "Atalho", dentro / "Lote 1")
+        self._ligar(self.raiz / "Processos" / "Copia" / f"{NUM}.pdf",
+                    self.raiz / "Processos" / "Lote 1" / f"{NUM}.pdf")
+        recorte = mcp_servidor.Recorte(self.raiz, dentro)
+        self.assertFalse(recorte.aceita(self.raiz / "Processos" / "Atalho" / f"{SIGILOSO}.pdf"))
+        self.assertTrue(recorte.aceita(self.raiz / "Processos" / "Copia" / f"{NUM}.pdf"))
 
 
 class TestTextosParaIA(BaseAcervo):
@@ -440,6 +536,22 @@ class TestChatGPT(BaseAcervo):
         self.assertIn(f"audiencias/{NUM}.docx", nomes)
         self.assertIn("LEIA-ME - instrucoes.md", nomes)
         self.assertFalse(any("Produtos" in n for n in nomes))
+        # as instruções falam das pastas do acervo; o pacote diz onde estão
+        leia = zipfile.ZipFile(arq_zip).read("LEIA-ME - instrucoes.md").decode("utf-8")
+        self.assertTrue(leia.startswith(chatgpt.NOTA_PASTAS_DO_PACOTE))
+        self.assertIn("audiencias/", leia)
+
+    def test_pacote_diz_que_leva_as_transcricoes(self):
+        with self.assertLogs("compartilhar.chatgpt", "INFO") as registro:
+            chatgpt.gerar_pacote(self.raiz, Path(self.dir.name) / "saida")
+        final = [l for l in registro.output if "Pacote para o ChatGPT" in l]
+        self.assertTrue(final, registro.output)
+        self.assertIn("1 transcrição de audiência", final[-1])
+        self.assertEqual(chatgpt.conteudo_do_pacote({NUM: None, SIGILOSO: None}, {NUM: [1, 2]}),
+                         "2 processos (autos e texto com as páginas marcadas), 2 transcrições de "
+                         "audiência, o índice e as instruções")
+        self.assertEqual(chatgpt.conteudo_do_pacote({NUM: None}, {}, incluir_texto=False),
+                         "1 processo (autos), o índice e as instruções")
 
     def test_link_do_work(self):
         self.assertTrue(chatgpt.url_work(Path("/tmp/A B")).startswith("codex://threads/new?path="))

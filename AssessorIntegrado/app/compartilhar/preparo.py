@@ -106,7 +106,7 @@ Processo dependente (incidente) tem o sufixo no nome: `0000000-00.0000.0.00.0000
    Grave os seus documentos em `Produtos/`.
 4. As **transcrições são automáticas** e podem ter erros de reconhecimento:
    em passagem decisiva, recomende a conferência com a gravação.
-5. Processos em **segredo de justiça não estão nesta pasta**, por configuração.
+{regra_sigilo}
 6. O que você produzir é **minuta de apoio para revisão do magistrado**, nunca
    decisão pronta (Resolução CNJ nº 615/2025). A decisão e a responsabilidade
    são do magistrado.
@@ -144,6 +144,17 @@ _Arquivo gerado pelo {nome} {versao} em {quando}. O programa não o altera
 depois de criado: para mudar estas regras, edite-o; para voltar ao texto
 padrão, apague-o e clique em “Preparar arquivos para IA”._
 """
+
+# Regra 5 do CONTEXTO. A frase "não estão nesta pasta" só é verdadeira com a
+# separação dos sigilosos ligada ([download] separar_sigilosos).
+REGRA_SIGILO_SEPARADOS = (
+    "5. Processos em **segredo de justiça não estão nesta pasta**, por configuração.")
+REGRA_SIGILO_JUNTOS = (
+    "5. **Esta pasta pode conter processos em segredo de justiça**: a separação\n"
+    "   automática dos sigilosos está desligada na configuração. Nada de processo\n"
+    "   sigiloso pode ser lido ou usado por você sem autorização expressa do\n"
+    "   magistrado: ao constatar que um processo tramita em segredo de justiça,\n"
+    "   interrompa a leitura, não o resuma nem o cite e avise o magistrado.")
 
 SKILL = """\
 ---
@@ -193,6 +204,14 @@ def _texto_unidade(cfg) -> str:
     partes = [cfg.texto("unidade", c) for c in ("vara", "comarca", "tribunal")]
     partes = [p for p in partes if p]
     return (" Unidade: " + " — ".join(partes) + ".") if partes else ""
+
+
+def _regra_sigilo(cfg) -> str:
+    """A regra do sigilo que vale para a configuração de hoje. Sem
+    configuração (uso avulso), a de sempre: o padrão é separar."""
+    if cfg is None or cfg.flag("download", "separar_sigilosos"):
+        return REGRA_SIGILO_SEPARADOS
+    return REGRA_SIGILO_JUNTOS
 
 
 def _indice(acervo: Acervo, pdfs: dict[str, Path], trans: dict[str, list[Path]]) -> str:
@@ -296,6 +315,7 @@ def atualizar_contexto(cfg=None, raiz: Path | None = None, extrair_texto: bool |
             progresso(total, total, "textos prontos")
 
     contexto = CONTEXTO.format(nome=NOME, versao=__version__, unidade=_texto_unidade(cfg),
+                               regra_sigilo=_regra_sigilo(cfg),
                                quando=datetime.now().strftime("%d/%m/%Y"))
     for nome in ("CLAUDE.md", "AGENTS.md"):
         destino = raiz / nome

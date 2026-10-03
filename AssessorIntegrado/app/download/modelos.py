@@ -130,7 +130,8 @@ class ResultadoProcesso:
     paginas: int = 0
     documentos: int = 0
     sigiloso: bool = False
-    incompleto: str = ""          # folhas que o portal não ofereceu ("12-15, 40")
+    incompleto: str = ""          # o que o portal não ofereceu: folhas no e-SAJ ("12-15, 40"),
+                                  # documentos no eProc ("ev. 4 PET1")
     detalhe: str = ""
     midias: list[str] = field(default_factory=list)
     segundos: float = 0.0

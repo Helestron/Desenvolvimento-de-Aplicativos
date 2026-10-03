@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 from .. import __version__
-from ..nucleo import cnj
+from ..nucleo import caminhos, cnj
 from . import textos
 
 log = logging.getLogger("mcp")
@@ -70,6 +70,60 @@ def _partes_relativas(pasta: Path, raiz: Path) -> tuple[str, ...] | None:
     except (ValueError, OSError, RuntimeError):
         return None
     return tuple(q.lower() for q in rel.parts)
+
+
+def pastas_do_programa() -> tuple[Path, ...]:
+    """Pastas do próprio programa, que nunca são acervo - nem quando o acervo
+    foi apontado (por engano) para uma pasta que as contém: os registros
+    (com imagens das telas dos portais), o runtime e a pasta das senhas e
+    dos perfis do navegador."""
+    return (caminhos.LOGS, caminhos.RUNTIME, caminhos.LOCAL)
+
+
+class Recorte:
+    """O que, debaixo da raiz, é de fato acervo.
+
+    Ficam de fora a pasta de sigilosos e as pastas do programa, se
+    estiverem dentro da raiz, e o arquivo que só está lá por um link
+    simbólico ou uma junção que leva para fora dela (o caminho real, e não
+    só o aparente, tem de estar no acervo e fora das pastas excluídas).
+    """
+
+    def __init__(self, raiz: Path, sigilosos: Path | None = None):
+        self.raiz = Path(raiz)
+        try:
+            self._raiz_real = self.raiz.resolve()
+        except (OSError, RuntimeError):
+            self._raiz_real = self.raiz.absolute()
+        pastas = ([Path(sigilosos)] if sigilosos else []) + list(pastas_do_programa())
+        self._fora = [r for r in (_partes_relativas(p, self.raiz) for p in pastas)
+                      if r is not None]
+        self._pastas_reais: dict[Path, Path] = {}
+
+    def _excluida(self, partes: tuple[str, ...]) -> bool:
+        baixo = tuple(q.lower() for q in partes)
+        return any(baixo[:len(f)] == f for f in self._fora)
+
+    def _real(self, p: Path) -> Path:
+        # Uma resolução por pasta (e não por arquivo): no Windows, cada uma
+        # abre o arquivo. O link simbólico de arquivo é resolvido à parte.
+        if p.is_symlink():
+            return p.resolve()
+        pasta = p.parent
+        real = self._pastas_reais.get(pasta)
+        if real is None:
+            real = self._pastas_reais[pasta] = pasta.resolve()
+        return real / p.name
+
+    def aceita(self, p: Path) -> bool:
+        """O arquivo 'p' (debaixo da raiz) pode ser servido e espelhado?"""
+        try:
+            if self._excluida(p.relative_to(self.raiz).parts[:-1]):
+                return False
+            real = self._real(p).relative_to(self._raiz_real)
+        except (ValueError, OSError, RuntimeError):
+            return False        # link ou junção para fora do acervo
+        return not self._excluida(real.parts[:-1])
 
 
 def chaves_sigilosas(sigilosos: Path | None, raiz: Path | None = None) -> set[str]:
@@ -128,8 +182,9 @@ class Acervo:
     def _arquivos(self, sufixo: str) -> list[Path]:
         if not self.raiz.exists():
             return []
-        sigilosos = self.pasta_sigilosos()
-        fora = _partes_relativas(sigilosos, self.raiz) if sigilosos else None
+        # Pasta de sigilosos e pastas do programa dentro do acervo, e link
+        # ou junção para fora dele: ficam de fora
+        recorte = Recorte(self.raiz, self.pasta_sigilosos())
         saida = []
         for p in self.raiz.rglob(f"*{sufixo}"):
             rel = p.relative_to(self.raiz).parts
@@ -139,8 +194,7 @@ class Acervo:
             if partes & _PASTAS_FORA or p.name.startswith("~$") \
                     or p.name.endswith((".parcial", ".tmp")):
                 continue
-            # Pasta de sigilosos dentro do acervo: fica de fora
-            if fora is not None and tuple(q.lower() for q in rel[:len(fora)]) == fora:
+            if not recorte.aceita(p):
                 continue
             saida.append(p)
         return sorted(saida)

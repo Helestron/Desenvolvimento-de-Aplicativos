@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import threading
+import time
 from pathlib import Path
 
 from . import caminhos
@@ -136,6 +137,11 @@ CABECALHO = """\
 """
 
 _trava = threading.Lock()
+
+# Troca do config.ini pelo arquivo novo: o antivírus, o indexador e o OneDrive
+# abrem o arquivo por um instante, e o os.replace falha com "acesso negado".
+TENTATIVAS_TROCA = 6
+ESPERA_TROCA_S = 0.4
 
 
 def modelo_ini() -> str:
@@ -366,7 +372,34 @@ def definir_no_arquivo(arquivo: Path, secao: str, chave: str, valor: str) -> Non
 
     tmp = arquivo.with_name(arquivo.name + ".tmp")
     tmp.write_text("\n".join(linhas) + "\n", encoding="utf-8")
-    os.replace(tmp, arquivo)
+    _trocar(tmp, arquivo)
+
+
+def _trocar(tmp: Path, arquivo: Path) -> None:
+    """os.replace com paciência para o Windows (como o pdf._trocar).
+
+    O antivírus, o indexador e o OneDrive seguram o config.ini por um
+    instante, e a troca falha com "acesso negado" (PermissionError).
+    Insiste-se por ~2 s; se continuar preso, o arquivo novo é descartado e
+    o erro sobe com uma explicação que o usuário entende.
+    """
+    for tentativa in range(TENTATIVAS_TROCA):
+        try:
+            os.replace(tmp, arquivo)
+            return
+        except PermissionError as erro:
+            if tentativa < TENTATIVAS_TROCA - 1:
+                time.sleep(ESPERA_TROCA_S)
+                continue
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise PermissionError(
+                f"Não consegui salvar a configuração: o arquivo {arquivo} está preso por "
+                "outro programa (antivírus, OneDrive ou outro que o tenha aberto). A "
+                "alteração não foi gravada: espere alguns segundos e repita-a; se o erro "
+                "persistir, feche o programa que está usando o arquivo.") from erro
 
 
 def carregar(criar: bool = True) -> Config:

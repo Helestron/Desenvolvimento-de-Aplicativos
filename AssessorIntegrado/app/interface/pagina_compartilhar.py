@@ -621,7 +621,8 @@ class PaginaCompartilhar(Pagina):
             self._mostrar_no_explorador(Path(arquivo))
             self._recado("Sucesso", "Pacote pronto",
                          f"{Path(arquivo).name}. Arraste o .zip para uma conversa ou um Projeto "
-                         "do ChatGPT. Ele leva os autos, o texto com as folhas e as instruções.")
+                         "do ChatGPT. Ele leva os autos, o texto com as folhas, as transcrições "
+                         "de audiência (quando houver) e as instruções.")
 
         def falhou(erro):
             if isinstance(erro, LookupError):
@@ -662,6 +663,18 @@ class PaginaCompartilhar(Pagina):
         if not destino:
             dialogos.informar(self.janela.raiz, "Espelho na nuvem",
                               "Escolha antes a pasta do OneDrive ou do Google Drive.")
+            return
+        presos = getattr(self.janela, "sigilosos_no_acervo", lambda: [])()
+        if presos:
+            um = len(presos) == 1
+            dialogos.avisar(self.janela.raiz, "Espelho na nuvem",
+                            ("Um processo em segredo de justiça ficou no acervo"
+                             if um else f"{len(presos)} processos em segredo de justiça ficaram "
+                                        "no acervo")
+                            + ": " + ", ".join(p.name for p in presos) + ". Mova "
+                            + ("o PDF" if um else "os PDFs")
+                            + " para a pasta de sigilosos antes de espelhar (veja o aviso na "
+                              "página Baixar processos).")
             return
         tarefa = self.tarefa_nuvem
 

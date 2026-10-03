@@ -441,7 +441,12 @@ def ler_texto_em(col: _Coletor, bruto: str, csv_provavel: bool = False) -> None:
         try:
             dialeto = csv.Sniffer().sniff(bruto[:4000], delimiters=";,\t|")
             linhas = [tuple(l) for l in csv.reader(bruto.splitlines(), dialeto)]
-            if linhas and max(len(l) for l in linhas) > 1:
+            # Sem cabeçalho, "número ; senha" digitado linha a linha vai para a
+            # leitura por linha, a que sabe associar a senha ao número. Tabela
+            # colada do Excel (tabulação) não: sem o cabeçalho "Senha", a
+            # segunda coluna é outra coisa (classe, vara, parte).
+            if linhas and max(len(l) for l in linhas) > 1 and (
+                    dialeto.delimiter == "\t" or _escolher_coluna(linhas)[0] is not None):
                 _ler_linhas(col, linhas, "csv")
                 return
         except csv.Error:

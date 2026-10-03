@@ -257,6 +257,12 @@ class TestArquivosPs1(unittest.TestCase):
                        "GetSystemWebProxy", "Get-FileHash"):
             self.assertIn(trecho, funcoes)
 
+    def test_botao_do_componente_com_o_nome_da_tela(self):
+        # O botão em Configurações > Transcrição é "Instalar o componente".
+        texto = (INSTALADOR / "instalar.ps1").read_text(encoding="utf-8-sig")
+        self.assertEqual(texto.count("Configurações > Transcrição > Instalar o componente"), 2)
+        self.assertNotIn("> Instalar componente", texto)
+
     def test_requisitos_travados(self):
         # Os arquivos são gerados à parte (uv pip compile); aqui só se confere
         # que continuam instaláveis com --require-hashes.
@@ -282,6 +288,23 @@ class TestOutrosArquivos(unittest.TestCase):
         for trecho in ("INSTALAR.bat", "Assessor Integrado.bat", "DESINSTALAR.bat",
                        "1. INSTALE", "2. ABRA", "3. USE", "Área de Trabalho"):
             self.assertIn(trecho, texto)
+
+    def test_manual_do_segredo_de_justica(self):
+        # O manual cita os nomes que estão na tela e diz onde fica cada coisa
+        # do processo sigiloso (relatório completo, peça sigilosa, transcrição).
+        manual = " ".join((RAIZ / "MANUAL.md").read_text(encoding="utf-8").split())
+        interface = RAIZ / "app" / "interface"
+        rotulos = {"Processo em segredo de justiça": "componentes.py",
+                   "Separar os sigilosos": "pagina_baixar.py",
+                   "Transcrever uma gravação…": "pagina_transcrever.py",
+                   "Instalar o componente": "pagina_config.py"}
+        for rotulo, arquivo in rotulos.items():
+            self.assertIn(f'"{rotulo}', (interface / arquivo).read_text(encoding="utf-8"), rotulo)
+        for trecho in ("**Processo em segredo de justiça**", "**Separar os sigilosos**",
+                       "**peça sigilosa**", "não identifica os sigilosos",
+                       "`Sigilosos\\<nome da relação>\\_controle\\relatorio.csv`",
+                       "`Sigilosos\\Transcricoes`", "`Sigilosos\\Transcricoes\\_audio`"):
+            self.assertIn(trecho, manual)
 
     # O ZIP de distribuição não leva os arquivos do git (empacotar.ps1): no CI,
     # a suíte roda da pasta extraída do ZIP, onde eles não existem.

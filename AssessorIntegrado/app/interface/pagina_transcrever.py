@@ -33,7 +33,7 @@ from tkinter import filedialog, ttk
 
 from ..nucleo import cnj, sistema, tribunais
 from . import componentes, dialogos, estilo, servicos
-from .componentes import Detalhes, Faixa, Medidor, Pagina
+from .componentes import CaixaSigilo, Detalhes, Faixa, Medidor, Pagina
 from .estilo import px
 from .tarefas import MICROFONE, MODELO_REVISAO, NUVEM
 
@@ -353,6 +353,8 @@ class PaginaTranscrever(Pagina):
         self.numero: cnj.Numero | None = None
         self.ultimo_docx: Path | None = None
         self.ultimo_audio: Path | None = None
+        self.ultimo_sigiloso = False        # a última audiência foi para a pasta dos sigilosos
+        self._sigiloso_sessao = False
         self.ultimas_falas: list = []
         self.ultimo_falante = None
         self._controle = threading.Event()
@@ -411,6 +413,10 @@ class PaginaTranscrever(Pagina):
         self.dica_numero = ttk.Label(q, text="", font=estilo.FONTE_NOTA, justify="left")
         self.dica_numero.grid(row=2, column=0, sticky="ew", pady=(px(4), 0))
         estilo.acompanhar_largura(self.dica_numero)
+        # Segredo de justiça: documento, gravação e diário fora do acervo
+        # (pré-marcada quando os autos estão na pasta de sigilosos).
+        self.caixa_sigilo = CaixaSigilo(q)
+        self.caixa_sigilo.grid(row=3, column=0, sticky="ew", pady=(px(6), 0))
         self.var_numero.trace_add("write", lambda *_: self._validar_numero())
 
         q = ttk.Frame(prep)
@@ -554,6 +560,7 @@ class PaginaTranscrever(Pagina):
         texto = self.var_numero.get()
         if not texto.strip():
             self.numero = None
+            self.caixa_sigilo.presumir(False)
             self.dica_numero.configure(text="Obrigatório: dá nome ao documento.",
                                        foreground=estilo.TINTA_FRACA)
             self.e_numero.configure(style="TEntry")
@@ -562,11 +569,14 @@ class PaginaTranscrever(Pagina):
             n = cnj.ler(texto)
         except cnj.NumeroInvalido:
             self.numero = None
+            self.caixa_sigilo.presumir(False)
             self.dica_numero.configure(text="Use o padrão CNJ: 0000000-00.0000.0.00.0000",
                                        foreground=estilo.VINHO)
             self.e_numero.configure(style="Invalido.TEntry")
             return None
         self.numero = n
+        if self.situacao in ("pronta", "fim"):
+            self.caixa_sigilo.presumir(servicos.processo_sigiloso(self.cfg, n))
         self.e_numero.configure(style="TEntry")
         t = tribunais.por_numero(n)
         onde = f" · {t.sigla}" if t else ""
@@ -593,6 +603,8 @@ class PaginaTranscrever(Pagina):
         # A mesma opção está em Configurações › Transcrição: sem reler, valia
         # a da abertura do programa, e o "Encerrar" ignorava a mudança.
         self.var_refinar.set(self.cfg.flag("transcricao", "refinar_ao_encerrar"))
+        if self.situacao in ("pronta", "fim"):
+            self._validar_numero()        # um lote pode ter levado os autos para os sigilosos
         if not self._microfones_lidos and not self.tarefa_apoio.ativa:
             self._microfones_lidos = True
             self.em_segundo_plano(self.tarefa_apoio, self._ler_ambiente,
@@ -762,10 +774,11 @@ class PaginaTranscrever(Pagina):
         self._salvar_tipo()
         # lembrar o processo não pode impedir a audiência de começar
         self.gravar("interface", "ultimo_processo", n.formatado)
+        sigiloso = self.caixa_sigilo.marcada
         try:
             sessao = servicos.nova_sessao(n, self.cfg, lambda t, d: self.postar("sessao", (t, d)),
                                           tipo=self.var_tipo.get().strip(),
-                                          falante=self.grade.nome_ativo)
+                                          falante=self.grade.nome_ativo, sigiloso=sigiloso)
         except Exception as erro:
             self.janela.erro_inesperado(erro)
             return
@@ -799,6 +812,7 @@ class PaginaTranscrever(Pagina):
             return
         self.sessao = sessao
         self.numero_sessao = n
+        self._sigiloso_sessao = sigiloso
         self.ultimo_falante = None
         self._status.update(modelo=f"modelo {getattr(sessao, 'modelo', '')}".strip(), atraso="",
                             salvo="")
@@ -867,6 +881,7 @@ class PaginaTranscrever(Pagina):
             else ["!disabled"]
         for w in (self.e_numero, self.c_tipo, self.btn_testar):
             w.state(estado_campos)
+        self.caixa_sigilo.travar("disabled" in estado_campos)
         self.c_mic.state(estado_campos + (["readonly"] if "!disabled" in estado_campos else []))
         if s == "pronta":
             self.relogio.configure(text="00:00:00")
@@ -879,7 +894,8 @@ class PaginaTranscrever(Pagina):
         subtitulo = getattr(self, "_subtitulo", None)
         if ligado:
             n = self.numero_sessao
-            partes = [f"Processo {n.formatado}" if n else "", self.var_tipo.get().strip()]
+            partes = [f"Processo {n.formatado}" if n else "", self.var_tipo.get().strip(),
+                      "segredo de justiça" if self._sessao_sigilosa() else ""]
             self.resumo_sessao.configure(text=" · ".join(p for p in partes if p))
             self.prep.grid_remove()
             self.linha_sessao.grid()
@@ -1050,6 +1066,8 @@ class PaginaTranscrever(Pagina):
         self.ultimo_docx = caminho
         self.ultimo_audio = getattr(sessao, "caminho_audio", None)
         self.ultimas_falas = list(getattr(sessao, "falas", []) or [])
+        self.ultimo_sigiloso = self._sessao_sigilosa() \
+            or servicos.na_pasta_dos_sigilosos(self.cfg, caminho)
         self.situacao = "fim"
         self._aplicar_situacao()
         self.medidor.zerar()
@@ -1057,15 +1075,28 @@ class PaginaTranscrever(Pagina):
                  ("Abrir a pasta", lambda: self._abrir_pasta(caminho), "apoio")]
         if self.ultimo_audio and Path(self.ultimo_audio).exists():
             acoes.append(("Revisar agora", self.revisar, "apoio"))
-        self._faixa("Sucesso", "Transcrição salva", caminho.name, acoes)
+        self._faixa("Sucesso", "Transcrição salva", self._onde(caminho), acoes)
         estilo.piscar_na_barra(self.janela.raiz)
         self._depois_de_salvar()
 
     def revisar(self) -> None:
         if not self.ultimo_audio or self.numero_sessao is None:
             return
+        # a revisão de audiência sigilosa continua fora do acervo
         self._transcrever_gravacao(Path(self.ultimo_audio), self.numero_sessao,
-                                   rotulos=self.ultimas_falas, titulo="Revisando com o modelo preciso")
+                                   rotulos=self.ultimas_falas, titulo="Revisando com o modelo preciso",
+                                   sigiloso=self.ultimo_sigiloso)
+
+    def _sessao_sigilosa(self) -> bool:
+        """A audiência em curso (ou a última) vai para a pasta dos sigilosos?
+        A sessão decide de vez ao iniciar (também pelos autos na pasta)."""
+        return bool(getattr(self.sessao, "sigiloso", False) or self._sigiloso_sessao)
+
+    def _onde(self, caminho: Path) -> str:
+        """O nome do documento e, se for o caso, onde ele está DE FATO."""
+        if servicos.na_pasta_dos_sigilosos(self.cfg, caminho):
+            return f"{caminho.name}\nNa pasta dos sigilosos, fora do acervo compartilhado."
+        return caminho.name
 
     # ============================================================ gravação
     def transcrever_arquivo(self) -> None:
@@ -1078,23 +1109,34 @@ class PaginaTranscrever(Pagina):
             return
         caminho = Path(caminho)
         numero = servicos.numero_no_nome(caminho)
+        cfg = self.cfg
 
-        def seguir(n):
-            self._transcrever_gravacao(caminho, n, titulo="Transcrevendo a gravação")
+        def seguir(n, sigiloso=False):
+            self._transcrever_gravacao(caminho, n, titulo="Transcrevendo a gravação",
+                                       sigiloso=sigiloso)
+        # Sempre uma confirmação: nela fica a caixa "Processo em segredo de
+        # justiça". Sem o número no nome do arquivo, o do campo vem escrito,
+        # para confirmar com Enter - antes ele era usado em silêncio, e o
+        # campo quase sempre traz o processo da audiência ANTERIOR (é lembrado
+        # entre as sessões): o documento saía com o número errado.
         if numero is not None:
-            seguir(numero)
-            return
-        # Sem o número no nome do arquivo, PERGUNTA - com o do campo já
-        # escrito, para confirmar com Enter. Antes ele era usado em silêncio, e
-        # o campo quase sempre traz o processo da audiência ANTERIOR (é
-        # lembrado entre as sessões): o documento saía com o número errado.
-        atual = self._validar_numero()
-        dialogos.DialogoNumero(self.janela.raiz, "De que processo é esta gravação?",
-                               "O nome do arquivo não traz o número do processo. Ele dá "
-                               "nome ao documento.", seguir,
-                               inicial=atual.formatado if atual is not None else "")
+            titulo, inicial = "Transcrever a gravação", numero.formatado
+            mensagem = (f"Gravação “{caminho.name}”. Confira o número do processo (ele dá "
+                        "nome ao documento) e marque a caixa se o processo estiver em segredo "
+                        "de justiça.")
+        else:
+            atual = self._validar_numero()
+            titulo, inicial = ("De que processo é esta gravação?",
+                               atual.formatado if atual is not None else "")
+            mensagem = "O nome do arquivo não traz o número do processo. Ele dá nome ao documento."
+        fixo = ("A gravação está na pasta dos sigilosos: a transcrição também fica lá, fora do "
+                "acervo compartilhado." if servicos.na_pasta_dos_sigilosos(cfg, caminho) else "")
+        dialogos.DialogoNumero(self.janela.raiz, titulo, mensagem, seguir, inicial=inicial,
+                               sigilo=lambda n: servicos.processo_sigiloso(cfg, n),
+                               motivo_fixo=fixo)
 
-    def _transcrever_gravacao(self, origem: Path, numero, rotulos=None, titulo: str = "") -> None:
+    def _transcrever_gravacao(self, origem: Path, numero, rotulos=None, titulo: str = "",
+                              sigiloso: bool = False) -> None:
         tarefa = self.tarefa_arquivo
         tipo = self.var_tipo.get().strip()
 
@@ -1104,14 +1146,14 @@ class PaginaTranscrever(Pagina):
         def trabalho():
             return servicos.transcrever_gravacao(origem, numero, self.cfg, progresso,
                                                  tarefa.parar.is_set, rotulos_manuais=rotulos,
-                                                 tipo=tipo)
+                                                 tipo=tipo, sigiloso=sigiloso)
 
         def pronto(caminho):
             self._status["salvo"] = ""
             self._atualizar_rodape()
             caminho = Path(caminho)
             self.ultimo_docx = caminho
-            self._faixa("Sucesso", "Transcrição pronta", caminho.name,
+            self._faixa("Sucesso", "Transcrição pronta", self._onde(caminho),
                         [("Abrir o documento", lambda: self._abrir(caminho), "principal"),
                          ("Abrir a pasta", lambda: self._abrir_pasta(caminho), "apoio")])
             estilo.piscar_na_barra(self.janela.raiz)
@@ -1144,7 +1186,7 @@ class PaginaTranscrever(Pagina):
         def pronto(caminho):
             caminho = Path(caminho)
             self._mostrar_recuperaveis(self._recuperaveis[1:])
-            self._faixa("Sucesso", "Transcrição recuperada", caminho.name,
+            self._faixa("Sucesso", "Transcrição recuperada", self._onde(caminho),
                         [("Abrir o documento", lambda: self._abrir(caminho), "principal")])
             self._depois_de_salvar()
 
@@ -1160,8 +1202,11 @@ class PaginaTranscrever(Pagina):
             dialogos.erro(self.janela.raiz, "Abrir o documento", str(erro))
 
     def _abrir_pasta(self, selecionar: Path | None = None) -> None:
+        # A pasta onde o documento está DE FATO: a de sigilosos, para o
+        # processo em segredo de justiça.
+        pasta = Path(selecionar).parent if selecionar is not None else self.cfg.pasta_transcricoes
         try:
-            sistema.abrir_pasta(self.cfg.pasta_transcricoes, selecionar)
+            sistema.abrir_pasta(pasta, selecionar)
         except Exception as erro:
             dialogos.erro(self.janela.raiz, "Abrir a pasta", str(erro))
 
@@ -1181,6 +1226,13 @@ class PaginaTranscrever(Pagina):
         cópia nova).
         """
         if getattr(self.janela, "_fechando", False):
+            return
+        if getattr(self.janela, "sigilosos_no_acervo", lambda: [])():
+            # Um lote não conseguiu tirar um sigiloso do acervo: o índice o
+            # listaria e o espelho levaria a cópia (como no motor, que não
+            # prepara nada para a IA nesse caso). Fica para quando o PDF sair.
+            log.warning("Índice do acervo e espelho na nuvem adiados: há processo sigiloso no "
+                        "acervo (veja o aviso na página Baixar processos).")
             return
         cfg = self.cfg
         destino = cfg.texto("compartilhar", "pasta_nuvem")

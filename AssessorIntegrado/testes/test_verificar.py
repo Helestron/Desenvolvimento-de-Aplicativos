@@ -169,6 +169,38 @@ class TestChecagens(unittest.TestCase):
         self.assertTrue(item.obrigatorio)
         self.assertIn("Acesso controlado a pastas", item.acao)
 
+    def test_pastas_uma_dentro_da_outra(self):
+        # Acervo e sigilosos aninhados: aviso que diz o que está em jogo
+        for acervo, sigilosos in ((self.pasta / "Acervo", self.pasta / "Acervo" / "Sigilosos"),
+                                  (self.pasta / "Sigilosos" / "Acervo", self.pasta / "Sigilosos"),
+                                  (self.pasta / "Acervo", self.pasta / "Acervo")):
+            with self.subTest(acervo=acervo, sigilosos=sigilosos):
+                self.cfg.definir("geral", "pasta_acervo", str(acervo))
+                self.cfg.definir("geral", "pasta_sigilosos", str(sigilosos))
+                item = verificar.checar_pastas(self.cfg)
+                self.assertEqual((item.situacao, item.codigo), (AVISO, "pastas"))
+                self.assertIn(config.conflito_de_pastas(acervo, sigilosos), item.detalhe)
+                self.assertIn("os processos em segredo de justiça iriam para a IA", item.detalhe)
+                self.assertIn("Configurações > Geral", item.acao)
+                self.assertIn("\u201cAlterar\u2026\u201d", item.acao)
+
+    def test_acervo_nao_pode_conter_o_programa_nem_as_senhas(self):
+        acervo = self.pasta / "Acervo"
+        with mock.patch.object(verificar.caminhos, "RAIZ", acervo / "AssessorIntegrado"):
+            item = verificar.checar_pastas(self.cfg)
+        self.assertEqual(item.situacao, AVISO)
+        self.assertIn("contém a pasta do programa", item.detalhe)
+        self.assertIn("fora da pasta do programa", item.acao)
+        with mock.patch.object(verificar.caminhos, "LOCAL", acervo / "AppData" / "AssessorIntegrado"):
+            item = verificar.checar_pastas(self.cfg)
+        self.assertEqual(item.situacao, AVISO)
+        self.assertIn("as senhas e os perfis do navegador", item.detalhe)
+        with mock.patch.object(verificar.caminhos, "LOCAL", acervo):
+            self.assertEqual(verificar.checar_pastas(self.cfg).situacao, AVISO)
+        # O padrão (acervo DENTRO da pasta do programa) continua aceito
+        with mock.patch.object(verificar.caminhos, "RAIZ", self.pasta):
+            self.assertEqual(verificar.checar_pastas(self.cfg).situacao, OK)
+
     def test_modelo_presente_ou_ausente(self):
         try:
             from app.transcricao import modelos
@@ -285,6 +317,8 @@ class TestChecagens(unittest.TestCase):
             item = verificar.checar_falantes()
         self.assertEqual((item.situacao, item.obrigatorio), (AVISO, False))
         self.assertTrue(item.detalhe.startswith("Não instalada (falta o componente sherpa-onnx):"), item.detalhe)
+        # O nome do botão é o da tela (Configurações > Transcrição)
+        self.assertIn("Configurações > Transcrição > Instalar o componente", item.acao)
         with mock.patch.object(verificar, "_falantes_situacao", return_value=(True, "instalada")):
             self.assertEqual(verificar.checar_falantes().situacao, OK)
 

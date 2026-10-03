@@ -14,8 +14,9 @@ integrado ao mais simples:
 * ESPELHO NA NUVEM (nuvem.py): o acervo copiado para o OneDrive/Google
   Drive, que os conectores do ChatGPT leem;
 * PACOTE: uma pasta (e um .zip) com os autos, o texto com as folhas
-  marcadas, o índice e as instruções, pronta para arrastar para uma conversa
-  ou um Projeto do ChatGPT.
+  marcadas, as transcrições de audiência (quando houver), o índice e as
+  instruções, pronta para arrastar para uma conversa ou um Projeto do
+  ChatGPT.
 """
 
 from __future__ import annotations
@@ -233,10 +234,19 @@ def _config():
         return None
 
 
+NOTA_PASTAS_DO_PACOTE = (
+    "> **Neste pacote, as pastas têm outro nome:** os autos (`Processos/`) estão em "
+    "`autos/`, o texto com as folhas marcadas (`_ia/texto/`) em `texto/` e as "
+    "transcrições de audiência (`Transcricoes/`) em `audiencias/`. Os nomes dos "
+    "arquivos são os mesmos.\n\n")
+
+
 def gerar_pacote(acervo: Path, destino: Path, numeros: list[str] | None = None,
                  incluir_pdf: bool = True, incluir_texto: bool | None = None,
                  progresso=None, cfg=None) -> tuple[Path, Path]:
-    """Monta a pasta e o .zip para levar ao ChatGPT.
+    """Monta a pasta e o .zip para levar ao ChatGPT: os autos (autos/), o
+    texto com as páginas marcadas (texto/), as transcrições de audiência,
+    quando houver (audiencias/), o índice e as instruções.
 
     'numeros' restringe aos processos indicados (padrão: o acervo inteiro).
     'incluir_texto' em branco segue a configuração ([compartilhar]
@@ -286,7 +296,14 @@ def gerar_pacote(acervo: Path, destino: Path, numeros: list[str] | None = None,
     for i, (origem, rel) in enumerate(arquivos, 1):
         alvo = pasta / rel
         alvo.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(origem, alvo)
+        if rel.endswith(".md"):
+            # As instruções e o índice falam das pastas do acervo; aqui elas
+            # têm outro nome.
+            alvo.write_text(NOTA_PASTAS_DO_PACOTE + origem.read_text(encoding="utf-8-sig",
+                                                                       errors="replace"),
+                            encoding="utf-8")
+        else:
+            shutil.copy2(origem, alvo)
         if origem.stat().st_size > LIMITE_ARQUIVO_MB * 1024 * 1024:
             grandes.append(origem.name)
         if progresso:
@@ -300,8 +317,29 @@ def gerar_pacote(acervo: Path, destino: Path, numeros: list[str] | None = None,
         for f in sorted(pasta.rglob("*")):
             if f.is_file():
                 z.write(f, f.relative_to(pasta).as_posix())
-    log.info("Pacote para o ChatGPT: %s (%d arquivo(s)).", pasta, total)
+    log.info("Pacote para o ChatGPT: %s (%d arquivo(s)). Leva %s.", pasta, total,
+             conteudo_do_pacote(pdfs, trans, incluir_pdf, incluir_texto))
     return pasta, arquivo_zip
+
+
+def _contar(n: int, singular: str, plural: str) -> str:
+    return f"{n} {singular if n == 1 else plural}"
+
+
+def conteudo_do_pacote(pdfs: dict, trans: dict, incluir_pdf: bool = True,
+                       incluir_texto: bool = True) -> str:
+    """O que o pacote leva, numa frase: "2 processos (autos e texto com as
+    páginas marcadas), 1 transcrição de audiência, o índice e as instruções"."""
+    itens = []
+    if pdfs:
+        leva = " e ".join(o for o, sim in (("autos", incluir_pdf),
+                                           ("texto com as páginas marcadas", incluir_texto)) if sim)
+        itens.append(_contar(len(pdfs), "processo", "processos") + (f" ({leva})" if leva else ""))
+    n = sum(len(v) for v in trans.values())
+    if n:
+        itens.append(_contar(n, "transcrição de audiência", "transcrições de audiência"))
+    itens += ["o índice", "as instruções"]
+    return ", ".join(itens[:-1]) + " e " + itens[-1]
 
 
 def estado(pasta_acervo: Path | None = None) -> dict:

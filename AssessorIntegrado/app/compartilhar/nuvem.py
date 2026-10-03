@@ -22,8 +22,7 @@ import string
 from pathlib import Path
 
 from ..nucleo import cnj
-from .mcp_servidor import (_DO_CONFIG, _partes_relativas, chaves_sigilosas,
-                           pasta_sigilosos_configurada)
+from .mcp_servidor import _DO_CONFIG, Recorte, chaves_sigilosas, pasta_sigilosos_configurada
 
 log = logging.getLogger("compartilhar.nuvem")
 
@@ -94,8 +93,9 @@ def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None,
     destino = Path(destino_raiz) / SUBPASTA
     if sigilosos is _DO_CONFIG:
         sigilosos = pasta_sigilosos_configurada()
-    # Pasta de sigilosos posta (por engano) dentro do acervo: fica de fora
-    fora = _partes_relativas(sigilosos, origem) if sigilosos else None
+    # Pasta de sigilosos e pastas do programa postas (por engano) dentro do
+    # acervo, e link ou junção para fora dele: ficam de fora
+    recorte = Recorte(origem, sigilosos)
     sigilosas = chaves_sigilosas(sigilosos, origem)
     arquivos = []
     for p in origem.rglob("*"):
@@ -106,7 +106,7 @@ def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None,
         if partes & _IGNORAR_PASTAS or p.name.startswith("~$") \
                 or p.name.endswith(_IGNORAR_SUFIXOS):
             continue
-        if fora is not None and tuple(q.lower() for q in rel[:len(fora)]) == fora:
+        if not recorte.aceita(p):
             continue
         if sigilosas and _chave(p.name) in sigilosas:
             continue

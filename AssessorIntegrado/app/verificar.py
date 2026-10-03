@@ -672,6 +672,47 @@ def checar_privacidade_microfone() -> Item:
         _ler_registro(winreg.HKEY_LOCAL_MACHINE, _CHAVE_MICROFONE))
 
 
+def _contem(pai: Path, filho: Path) -> bool:
+    """'filho' é 'pai' ou fica dentro dele (caminhos reais)?"""
+    try:
+        return Path(filho).resolve().is_relative_to(Path(pai).resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+_ACAO_PASTAS = ("Corrija antes de compartilhar o acervo: em Configurações > Geral, use "
+                "\u201cAlterar\u2026\u201d para escolher {}.")
+
+
+def _problema_nas_pastas(cfg) -> tuple[str, str] | None:
+    """(o problema, o que fazer) se a pasta do acervo levaria à IA o que não
+    pode ir; None se está tudo separado.
+
+    Tudo o que está no acervo é lido pela IA (Claude Code, Cowork, ChatGPT
+    Work) e copiado para a nuvem. A regra acervo x sigilosos é a do núcleo
+    (config.conflito_de_pastas), a mesma da tela de Configurações.
+    """
+    from .nucleo import config
+
+    acervo = cfg.pasta_acervo
+    frase = config.conflito_de_pastas(acervo, cfg.pasta_sigilosos)
+    if frase:
+        return (frase + " Do jeito que está, os processos em segredo de justiça iriam para a "
+                "IA junto com o acervo.",
+                _ACAO_PASTAS.format("pastas separadas para o acervo e para os sigilosos (uma "
+                                    "não pode ficar dentro da outra)"))
+    if _contem(acervo, caminhos.RAIZ):
+        return (f"A pasta do acervo ({acervo}) contém a pasta do programa ({caminhos.RAIZ}): os "
+                "registros (com imagens das telas dos portais) e a configuração ficariam ao "
+                "alcance da IA.",
+                _ACAO_PASTAS.format("uma pasta só para o acervo, fora da pasta do programa"))
+    if _contem(acervo, caminhos.LOCAL):
+        return (f"A pasta do acervo ({acervo}) contém a pasta em que o programa guarda as senhas "
+                f"e os perfis do navegador ({caminhos.LOCAL}), que ficariam ao alcance da IA.",
+                _ACAO_PASTAS.format("uma pasta só para o acervo, que não contenha essa pasta"))
+    return None
+
+
 def checar_pastas(cfg) -> Item:
     pastas = [cfg.pasta_acervo, cfg.pasta_processos, cfg.pasta_transcricoes,
               cfg.pasta_sigilosos, caminhos.LOGS]
@@ -690,6 +731,11 @@ def checar_pastas(cfg) -> Item:
         except OSError as erro:
             return Item("Pastas de trabalho", FALHA, f"Não foi possível gravar em {pasta}: {erro}",
                         codigo="pastas", acao="Confira se a pasta existe, se o disco tem espaço e se não está protegido contra gravação.")
+    # Aviso, e não falha: a instalação está boa, e a troca é feita na tela
+    # (nada se perde). Mas o texto diz o que está em jogo.
+    problema = _problema_nas_pastas(cfg)
+    if problema:
+        return Item("Pastas de trabalho", AVISO, problema[0], codigo="pastas", acao=problema[1])
     return Item("Pastas de trabalho", OK,
                 f"As pastas do acervo ({_relativo(cfg.pasta_acervo)}), dos processos sigilosos e dos "
                 "registros aceitam gravação.",
@@ -811,7 +857,7 @@ def _falantes_situacao() -> tuple[bool, str]:
 def checar_falantes(completo: bool = False) -> Item:
     nome = "Separação de falantes (opcional)"
     disponivel, situacao = _falantes_situacao()
-    acao = "Para instalar: Configurações > Transcrição > Instalar componente (cerca de 60 MB)."
+    acao = "Para instalar: Configurações > Transcrição > Instalar o componente (cerca de 60 MB)."
     if not disponivel:
         return Item(nome, AVISO, f"{situacao[:1].upper()}{situacao[1:]}: a revisão final não separa as vozes sozinha.",
                     obrigatorio=False, codigo="falantes", acao=acao)

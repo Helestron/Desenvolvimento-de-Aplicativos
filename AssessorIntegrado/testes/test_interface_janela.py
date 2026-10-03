@@ -59,10 +59,11 @@ class SessaoFalsa:
     """Faz as vezes de transcricao.ao_vivo.SessaoAoVivo (sem microfone nem modelo)."""
 
     def __init__(self, numero, cfg, eventos, *, tipo="", participantes=None, falante="",
-                 pasta=None):
+                 pasta=None, sigiloso=False):
         self.numero, self.cfg, self.eventos = numero, cfg, eventos
         self.falante = falante
         self.tipo = tipo
+        self.sigiloso = sigiloso
         self.modelo = "small"
         self.tempo = 0.0
         self.falas = []
@@ -417,7 +418,8 @@ class TesteJanela(unittest.TestCase):
                                          in self.textos(pagina.faixa)))
         self.assertEqual(self.raiz.clipboard_get(), str(self.cfg.pasta_acervo))
         # conector do Claude Desktop
-        with mock.patch.object(claude, "registrar_mcp", return_value=[self.dir / "x.json"]):
+        with mock.patch.object(claude, "registrar_mcp", return_value=[self.dir / "x.json"]), \
+                mock.patch.object(claude, "claude_desktop_instalado", return_value=True):
             pagina.conectar_claude()
             self.assertTrue(self.bombear(ate=lambda: "Acervo conectado ao Claude Desktop"
                                          in self.textos(pagina.faixa)))
@@ -483,15 +485,23 @@ class TesteJanela(unittest.TestCase):
             progresso(0.5, "Transcrevendo")
             saida.write_bytes(b"PK")
             return saida
+        from app.interface import dialogos
+
         with mock.patch("app.interface.pagina_transcrever.filedialog.askopenfilename",
                         return_value=str(gravacao)), \
                 mock.patch("app.interface.servicos.transcrever_gravacao",
                            side_effect=transcrever) as chamada:
             pagina.transcrever_arquivo()
+            # a confirmação (com a caixa de segredo de justiça) já traz o número
+            caixa = next(w for w in self.raiz.winfo_children()
+                         if isinstance(w, dialogos.DialogoNumero))
+            self.assertEqual(caixa.texto.get(), "0700123-83.2024.8.02.0001")
+            caixa.confirmar()
             self.assertTrue(self.bombear(ate=lambda: "Transcrição pronta"
                                          in self.textos(pagina.faixa)))
         self.assertEqual(chamada.call_args[0][1].formatado, "0700123-83.2024.8.02.0001",
                          "o número vem do nome do arquivo")
+        self.assertFalse(chamada.call_args[1]["sigiloso"])
         diario = self.dir / "x.jsonl"
         pagina._mostrar_recuperaveis([diario])
         with mock.patch("app.interface.servicos.recuperar", return_value=saida):

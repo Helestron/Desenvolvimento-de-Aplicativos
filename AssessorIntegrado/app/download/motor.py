@@ -14,7 +14,9 @@ O que o motor garante, seja qual for o portal:
   acervo compartilhado com a IA - o PDF, a capa e as gravações. O portal
   grava numa pasta provisória fora do acervo, e nada entra no acervo antes
   de se saber se é sigiloso; uma vez sigiloso, sempre sigiloso (e a cópia
-  de outro lote, de quando era público, também sai do acervo);
+  de outro lote, de quando era público, também sai do acervo, assim como
+  as transcrições de audiência já feitas, que vão para
+  <sigilosos>\\Transcricoes);
 * falha passageira é repetida; sessão que cai é refeita; login recusado
   encerra só o grupo daquele tribunal, com o motivo em cada linha;
 * tribunal em transição (TJAL, TJSP, TJAC: e-SAJ e eProc): o que não for
@@ -239,6 +241,57 @@ def _mesmo_volume(a: Path, b: Path) -> bool:
         return False
 
 
+def _mesma_pasta(a: Path, b: Path) -> bool:
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except (OSError, RuntimeError):
+        return Path(a) == Path(b)
+
+
+def _do_processo(nome_do_arquivo: str, nome: str) -> bool:
+    """O arquivo da pasta de transcrições é deste processo?
+
+    "<nome>.docx", "<nome> (2).docx", "<nome> 2026-09-16 14h00.flac": sim. O
+    do incidente ("<nome>-01.docx") não é do principal, nem o do principal é
+    do incidente - o nome é conferido também como número CNJ.
+    """
+    depois = nome_do_arquivo[len(nome):len(nome) + 1]
+    if not nome_do_arquivo.startswith(nome) or depois not in ("", " ", "."):
+        return False
+    try:
+        return cnj.ler_nome_arquivo(nome_do_arquivo).nome_arquivo == nome
+    except cnj.NumeroInvalido:
+        return False
+
+
+def _transcricoes_do_processo(pasta: Path, nome: str) -> list[list[Path]]:
+    """Os arquivos do processo na pasta (sem subpastas), agrupados pelo nome
+    sem a extensão: a gravação, o diário e a trava de uma audiência
+    ("<nome> 2026-09-16 14h00.flac/.jsonl/.trava") andam juntos."""
+    grupos: OrderedDict[str, list[Path]] = OrderedDict()
+    try:
+        arquivos = sorted(p for p in Path(pasta).iterdir()
+                          if p.is_file() and _do_processo(p.name, nome))
+    except OSError:
+        return []
+    for arquivo in arquivos:
+        grupos.setdefault(arquivo.stem, []).append(arquivo)
+    return list(grupos.values())
+
+
+def _nome_livre_do_grupo(pasta: Path, grupo: list[Path]) -> str:
+    """Nome (sem a extensão) que não existe na pasta para NENHUM arquivo do
+    grupo: a gravação e o diário continuam com o mesmo nome, e nada no
+    destino é sobrescrito."""
+    base = grupo[0].stem
+    finais = [a.name[len(base):] for a in grupo]
+    candidato, n = base, 2
+    while any((pasta / f"{candidato}{final}").exists() for final in finais):
+        candidato = f"{base} ({n})"
+        n += 1
+    return candidato
+
+
 # ------------------------------------------------------------------ motor
 class _Lote:
     def __init__(self, numeros, destino, opcoes, ctx, senhas, cofre,
@@ -270,6 +323,7 @@ class _Lote:
         self._ultimo_preparo = 0.0
         # Cópias de sigilosos que não puderam sair do acervo (arquivo preso).
         self._sigilo_no_acervo: list[str] = []
+        self._cfg_lida = None            # config.ini, quando quem chama não deu cfg
         # Uma vez sigiloso, sempre sigiloso: o que relatórios anteriores
         # deste lote já apuraram (a página nem sempre repete o aviso).
         self._sigilosos_sabidos = self._ler_sigilos_anteriores()
@@ -571,6 +625,7 @@ class _Lote:
             if lote == self.destino:
                 r.arquivo = str(novo)
                 r.detalhe = _juntar(r.detalhe, "levado agora para a pasta de sigilosos")
+        self._levar_transcricoes(r, n)
         acervo = getattr(self.cfg, "pasta_acervo", None)
         if acervo is None and self.destino.parent.name.lower() == "processos":
             acervo = self.destino.parent.parent
@@ -594,6 +649,96 @@ class _Lote:
                 + " para a pasta de sigilosos (arquivo aberto?): "
                 + ", ".join(f"{p.parent.name}\\{p.name}" for p in presos)
                 + (". Mova-a" if uma else ". Mova-as") + " à mão antes de compartilhar o acervo")
+
+    def _config(self):
+        """A configuração do programa: a recebida ou, sem ela, a do config.ini."""
+        if self.cfg is not None:
+            return self.cfg
+        if self._cfg_lida is None:
+            from ..nucleo import config
+            self._cfg_lida = config.carregar()
+        return self._cfg_lida
+
+    def _levar_transcricoes(self, r: ResultadoProcesso, n: Numero) -> None:
+        """Leva para <sigilosos>/Transcricoes as transcrições de audiência do
+        processo sigiloso que ficaram no acervo (<acervo>/Transcricoes): os
+        DOCX e, em _audio, a gravação, o diário e a trava. Nada no destino é
+        sobrescrito (nome livre); o que não puder sair conta como sigiloso
+        no acervo, como o PDF preso."""
+        try:
+            from ..transcricao import documento
+            cfg = self._config()
+            origem = Path(cfg.pasta_transcricoes)
+            alvo = Path(documento.pasta_das_transcricoes(cfg, sigiloso=True))
+        except Exception as erro:          # configuração sem as pastas (dublê, ini ilegível)
+            log.debug("transcrições do sigiloso: pastas indisponíveis (%s)", erro)
+            return
+        if _mesma_pasta(origem, alvo) or not origem.is_dir():
+            return
+        nome = n.nome_arquivo
+        pares = [(grupo, alvo) for grupo in _transcricoes_do_processo(origem, nome)]
+        pares += [(grupo, alvo / "_audio")
+                  for grupo in _transcricoes_do_processo(origem / "_audio", nome)]
+        if not pares:
+            return
+        try:
+            from ..transcricao.ao_vivo import sessao_aberta
+        except ImportError:                # sem o módulo de transcrição, não há gravação aberta
+            def sessao_aberta(_diario):
+                return False
+        gravando = any(sessao_aberta(a) for grupo, _ in pares for a in grupo
+                       if a.suffix.lower() == ".jsonl")
+        levados = 0
+        presos: list[Path] = []
+        for grupo, pasta in pares:
+            if gravando:
+                # A audiência deste processo está sendo gravada agora: tirar
+                # os arquivos do lugar a estragaria. Ficam para depois.
+                presos += grupo
+                continue
+            livre = _nome_livre_do_grupo(pasta, grupo)
+            base = grupo[0].stem
+            for arquivo in grupo:
+                destino = pasta / f"{livre}{arquivo.name[len(base):]}"
+                try:
+                    _mover(arquivo, destino)
+                except Exception as erro:
+                    log.warning("    não consegui levar %s para a pasta de sigilosos (%s)",
+                                arquivo.name, erro)
+                    presos.append(arquivo)
+                    continue
+                levados += 1
+                log.info("    transcrição do sigiloso levada para a pasta de sigilosos: %s -> %s",
+                         arquivo.name, destino)
+        if levados:
+            self._retirou_do_acervo = True
+            r.detalhe = _juntar(r.detalhe, (
+                "1 arquivo de transcrição de audiência levado" if levados == 1
+                else f"{levados} arquivos de transcrição de audiência levados")
+                + " para a pasta de sigilosos")
+        if not presos:
+            return
+        self._sigilo_no_acervo += [str(p) for p in presos]
+        log.error("ATENÇÃO: %s é sigiloso e a transcrição dele NÃO pôde ser tirada do "
+                  "acervo%s: %s", n.formatado,
+                  " (a audiência está sendo gravada)" if gravando else "",
+                  ", ".join(str(p) for p in presos))
+        if r.situacao in (OK, JA_BAIXADO):
+            r.situacao = ERRO
+        um = len(presos) == 1
+        if gravando:
+            r.detalhe = _juntar(
+                r.detalhe, "ATENÇÃO: processo sigiloso com audiência sendo gravada agora; a "
+                "transcrição fica no acervo até a gravação terminar. Depois, clique em 'Tentar "
+                "de novo' para levá-la à pasta de sigilosos antes de compartilhar o acervo")
+        else:
+            r.detalhe = _juntar(
+                r.detalhe, "ATENÇÃO: processo sigiloso com "
+                + ("arquivo de transcrição no acervo que não pôde ser levado" if um
+                   else "arquivos de transcrição no acervo que não puderam ser levados")
+                + " para a pasta de sigilosos (arquivo aberto?): "
+                + ", ".join(p.name for p in presos)
+                + (". Mova-o" if um else ". Mova-os") + " à mão antes de compartilhar o acervo")
 
     def _area_provisoria(self, n: Numero) -> Path:
         """A pasta provisória deste processo, vazia."""

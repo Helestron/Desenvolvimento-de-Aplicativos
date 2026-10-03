@@ -767,7 +767,7 @@ function Etapa-Falantes {
     if ((Ler-Estado 'falantes') -ne $hash) {
         $codigo = Instalar-Requisitos $RequisitosFalantes
         if ($codigo -ne 0) {
-            Concluir-Etapa 'aviso' 'O componente não foi instalado.' 'O programa funciona sem ele (os falantes são marcados pelos botões F1 a F8). Para tentar de novo: Configurações > Transcrição > Instalar componente, ou o INSTALAR.bat.'
+            Concluir-Etapa 'aviso' 'O componente não foi instalado.' 'O programa funciona sem ele (os falantes são marcados pelos botões F1 a F8). Para tentar de novo: Configurações > Transcrição > Instalar o componente, ou o INSTALAR.bat.'
             return
         }
         Gravar-Estado 'falantes' $hash
@@ -776,7 +776,7 @@ function Etapa-Falantes {
     if ($codigo -eq 0 -and (Falantes-Disponivel)) {
         Concluir-Etapa 'ok' 'Separação de falantes pronta.'
     } else {
-        Concluir-Etapa 'aviso' 'Os modelos de voz do componente não foram baixados.' 'O programa funciona sem eles. Para tentar de novo: Configurações > Transcrição > Instalar componente, ou o INSTALAR.bat.'
+        Concluir-Etapa 'aviso' 'Os modelos de voz do componente não foram baixados.' 'O programa funciona sem eles. Para tentar de novo: Configurações > Transcrição > Instalar o componente, ou o INSTALAR.bat.'
     }
 }
 

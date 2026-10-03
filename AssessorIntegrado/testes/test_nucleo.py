@@ -173,6 +173,39 @@ class TestConfig(unittest.TestCase):
                                   (base / "Acervo", base / "Acervo")):
             self.assertIn("compartilhado com a IA", config.conflito_de_pastas(acervo, sigilosos))
 
+    def test_definir_insiste_quando_o_arquivo_esta_preso(self):
+        # Regressão: o antivírus ou o OneDrive seguram o config.ini por um
+        # instante, e o os.replace falhava de primeira com "acesso negado".
+        c = config.Config(self.arq)
+        original = config.os.replace
+        falhas = [PermissionError(13, "Acesso negado")] * 2
+
+        def replace(origem, destino):
+            if falhas:
+                raise falhas.pop()
+            return original(origem, destino)
+
+        with mock.patch.object(config.os, "replace", replace), \
+                mock.patch.object(config.time, "sleep") as dormir:
+            c.definir("unidade", "comarca", "Maceió")
+        self.assertEqual(dormir.call_count, 2)
+        self.assertEqual(config.Config(self.arq).texto("unidade", "comarca"), "Maceió")
+
+    def test_definir_com_arquivo_preso_de_vez_explica_e_nao_deixa_resto(self):
+        c = config.Config(self.arq)
+        with mock.patch.object(config.os, "replace", side_effect=PermissionError(13, "Acesso negado")), \
+                mock.patch.object(config.time, "sleep") as dormir:
+            with self.assertRaises(PermissionError) as ctx:
+                c.definir("unidade", "comarca", "Maceió")
+        self.assertEqual(dormir.call_count, config.TENTATIVAS_TROCA - 1)
+        self.assertGreaterEqual(config.TENTATIVAS_TROCA * config.ESPERA_TROCA_S, 2)
+        mensagem = str(ctx.exception)
+        self.assertIn("Não consegui salvar a configuração", mensagem)
+        self.assertIn("antivírus, OneDrive", mensagem)
+        self.assertNotIn("Errno", mensagem)
+        self.assertFalse(self.arq.with_name(self.arq.name + ".tmp").exists())
+        self.assertEqual(c.texto("unidade", "comarca"), "")
+
     def test_valor_invalido_vira_padrao(self):
         self.arq.write_text("[download]\npausa_entre_processos = muito\npular_baixados = talvez\n",
                             encoding="utf-8")
@@ -216,6 +249,24 @@ class TestListas(unittest.TestCase):
     def test_segunda_coluna_nao_vira_senha(self):
         lei = listas.ler_texto("Por fim 0800072-12.2024.8.02.0056 ; Audiência\n")
         self.assertEqual(lei.senhas, {})
+        # tabela colada do Excel, sem o cabeçalho "Senha"
+        lei = listas.ler_texto("0800072-12.2024.8.02.0056\tCível\n"
+                               "0700123-45.2024.8.02.0001\tFamília\n")
+        self.assertEqual(len(lei.processos), 2)
+        self.assertEqual(lei.senhas, {})
+
+    def test_numero_e_senha_em_todas_as_linhas_sem_cabecalho(self):
+        # Só linhas "número ; senha": o leitor de CSV pegava o atalho e perdia
+        # as senhas.
+        lei = listas.ler_texto("0800072-12.2024.8.02.0056 ; SENHA1\n"
+                               "0700123-45.2024.8.02.0001 ; SENHA2\n")
+        self.assertEqual(lei.senhas, {"0800072-12.2024.8.02.0056": "SENHA1",
+                                      "0700123-45.2024.8.02.0001": "SENHA2"})
+        (self.d / "s.csv").write_text("0800072-12.2024.8.02.0056;XY99\n"
+                                      "0700123-45.2024.8.02.0001;ZW77\n", encoding="utf-8")
+        lei = listas.ler_arquivo(self.d / "s.csv")
+        self.assertEqual(lei.senhas, {"0800072-12.2024.8.02.0056": "XY99",
+                                      "0700123-45.2024.8.02.0001": "ZW77"})
 
     def test_docx_na_ordem_do_documento(self):
         from docx import Document

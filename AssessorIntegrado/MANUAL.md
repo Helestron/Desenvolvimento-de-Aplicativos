@@ -66,9 +66,21 @@ relatório do lote fica em `_controle\relatorio.csv` (abre no Excel).
 - O que já foi baixado não é baixado de novo (pode deixar a lista crescer).
 - **Parar** interrompe ao fim do processo atual; o que faltou é retomado depois.
 - Processo dependente (incidente) sai com o sufixo: `...0001-01.pdf`.
-- **Segredo de justiça**: o processo sigiloso vai para a pasta `Sigilosos`,
-  **fora** do acervo que é compartilhado com a IA. Se a relação trouxer a senha
-  do processo (`número ; senha`, ou uma coluna "senha"), ela é usada.
+- **Segredo de justiça**: com a opção **Separar os sigilosos** marcada (o
+  padrão), o processo sigiloso vai para a pasta `Sigilosos\<nome da relação>\`,
+  **fora** do acervo que é compartilhado com a IA. Vai para lá também o
+  processo público que tenha alguma **peça sigilosa** (no e-SAJ, a peça
+  marcada como sigilosa na Pasta Digital), porque o PDF a traz inteira.
+  O relatório do lote que fica no acervo não identifica os sigilosos (no
+  lugar do número, a linha deles diz "(processo sigiloso)"); o relatório
+  completo, com os números, fica em
+  `Sigilosos\<nome da relação>\_controle\relatorio.csv`.
+  A transcrição de audiência de processo sigiloso fica em
+  `Sigilosos\Transcricoes` (veja "Transcrever audiência", abaixo); a que já
+  estava no acervo quando o download descobriu o sigilo é levada para lá,
+  com a gravação. Se a
+  relação trouxer a senha do processo (`número ; senha`, ou uma coluna
+  "senha"), ela é usada.
 - **Tribunais em transição** (TJAL, TJSP e TJAC, do e-SAJ para o eProc): o programa
   procura primeiro no e-SAJ e, não achando, no eProc.
 - No eProc, os autos são montados documento a documento, na ordem dos eventos,
@@ -79,7 +91,12 @@ relatório do lote fica em `_controle\relatorio.csv` (abre no Excel).
 ## 2. Transcrever audiência
 
 1. Clique em **Transcrever audiência**.
-2. Informe o **número do processo** — é ele que dá nome ao arquivo.
+2. Informe o **número do processo** — é ele que dá nome ao arquivo. Se o
+   processo estiver em **segredo de justiça**, marque a caixa **Processo em
+   segredo de justiça**, logo abaixo do número: a transcrição e a gravação
+   vão para `Sigilosos\Transcricoes`, fora do acervo compartilhado com a IA.
+   Quando os autos já estão na pasta dos sigilosos, a caixa vem marcada e
+   travada.
 3. Escolha o **microfone** e clique em **Testar**; fale algo: a barra do
    medidor deve se mexer.
 4. Clique em **Iniciar**. O texto aparece na tela poucos segundos depois de
@@ -93,7 +110,9 @@ relatório do lote fica em `_controle\relatorio.csv` (abre no Excel).
 **O que sai:** `Acervo\Transcricoes\<número do processo>.docx`, com a ficha da
 audiência (processo, data, horário, unidade, participantes), cada fala com o
 falante e a hora `[hh:mm:ss]` e o aviso de que a transcrição é automática. A
-gravação fica guardada em `Transcricoes\_audio`, para conferência.
+gravação fica guardada em `Transcricoes\_audio`, para conferência. Processo em
+segredo de justiça: `Sigilosos\Transcricoes\<número do processo>.docx` e,
+em `Sigilosos\Transcricoes\_audio`, a gravação.
 
 **Bom saber**
 - A transcrição funciona **sem internet**, no próprio computador: o áudio da
@@ -105,7 +124,8 @@ gravação fica guardada em `Transcricoes\_audio`, para conferência.
   minutos). Com o componente de separação de vozes instalado, a revisão
   também separa os falantes automaticamente.
 - Para transcrever uma **gravação já existente** (por exemplo, a mídia baixada
-  do processo), use **Transcrever uma gravação…**.
+  do processo), use **Transcrever uma gravação…**. A janela que confirma o
+  número do processo traz a mesma caixa **Processo em segredo de justiça**.
 - Se, durante o teste, o medidor não se mexer, o Windows pode estar
   bloqueando o microfone:
   *Configurações > Privacidade e segurança > Microfone > Permitir que
@@ -155,7 +175,9 @@ oficial da Anthropic (sem administrador). Requer plano pago do Claude.
 - **Abrir no Codex** (se instalado) abre o agente da OpenAI no terminal, dentro
   da pasta.
 - **Gerar pacote para o ChatGPT** monta uma pasta e um `.zip` com os autos, os
-  textos e as instruções, para anexar numa conversa ou num Projeto.
+  textos, as transcrições de audiência (quando houver), o índice e as
+  instruções, para anexar numa conversa ou num Projeto. O que está na pasta
+  de sigilosos fica de fora.
 
 ### Pela nuvem (web e celular)
 Em **Espelho na nuvem (OneDrive ou Google Drive)**, escolha a pasta na lista
@@ -175,7 +197,7 @@ sigilosos e as gravações das audiências não são copiados.
 | `Acervo\Transcricoes\` | as transcrições (`.docx`) e, em `_audio`, as gravações |
 | `Acervo\_ia\` | textos extraídos para a IA (pode apagar: é refeito) |
 | `Acervo\Produtos\` | onde a IA grava o que produzir |
-| `Sigilosos\` | processos em segredo de justiça (fora do compartilhamento) |
+| `Sigilosos\` | processos em segredo de justiça (fora do compartilhamento) e, em `Transcricoes\`, as transcrições das audiências deles |
 | `Logs\` | histórico; `diagnostico\` guarda print e HTML quando um portal muda |
 
 As pastas podem ser trocadas em **Configurações > Geral**. A pasta dos
