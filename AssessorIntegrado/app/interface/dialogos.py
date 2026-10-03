@@ -368,16 +368,26 @@ class DialogoLink(Dialogo):
 
 # ========================================================= número do processo
 class DialogoNumero(Dialogo):
-    """Pede o número do processo (gravação cujo nome não traz o número)."""
+    """Pede (ou confirma) o número do processo de uma gravação.
+
+    Com 'sigilo' - função (Numero) -> bool que diz se os autos estão na pasta
+    de sigilosos -, mostra também a caixa "Processo em segredo de justiça",
+    pré-marcada por ela, e chama ao_confirmar(numero, sigiloso). Sem ela,
+    ao_confirmar(numero). 'motivo_fixo' marca e trava a caixa (ex.: a
+    gravação já está na pasta de sigilosos).
+    """
 
     largura = 520
 
-    def __init__(self, raiz, titulo: str, mensagem: str, ao_confirmar, inicial: str = ""):
+    def __init__(self, raiz, titulo: str, mensagem: str, ao_confirmar, inicial: str = "",
+                 sigilo=None, motivo_fixo: str = ""):
         super().__init__(raiz, titulo, mensagem)
         from ..nucleo import cnj
+        from .componentes import CaixaSigilo
 
         self._cnj = cnj
         self.ao_confirmar = ao_confirmar
+        self._sigilo = sigilo
         self.texto = tk.StringVar(value=inicial)
         self.e = ttk.Entry(self.corpo, textvariable=self.texto, font=estilo.FONTE_TRANSCRICAO)
         self.e.grid(row=0, column=0, sticky="ew")
@@ -385,6 +395,10 @@ class DialogoNumero(Dialogo):
         self.dica = ttk.Label(self.corpo, text="No padrão CNJ: 0000000-00.0000.0.00.0000",
                               foreground=estilo.TINTA_FRACA, font=estilo.FONTE_NOTA)
         self.dica.grid(row=1, column=0, sticky="w", pady=(px(6), 0))
+        self.caixa_sigilo = None
+        if sigilo is not None:
+            self.caixa_sigilo = CaixaSigilo(self.corpo, motivo_fixo=motivo_fixo)
+            self.caixa_sigilo.grid(row=2, column=0, sticky="ew", pady=(px(12), 0))
         self.ok, = self.botoes(("Cancelar", self.cancelar, "apoio"),
                                ("Continuar", self.confirmar, "principal"))[1:]
         self.texto.trace_add("write", lambda *_: self._validar())
@@ -398,8 +412,16 @@ class DialogoNumero(Dialogo):
             self.ok.state(["disabled"])
             self.dica.configure(text="No padrão CNJ: 0000000-00.0000.0.00.0000",
                                 foreground=estilo.TINTA_FRACA)
+            if self.caixa_sigilo is not None:
+                self.caixa_sigilo.presumir(False)
             return None
         self.ok.state(["!disabled"])
+        if self.caixa_sigilo is not None:
+            try:
+                autos = bool(self._sigilo(n))
+            except Exception:
+                autos = False
+            self.caixa_sigilo.presumir(autos)
         if n.digito_confere:
             self.dica.configure(text=f"{n.formatado} · número conferido", foreground=estilo.VERDE)
         else:
@@ -411,8 +433,12 @@ class DialogoNumero(Dialogo):
         n = self._validar()
         if n is None:
             return
+        sigiloso = self.caixa_sigilo.marcada if self.caixa_sigilo is not None else None
         self.fechar()
-        self.ao_confirmar(n)
+        if sigiloso is None:
+            self.ao_confirmar(n)
+        else:
+            self.ao_confirmar(n, sigiloso)
 
 
 # ======================================================== salvando ao fechar
