@@ -65,6 +65,16 @@ ESQUEMA: list[tuple[str, str, str, str]] = [
 
     ("esaj", "login", "senha", "Como entrar no e-SAJ: senha, certificado ou manual."),
     ("eproc", "login", "senha", "Como entrar no eProc: senha ou manual."),
+    ("eproc", "modo", "documentos",
+     "Como montar o PDF: documentos (baixa peça por peça, na ordem dos eventos,\n"
+     "com marcadores - padrão) ou completo (usa o \"Download Completo\" do\n"
+     "eProc, que o tribunal gera em segundo plano; se demorar, volta para\n"
+     "documentos)."),
+    ("eproc", "espera_completo_minutos", "8",
+     "No modo completo, quanto esperar o tribunal gerar o arquivo."),
+    ("eproc", "perfil", "",
+     "Perfil a escolher depois do login, quando o usuário tem mais de um\n"
+     "(ex.: MAGISTRADO). Em branco = o programa pergunta na janela."),
 
     ("transcricao", "modelo_ao_vivo", "small",
      "Modelo da transcrição ao vivo: base (computador fraco), small\n"
@@ -95,6 +105,13 @@ ESQUEMA: list[tuple[str, str, str, str]] = [
      "Texto que orienta vocabulário e pontuação. MANTENHA ACENTUADO: o modelo\n"
      "imita a grafia do contexto; sem acento, a transcrição sai sem acento."),
     ("transcricao", "threads", "0", "Núcleos usados. 0 = metade dos disponíveis."),
+
+    ("interface", "assistente_concluido", "false",
+     "As chaves desta seção são gravadas pela própria tela."),
+    ("interface", "tribunal", "", ""),
+    ("interface", "pasta_relacoes", "", ""),
+    ("interface", "ultimo_processo", "", ""),
+    ("interface", "tipo_audiencia", "", ""),
 
     ("compartilhar", "pasta_nuvem", "",
      "Pasta do OneDrive ou do Google Drive para espelhar o acervo (os\n"

@@ -462,6 +462,10 @@ class Assistente(Dialogo):
     def _mostrar_passo(self) -> None:
         for w in self.area.winfo_children():
             w.destroy()
+        # O passo 3 divide a área em duas colunas iguais; voltando dele, os
+        # passos 1 e 2 ficavam espremidos na metade esquerda.
+        self.area.columnconfigure(0, weight=1, uniform="")
+        self.area.columnconfigure(1, weight=0, uniform="")
         titulos = ("Onde você trabalha", "Pasta do acervo", "Seus dados")
         self.rotulo_passo.configure(
             text=f"Passo {self.passo + 1} de {len(self._paginas)} · {titulos[self.passo]}")

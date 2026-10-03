@@ -61,6 +61,19 @@ function Pastas-DeDados {
     }
 }
 
+function Pastas-Protegidas {
+    # Pastas que o desinstalador nunca apaga, nem as que as contêm (ver
+    # Motivo-ParaNaoApagar): as do Windows e as do usuário.
+    $lista = @($env:USERPROFILE, $env:OneDrive, $env:OneDriveCommercial, $env:OneDriveConsumer,
+               $env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramData,
+               $env:APPDATA, $env:LOCALAPPDATA, $env:PUBLIC)
+    foreach ($nome in @('UserProfile', 'Desktop', 'MyDocuments', 'MyPictures', 'MyMusic', 'MyVideos')) {
+        try { $lista += [Environment]::GetFolderPath($nome) } catch { }
+    }
+    if ($env:USERPROFILE) { $lista += (Join-Path $env:USERPROFILE 'Downloads') }
+    return @($lista | Where-Object { $_ })
+}
+
 function Descrever-Pasta {
     # "37 arquivos, 812,4 MB" - para o usuário saber o que está apagando.
     param([string]$Pasta)
@@ -88,7 +101,9 @@ function Remover-ConectoresPeloPython {
               'claude.remover_mcp(); ' +
               'f = getattr(chatgpt, "remover_mcp_codex", None); ' +
               'f() if f else None'
-    $r = Capturar $PythonExe @('-c', $codigo) -Pasta $Raiz -LimiteSegundos 120
+    # -E e -s: um PYTHONHOME/PYTHONPATH deixado por outro programa, ou os
+    # pacotes "do usuário" de outro Python, não podem atrapalhar.
+    $r = Capturar $PythonExe @('-E', '-s', '-c', $codigo) -Pasta $Raiz -LimiteSegundos 120
     return ($r.Codigo -eq 0)
 }
 
@@ -147,6 +162,19 @@ function Mandar-ParaLixeira {
 function Apagar-DadosDoUsuario {
     param([string]$Pasta, [string]$Descricao)
     if (-not (Test-Path -LiteralPath $Pasta)) { return }
+    # O config.ini pode apontar o Acervo para "Documentos", a Área de
+    # Trabalho ou um disco inteiro: essa pasta não é só do programa.
+    $motivo = Motivo-ParaNaoApagar $Pasta $Raiz (Pastas-Protegidas)
+    if ($motivo) {
+        Write-Host ''
+        Mostrar-Aviso ('Mantida: ' + $Pasta)
+        Mostrar-Dica ('Essa pasta ' + $motivo + '; por segurança, o desinstalador não a apaga.')
+        Mostrar-Dica 'Se quiser, apague à mão as subpastas Processos e Transcricoes que estão nela.'
+        if ($script:ModoSilencioso -and $ApagarDados) {
+            $script:Problemas += ('Não apagada por segurança: ' + $Pasta + ' (' + $motivo + ').')
+        }
+        return
+    }
     $resumo = Descrever-Pasta $Pasta
     $apagar = $false
     if ($script:ModoSilencioso) {
@@ -197,13 +225,13 @@ function Desinstalar {
     }
     $dados = Pastas-DeDados
 
-    # Conectores de IA (antes de apagar o runtime: o Python faz melhor).
-    $viaPython = $false
-    try { $viaPython = Remover-ConectoresPeloPython } catch { }
-    if (-not $viaPython) {
-        try { Remover-ConectorClaudeJson } catch { $script:Problemas += ('Conector do Claude: ' + $_.Exception.Message) }
-        try { Remover-ConectorCodexToml } catch { $script:Problemas += ('Conector do ChatGPT: ' + $_.Exception.Message) }
-    }
+    # Conectores de IA (antes de apagar o runtime: o Python faz melhor). A
+    # reserva em PowerShell roda sempre depois: não muda nada no que o Python
+    # já limpou e cobre o que ele não alcançou (Python quebrado, versão antiga
+    # do programa sem a remoção do ChatGPT, arquivo que ele recusou ler).
+    try { $null = Remover-ConectoresPeloPython } catch { }
+    try { Remover-ConectorClaudeJson } catch { $script:Problemas += ('Conector do Claude: ' + $_.Exception.Message) }
+    try { Remover-ConectorCodexToml } catch { $script:Problemas += ('Conector do ChatGPT: ' + $_.Exception.Message) }
     Mostrar-Ok 'Conector do acervo removido do Claude Desktop e do ChatGPT (se existia).'
 
     # Atalhos - só os que apontam para esta pasta.

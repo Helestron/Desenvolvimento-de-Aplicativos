@@ -319,10 +319,21 @@ function Avaliar-Pasta {
         }
     }
     $raizesOneDrive = @($env:OneDrive, $env:OneDriveCommercial, $env:OneDriveConsumer)
-    $local = Avaliar-Local $Raiz $raizesOneDrive (Caminhos-LongosAtivados)
+    $local = Avaliar-Local $Raiz $raizesOneDrive (Caminhos-LongosAtivados) 100 (Pasta-Gravavel $Raiz) (Acento-SemNomeCurto $Raiz)
     if (-not $local.Mover) {
         Mostrar-Ok 'Local adequado: fora do OneDrive e com caminho curto.'
         return $false
+    }
+    # Sem permissão de gravar, instalar aqui é impossível (o runtime fica
+    # dentro da pasta): ou o programa vai para outra pasta, ou nada feito.
+    $impedido = 'Não é possível gravar na pasta do programa.'
+    if ($local.SemGravacao) {
+        Mostrar-Aviso 'Não há permissão para gravar nesta pasta, e o programa guarda dentro dela o'
+        Mostrar-Dica 'Python, as bibliotecas e os registros.'
+    }
+    if ($local.SemNomeCurto) {
+        Mostrar-Aviso 'O caminho desta pasta tem acento, e este disco não oferece nome curto sem'
+        Mostrar-Dica 'acento: o modelo de transcrição não conseguiria abrir os próprios arquivos.'
     }
     if ($local.OneDrive) {
         Mostrar-Aviso 'Esta pasta fica dentro do OneDrive. A sincronização trava arquivos em uso'
@@ -335,25 +346,36 @@ function Avaliar-Pasta {
     if ($local.Rede) {
         Mostrar-Aviso 'Esta pasta fica na rede; o programa precisa estar no próprio computador.'
     }
-    if ($NaoMover) { return $false }
+    if ($NaoMover) {
+        if ($local.SemGravacao) { Bloquear $impedido 'Extraia o ZIP numa pasta sua, por exemplo C:\AssessorIntegrado, e rode o INSTALAR.bat de lá.' }
+        return $false
+    }
     $sugerida = ''
     $candidatas = @()
     foreach ($base in @($env:SystemDrive, $env:USERPROFILE)) {
         if ($base) { $candidatas += (Join-Path $base 'AssessorIntegrado') }
     }
     foreach ($candidata in $candidatas) {
+        # Com acento sem nome curto, o destino tem de ser só ASCII (a pasta
+        # do usuário, "C:\Users\João", teria o mesmo problema).
+        if ($local.SemNomeCurto -and (Tem-Acento $candidata)) { continue }
         if (-not (Esta-NoOneDrive $candidata $raizesOneDrive) -and (Pasta-Gravavel $candidata)) {
             $sugerida = $candidata
             break
         }
     }
-    if (-not $sugerida) { return $false }
+    if (-not $sugerida) {
+        if ($local.SemGravacao) { Bloquear $impedido 'Extraia o ZIP numa pasta sua, por exemplo C:\AssessorIntegrado, e rode o INSTALAR.bat de lá.' }
+        return $false
+    }
     if ($script:ModoSilencioso) {
+        if ($local.SemGravacao) { Bloquear $impedido ('Rode o instalador com -Pasta ' + $sugerida + ', ou extraia o ZIP numa pasta sua.') }
         Mostrar-Dica ('Seguindo aqui (modo silencioso). Para instalar em outra pasta, use -Pasta ' + $sugerida + '.')
         return $false
     }
     $pergunta = 'Instalar em ' + $sugerida + '? (O programa é copiado para lá; esta pasta pode ser apagada depois.)'
     if (-not (Perguntar $pergunta $true)) {
+        if ($local.SemGravacao) { Bloquear $impedido ('Extraia o ZIP numa pasta sua, por exemplo ' + $sugerida + ', e rode o INSTALAR.bat de lá.') }
         Mostrar-Info 'Certo: a instalação continua nesta pasta.'
         return $false
     }
@@ -398,6 +420,20 @@ function Mover-Para {
     return $true
 }
 
+function Processo-AnteriorA {
+    # O processo já existia quando o arquivo foi gravado? O Windows reaproveita
+    # números de processo: a trava de uma instalação interrompida (janela
+    # fechada no meio) pode apontar para um PowerShell aberto depois, que nada
+    # tem com ela - e bloquearia a instalação sem motivo. Na dúvida (sem acesso
+    # à hora de início), considera que sim.
+    param($Processo, [string]$Arquivo)
+    $inicio = $null
+    try { $inicio = $Processo.StartTime } catch { }
+    if ($null -eq $inicio) { return $true }
+    $gravado = [IO.File]::GetLastWriteTime($Arquivo)
+    return ($inicio -le $gravado.AddSeconds(5))
+}
+
 function Tomar-Trava {
     New-Item -ItemType Directory -Force -Path $Runtime | Out-Null
     if (Test-Path -LiteralPath $Trava) {
@@ -405,7 +441,7 @@ function Tomar-Trava {
         try { $dono = [int]([IO.File]::ReadAllText($Trava).Trim()) } catch { }
         if ($dono -gt 0 -and $dono -ne $PID) {
             $outro = Get-Process -Id $dono -ErrorAction SilentlyContinue
-            if ($null -ne $outro -and $outro.ProcessName -match 'powershell') {
+            if ($null -ne $outro -and $outro.ProcessName -match '^(powershell|pwsh)' -and (Processo-AnteriorA $outro $Trava)) {
                 Bloquear 'Outra instalação está em andamento nesta pasta.' 'Espere a outra janela do instalador terminar (ou feche-a) e tente de novo.'
             }
         }
@@ -617,6 +653,11 @@ function Etapa-Python {
         Interromper 'Não foi possível instalar o Python.' 'Confira a internet (o download vem de github.com) e rode o INSTALAR.bat de novo: o que já foi baixado é aproveitado.'
     }
     Gravar-Estado 'python' $script:VersaoPython
+    # Python novo vem sem pacote nenhum: o que o estado dizia das bibliotecas
+    # e da separação de falantes não vale mais (sem isto, o componente de
+    # falantes não seria reinstalado pela etapa 6, que o confere pelo estado).
+    Gravar-Estado 'bibliotecas' ''
+    Gravar-Estado 'falantes' ''
     Concluir-Etapa 'ok' ('Python ' + $script:VersaoPython + ' instalado.')
 }
 
@@ -655,7 +696,13 @@ function Etapa-Bibliotecas {
     }
     $erro = Bibliotecas-Erro
     if ($erro) {
-        Interromper ('As bibliotecas foram instaladas, mas não carregam: ' + $erro) 'Rode o INSTALAR.bat de novo. Se o erro falar em DLL, reinicie o computador antes; se persistir, envie o registro da instalação ao suporte.'
+        # Não interrompe: uma DLL que não carrega (processador antigo para a
+        # transcrição, antivírus que reteve um arquivo) costuma afetar uma
+        # função só. A instalação segue - pastas, atalhos - e a verificação
+        # final aponta o componente e o que fazer. O estado não é gravado:
+        # a próxima execução confere tudo de novo.
+        Concluir-Etapa 'falha' ('As bibliotecas foram instaladas, mas não carregam: ' + $erro) 'Veja a verificação final, adiante. Se o erro falar em DLL, reinicie o computador e rode o INSTALAR.bat de novo; se persistir, envie o registro da instalação ao suporte.'
+        return
     }
     $script:BibliotecasProntas = $true
     Gravar-Estado 'bibliotecas' $hash
@@ -951,20 +998,23 @@ if ($env:ASSESSOR_INSTALADOR_DUBLES -and (Test-Path -LiteralPath $env:ASSESSOR_I
 $codigoSaida = 0
 try {
     Preparar-Console
-    New-Item -ItemType Directory -Force -Path $Logs | Out-Null
+    # Numa pasta sem permissão de gravação não há registro - e isso não pode
+    # derrubar o instalador com erro em inglês: a etapa 1 explica e oferece
+    # outra pasta.
     try {
+        New-Item -ItemType Directory -Force -Path $Logs | Out-Null
         Start-Transcript -LiteralPath $script:ArquivoLog -Force | Out-Null
         $script:Transcrevendo = $true
     } catch { }
     if ($ModeloAoVivo) {
-        $script:Modelo = $ModeloAoVivo.Trim().ToLowerInvariant()
+        $script:Modelo = Nome-DoModelo $ModeloAoVivo
         if (-not $TamanhoModelos.ContainsKey($script:Modelo)) {
             Bloquear ('Modelo desconhecido: ' + $ModeloAoVivo + '.') 'Use -ModeloAoVivo com base, small, medium ou large-v3-turbo.'
         }
     } else {
         $ini = Join-Path $Raiz 'config.ini'
         if (Test-Path -LiteralPath $ini) {
-            $configurado = (Ler-ValorDoIni ([IO.File]::ReadAllText($ini, [Text.Encoding]::UTF8)) 'transcricao' 'modelo_ao_vivo').ToLowerInvariant()
+            $configurado = Nome-DoModelo (Ler-ValorDoIni ([IO.File]::ReadAllText($ini, [Text.Encoding]::UTF8)) 'transcricao' 'modelo_ao_vivo')
             if ($TamanhoModelos.ContainsKey($configurado)) { $script:Modelo = $configurado }
         }
     }

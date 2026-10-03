@@ -119,18 +119,116 @@ function Avaliar-Local {
     # (onnxruntime\tools\...\__pycache__\...cpython-312.pyc) tem cerca de
     # 160 caracteres a partir da pasta do programa, e o Windows, sem o
     # "LongPathsEnabled" (que só o administrador liga), para em 260.
+    # $Gravavel = $false: sem permissão de gravar (ZIP extraído em "Arquivos
+    # de Programas" pelo administrador, ou numa pasta de rede só de leitura) -
+    # aí não há como instalar no lugar: o runtime fica dentro da pasta.
+    # $SemNomeCurto = $true: caminho com acento num disco sem nomes curtos
+    # 8.3 (ver Acento-SemNomeCurto) - o modelo de transcrição não abriria.
     param([string]$Caminho, [string[]]$RaizesOneDrive = @(), [bool]$CaminhosLongos = $false,
-          [int]$Limite = 100)
+          [int]$Limite = 100, [bool]$Gravavel = $true, [bool]$SemNomeCurto = $false)
     $noOneDrive = Esta-NoOneDrive $Caminho $RaizesOneDrive
     $longo = ($Caminho.Length -gt $Limite) -and (-not $CaminhosLongos)
     $rede = $Caminho.StartsWith('\\')
     return [pscustomobject]@{
-        OneDrive    = $noOneDrive
-        Comprimento = $Caminho.Length
-        Longo       = $longo
-        Rede        = $rede
-        Mover       = ($noOneDrive -or $longo -or $rede)
+        OneDrive     = $noOneDrive
+        Comprimento  = $Caminho.Length
+        Longo        = $longo
+        Rede         = $rede
+        SemGravacao  = (-not $Gravavel)
+        SemNomeCurto = $SemNomeCurto
+        Mover        = ($noOneDrive -or $longo -or $rede -or (-not $Gravavel) -or $SemNomeCurto)
     }
+}
+
+function Tem-Acento {
+    # Algum caractere fora do ASCII no texto?
+    param([AllowEmptyString()][string]$Texto)
+    return ([string]$Texto -match '[^\x00-\x7F]')
+}
+
+function Acento-SemNomeCurto {
+    # $true quando o caminho tem acento e o Windows não oferece para ele um
+    # nome curto 8.3 só em ASCII (C:\Users\JOO~1\...). As bibliotecas em C++
+    # do modelo de transcrição (CTranslate2) abrem arquivos com o caminho em
+    # ANSI; o programa contorna o acento com o nome curto, mas há discos em
+    # que a criação de nomes curtos está desligada - e então o modelo "não
+    # existe". Na dúvida (sem COM, pasta inexistente), $false: só avisa quem
+    # tem certeza.
+    param([string]$Caminho)
+    if (-not (Tem-Acento $Caminho)) { return $false }
+    try {
+        $fso = New-Object -ComObject Scripting.FileSystemObject
+        try {
+            $curto = [string]$fso.GetFolder($Caminho).ShortPath
+        } finally {
+            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($fso)
+        }
+        return (Tem-Acento $curto)
+    } catch {
+        return $false
+    }
+}
+
+function Nome-DoModelo {
+    # Como transcricao.modelos.nome_canonico: aceita os apelidos que o
+    # programa aceita no config.ini (inclusive em português, com ou sem acento).
+    param([AllowEmptyString()][AllowNull()][string]$Nome)
+    $n = ([string]$Nome).Trim().ToLowerInvariant()
+    $apelidos = @{
+        'turbo' = 'large-v3-turbo'; 'large-turbo' = 'large-v3-turbo'; 'large-v3turbo' = 'large-v3-turbo'
+        'pequeno' = 'small'; 'medio' = 'medium'; 'médio' = 'medium'; 'basico' = 'base'; 'básico' = 'base'
+    }
+    if ($apelidos.ContainsKey($n)) { return $apelidos[$n] }
+    return $n
+}
+
+function Normalizar-Caminho {
+    # Caminho com "\", sem "." nem "..", sem barra no fim - para comparar
+    # pastas sem depender do disco (a função é testada também fora do Windows).
+    param([AllowEmptyString()][AllowNull()][string]$Caminho)
+    $t = ([string]$Caminho).Trim() -replace '/', '\'
+    $prefixo = ''
+    if ($t.StartsWith('\\')) { $prefixo = '\\'; $t = $t.Substring(2) }
+    elseif ($t.StartsWith('\')) { $prefixo = '\'; $t = $t.Substring(1) }
+    $partes = New-Object System.Collections.Generic.List[string]
+    foreach ($s in $t.Split([char]'\')) {
+        if ($s -eq '' -or $s -eq '.') { continue }
+        if ($s -eq '..') {
+            # Nunca sobe acima do disco ("C:") nem do servidor de rede.
+            $minimo = 0
+            if ($prefixo -eq '\\' -or ($partes.Count -gt 0 -and $partes[0] -match '^[A-Za-z]:$')) { $minimo = 1 }
+            if ($partes.Count -gt $minimo) { $partes.RemoveAt($partes.Count - 1) }
+            continue
+        }
+        $partes.Add($s)
+    }
+    return ($prefixo + ($partes -join '\'))
+}
+
+function Motivo-ParaNaoApagar {
+    # Por que o desinstalador NÃO pode apagar esta pasta de dados ('' quando
+    # pode). O Acervo e os Sigilosos podem ter sido apontados, em
+    # Configurações, para uma pasta ampla - um disco inteiro, "Documentos", a
+    # Área de Trabalho, a pasta do usuário, o OneDrive, ou a pasta acima do
+    # programa -, e apagá-la levaria junto tudo o que o usuário guarda ali.
+    # $Protegidas: pastas do Windows e do usuário (passadas por quem chama,
+    # para a função continuar pura e testável).
+    param([string]$Pasta, [string]$Raiz, [string[]]$Protegidas = @())
+    $p = Normalizar-Caminho $Pasta
+    if (-not $p -or $p -eq '\' -or $p -match '^[A-Za-z]:$' -or $p -match '^\\\\[^\\]+(\\[^\\]+)?$') {
+        return 'é a raiz de um disco ou de um compartilhamento de rede'
+    }
+    $pBarra = $p.ToLowerInvariant() + '\'
+    if ($Raiz) {
+        $r = (Normalizar-Caminho $Raiz).ToLowerInvariant() + '\'
+        if ($r.StartsWith($pBarra, [StringComparison]::Ordinal)) { return 'contém a pasta do próprio programa' }
+    }
+    foreach ($x in @($Protegidas)) {
+        if ([string]::IsNullOrWhiteSpace($x)) { continue }
+        $xBarra = (Normalizar-Caminho $x).ToLowerInvariant() + '\'
+        if ($xBarra.StartsWith($pBarra, [StringComparison]::Ordinal)) { return ('é (ou contém) uma pasta do Windows ou do usuário: ' + $x) }
+    }
+    return ''
 }
 
 # ------------------------------------------------- arquivos de texto/JSON
@@ -171,10 +269,15 @@ function Ler-ValorDoIni {
 
 function Resolver-Pasta {
     # Como caminhos.resolver(): relativo à pasta do programa, ou absoluto;
-    # %VARIAVEIS% do Windows são expandidas.
+    # %VARIAVEIS% do Windows e "~" (pasta do usuário) são expandidos.
     param([AllowEmptyString()][string]$Valor, [string]$Padrao, [string]$Raiz)
     $texto = [Environment]::ExpandEnvironmentVariables(([string]$Valor).Trim())
     if (-not $texto) { $texto = $Padrao }
+    if ($texto -eq '~' -or $texto.StartsWith('~\') -or $texto.StartsWith('~/')) {
+        $casa = $env:USERPROFILE
+        if (-not $casa) { $casa = [Environment]::GetFolderPath('UserProfile') }
+        $texto = $casa.TrimEnd([char[]]@('\', '/')) + $texto.Substring(1)
+    }
     if ($texto -match '^[A-Za-z]:[\\/]' -or $texto.StartsWith('\\') -or $texto.StartsWith('/')) {
         return $texto
     }

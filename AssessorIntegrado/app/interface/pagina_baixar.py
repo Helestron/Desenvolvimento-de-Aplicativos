@@ -28,9 +28,11 @@ from . import componentes, dialogos, estilo, servicos
 from .acessos import EditorAcesso, portais_da_lista
 from .componentes import Detalhes, Faixa, Pagina, plural, secao
 from .estilo import px
-from .tarefas import NAVEGADOR, ContextoTela
+from .tarefas import NAVEGADOR, NUVEM, ContextoTela
 
-log = logging.getLogger("interface.baixar")
+# "download" no nome: as linhas deste registro vão para os Detalhes da
+# página (registro.marca), junto com as do motor.
+log = logging.getLogger("interface.download")
 
 COLUNAS = [("n", "Nº", 46, "e", False), ("processo", "Processo", 214, "w", False),
            ("tribunal", "Tribunal", 150, "w", False), ("situacao", "Situação", 160, "w", False),
@@ -62,7 +64,7 @@ class PaginaBaixar(Pagina):
         self._vars: dict[str, tk.BooleanVar] = {}
         self.tarefa_ler = self.nova_tarefa("Ler a relação")
         self.tarefa = self.nova_tarefa("Baixar processos", (NAVEGADOR,))
-        self.tarefa_nuvem = self.nova_tarefa("Espelhar o acervo na nuvem")
+        self.tarefa_nuvem = self.nova_tarefa("Espelho na nuvem (download)", (NUVEM,))
 
         corpo, rodape, _ = componentes.estrutura(
             self, "Baixar processos",
@@ -389,53 +391,41 @@ class PaginaBaixar(Pagina):
 
     # ============================================================ rodapé
     def _atualizar_rodape(self) -> None:
-        for w in self.acoes_rodape.winfo_children():
-            w.destroy()
-        self.barra_rodape.grid_remove()
-        self.barra_rodape.stop()
-        self.icone_rodape.configure(image="")
+        """Texto, barra e botões do rodapé conforme o estado.
+
+        Chamado a cada evento 'status' e 'progresso' do motor (vários por
+        processo). Os botões só são refeitos quando MUDAM: destruí-los e
+        recriá-los a cada evento fazia o "Parar" piscar e perder o clique
+        (o botão apertado sumia antes de o mouse ser solto).
+        """
         estado = self.estado
         n = len(self.numeros)
+        imagem = ""
+        barra = None                         # None | ("indeterminate",) | ("determinate", valor, linha)
         if estado == "lendo":
-            self.texto_rodape.configure(text="Lendo a relação…", foreground=estilo.TINTA)
-            self.barra_rodape.configure(mode="indeterminate")
-            self.barra_rodape.grid(row=1, column=1, sticky="ew", pady=(px(6), 0))
-            self.barra_rodape.start(12)
-            self._botao_principal(n, habilitado=False)
+            texto, cor = "Lendo a relação…", estilo.TINTA
+            barra = ("indeterminate", 0, 1)
+            acoes = ("principal", n, False)
         elif estado == "baixando":
             feitos, total, atual = self.progresso
             total = total or n
-            linha = f"{min(feitos + 1, total)} de {total}"
+            texto = f"{min(feitos + 1, total)} de {total}"
             if atual:
-                linha += f" · {atual}"
+                texto += f" · {atual}"
             if self.status_texto:
-                linha += f"\n{self.status_texto}"
-            self.texto_rodape.configure(text=linha, foreground=estilo.TINTA)
-            self.barra_rodape.configure(mode="determinate",
-                                        value=1000 * feitos / total if total else 0)
-            self.barra_rodape.grid(row=2, column=1, sticky="ew", pady=(px(6), 0))
-            parar = estilo.botao(self.acoes_rodape, "Parar", self.parar, "cuidado", grande=True)
-            parar.pack(side="left")
-            if self.tarefa.parar.is_set():
-                parar.state(["disabled"])
+                texto += f"\n{self.status_texto}"
+            cor = estilo.TINTA
+            barra = ("determinate", 1000 * feitos / total if total else 0, 2)
+            acoes = ("parar", self.tarefa.parar.is_set())
         elif estado == "fim" and self.resumo is not None:
             r = self.resumo
             falhas = r.a_refazer()
             ok = not r.falhas and not r.pendentes
-            self.icone_rodape.configure(image=estilo.imagem("sinal-ok" if ok else "sinal-aviso",
-                                                            px(22)) or "")
+            imagem = estilo.imagem("sinal-ok" if ok else "sinal-aviso", px(22)) or ""
             minutos = getattr(r, "minutos", 0) or 0
             duracao = f" Em {minutos:.0f} min." if minutos >= 1 else ""
-            self.texto_rodape.configure(text=_maiuscula(r.texto()) + duracao,
-                                        foreground=estilo.TINTA)
-            estilo.botao(self.acoes_rodape, "Abrir a pasta", self.abrir_destino,
-                         "principal").pack(side="left")
-            if falhas:
-                estilo.botao(self.acoes_rodape, f"Tentar de novo ({len(falhas)})",
-                             self.tentar_de_novo).pack(side="left", padx=(px(8), 0))
-            estilo.botao(self.acoes_rodape, "Compartilhar com IA  →",
-                         lambda: self.janela.mostrar("compartilhar")).pack(
-                side="left", padx=(px(8), 0))
+            texto, cor = _maiuscula(r.texto()) + duracao, estilo.TINTA
+            acoes = ("fim", len(falhas))
         else:
             if n:
                 falta = [e for e in self.editores if not e.tem_credenciais()]
@@ -446,11 +436,57 @@ class PaginaBaixar(Pagina):
                                       for e in falta)
                     texto += (f"\nFalta a senha de {nomes} (passo 2): sem ela, você entra "
                               "manualmente na janela do navegador.")
-                self.texto_rodape.configure(text=texto, foreground=estilo.TINTA)
+                cor = estilo.TINTA
             else:
-                self.texto_rodape.configure(text="Abra a relação de processos para começar.",
-                                            foreground=estilo.TINTA_FRACA)
-            self._botao_principal(n, habilitado=bool(n) and not self.tarefa.ativa)
+                texto, cor = "Abra a relação de processos para começar.", estilo.TINTA_FRACA
+            acoes = ("principal", n, bool(n) and not self.tarefa.ativa)
+
+        self.icone_rodape.configure(image=imagem)
+        self.texto_rodape.configure(text=texto, foreground=cor)
+        self._barra(barra)
+        if acoes != getattr(self, "_chave_acoes", None):
+            self._chave_acoes = acoes
+            self._montar_acoes(acoes)
+
+    def _barra(self, definicao) -> None:
+        b = self.barra_rodape
+        if definicao is None:
+            if getattr(self, "_modo_barra", None) is not None:
+                b.stop()
+                b.grid_remove()
+            self._modo_barra = None
+            return
+        modo, valor, linha = definicao
+        if modo != getattr(self, "_modo_barra", None):
+            b.stop()
+            b.configure(mode=modo, value=0)
+            b.grid(row=linha, column=1, sticky="ew", pady=(px(6), 0))
+            if modo == "indeterminate":
+                b.start(12)
+            self._modo_barra = modo
+        if modo == "determinate":
+            b.configure(value=valor)
+
+    def _montar_acoes(self, acoes: tuple) -> None:
+        for w in self.acoes_rodape.winfo_children():
+            w.destroy()
+        tipo = acoes[0]
+        if tipo == "parar":
+            parar = estilo.botao(self.acoes_rodape, "Parar", self.parar, "cuidado", grande=True)
+            parar.pack(side="left")
+            if acoes[1]:
+                parar.state(["disabled"])
+        elif tipo == "fim":
+            estilo.botao(self.acoes_rodape, "Abrir a pasta", self.abrir_destino,
+                         "principal").pack(side="left")
+            if acoes[1]:
+                estilo.botao(self.acoes_rodape, f"Tentar de novo ({acoes[1]})",
+                             self.tentar_de_novo).pack(side="left", padx=(px(8), 0))
+            estilo.botao(self.acoes_rodape, "Compartilhar com IA  →",
+                         lambda: self.janela.mostrar("compartilhar")).pack(
+                side="left", padx=(px(8), 0))
+        else:
+            self._botao_principal(acoes[1], habilitado=acoes[2])
 
     def _botao_principal(self, n: int, habilitado: bool) -> None:
         texto = f"Baixar {plural(n, 'processo')}" if n else "Baixar processos"
@@ -598,7 +634,12 @@ class PaginaBaixar(Pagina):
             componentes.mostrar_no_rolavel(self.faixa_portal)
             estilo.piscar_na_barra(self.janela.raiz)
         elif tipo == "pedir_codigo":
-            self.janela.mostrar(self.nome)
+            # Com a audiência gravando na tela, a página fica onde está: o
+            # diálogo aparece por cima e F1 a F8 continuam marcando quem fala
+            # (trocar de página no meio da audiência desligava os atalhos, e
+            # F1 abria a Ajuda).
+            if not self.janela.audiencia_na_tela():
+                self.janela.mostrar(self.nome)
             dialogos.DialogoCodigo(self.janela.raiz, dado)
         elif tipo == "fim":
             self._terminou(dado)
@@ -663,10 +704,16 @@ class PaginaBaixar(Pagina):
             self._espelhar()
 
     def _espelhar(self) -> None:
+        # Nunca durante o fechamento (o lote interrompido ao fechar chega aqui
+        # e a janela esperaria a cópia), e sempre interrompível.
+        if getattr(self.janela, "_fechando", False):
+            return
         from ..compartilhar import nuvem
 
         destino = Path(self.cfg.texto("compartilhar", "pasta_nuvem"))
-        recusa = self.tarefa_nuvem.iniciar(nuvem.espelhar, self.cfg.pasta_acervo, destino)
+        tarefa = self.tarefa_nuvem
+        recusa = tarefa.iniciar(nuvem.espelhar, self.cfg.pasta_acervo, destino, None,
+                                tarefa.parar.is_set)
         if recusa:
             log.info("espelho na nuvem adiado: %s", recusa)
 
@@ -674,9 +721,19 @@ class PaginaBaixar(Pagina):
     def ao_mostrar(self) -> None:
         for chave, var in self._vars.items():
             var.set(self.cfg.flag("download", chave))
+        # O mesmo portal pode ter sido mudado nas Configurações ou no
+        # assistente enquanto esta página estava escondida.
+        for ed in self.editores:
+            ed.recarregar()
         if self.estado in ("vazio", "pronto"):
             self._atualizar_destino()
             self._atualizar_rodape()
+
+    def ao_esconder(self) -> None:
+        # Clicar na barra lateral não tira o foco do campo: sem isto, a senha
+        # digitada e não "confirmada" (Tab/Enter) não chegava às outras páginas.
+        for ed in self.editores:
+            ed.salvar()
 
     def indicador(self):
         if self.tarefa.ativa:

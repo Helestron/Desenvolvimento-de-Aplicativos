@@ -276,6 +276,53 @@ class TesteAcessos(unittest.TestCase):
         self.assertIn("certificado", [m for m, _ in modos_do_sistema("esaj")])
 
 
+class TesteRegressoesDaRevisao(unittest.TestCase):
+    """Defeitos achados na revisão da interface (sem tela)."""
+
+    def test_registro_das_paginas_chega_aos_detalhes(self):
+        # 'interface.baixar' e 'interface.transcrever' não casavam com nenhuma
+        # marca: as linhas da própria página sumiam dos Detalhes dela.
+        from app.interface import pagina_baixar, pagina_compartilhar, pagina_transcrever
+        from app.nucleo import registro
+
+        for modulo, pagina in ((pagina_baixar, pagina_baixar.PaginaBaixar),
+                               (pagina_transcrever, pagina_transcrever.PaginaTranscrever),
+                               (pagina_compartilhar, pagina_compartilhar.PaginaCompartilhar)):
+            self.assertEqual(registro.marca(modulo.log.name), pagina.marca_log, modulo.__name__)
+
+    def test_dois_espelhos_na_nuvem_nao_rodam_juntos(self):
+        # As cópias automáticas (fim do lote, fim da audiência) e a manual
+        # escreviam no MESMO .parcial do destino ao mesmo tempo.
+        from app.interface.tarefas import NUVEM
+
+        gerente = Recursos()
+        liberar = threading.Event()
+        lote = Tarefa("Espelho na nuvem (download)", (NUVEM,), gerente)
+        manual = Tarefa("Espelhar o acervo na nuvem", (NUVEM,), gerente)
+        self.assertIsNone(lote.iniciar(liberar.wait, 5))
+        recusa = manual.iniciar(lambda: None)
+        self.assertIn("a pasta da nuvem", recusa or "")
+        liberar.set()
+        self.assertTrue(lote.esperar(5))
+        self.assertIsNone(manual.iniciar(lambda: None))
+        self.assertTrue(manual.esperar(5))
+
+    def test_recado_do_modelo_ausente_diz_a_verdade(self):
+        # A sessão ao vivo baixa o modelo que faltar: "não começa" era falso.
+        with tempfile.TemporaryDirectory() as tmp:
+            arquivo = Path(tmp) / "config.ini"
+            arquivo.write_text(f"[geral]\npasta_acervo = {Path(tmp) / 'Acervo'}\n",
+                               encoding="utf-8")
+            cfg = config.Config(arquivo)
+            with mock.patch.object(servicos, "_pacote_presente", return_value=True), \
+                    mock.patch.object(servicos, "modelo_instalado", return_value=False):
+                pendencias = servicos.pendencias(cfg)
+        modelo = [p for p in pendencias if p.chave == "modelo"]
+        self.assertEqual(len(modelo), 1)
+        self.assertNotIn("não começa", modelo[0].texto)
+        self.assertIn("primeira audiência", modelo[0].texto)
+
+
 class TesteIcones(unittest.TestCase):
     def test_recursos_versionados_existem(self):
         from app.interface import estilo

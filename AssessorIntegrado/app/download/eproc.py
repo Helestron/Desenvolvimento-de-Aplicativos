@@ -134,7 +134,8 @@ SELETORES_PADRAO: dict[str, list[str]] = {
     # padrão; quem o confirmar num tribunal pode pô-lo no seletores-eproc.json.
     "eventos_listar_todos": [],
     # documento e Download Completo
-    "documento_iframe": ["iframe#conteudoIframe", "#conteudoIframe", "iframe[name='conteudoIframe']"],
+    "documento_iframe": ["iframe#conteudoIframe", "#conteudoIframe",
+                         "iframe[name='conteudoIframe']"],
     "completo_botao": ["#btnDownloadCompletoRS", "#btnDownloadCompleto",
                        "[onclick*='agendar_arquivo_completo']",
                        "a[href*='agendar_arquivo_completo']"],
@@ -687,6 +688,11 @@ def titulo_do_documento(doc: Documento) -> str:
     return f"{titulo} ({doc.data})" if doc.data else titulo
 
 
+def plural(n: int, singular: str, plural_: str) -> str:
+    """"1 documento", "2 documentos"."""
+    return f"{n} {singular if n == 1 else plural_}"
+
+
 def descrever_faltantes(docs: list[Documento], limite: int = 12) -> str:
     """Para a coluna "incompleto": "ev. 4 PET1, ev. 9 OUT2"."""
     itens = [f"ev. {d.evento} {d.rotulo}".strip() for d in docs]
@@ -823,7 +829,7 @@ def url_implementacao(href: str) -> str:
         return ""
     partes = urllib.parse.urlsplit(href)
     pedacos = [p for p in partes.query.split("&") if p]
-    acoes = [p.split("=", 1)[1] if "=" in p else "" for p in pedacos if p.split("=", 1)[0] == "acao"]
+    acoes = [p.partition("=")[2] for p in pedacos if p.partition("=")[0] == "acao"]
     if not acoes:
         return ""
     if acoes[0] == "acessar_documento_implementacao":
@@ -1058,7 +1064,7 @@ def texto_capa(numero: Numero, portal: str, capa: dict, partes: list[str], n_eve
                           "no lugar.")
         if midias:
             linhas.append(f"Gravações e outros arquivos de áudio ou vídeo: {midias} (não cabem "
-                          "no PDF; veja a página de aviso de cada um).")
+                          "no PDF; veja a página de aviso de cada uma).")
         linhas += ["", "Como ler este arquivo: os documentos estão na ordem dos eventos, do mais "
                    "antigo ao mais novo. Cada documento tem um marcador (painel lateral do "
                    "leitor de PDF) no formato \"Evento N — descrição — rótulo (data)\". O eProc "
@@ -1083,7 +1089,8 @@ def texto_capa_txt(numero: Numero, portal: str, capa: dict, partes: list[str],
     linhas.append(f"== Eventos ({len(recentes)}) ==")
     for e in recentes[:60]:
         docs = ", ".join(d.rotulo for d in e.documentos)
-        linhas.append(f"{e.data}  Evento {e.numero} - {e.descricao}" + (f" [{docs}]" if docs else ""))
+        linhas.append(f"{e.data}  Evento {e.numero} - {e.descricao}"
+                      + (f" [{docs}]" if docs else ""))
     if len(recentes) > 60:
         linhas.append(f"(... e mais {len(recentes) - 60} eventos antigos)")
     if not recentes:
@@ -1175,6 +1182,21 @@ _JS_TEXTO_SEM = r"""(seletores) => {
         nos.forEach(el => { const x = el.innerText || ''; if (x) t = t.split(x).join(' '); });
     }
     return t.slice(0, 300000);
+}"""
+
+_JS_PAGINAR = r"""(a) => {
+    const el = a.s ? document.querySelector(a.s) : null;
+    if (el && el.options) {
+        const i = Array.from(el.options).findIndex(o => o.value === a.v);
+        if (i >= 0) {
+            el.selectedIndex = i;
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+            return 'seletor';
+        }
+    }
+    if (typeof alterarPagina === 'function') { alterarPagina(a.v); return 'funcao'; }
+    return '';
 }"""
 
 _JS_LINKS_COMPLETO = r"""() => {
@@ -1362,8 +1384,26 @@ class PortalEProc:
                 time.sleep(0.15)
 
     def _ir(self, url: str, pagina=None) -> None:
+        """goto que tolera a navegação anterior ainda em curso.
+
+        Depois de um endereço que não responde, o Chromium ainda está abrindo
+        a própria página de erro, e o goto seguinte é "interrompido por outra
+        navegação": espera-se ela assentar e tenta-se de novo, uma vez.
+        """
         self._checar_cancelado()
-        (pagina or self.pg).goto(url, wait_until="domcontentloaded", timeout=self.espera_ms)
+        pagina = pagina or self.pg
+        for tentativa in (1, 2):
+            try:
+                pagina.goto(url, wait_until="domcontentloaded", timeout=self.espera_ms)
+                return
+            except Exception as erro:
+                if tentativa == 2 or not re.search(
+                        r"interrupted by another navigation|net::ERR_ABORTED", str(erro)):
+                    raise
+                try:
+                    pagina.wait_for_load_state("load", timeout=5000)
+                except Exception:
+                    pass
 
     def _ouvir_avisos(self, pagina) -> None:
         """Guarda as caixas de aviso do portal (alert), que o Navegador
@@ -1565,10 +1605,8 @@ class PortalEProc:
             self._ouvir_avisos(self.pg)
             etapa = self._esperar_etapa_conhecida(min(20.0, float(self.opcoes.espera_s)))
             if etapa != "desconhecido":
-                if len(candidatos) > 1 or url != normalizar_base(self.tribunal.url_para(None, self.grau)):
-                    log.info("%s: usando o endereço %s", self.nome, url)
-                else:
-                    log.debug("%s: endereço %s", self.nome, url)
+                # o log diz qual endereço valeu (o do TJAL ainda não é confirmado)
+                log.info("%s: usando o endereço %s", self.nome, url)
                 return url, etapa
             abriu_algo = True
             falhas.append(f"{url} (abriu, mas não é a tela de entrada do eProc)")
@@ -1614,8 +1652,9 @@ class PortalEProc:
             if time.monotonic() > limite:
                 self.nav.diagnosticar("eproc-login-prazo")
                 raise LoginFalhou(
-                    f"passaram-se {minutos} minutos sem concluir o login no {self.nome}. Tente "
-                    "de novo (o prazo se ajusta em Configurações: espera_login_minutos).")
+                    f"o prazo de {plural(minutos, 'minuto', 'minutos')} para concluir o login no "
+                    f"{self.nome} acabou. Tente de novo (o prazo se ajusta em Configurações: "
+                    "espera_login_minutos).")
             if etapa == "recusado":
                 raise self._falha_de_credencial()
             if etapa == "bloqueado":
@@ -1720,8 +1759,9 @@ class PortalEProc:
                 "quando estiver com o celular à mão.")
         codigo = re.sub(r"\D", "", codigo)
         if not codigo:
-            return codigos + 1, ("Espere o aplicativo mostrar um código novo (ele muda a cada "
-                                 "30 segundos) e digite-o. ")
+            # "pedir outro" não é tentativa: quem limita é o prazo do login
+            return codigos, ("Espere o aplicativo mostrar um código novo (ele muda a cada "
+                             "30 segundos) e digite-o. ")
         campo = self._visivel("otp_campo", espera_ms=3000)
         if campo is None:
             return codigos + 1, recado
@@ -1816,7 +1856,8 @@ class PortalEProc:
             mensagem = ("Conclua o login na janela do navegador que se abriu (usuário e senha, "
                         "código do autenticador ou certificado digital, como de costume).")
         self.ctx.avisar(f"Entre no {self.nome}",
-                        f"{mensagem} Aguardo até {minutos} minutos e sigo sozinho.")
+                        f"{mensagem} Aguardo até {plural(minutos, 'minuto', 'minutos')} e sigo "
+                        "sozinho.")
         limite = time.monotonic() + minutos * 60
         while time.monotonic() < limite:
             self._dormir(2)
@@ -1825,8 +1866,9 @@ class PortalEProc:
                 return
         self.nav.diagnosticar("eproc-manual-prazo")
         raise LoginFalhou(
-            f"passaram-se {minutos} minutos sem o login na janela do navegador. Tente de novo "
-            "(o prazo se ajusta em Configurações: espera_login_minutos).")
+            f"o prazo de {plural(minutos, 'minuto', 'minutos')} para o login na janela do "
+            "navegador acabou. Tente de novo (o prazo se ajusta em Configurações: "
+            "espera_login_minutos).")
 
     def _pos_login(self) -> None:
         # A página em que o login termina pode ser um redirecionamento; a
@@ -1895,8 +1937,14 @@ class PortalEProc:
                 r = req.post(url, data=corpo or "", **extra)
             else:
                 r = req.get(url, **extra)
-            return Resposta(r.status, r.url or url, (r.headers or {}).get("content-type", ""),
-                            r.body(), canal)
+            try:
+                return Resposta(r.status, r.url or url,
+                                (r.headers or {}).get("content-type", ""), r.body(), canal)
+            finally:
+                try:
+                    r.dispose()      # o corpo também fica na memória do navegador
+                except Exception:
+                    pass
         d = self.pg.evaluate(_JS_BUSCAR, {"url": url, "metodo": metodo, "corpo": corpo,
                                           "cabecalhos": cabecalhos or {}, "prazo": prazo_ms})
         if not isinstance(d, dict) or d.get("erro"):
@@ -1934,15 +1982,22 @@ class PortalEProc:
                     self._dormir(1.5)
                     continue
                 if canais is None and canal != self._canais[0]:
-                    log.info("    (o canal direto não respondeu; sigo pela própria janela do "
-                             "navegador)")
+                    log.info("    (%s)", "o canal direto não respondeu; sigo pela própria janela "
+                             "do navegador" if canal == "pagina" else
+                             "a janela do navegador não buscou o arquivo; sigo pelo canal direto")
                     self._canais.remove(canal)
                     self._canais.insert(0, canal)
                 return resp
         raise RuntimeError(f"não consegui falar com o eProc ({explicar_erro(str(ultimo))})")
 
     # ======================================================== download
-    def baixar(self, numero: Numero, destino_pdf: Path, senha: str | None = None) -> ResultadoProcesso:
+    def baixar(self, numero: Numero, destino_pdf: Path,
+               senha: str | None = None) -> ResultadoProcesso:
+        """Os autos do processo em ``destino_pdf``.
+
+        ``senha`` existe pelo contrato comum e é ignorada: o eProc não tem
+        senha de processo (o acesso ao sigiloso depende do perfil do usuário).
+        """
         destino_pdf = Path(destino_pdf)
         r = ResultadoProcesso(ordem=0, numero=numero.formatado, tribunal=self.tribunal.sigla,
                               sistema=self.sistema)
@@ -2064,7 +2119,16 @@ class PortalEProc:
         campo.press("Enter")
         self._esperar(lambda: self._trocou(marca) or bool(self._avisos_portal), self.espera_ms)
         self._esperar_carga()
-        return self._classificar(numero)
+        # A resposta pode ser uma página que se redireciona sozinha (por
+        # script) para a do processo: dá-se um instante antes de desistir.
+        resultado = ["desconhecido"]
+
+        def pronto():
+            resultado[0] = self._classificar(numero)
+            return resultado[0] != "desconhecido"
+
+        self._esperar(pronto, 3000)
+        return resultado[0]
 
     def _na_pagina_do_processo(self, raiz: No) -> bool:
         return (primeiro(raiz, self.sel.get("processo_pagina", [])) is not None
@@ -2254,8 +2318,8 @@ class PortalEProc:
         for seletor in self.sel.get("eventos_paginacao", []):
             try:
                 valor = self.pg.evaluate(
-                    "s => { const el = document.querySelector(s); return el ? String(el.value) : null; }",
-                    seletor)
+                    "s => { const el = document.querySelector(s);"
+                    " return el ? String(el.value) : null; }", seletor)
             except Exception:
                 continue
             if valor is not None:
@@ -2317,23 +2381,14 @@ class PortalEProc:
                 continue
         antes = {e.chave for e in ler_eventos(ler_html(self._html()), self.sel)}
         marca = self._marcar()
-        feito = False
-        if seletor:
-            try:
-                self.pg.locator(seletor).first.select_option(value=valor, timeout=5000)
-                feito = True
-            except Exception as erro:
-                log.debug("  paginação pelo seletor: %s", str(erro)[:120])
-        if not feito:
-            try:
-                self.pg.evaluate(
-                    "(a) => { const el = a.s ? document.querySelector(a.s) : null;"
-                    " if (el) { el.value = a.v; el.dispatchEvent(new Event('change', {bubbles: true}));"
-                    " return true; }"
-                    " if (typeof alterarPagina === 'function') { alterarPagina(a.v); return true; }"
-                    " return false; }", {"s": seletor, "v": valor})
-            except Exception:
-                pass             # a página trocou durante a chamada: é o esperado
+        # Pelo VALOR exato, por script. O select_option do Playwright casa a
+        # string também com o RÓTULO das opções - e na paginação do eProc as
+        # opções são value="0" rótulo "1", value="1" rótulo "2"...: pedir a
+        # página "1" abria a primeira de novo.
+        try:
+            self.pg.evaluate(_JS_PAGINAR, {"s": seletor, "v": valor})
+        except Exception:
+            pass                 # a página trocou durante a chamada: é o esperado
 
         def pronto():
             # Com navegação, a página nova; sem ela (paginação por ajax), o
@@ -2354,10 +2409,11 @@ class PortalEProc:
         docs = ordenar_documentos(eventos)
         if not docs:
             self.nav.diagnosticar(f"eproc-sem-documentos-{numero.nome_arquivo}")
-            raise SemAcesso(f"o eProc mostrou {len(eventos)} evento(s), mas nenhum documento com "
-                            "link (sem acesso aos documentos, ou o portal mudou: veja "
-                            "Logs\\diagnostico)")
-        log.info("    %d evento(s), %d documento(s).", len(eventos), len(docs))
+            raise SemAcesso(f"o eProc mostrou {plural(len(eventos), 'evento', 'eventos')}, mas "
+                            "nenhum documento com link (sem acesso aos documentos, ou o portal "
+                            "mudou: veja Logs\\diagnostico)")
+        log.info("    %s, %s.", plural(len(eventos), "evento", "eventos"),
+                 plural(len(docs), "documento", "documentos"))
         r.documentos = len(docs)
         partes: list[pdf.Parte] = []
         faltaram: list[Documento] = []
@@ -2419,13 +2475,16 @@ class PortalEProc:
         log.info("    salvo: %s (%d páginas)", destino.name, r.paginas)
         if faltaram:
             r.incompleto = descrever_faltantes(faltaram)
-            self._notas.append(f"{len(faltaram)} documento(s) não vieram e têm página de aviso "
-                               "no lugar")
+            self._notas.append(
+                plural(len(faltaram), "documento não veio e tem", "documentos não vieram e têm")
+                + " página de aviso no lugar")
         if midias_salvas:
             r.midias = midias_salvas
-            self._notas.append(f"{len(midias_salvas)} gravação(ões) salva(s) em _controle\\midias")
+            self._notas.append(plural(len(midias_salvas), "gravação salva", "gravações salvas")
+                               + " em _controle\\midias")
         if midias_fora:
-            self._notas.append(f"{midias_fora} gravação(ões) nos autos, não baixada(s)")
+            self._notas.append(plural(midias_fora, "gravação", "gravações") + " nos autos, "
+                               + ("não baixada" if midias_fora == 1 else "não baixadas"))
 
     def _aviso_falha(self, doc: Documento, motivo: str) -> str:
         return (f"O documento {doc.rotulo} do evento {doc.evento} não pôde ser baixado do "
@@ -2443,13 +2502,15 @@ class PortalEProc:
             return cabeca + f"O arquivo foi salvo em:\n{relativo}"
         if falhou:
             return cabeca + ("O arquivo veio do portal, mas não pôde ser salvo no computador "
-                             "(disco cheio ou sem permissão?). Ouça-a diretamente no eProc.")
-        return cabeca + ("Ela não foi baixada: para baixá-la, ative a opção de baixar as "
-                         "gravações de audiência e baixe o processo de novo, ou ouça-a "
+                             "(disco cheio ou sem permissão?). Consulte-o diretamente no eProc.")
+        return cabeca + ("O arquivo não foi baixado: para baixá-lo, ative a opção de baixar as "
+                         "gravações de audiência e baixe o processo de novo, ou consulte-o "
                          "diretamente no eProc.")
 
-    def _salvar_midia(self, doc: Documento, dados: bytes, extensao: str, pasta: Path) -> Path | None:
-        nome = sistema.nome_seguro(f"Evento {doc.evento} - {doc.rotulo}", "midia") + (extensao or ".bin")
+    def _salvar_midia(self, doc: Documento, dados: bytes, extensao: str,
+                      pasta: Path) -> Path | None:
+        nome = (sistema.nome_seguro(f"Evento {doc.evento} - {doc.rotulo}", "midia")
+                + (extensao or ".bin"))
         alvo = pasta / nome
         try:
             sistema.gravar_atomico(alvo, dados)
@@ -2469,6 +2530,7 @@ class PortalEProc:
         href = urllib.parse.urljoin(self._url_processo or self._url() or self.base, doc.href)
         motivos: list[str] = []
         visitados: set[str] = set()
+        recusas: dict[str, int] = {}
 
         def tentar(url: str):
             if not url or url in visitados:
@@ -2477,6 +2539,7 @@ class PortalEProc:
             achado = self._interpretar(url, doc)
             if achado[0] == "falha":
                 motivos.append(achado[1])
+                recusas[url] = achado[2] if len(achado) > 2 else 0
                 return None
             return achado
 
@@ -2490,13 +2553,17 @@ class PortalEProc:
                 if achado is None or achado[0] == "moldura":
                     continue
             return achado
-        # último recurso: a moldura aberta numa aba, lida depois dos scripts
+        # Último recurso: a moldura aberta numa aba, lida depois dos scripts.
+        # Se a própria moldura foi recusada pelo servidor, a aba não ajuda.
+        if recusas.get(href, 0) >= 400:
+            raise _FalhaDocumento("; ".join(dict.fromkeys(motivos)))
         src = self._src_pela_aba(href)
         if src:
             achado = tentar(src)
             if achado is not None and achado[0] != "moldura":
                 return achado
-        raise _FalhaDocumento("; ".join(dict.fromkeys(motivos)) or "o portal não entregou o documento")
+        raise _FalhaDocumento("; ".join(dict.fromkeys(motivos))
+                              or "o portal não entregou o documento")
 
     def _interpretar(self, url: str, doc: Documento) -> tuple:
         try:
@@ -2529,12 +2596,13 @@ class PortalEProc:
                     raise self._perdeu_sessao("o eProc pediu login de novo ao abrir um documento")
                 return ("falha", "o eProc recusou o link do documento")
             if resp.status >= 400:
-                return ("falha", f"o portal recusou o documento (HTTP {resp.status})")
+                return ("falha", f"o portal recusou o documento (HTTP {resp.status})", resp.status)
             src = src_do_iframe(texto, resp.url, self.sel)
             if src:
                 return ("moldura", src)
-            if any(marca in texto for marca in ("divInfraBarraSistema", "txtNumProcessoPesquisaRapida",
-                                                "txaInfraMsg", "divInfraCaptcha")):
+            marcas_do_sistema = ("divInfraBarraSistema", "txtNumProcessoPesquisaRapida",
+                                 "txaInfraMsg", "divInfraCaptcha")
+            if any(marca in texto for marca in marcas_do_sistema):
                 return ("falha", "o portal devolveu uma página de aviso em vez do documento")
             return ("html", texto, ".html")
         if tipo in ("pdf", "imagem", "texto"):
@@ -2551,14 +2619,16 @@ class PortalEProc:
     def _src_pela_aba(self, href: str) -> str:
         """Abre a moldura numa aba e lê o endereço do iframe (quando ele é
         posto por script e não está no HTML)."""
+        seletores = self.sel.get("documento_iframe", [])
         try:
             with self.nav.nova_aba() as aba:
                 aba.goto(href, wait_until="domcontentloaded", timeout=self.espera_ms)
-                for seletor in self.sel.get("documento_iframe", []):
-                    try:
-                        aba.locator(seletor).first.wait_for(state="attached", timeout=3000)
-                    except Exception:
-                        continue
+                try:      # uma espera só, por qualquer um deles
+                    aba.locator(", ".join(seletores)).first.wait_for(state="attached",
+                                                                     timeout=3000)
+                except Exception:
+                    pass
+                for seletor in seletores:
                     src = aba.evaluate(
                         "s => { const f = document.querySelector(s);"
                         " return f ? (f.src || f.getAttribute('src') || '') : ''; }", seletor)
@@ -2627,8 +2697,10 @@ class PortalEProc:
             except Exception:
                 caixas = {}
             if (caixas or {}).get("desmarcadas"):
-                log.info("    %d processo(s) relacionado(s) desmarcado(s) no Download Completo.",
-                         caixas["desmarcadas"])
+                n = caixas["desmarcadas"]
+                log.info("    %s no Download Completo (com dois marcados, o eProc dá erro).",
+                         plural(n, "processo relacionado desmarcado",
+                                "processos relacionados desmarcados"))
             gerar = self._visivel("completo_gerar", espera_ms=5000)
             if gerar is None:
                 raise RuntimeError("não achei o botão de gerar o arquivo completo")
@@ -2654,8 +2726,10 @@ class PortalEProc:
                 raise RuntimeError("o eProc informou erro na geração do arquivo completo")
             if time.monotonic() > limite:
                 minutos = self.espera_completo_min
+                texto_min = (f"{minutos:g} minuto" if minutos == 1
+                             else f"{minutos:g} minutos")
                 raise RuntimeError(f"o eProc não terminou de gerar o arquivo completo em "
-                                   f"{minutos:g} minuto(s)")
+                                   f"{texto_min}")
             self.ctx.status(f"{rotulo}: o eProc está gerando o arquivo completo "
                             f"({int(time.monotonic() - inicio)} s)...")
             self._dormir(INTERVALO_COMPLETO_S)

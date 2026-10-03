@@ -12,6 +12,8 @@ coisa:
     navegador        o navegador dos portais, a sessão e o código de verificação
     microfone        a captura de áudio (audiência ao vivo, teste do microfone)
     modelo_revisao   o modelo preciso de transcrição, que toma todos os núcleos
+    nuvem            a pasta do espelho na nuvem (duas cópias ao mesmo tempo
+                     escreveriam no mesmo arquivo .parcial)
 
 Baixar processos e transcrever uma audiência ao vivo, por exemplo, andam
 juntos.
@@ -41,11 +43,13 @@ log = logging.getLogger("interface.tarefas")
 NAVEGADOR = "navegador"
 MICROFONE = "microfone"
 MODELO_REVISAO = "modelo_revisao"
+NUVEM = "nuvem"
 
 NOMES = {
     NAVEGADOR: "o navegador dos portais",
     MICROFONE: "o microfone",
     MODELO_REVISAO: "o modelo preciso de transcrição",
+    NUVEM: "a pasta da nuvem",
 }
 
 

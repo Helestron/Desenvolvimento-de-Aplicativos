@@ -197,6 +197,42 @@ class TestChecagens(unittest.TestCase):
         finally:
             modelos.PASTA = antes
 
+    def test_teste_de_transcricao_usa_o_caminho_nativo(self):
+        # Regressão: a sonda recebia o caminho com acento ("C:\\Teste Área\\...",
+        # o do CI; "C:\\Users\\João\\...", o de muitos usuários), que o
+        # CTranslate2 não abre no Windows. O programa usa o nome curto 8.3
+        # (modelos.caminho_nativo); a verificação tem de testar igual - senão
+        # reprova (FALHA obrigatória) uma instalação que funciona.
+        longo = Path("C:/Teste \u00c1rea/runtime/modelos/whisper-small")
+
+        class Modelos:
+            instalado = staticmethod(lambda nome: True)
+            pasta_do_modelo = staticmethod(lambda nome: longo)
+            nome_canonico = staticmethod(lambda nome: nome)
+            tamanho_mb = staticmethod(lambda nome: 484)
+            caminho_nativo = staticmethod(lambda p: "C:/TESTEA~1/runtime/modelos/whisper-small")
+
+        chamadas = []
+
+        def rodar(args, limite_s, extra=None):
+            chamadas.append(list(args))
+            return 0, "ok 1.5 2.0\n", "", False
+
+        with mock.patch.object(verificar, "_modelos", lambda: Modelos), \
+                mock.patch.object(verificar, "rodar", rodar):
+            item = verificar.checar_teste_transcricao(self.cfg)
+        self.assertEqual(item.situacao, OK, item.detalhe)
+        self.assertEqual(chamadas[0][-1], "C:/TESTEA~1/runtime/modelos/whisper-small")
+
+        # Sem nome curto (disco com 8.3 desligado), a falha diz o que resolve.
+        Modelos.caminho_nativo = staticmethod(lambda p: str(longo))
+        with mock.patch.object(verificar, "_modelos", lambda: Modelos), \
+                mock.patch.object(verificar, "rodar", lambda *a, **k: (1, "", "RuntimeError: Unable to open file 'model.bin'", False)):
+            item = verificar.checar_teste_transcricao(self.cfg)
+        self.assertEqual(item.situacao, FALHA)
+        self.assertIn("acento", item.acao)
+        self.assertIn("C:\\AssessorIntegrado", item.acao)
+
     def test_cofre(self):
         item = verificar.checar_cofre()
         if sys.platform == "win32":

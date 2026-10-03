@@ -380,8 +380,11 @@ def pendencias(cfg) -> list[Pendencia]:
                                + ". " + DICA_INSTALAR, "Abrir a pasta do programa"))
     modelo = cfg.texto("transcricao", "modelo_ao_vivo") or "small"
     if _pacote_presente("faster_whisper") and not modelo_instalado(modelo):
+        # A sessão ao vivo baixa o modelo que faltar ao começar (o áudio é
+        # gravado e a fila espera): o recado diz isso, e não que "não começa".
         saida.append(Pendencia("modelo", f"O modelo de transcrição “{modelo}” ainda não foi "
-                                         "baixado. Sem ele, a transcrição ao vivo não começa.",
+                                         "baixado. Baixe agora: senão, a primeira audiência "
+                                         "começa baixando o modelo, e o texto demora a aparecer.",
                                "Baixar agora"))
     return saida
 

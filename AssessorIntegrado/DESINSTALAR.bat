@@ -25,8 +25,14 @@ set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if exist "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe" set "PS=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%PS%" set "PS=powershell.exe"
 
+rem Mesmo teste inicial do INSTALAR.bat: tira a marca da internet dos .ps1
+rem e confere se uma regra do setor de TI impede o PowerShell de rodar
+rem scripts (3) ou o deixa em modo restrito (4).
 set "ASSESSOR_RAIZ=%~dp0"
-"%PS%" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "try { Get-ChildItem -LiteralPath (Join-Path $env:ASSESSOR_RAIZ 'instalador') -Filter '*.ps1' | Unblock-File } catch { }; exit 0" >nul 2>&1
+"%PS%" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "try { Get-ChildItem -LiteralPath (Join-Path $env:ASSESSOR_RAIZ 'instalador') -Filter '*.ps1' | Unblock-File } catch { }; if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { exit 4 }; $p = @((Get-ExecutionPolicy -Scope MachinePolicy), (Get-ExecutionPolicy -Scope UserPolicy)); if (($p -contains 'AllSigned') -or ($p -contains 'Restricted')) { exit 3 }; exit 0" >nul 2>&1
+set "TESTE=%ERRORLEVEL%"
+if "%TESTE%"=="3" goto :bloqueado
+if "%TESTE%"=="4" goto :bloqueado
 
 "%PS%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0instalador\desinstalar.ps1" %*
 set "CODIGO=%ERRORLEVEL%"
@@ -42,6 +48,17 @@ echo.
 echo   Faltam arquivos do programa ao lado deste DESINSTALAR.bat.
 echo   Para remover o programa, apague a pasta inteira e os atalhos
 echo   com o nome Assessor Integrado.
+echo.
+set "CODIGO=11"
+goto :pausar
+
+:bloqueado
+echo.
+echo   Uma regra do setor de TI impede o PowerShell deste computador de
+echo   rodar o desinstalador. Para remover o programa sem ele: apague os
+echo   atalhos Assessor Integrado da Area de Trabalho e do Menu Iniciar e,
+echo   depois, a pasta inteira do programa (antes, copie para outro lugar
+echo   a pasta Acervo, se quiser guardar os processos e as transcricoes).
 echo.
 set "CODIGO=11"
 

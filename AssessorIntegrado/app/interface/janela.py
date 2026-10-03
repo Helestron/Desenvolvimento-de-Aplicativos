@@ -52,7 +52,11 @@ MINIMO = (980, 660)
 LARGURA_TRILHO = 1060      # abaixo disto, a barra lateral mostra só ícones
 TICK_MS = 100
 FATIA_S = 0.04            # tempo máximo de um tique esvaziando a fila
-ESPERA_FECHAR_S = 120     # o DOCX da audiência pode levar um pouco para fechar
+ESPERA_FECHAR_S = 120     # downloads, cópias e demais trabalhos interrompidos
+# A audiência ao vivo transcreve, ao encerrar, a fila que ainda estiver
+# atrasada (computador lento: minutos) antes de gravar o DOCX final. Matar o
+# processo no meio deixava só o documento parcial; a janela espera mais por ela.
+ESPERA_AUDIENCIA_S = 15 * 60
 
 # (nome, módulo, classe); None = separador na barra lateral
 PAGINAS = (
@@ -275,6 +279,18 @@ class Janela:
             self._cofre = servicos.cofre()
         return self._cofre
 
+    def audiencia_na_tela(self) -> bool:
+        """A página Transcrever está à vista com uma audiência em curso?
+
+        Nesse caso nada troca de página sozinho (código de verificação de um
+        download em paralelo, por exemplo): os atalhos F1 a F8 só valem na
+        página Transcrever, e o magistrado está marcando quem fala.
+        """
+        if self.atual != "transcrever":
+            return False
+        pagina = self.paginas.get("transcrever")
+        return getattr(pagina, "situacao", "") in ("iniciando", "gravando", "pausada")
+
     def postar(self, pagina: str, tipo: str, dado=None) -> None:
         """Seguro em qualquer thread."""
         self.fila.put(("evento", (pagina, tipo, dado)))
@@ -387,13 +403,26 @@ class Janela:
             self._aguarde = dialogos.DialogoAguarde(
                 self.raiz, "Encerrando com segurança",
                 "Salvando o que estava em andamento. Isto leva poucos segundos.")
-        self._esperar_e_destruir(time.monotonic() + ESPERA_FECHAR_S)
+        agora = time.monotonic()
+        self._esperar_e_destruir(agora + ESPERA_FECHAR_S, agora + ESPERA_AUDIENCIA_S)
 
     _fechar = fechar          # nome da base (WM_DELETE_WINDOW)
 
-    def _esperar_e_destruir(self, limite: float) -> None:
-        if any(p.ocupada for p in self.paginas.values()) and time.monotonic() < limite:
-            self.raiz.after(150, lambda: self._esperar_e_destruir(limite))
+    def _audiencia_encerrando(self) -> bool:
+        pagina = self.paginas.get("transcrever")
+        tarefa = getattr(pagina, "tarefa_sessao", None)
+        return bool(tarefa is not None and tarefa.ativa)
+
+    def _esperar_e_destruir(self, limite: float, limite_audiencia: float | None = None) -> None:
+        agora = time.monotonic()
+        if limite_audiencia is None:
+            limite_audiencia = limite
+        if self._audiencia_encerrando() and agora < limite_audiencia:
+            esperar = True
+        else:
+            esperar = any(p.ocupada for p in self.paginas.values()) and agora < limite
+        if esperar:
+            self.raiz.after(150, lambda: self._esperar_e_destruir(limite, limite_audiencia))
             return
         self.destruir()
 

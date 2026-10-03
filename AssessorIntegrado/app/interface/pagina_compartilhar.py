@@ -23,6 +23,7 @@ from ..nucleo import sistema
 from . import componentes, dialogos, estilo, servicos
 from .componentes import Cartao, EstadoLinha, Faixa, Pagina, plural, quando
 from .estilo import px
+from .tarefas import NUVEM
 
 log = logging.getLogger("interface.compartilhar")
 
@@ -41,7 +42,7 @@ class PaginaCompartilhar(Pagina):
         self._vars: dict = {}
         self.tarefa_estado = self.nova_tarefa("Conferir o Claude e o ChatGPT")
         self.tarefa = self.nova_tarefa("Preparar o acervo para a IA")
-        self.tarefa_nuvem = self.nova_tarefa("Espelhar o acervo na nuvem")
+        self.tarefa_nuvem = self.nova_tarefa("Espelhar o acervo na nuvem", (NUVEM,))
         self.tarefa_abrir = self.nova_tarefa("Abrir a ferramenta de IA")
 
         corpo, _, _ = componentes.estrutura(
@@ -352,6 +353,14 @@ class PaginaCompartilhar(Pagina):
         except Exception as erro:
             dialogos.erro(self.janela.raiz, "Abrir a pasta", str(erro))
 
+    def _mostrar_no_explorador(self, arquivo: Path) -> None:
+        # Se o Explorador não abrir, o recado com o nome do arquivo aparece
+        # do mesmo jeito (antes, a exceção engolia o recado).
+        try:
+            sistema.abrir_pasta(arquivo.parent, arquivo)
+        except Exception as erro:
+            log.warning("não consegui abrir a pasta %s: %s", arquivo.parent, erro)
+
     def copiar_caminho(self) -> None:
         if componentes.copiar(self.janela.raiz, str(self.cfg.pasta_acervo)):
             self.estado_acervo.definir("Caminho copiado. Cole com Ctrl+V onde precisar.", "ok")
@@ -486,7 +495,7 @@ class PaginaCompartilhar(Pagina):
                 dialogos.informar(self.janela.raiz, "Plugin para o Cowork",
                                   "Esta versão do programa ainda não gera o plugin.")
                 return
-            sistema.abrir_pasta(Path(arquivo).parent, Path(arquivo))
+            self._mostrar_no_explorador(Path(arquivo))
             self._recado("Sucesso", "Plugin gerado",
                          f"{Path(arquivo).name}. No Claude: Personalizar › Plugins › Adicionar › "
                          "Enviar plugin, e escolha este arquivo. Ele ensina o Cowork a trabalhar "
@@ -547,7 +556,7 @@ class PaginaCompartilhar(Pagina):
 
         def pronto(resultado):
             pasta, arquivo = resultado
-            sistema.abrir_pasta(Path(arquivo).parent, Path(arquivo))
+            self._mostrar_no_explorador(Path(arquivo))
             self._recado("Sucesso", "Pacote pronto",
                          f"{Path(arquivo).name}. Arraste o .zip para uma conversa ou um Projeto "
                          "do ChatGPT. Ele leva os autos, o texto com as folhas e as instruções.")

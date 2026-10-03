@@ -361,6 +361,22 @@ def _modelo_instalado(nome: str) -> tuple[bool, Path]:
         return ok, pasta
 
 
+def _caminho_nativo(pasta: Path) -> str:
+    """O caminho do modelo como o programa o entrega ao CTranslate2.
+
+    O CTranslate2 abre o model.bin com o caminho em bytes, que o Windows lê
+    em cp1252: numa pasta com acento ("C:\\Users\\João\\...", ou a do CI,
+    "C:\\Teste Área\\...") o modelo "não existe". O programa contorna isso
+    com o nome curto 8.3 (modelos.caminho_nativo); a verificação tem de
+    testar o modelo do MESMO jeito - senão reprova uma instalação que
+    funciona, e o instalador termina em vermelho.
+    """
+    try:
+        return str(_modelos().caminho_nativo(pasta))
+    except Exception:  # noqa: BLE001 - sem o módulo, o caminho como está
+        return str(pasta)
+
+
 def _tamanho_mb(nome: str) -> int:
     try:
         return int(_modelos().tamanho_mb(nome))
@@ -422,7 +438,8 @@ def checar_teste_transcricao(cfg) -> Item:
     if not instalado:
         return Item(nome, AVISO, f"Pulado: o modelo {ao_vivo} ainda não foi baixado.",
                     obrigatorio=False, codigo="teste_transcricao")
-    codigo, saida, erro, estourou = rodar([_python(), "-c", _SONDA_WHISPER, str(pasta)], 300)
+    nativo = _caminho_nativo(pasta)
+    codigo, saida, erro, estourou = rodar([_python(), "-c", _SONDA_WHISPER, nativo], 300)
     for linha in saida.splitlines():
         if linha.startswith("ok "):
             _, carregou, total = linha.split()
@@ -432,10 +449,17 @@ def checar_teste_transcricao(cfg) -> Item:
                         codigo="teste_transcricao")
     ultima = (erro.strip().splitlines() or [""])[-1]
     motivo = explicar_queda(None if estourou else codigo) if not ultima else ultima
+    if not nativo.isascii():
+        # Acento no caminho e nenhum nome curto 8.3 neste disco: baixar de
+        # novo não resolveria.
+        acao = ("O caminho da pasta do programa tem acento, e este disco não oferece "
+                "nome curto sem acento. Instale o programa em C:\\AssessorIntegrado "
+                "(o INSTALAR.bat oferece a mudança).")
+    else:
+        acao = ("Apague a pasta " + _relativo(pasta) + " e rode o INSTALAR.bat de novo "
+                "(o modelo será baixado outra vez).")
     return Item(nome, FALHA, f"O modelo {ao_vivo} não funcionou: {motivo}",
-                codigo="teste_transcricao",
-                acao=("Apague a pasta " + _relativo(pasta) + " e rode o INSTALAR.bat de novo "
-                      "(o modelo será baixado outra vez)."))
+                codigo="teste_transcricao", acao=acao)
 
 
 def _navegadores_instalados() -> tuple[str, str]:

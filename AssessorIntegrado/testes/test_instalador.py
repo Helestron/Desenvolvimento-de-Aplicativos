@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -466,6 +467,57 @@ class TestFuncoesPowerShell(unittest.TestCase):
         self.assertFalse(r["longo_ok"]["Mover"])
         self.assertTrue(r["rede"]["Rede"] and r["rede"]["Mover"])
 
+    def test_local_sem_gravacao_ou_com_acento_sem_nome_curto(self):
+        r = ps_json(r"""
+Gravar-Saida @{
+ sem = (Avaliar-Local 'C:\AssessorIntegrado' @() $false 100 $false);
+ curto = (Avaliar-Local 'C:\Teste Área' @() $false 100 $true $true);
+ normal = (Avaliar-Local 'C:\Teste Área' @() $false 100 $true $false);
+ acento = (Tem-Acento 'C:\Users\João'); ascii = (Tem-Acento 'C:\AssessorIntegrado');
+ inexistente = (Acento-SemNomeCurto 'C:\Pasta Que Não Existe\Área');
+ so_ascii = (Acento-SemNomeCurto 'C:\AssessorIntegrado') }""")
+        self.assertTrue(r["sem"]["SemGravacao"] and r["sem"]["Mover"])
+        self.assertTrue(r["curto"]["SemNomeCurto"] and r["curto"]["Mover"])
+        self.assertFalse(r["normal"]["Mover"])
+        self.assertTrue(r["acento"])
+        self.assertFalse(r["ascii"])
+        self.assertFalse(r["inexistente"], "na dúvida, não avisa")
+        self.assertFalse(r["so_ascii"])
+
+    def test_nome_do_modelo(self):
+        r = ps_json("Gravar-Saida @{ a = (Nome-DoModelo 'Médio'); b = (Nome-DoModelo ' TURBO ');\n"
+                    " c = (Nome-DoModelo 'small'); d = (Nome-DoModelo 'gigante'); e = (Nome-DoModelo $null);\n"
+                    " f = (Nome-DoModelo 'basico') }")
+        self.assertEqual((r["a"], r["b"], r["c"], r["d"], r["e"], r["f"]),
+                         ("medium", "large-v3-turbo", "small", "gigante", "", "base"))
+
+    def test_pastas_que_o_desinstalador_nao_apaga(self):
+        r = ps_json(r"""
+$prot = @('C:\Users\ana', 'C:\Users\ana\Documents', 'C:\Users\ana\OneDrive - TJ', '', $null)
+$raiz = 'C:\Programas\Assessor Integrado'
+Gravar-Saida @{
+ disco = (Motivo-ParaNaoApagar 'D:\' $raiz $prot); disco2 = (Motivo-ParaNaoApagar 'd:' $raiz $prot);
+ rede = (Motivo-ParaNaoApagar '\\servidor\gabinete\' $raiz $prot);
+ docs = (Motivo-ParaNaoApagar 'C:\Users\ana\Documents\' $raiz $prot);
+ usuarios = (Motivo-ParaNaoApagar 'c:\users' $raiz $prot);
+ onedrive = (Motivo-ParaNaoApagar 'C:/Users/ana/OneDrive - TJ' $raiz $prot);
+ acima = (Motivo-ParaNaoApagar 'C:\Programas' $raiz $prot);
+ pontos = (Motivo-ParaNaoApagar 'C:\Programas\Assessor Integrado\..' $raiz $prot);
+ raiz = (Motivo-ParaNaoApagar $raiz $raiz $prot);
+ vazio = (Motivo-ParaNaoApagar '' $raiz $prot);
+ proprio = (Motivo-ParaNaoApagar 'C:\Programas\Assessor Integrado\Acervo' $raiz $prot);
+ dentro = (Motivo-ParaNaoApagar 'C:\Users\ana\Documents\Acervo' $raiz $prot);
+ vizinho = (Motivo-ParaNaoApagar 'C:\Users\ana\Documents2' $raiz $prot);
+ outro_disco = (Motivo-ParaNaoApagar 'D:\Gabinete\Acervo' $raiz $prot);
+ n1 = (Normalizar-Caminho 'C:/a/./b/../c/'); n2 = (Normalizar-Caminho 'C:\..\x');
+ n3 = (Normalizar-Caminho '\\srv\c$\..\..\y') }""")
+        for chave in ("disco", "disco2", "rede", "docs", "usuarios", "onedrive", "acima", "pontos", "raiz", "vazio"):
+            self.assertTrue(r[chave], f"{chave}: deveria ser protegida")
+        for chave in ("proprio", "dentro", "vizinho", "outro_disco"):
+            self.assertEqual(r[chave], "", f"{chave}: pode ser apagada")
+        self.assertIn("programa", r["acima"])
+        self.assertEqual((r["n1"], r["n2"], r["n3"]), ("C:\\a\\c", "C:\\x", "\\\\srv\\y"))
+
     def test_config_ini_e_pastas(self):
         ini = ("; comentário\n[geral]\npasta_acervo = D:\\Gabinete\\Acervo\n"
                "# outro\npasta_sigilosos=\n[Transcricao]\nmodelo_ao_vivo = Base\n")
@@ -473,6 +525,8 @@ class TestFuncoesPowerShell(unittest.TestCase):
             arq = Path(tmp) / "config.ini"
             arq.write_text(ini, encoding="utf-8")
             os.environ["ASSESSOR_TESTE_PASTA"] = "E:\\Dados"
+            perfil_antes = os.environ.get("USERPROFILE")
+            os.environ["USERPROFILE"] = "E:\\Perfil"
             try:
                 r = ps_json(
                     "$t = [IO.File]::ReadAllText($Extra, [Text.Encoding]::UTF8)\n"
@@ -484,10 +538,15 @@ class TestFuncoesPowerShell(unittest.TestCase):
                     " abs = (Resolver-Pasta 'D:\\Gabinete\\Acervo' 'Acervo' $raiz);\n"
                     " padrao = (Resolver-Pasta '' 'Sigilosos' $raiz);\n"
                     " esperado = (Join-Path $raiz 'Sigilosos');\n"
-                    " var = (Resolver-Pasta '%ASSESSOR_TESTE_PASTA%\\Acervo' 'Acervo' $raiz) }",
+                    " var = (Resolver-Pasta '%ASSESSOR_TESTE_PASTA%\\Acervo' 'Acervo' $raiz);\n"
+                    " til = (Resolver-Pasta '~\\Acervo' 'Acervo' $raiz) }",
                     "-Extra", str(arq))
             finally:
                 os.environ.pop("ASSESSOR_TESTE_PASTA", None)
+                if perfil_antes is None:
+                    os.environ.pop("USERPROFILE", None)
+                else:
+                    os.environ["USERPROFILE"] = perfil_antes
         self.assertEqual(r["acervo"], "D:\\Gabinete\\Acervo")
         self.assertEqual(r["sig"], "")
         self.assertEqual(r["modelo"], "Base")
@@ -495,6 +554,7 @@ class TestFuncoesPowerShell(unittest.TestCase):
         self.assertEqual(r["abs"], "D:\\Gabinete\\Acervo")
         self.assertEqual(r["padrao"], r["esperado"])
         self.assertEqual(r["var"], "E:\\Dados\\Acervo")
+        self.assertEqual(r["til"], "E:\\Perfil\\Acervo")
 
     def test_resumo_da_verificacao(self):
         itens = [{"nome": "A", "situacao": "ok", "obrigatorio": True},
@@ -746,10 +806,19 @@ function Capturar {
     Sim-Anotar ('capturar ' + $codigo)
     if (-not (Test-Path -LiteralPath $Programa)) { return [pscustomobject]@{ Codigo = -1; Saida = ''; Erro = 'sem python' } }
     $ok = $true
-    if ($codigo -like 'import faster_whisper*') { $ok = Test-Path -LiteralPath (Sim-Marca 'bibliotecas') }
+    if ($codigo -like 'import faster_whisper*') {
+        $ok = Test-Path -LiteralPath (Sim-Marca 'bibliotecas')
+        if ($ok -and $env:ASSESSOR_SIM_IMPORT_FALHA) {
+            return [pscustomobject]@{ Codigo = 1; Saida = ''; Erro = 'ImportError: DLL load failed while importing _ext' } }
+    }
     elseif ($codigo -like '*falantes.disponivel*') { $ok = Test-Path -LiteralPath (Sim-Marca 'falantes') }
     if ($ok) { return [pscustomobject]@{ Codigo = 0; Saida = '3.12.10'; Erro = '' } }
     return [pscustomobject]@{ Codigo = 1; Saida = ''; Erro = "ModuleNotFoundError: No module named 'faster_whisper'" }
+}
+if ($env:ASSESSOR_SIM_SEM_GRAVACAO) {
+    # A pasta do programa não aceita gravação (as outras, sim).
+    function Pasta-Gravavel { param([string]$Pasta)
+        return ((Normalizar-Caminho $Pasta) -ne (Normalizar-Caminho $Raiz)) }
 }
 """
 
@@ -784,7 +853,8 @@ class TestRoteiroDoInstalador(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def rodar(self, script: str = "instalar.ps1", *args: str, **simulacao: str) -> tuple[int, str, str]:
+    def rodar(self, script: str = "instalar.ps1", *args: str, ambiente: dict | None = None,
+              **simulacao: str) -> tuple[int, str, str]:
         if self.registro.exists():
             self.registro.unlink()
         env = dict(os.environ, ASSESSOR_INSTALADOR_DUBLES=str(self.dubles), NO_COLOR="1",
@@ -795,6 +865,7 @@ class TestRoteiroDoInstalador(unittest.TestCase):
             env.pop(variavel, None)
         for chave, valor in simulacao.items():
             env[f"ASSESSOR_SIM_{chave.upper()}"] = valor
+        env.update(ambiente or {})
         r = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                             "-File", str(self.raiz / "instalador" / script), *args],
                            capture_output=True, env=env, timeout=300, stdin=subprocess.DEVNULL)
@@ -882,6 +953,101 @@ class TestRoteiroDoInstalador(unittest.TestCase):
         self.assertIn("robocopy", registro)
         self.assertIn("-NaoMover", registro)
         self.assertIn("-Silencioso", registro.split("-NaoMover", 1)[1])
+
+    def test_trava_so_bloqueia_com_o_dono_vivo(self):
+        # Regressão: o Windows reaproveita números de processo. Uma trava
+        # esquecida (janela fechada no meio da instalação) que aponta para um
+        # PowerShell aberto DEPOIS não pode impedir a instalação.
+        outro = subprocess.Popen([POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 120"],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            time.sleep(1.5)
+            self.runtime.mkdir(parents=True, exist_ok=True)
+            trava = self.runtime / ".instalando"
+            trava.write_text(str(outro.pid), encoding="ascii")
+            codigo, saida, registro = self.rodar("instalar.ps1", "-Silencioso")
+            self.assertEqual(codigo, 11, saida)
+            self.assertIn("Outra instala", saida)
+            self.assertNotIn("baixar ", registro)
+            antiga = time.time() - 3600
+            os.utime(trava, (antiga, antiga))
+            codigo, saida, _ = self.rodar("instalar.ps1", "-Silencioso")
+            self.assertEqual(codigo, 0, saida)
+            self.assertFalse(trava.exists(), "a trava ficou para trás")
+        finally:
+            outro.kill()
+            outro.wait()
+
+    def test_bibliotecas_que_nao_carregam_nao_interrompem(self):
+        # Regressão: uma DLL que não carrega interrompia tudo na etapa 3 -
+        # sem pastas, sem atalhos e sem o diagnóstico da verificação final.
+        codigo, saida, registro = self.rodar("instalar.ps1", "-Silencioso", import_falha="1")
+        self.assertEqual(codigo, 10, saida)
+        self.assertIn("DLL load failed", saida)
+        for trecho in ("-m app preparar-pastas", "-m app verificar --completo --json"):
+            self.assertIn(trecho, registro)
+        self.assertTrue((self.atalhos / "Desktop.lnk").exists())
+        estado = self.estado()
+        self.assertEqual(estado["resultado"], "falha")
+        self.assertFalse(estado.get("bibliotecas"), "bibliotecas que não carregam não podem ficar como prontas")
+        self.assertFalse((self.runtime / ".instalando").exists())
+
+    def test_python_refeito_reinstala_o_componente_de_falantes(self):
+        # Regressão: com o Python refeito (cópia quebrada, antivírus), o
+        # componente de falantes era dado como instalado pelo estado.json.
+        codigo, saida, _ = self.rodar("instalar.ps1", "-Silencioso")
+        self.assertEqual(codigo, 0, saida)
+        shutil.rmtree(self.runtime / "python")
+        codigo, saida, registro = self.rodar("instalar.ps1", "-Silencioso")
+        self.assertEqual(codigo, 0, saida)
+        self.assertIn("instalador" + os.sep + "requisitos.txt", registro)
+        self.assertIn("requisitos-falantes.txt", registro)
+
+    def test_pasta_sem_permissao_de_gravacao(self):
+        # Regressão: o "New-Item Logs" derrubava o instalador com erro em
+        # inglês. Agora: no modo silencioso, explica e para (código 11); com
+        # o usuário (aqui, sem teclado: resposta padrão), copia para outra pasta.
+        codigo, saida, registro = self.rodar("instalar.ps1", "-Silencioso", sem_gravacao="1")
+        self.assertEqual(codigo, 11, saida)
+        self.assertIn("-Pasta", saida)
+        self.assertNotIn("baixar ", registro)
+        self.assertNotIn("Erro inesperado", saida)
+        # O disco do sistema de mentira: a pasta sugerida (<disco>\AssessorIntegrado)
+        # nasce dentro da pasta temporária, e não em C:\ de verdade.
+        disco = Path(self.tmp.name) / "disco"
+        disco.mkdir()
+        codigo, saida, registro = self.rodar("instalar.ps1", ambiente={"SystemDrive": str(disco)},
+                                             sem_gravacao="1")
+        self.assertEqual(codigo, 0, saida)
+        self.assertIn("robocopy", registro)
+        self.assertIn("-NaoMover", registro)
+        self.assertIn(str(disco / "AssessorIntegrado"), registro)
+
+    def test_modelo_por_apelido(self):
+        codigo, saida, registro = self.rodar("instalar.ps1", "-Silencioso", "-SemFalantes", "-ModeloAoVivo", "medio")
+        self.assertEqual(codigo, 0, saida)
+        self.assertIn("-m app modelos baixar medium", registro)
+        self.assertIn("'modelo_ao_vivo', 'medium'", registro)
+        self.assertEqual(self.estado()["modelo_ao_vivo"], "medium")
+
+    def test_desinstalar_nao_apaga_pasta_ampla(self):
+        # Regressão: com o Acervo apontado (Configurações) para a pasta do
+        # usuário ou para a pasta acima do programa, "-ApagarDados" apagava
+        # tudo o que estava lá - inclusive o próprio programa.
+        codigo, saida, _ = self.rodar("instalar.ps1", "-Silencioso")
+        self.assertEqual(codigo, 0, saida)
+        pessoal = self.perfil / "documento-pessoal.txt"
+        pessoal.write_text("x", encoding="utf-8")
+        (self.raiz / "config.ini").write_text(f"[geral]\npasta_acervo = {self.perfil}\n", encoding="utf-8")
+        codigo, saida, _ = self.rodar("desinstalar.ps1", "-Silencioso", "-ApagarDados")
+        self.assertEqual(codigo, 10, saida)
+        self.assertTrue(pessoal.exists(), "apagou a pasta do usuário")
+        self.assertIn("seguran", saida)
+        (self.raiz / "config.ini").write_text("[geral]\npasta_acervo = ..\n", encoding="utf-8")
+        codigo, saida, _ = self.rodar("desinstalar.ps1", "-Silencioso", "-ApagarDados")
+        self.assertEqual(codigo, 10, saida)
+        self.assertTrue((self.raiz / "instalador" / "desinstalar.ps1").exists(), "apagou o próprio programa")
+        self.assertTrue(pessoal.exists())
 
     def test_desinstalar_mantem_os_dados_no_modo_silencioso(self):
         codigo, saida, _ = self.rodar("instalar.ps1", "-Silencioso")

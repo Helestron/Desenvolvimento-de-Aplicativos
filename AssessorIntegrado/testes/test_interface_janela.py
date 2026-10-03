@@ -492,6 +492,260 @@ class TesteJanela(unittest.TestCase):
             yield filho
             yield from self._descendentes(filho)
 
+    # ------------------------------------------- regressões da revisão
+    def _gravando(self, fabrica=None):
+        """Abre a página Transcrever com uma audiência (simulada) gravando."""
+        pagina = self.j.paginas["transcrever"]
+        self.j.mostrar("transcrever")
+        criadas, padrao = self._sessao_falsa()
+        pagina.var_numero.set("0700123-83.2024.8.02.0001")
+        self._patch_sessao = mock.patch("app.interface.servicos.nova_sessao",
+                                        side_effect=fabrica or padrao)
+        self._patch_sessao.start()
+        self.addCleanup(self._patch_sessao.stop)
+        pagina.iniciar()
+        self.assertTrue(self.bombear(ate=lambda: pagina.situacao == "gravando"))
+        return pagina, criadas
+
+    def test_transcricao_segue_a_ultima_fala_depois_de_um_aviso(self):
+        # Um aviso em cima (atraso, microfone reaberto) encolhia a caixa presa
+        # pelo topo: a última linha saía de vista, o teste "está no fim?"
+        # falhava e a transcrição parava de rolar no meio da audiência.
+        from app.transcricao.documento import Fala
+
+        pagina, criadas = self._gravando()
+        sessao = criadas[0]
+        for i in range(25):
+            sessao.eventos("fala", Fala(i, i + 1, "Juiz(a)" if i % 2 else "Parte",
+                                        f"Fala número {i}. " * 6))
+        self.assertTrue(self.bombear(ate=lambda: "Fala número 24" in pagina.texto.get("1.0", "end")))
+        self.bombear(0.2)
+        self.assertGreaterEqual(pagina.texto.yview()[1], 0.999)
+        sessao.eventos("aviso", "A transcrição está 25 s atrás da fala.")
+        self.assertTrue(self.bombear(ate=lambda: pagina.faixa.winfo_ismapped()))
+        self.bombear(0.2)
+        sessao.eventos("fala", Fala(30, 31, "Parte", "Última fala antes da pausa."))
+        self.assertTrue(self.bombear(ate=lambda: "Última fala" in pagina.texto.get("1.0", "end")))
+        self.bombear(0.3)
+        self.assertGreaterEqual(pagina.texto.yview()[1], 0.999, "a última fala fica à vista")
+        # quem sobe para reler não é arrastado de volta pela fala seguinte
+        pagina._rolar_pela_barra("moveto", 0)
+        self.bombear(0.2)
+        sessao.eventos("fala", Fala(32, 33, "Juiz(a)", "Mais uma fala."))
+        self.assertTrue(self.bombear(ate=lambda: "Mais uma fala" in pagina.texto.get("1.0", "end")))
+        self.bombear(0.2)
+        self.assertEqual(pagina.texto.yview()[0], 0.0)
+        pagina.encerrar()
+        self.assertTrue(self.bombear(ate=lambda: pagina.situacao == "fim"))
+
+    def test_audiencia_compacta_a_preparacao(self):
+        # Em notebook 1366x768 a 125% a preparação travada mais um aviso
+        # deixavam a área da transcrição sem nenhuma linha.
+        pagina, _ = self._gravando()
+        self.bombear(0.1)
+        self.assertFalse(pagina.prep.winfo_ismapped())
+        self.assertTrue(pagina.linha_sessao.winfo_ismapped())
+        self.assertIn("0700123-83.2024.8.02.0001", pagina.resumo_sessao.cget("text"))
+        self.assertFalse(pagina._subtitulo.winfo_ismapped())
+        pagina.tratar_evento("sessao", ("nivel", 0.5))
+        self.assertGreater(pagina.medidor_sessao._nivel, 0)
+        pagina.encerrar()
+        self.assertTrue(self.bombear(ate=lambda: pagina.situacao == "fim"))
+        self.bombear(0.1)
+        self.assertTrue(pagina.prep.winfo_ismapped())
+        self.assertFalse(pagina.linha_sessao.winfo_ismapped())
+
+    def test_codigo_do_download_nao_tira_da_audiencia(self):
+        # O pedido de código trocava para a página Baixar: no meio da
+        # audiência, F1 a F8 deixavam de marcar quem fala (e F1 abria a Ajuda).
+        from app.interface import dialogos
+        from app.interface.tarefas import PedidoCodigo
+
+        def dialogo():
+            return next((w for w in self.raiz.winfo_children()
+                         if isinstance(w, dialogos.DialogoCodigo)), None)
+
+        pagina, criadas = self._gravando()
+        pedido = PedidoCodigo("Código do e-SAJ", "Digite o código do e-mail.", 60)
+        self.j.postar("baixar", "pedir_codigo", pedido)
+        self.assertTrue(self.bombear(ate=lambda: dialogo() is not None))
+        self.assertEqual(self.j.atual, "transcrever", "a audiência continua à vista")
+        self.assertEqual(self.j._tecla_funcao(mock.Mock(keysym="F3")), "break")
+        self.assertEqual(criadas[0].falante, pagina.grade.nomes[2])
+        dialogo().cancelar()
+        self.assertIsNone(pedido.resposta)
+        pagina.encerrar()
+        self.assertTrue(self.bombear(ate=lambda: pagina.situacao == "fim"))
+        # sem audiência, o pedido traz a página Baixar à frente
+        outro = PedidoCodigo("Código do e-SAJ", "Digite.", 60)
+        self.j.postar("baixar", "pedir_codigo", outro)
+        self.assertTrue(self.bombear(ate=lambda: dialogo() is not None))
+        self.assertEqual(self.j.atual, "baixar")
+        dialogo().cancelar()
+
+    def test_fechar_espera_a_audiencia_alem_do_limite_geral(self):
+        # Com a fila atrasada, encerrar() transcreve o que falta antes do DOCX
+        # final; o limite de 120 s matava o processo no meio.
+        criadas = []
+
+        class SessaoLenta(SessaoFalsa):
+            def encerrar(self, refinar=False):
+                time.sleep(1.0)
+                return super().encerrar(refinar)
+
+        def fabrica(numero, cfg, eventos, **kw):
+            s = SessaoLenta(numero, cfg, eventos, pasta=self.dir, **kw)
+            criadas.append(s)
+            return s
+
+        self._gravando(fabrica)
+        with mock.patch("app.interface.janela.ESPERA_FECHAR_S", 0.0), \
+                mock.patch("app.interface.dialogos.confirmar", return_value=True):
+            self.j.fechar()
+            self.assertTrue(self.bombear(ate=lambda: not self.j._viva(), limite=15))
+        self.assertTrue(criadas[0].encerrada.is_set(), "o DOCX final é gravado antes de fechar")
+
+    def test_rodape_do_download_nao_refaz_o_parar_a_cada_evento(self):
+        # Destruir e recriar o "Parar" a cada status do motor fazia o botão
+        # piscar e perder o clique.
+        pagina = self.j.paginas["baixar"]
+        numeros = [_cnj(700500 + i) for i in range(3)]
+        pagina._usar_leitura(listas.ler_texto("\n".join(numeros)), "Lote rodapé")
+        pagina.estado = "baixando"
+        pagina.progresso = (0, 3, numeros[0])
+        pagina._atualizar_rodape()
+        parar = pagina.acoes_rodape.winfo_children()
+        self.assertEqual(len(parar), 1)
+        for i in range(5):
+            pagina.tratar_evento("status", f"Passo {i}")
+            pagina.tratar_evento("progresso", (1, 3, numeros[1]))
+        self.assertEqual(pagina.acoes_rodape.winfo_children(), parar)
+        self.assertTrue(parar[0].winfo_exists())
+        self.assertIn("Passo 4", pagina.texto_rodape.cget("text"))
+        self.assertEqual(float(pagina.barra_rodape.cget("value")), 1000 / 3)
+        pagina.tarefa.parar.set()                    # pediu para parar: o botão apaga
+        pagina._atualizar_rodape()
+        self.assertTrue(pagina.acoes_rodape.winfo_children()[0].instate(["disabled"]))
+        pagina.tarefa.parar.clear()
+        pagina.estado = "pronto"
+        pagina._atualizar_rodape()
+        self.assertIn("Baixar 3 processos", self.textos(pagina.acoes_rodape))
+        self.assertFalse(pagina.barra_rodape.winfo_ismapped())
+
+    def test_acesso_igual_na_pagina_baixar_e_nas_configuracoes(self):
+        # O editor que ficava montado na página Baixar guardava o estado
+        # antigo e, ao clicar em Baixar, regravava no cofre a senha que o
+        # usuário acabara de mandar esquecer nas Configurações.
+        config_ = self.j.paginas["config"]
+        self.j.mostrar("config")
+        ed_c = next(e for e in config_.editores if e.portal == "esaj:TJAL")
+        ed_c.modo.set("senha")
+        ed_c.usuario.set("123.456.789-00")
+        ed_c.senha.set("segredo")
+        ed_c.lembrar.set(True)
+        ed_c.salvar()
+        self.assertEqual(self.j._cofre.obter("esaj:TJAL"), ("123.456.789-00", "segredo"))
+
+        baixar = self.j.paginas["baixar"]
+        baixar._usar_leitura(listas.ler_texto(_cnj(700600)), "Lote acesso")
+        self.j.mostrar("baixar")
+        ed_b = next(e for e in baixar.editores if e.portal == "esaj:TJAL")
+        self.assertTrue(ed_b.tem_credenciais())
+
+        self.j.mostrar("config")
+        ed_c.lembrar.set(False)
+        ed_c.salvar()                                 # "não lembrar": sai do disco
+        self.assertEqual(self.j._cofre.obter("esaj:TJAL"), ("", ""))
+        self.j.mostrar("baixar")
+        ed_b.salvar()                                 # o que o botão Baixar faz antes do lote
+        self.assertEqual(self.j._cofre.obter("esaj:TJAL"), ("", ""),
+                         "a senha esquecida não volta ao disco")
+        self.assertFalse(ed_b.lembrar.get())
+        self.assertTrue(ed_b.tem_credenciais(), "vale a senha só por agora")
+        self.assertEqual(ed_b.credenciais_atuais(), ("123.456.789-00", "segredo"))
+
+    def test_assistente_voltar_do_ultimo_passo_usa_a_largura_toda(self):
+        from app.interface import dialogos
+
+        a = dialogos.Assistente(self.j)
+        self.bombear(0.2)
+        a.proximo()
+        a.proximo()
+        self.assertEqual(int(a.area.grid_columnconfigure(1)["weight"]), 1)
+        a.anterior()
+        self.bombear(0.1)
+        self.assertEqual(int(a.area.grid_columnconfigure(1)["weight"]), 0)
+        a.fechar()
+
+    def test_molduras_dos_falantes_nao_acumulam(self):
+        # Uma imagem por largura nova, a cada redimensionamento, sem limite.
+        import gc
+
+        from app.interface import pagina_transcrever as pt
+
+        for largura in range(100, 300):
+            pt._moldura(largura, 40, "#ffffff", "#dadce0")
+        self.assertLessEqual(len(pt._molduras), pt.MAX_MOLDURAS)
+        pagina = self.j.paginas["transcrever"]
+        self.j.mostrar("transcrever")
+        self.bombear(0.3)
+        chip = pagina.grade.chips[0]
+        foto = getattr(chip, "_foto", None)
+        self.assertIsNotNone(foto)
+        pt._molduras.clear()                          # saiu do cache...
+        gc.collect()
+        nomes = self.raiz.tk.splitlist(self.raiz.tk.call("image", "names"))
+        self.assertIn(str(foto), nomes, "...mas a imagem desenhada continua viva")
+
+    def test_espelho_automatico_interrompivel_e_nunca_ao_fechar(self):
+        nuvem_dir = self.dir / "Nuvem"
+        nuvem_dir.mkdir()
+        self.cfg.definir("compartilhar", "pasta_nuvem", str(nuvem_dir))
+        self.cfg.definir("compartilhar", "espelhar_automaticamente", True)
+        chamadas = []
+
+        def espelhar(origem, destino, progresso=None, cancelado=None):
+            chamadas.append(cancelado)
+            return 0, 0
+
+        transcrever = self.j.paginas["transcrever"]
+        baixar = self.j.paginas["baixar"]
+        with mock.patch("app.compartilhar.nuvem.espelhar", side_effect=espelhar):
+            # a tarefa de apoio ocupada não descarta mais o espelho
+            liberar = threading.Event()
+            transcrever.tarefa_apoio.iniciar(liberar.wait, 5)
+            transcrever._espelhar_se_preciso()
+            self.assertTrue(self.bombear(ate=lambda: len(chamadas) == 1))
+            liberar.set()
+            self.assertTrue(self.bombear(ate=lambda: not transcrever.tarefa_nuvem.ativa))
+            baixar._espelhar()
+            self.assertTrue(self.bombear(ate=lambda: len(chamadas) == 2
+                                         and not baixar.tarefa_nuvem.ativa))
+            self.assertTrue(all(callable(c) for c in chamadas), "o fechar consegue interromper")
+            self.j._fechando = True
+            try:
+                transcrever._espelhar_se_preciso()
+                baixar._espelhar()
+                self.bombear(0.2)
+            finally:
+                self.j._fechando = False
+        self.assertEqual(len(chamadas), 2, "nada de cópia nova durante o fechamento")
+
+    def test_endereco_do_portal_volta_ao_original(self):
+        pagina = self.j.paginas["config"]
+        self.j.mostrar("config")
+        var = pagina._vars[("endereco", "esaj:TJAL")]
+        original = var.get()
+        entrada = next(w for w in self._descendentes(pagina) if isinstance(w, tk.ttk.Entry)
+                       and str(w.cget("textvariable")) == str(var))
+        with mock.patch("app.nucleo.tribunais.definir_endereco") as definir:
+            var.set("https://novo.tjal.jus.br")
+            entrada.event_generate("<Return>")
+            var.set(original)
+            entrada.event_generate("<Return>")
+        self.assertEqual([c.args[2] for c in definir.call_args_list],
+                         ["https://novo.tjal.jus.br", original])
+
     def test_registro_tem_limite(self):
         from app.interface.componentes import MAX_LINHAS_REGISTRO, Detalhes
 

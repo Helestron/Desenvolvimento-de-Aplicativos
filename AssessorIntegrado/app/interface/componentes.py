@@ -163,6 +163,7 @@ def estrutura(pagina: ttk.Frame, titulo: str, subtitulo: str = "", rolavel: bool
         sub = ttk.Label(topo, text=subtitulo, foreground=estilo.TINTA_FRACA, justify="left")
         sub.grid(row=1, column=0, sticky="ew", pady=(px(2), 0))
         estilo.acompanhar_largura(sub)
+        pagina._subtitulo = sub          # type: ignore[attr-defined]  (a página pode escondê-lo)
     acoes = None
     if acoes_cabecalho:
         acoes = ttk.Frame(topo)

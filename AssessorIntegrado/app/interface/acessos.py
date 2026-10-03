@@ -119,17 +119,45 @@ class EditorAcesso(ttk.Frame):
             log.debug("cofre ilegível para %s: %s", self.portal, erro)
             return "", ""
 
+    def _senha_conhecida(self) -> str:
+        """A digitada agora, a guardada no cofre ou a "só por agora" da sessão
+        (posta por OUTRO editor do mesmo portal, ex.: nas Configurações)."""
+        sessao = self.janela.credenciais_sessao.get(self.portal) or ("", "")
+        return self.senha.get() or self._senha_guardada or sessao[1]
+
     def tem_credenciais(self) -> bool:
         if self.modo.get() != "senha":
             return True
-        usuario = self.usuario.get().strip()
-        senha = self.senha.get() or self._senha_guardada
-        return bool(usuario and senha)
+        return bool(self.usuario.get().strip() and self._senha_conhecida())
 
     def credenciais_atuais(self) -> tuple[str, str] | None:
         usuario = self.usuario.get().strip()
-        senha = self.senha.get() or self._senha_guardada
+        senha = self._senha_conhecida()
         return (usuario, senha) if usuario and senha else None
+
+    def recarregar(self) -> None:
+        """Relê forma de entrar, cofre e sessão sem perder o que está digitado.
+
+        O mesmo portal aparece em até três editores (assistente, Baixar,
+        Configurações). Sem reler, o editor que ficou montado guardava o
+        estado antigo: mandava "Falta a senha" com a senha já guardada, ou -
+        pior - regravava no cofre, ao clicar em Baixar, a senha que o usuário
+        tinha acabado de mandar esquecer.
+        """
+        modo = (self.janela.cfg.texto(self.sistema, "login") or "senha").lower()
+        if modo in [m for m, _ in modos_do_sistema(self.sistema)] and modo != self.modo.get():
+            self.modo.set(modo)
+        usuario, senha = self._guardadas()
+        self._senha_guardada = senha
+        sessao = self.janela.credenciais_sessao.get(self.portal)
+        if usuario and senha:
+            self.lembrar.set(True)
+        elif sessao:
+            self.lembrar.set(False)
+            usuario = usuario or sessao[0]
+        if usuario and not self.usuario.get().strip():
+            self.usuario.set(usuario)
+        self._aplicar_modo()
 
     # ------------------------------------------------------------ salvar
     def _modo_mudou(self) -> None:
@@ -141,16 +169,17 @@ class EditorAcesso(ttk.Frame):
     def salvar(self) -> None:
         """Grava o que estiver nos campos (chamado a cada saída de campo)."""
         usuario = self.usuario.get().strip()
-        senha_digitada = self.senha.get()
-        senha = senha_digitada or self._senha_guardada
+        senha = self._senha_conhecida()
         sessao = self.janela.credenciais_sessao
         try:
             if self.lembrar.get():
+                # Só troca a sessão pelo cofre quando há o que guardar: um
+                # editor vazio não apaga a senha "só por agora" de outro.
                 if usuario and senha:
                     self.janela.cofre().guardar(self.portal, usuario, senha)
                     self._senha_guardada = senha
                     self.senha.set("")
-                sessao.pop(self.portal, None)
+                    sessao.pop(self.portal, None)
             else:
                 if self._senha_guardada:
                     self.janela.cofre().apagar(self.portal)

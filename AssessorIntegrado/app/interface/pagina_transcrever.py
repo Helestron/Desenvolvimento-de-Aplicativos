@@ -23,6 +23,7 @@ mexe no texto é a thread do Tk. Os atalhos F1 a F8 só valem nesta página.
 
 from __future__ import annotations
 
+import collections
 import logging
 import threading
 import tkinter as tk
@@ -34,9 +35,11 @@ from ..nucleo import cnj, sistema, tribunais
 from . import componentes, dialogos, estilo, servicos
 from .componentes import Detalhes, Faixa, Medidor, Pagina
 from .estilo import px
-from .tarefas import MICROFONE, MODELO_REVISAO
+from .tarefas import MICROFONE, MODELO_REVISAO, NUVEM
 
-log = logging.getLogger("interface.transcrever")
+# "transcricao" no nome: as linhas deste registro vão para os Detalhes da
+# página (registro.marca), junto com as do módulo de transcrição.
+log = logging.getLogger("interface.transcricao")
 
 TIPOS = ("Instrução e julgamento", "Conciliação", "Mediação", "Custódia", "Justificação",
          "Oitiva de testemunha", "Interrogatório", "Depoimento especial", "Admonitória",
@@ -197,6 +200,7 @@ class GradeFalantes(ttk.Frame):
         else:
             fundo, fio, letra = estilo.PAPEL, estilo.LINHA, estilo.TINTA
         foto = _moldura(L, A, fundo, fio)
+        c._foto = foto  # type: ignore[attr-defined]  (viva enquanto estiver desenhada)
         if foto is not None:
             c.create_image(0, 0, anchor="nw", image=foto)
         else:
@@ -247,13 +251,23 @@ class GradeFalantes(ttk.Frame):
         e.bind("<Escape>", cancelar)
 
 
-_molduras: dict = {}
+# Fundo arredondado dos botões de falante. A largura acompanha a janela: a
+# cada redimensionamento nasce uma imagem por largura nova, e o cache sem
+# limite crescia sem parar (megabytes de imagens do Tk que nunca voltavam).
+# Limitado às mais recentes; a que está desenhada fica presa ao próprio
+# botão (GradeFalantes._desenhar), então descartá-la daqui não a apaga.
+MAX_MOLDURAS = 48
+_molduras: "collections.OrderedDict" = collections.OrderedDict()
 estilo._ao_trocar_interpretador.append(_molduras.clear)
 
 
 def _moldura(largura: int, altura: int, fundo: str, fio: str):
     chave = (largura, altura, fundo, fio)
-    if chave not in _molduras:
+    if chave in _molduras:
+        _molduras.move_to_end(chave)
+    else:
+        while len(_molduras) >= MAX_MOLDURAS:
+            _molduras.popitem(last=False)
         try:
             from PIL import Image, ImageDraw, ImageTk
 
@@ -342,6 +356,9 @@ class PaginaTranscrever(Pagina):
         self.tarefa_teste = self.nova_tarefa("Teste do microfone", (MICROFONE,))
         self.tarefa_arquivo = self.nova_tarefa("Transcrição de gravação", (MODELO_REVISAO,))
         self.tarefa_apoio = self.nova_tarefa("Preparar a transcrição")
+        self.tarefa_nuvem = self.nova_tarefa("Espelho na nuvem (transcrição)", (NUVEM,))
+        self._seguir_fim = True         # a transcrição acompanha a última fala
+        self._relogio_id = None
 
         corpo, _, _ = componentes.estrutura(
             self, "Transcrever audiência",
@@ -353,6 +370,22 @@ class PaginaTranscrever(Pagina):
         prep = ttk.Frame(corpo)
         prep.grid(row=0, column=0, columnspan=2, sticky="ew")
         prep.columnconfigure((0, 1, 2), weight=1, uniform="prep")
+        self.prep = prep
+        # Durante a audiência os campos acima ficam travados: no lugar deles,
+        # uma linha só (processo, tipo e o nível do microfone). Em notebook de
+        # 1366x768 a 125% (a janela tem ~540 px de altura útil), a preparação
+        # mais um aviso deixavam a área da transcrição com ZERO linhas.
+        self.linha_sessao = ttk.Frame(corpo)
+        self.linha_sessao.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.linha_sessao.columnconfigure(0, weight=1)
+        self.resumo_sessao = ttk.Label(self.linha_sessao, text="", font=estilo.FONTE_NEGRITO,
+                                       anchor="w")
+        self.resumo_sessao.grid(row=0, column=0, sticky="ew")
+        ttk.Label(self.linha_sessao, text="Microfone", foreground=estilo.TINTA_FRACA,
+                  font=estilo.FONTE_NOTA).grid(row=0, column=1, sticky="e", padx=(px(12), px(8)))
+        self.medidor_sessao = Medidor(self.linha_sessao, largura=px(160), altura=px(6))
+        self.medidor_sessao.grid(row=0, column=2, sticky="e")
+        self.linha_sessao.grid_remove()
 
         q = ttk.Frame(prep)
         q.grid(row=0, column=0, sticky="new", padx=(0, px(16)))
@@ -471,9 +504,19 @@ class PaginaTranscrever(Pagina):
                              foreground=estilo.TINTA, highlightthickness=0, spacing1=px(2),
                              spacing3=px(6), cursor="arrow", state="disabled", height=6)
         self.texto.grid(row=0, column=0, sticky="nsew", padx=(px(2), 0), pady=px(2))
-        rolagem = ttk.Scrollbar(caixa, orient="vertical", command=self.texto.yview)
+        rolagem = ttk.Scrollbar(caixa, orient="vertical", command=self._rolar_pela_barra)
         rolagem.grid(row=0, column=1, sticky="ns", pady=px(8), padx=(0, px(4)))
         self.texto.configure(yscrollcommand=componentes.rolagem_automatica(rolagem))
+        # Acompanhar a última fala é decisão do USUÁRIO (rolar para cima para
+        # reler; voltar ao fim para seguir), e não da geometria: quando um
+        # aviso aparece em cima, os Detalhes se abrem ou a janela muda de
+        # tamanho, a caixa encolhe presa pelo topo, a última linha sai de
+        # vista e o teste "está no fim?" falhava - a transcrição parava de
+        # rolar no meio da audiência.
+        for sequencia in ("<MouseWheel>", "<Button-4>", "<Button-5>", "<KeyRelease>",
+                          "<ButtonRelease-1>"):
+            self.texto.bind(sequencia, lambda _e: self._lembrar_posicao(), add="+")
+        self.texto.bind("<Configure>", lambda _e: self._manter_no_fim(), add="+")
         self.texto.tag_configure("rotulo", font=estilo.FONTE_TRANSCRICAO_NEGRITO,
                                  foreground=estilo.AZUL_PROFUNDO, spacing1=px(10))
         self.texto.tag_configure("hora", font=estilo.FONTE_NOTA, foreground=estilo.APAGADO)
@@ -746,7 +789,8 @@ class PaginaTranscrever(Pagina):
         self.faixa.grid_remove()
         self.situacao = "iniciando"
         self._aplicar_situacao()
-        self._relogio()
+        if self._relogio_id is None:        # um cronômetro só, mesmo reiniciando depressa
+            self._relogio()
 
     def _pausar(self) -> None:
         try:
@@ -775,13 +819,14 @@ class PaginaTranscrever(Pagina):
         self._controle.set()
 
     def _relogio(self) -> None:
+        self._relogio_id = None
         if self.sessao is None or self.situacao in ("pronta", "fim"):
             return
         try:
             self.relogio.configure(text=_hms(self.sessao.tempo))
         except Exception:
             pass
-        self.janela.raiz.after(500, self._relogio)
+        self._relogio_id = self.after(500, self._relogio)
 
     def _aplicar_situacao(self) -> None:
         s = self.situacao
@@ -800,6 +845,7 @@ class PaginaTranscrever(Pagina):
             self.btn_encerrar.grid()
         else:
             self.btn_encerrar.grid_remove()
+        self._modo_audiencia(s in ("iniciando", "gravando", "pausada", "encerrando"))
         estado_campos = ["disabled"] if s in ("iniciando", "gravando", "pausada", "encerrando") \
             else ["!disabled"]
         for w in (self.e_numero, self.c_tipo, self.btn_testar):
@@ -809,6 +855,25 @@ class PaginaTranscrever(Pagina):
             self.relogio.configure(text="00:00:00")
         self._atualizar_rodape()
         self.janela.atualizar_indicadores()
+
+    def _modo_audiencia(self, ligado: bool) -> None:
+        """Na audiência, a preparação (travada) vira uma linha e o subtítulo
+        sai: a altura vai para a transcrição."""
+        subtitulo = getattr(self, "_subtitulo", None)
+        if ligado:
+            n = self.numero_sessao
+            partes = [f"Processo {n.formatado}" if n else "", self.var_tipo.get().strip()]
+            self.resumo_sessao.configure(text=" · ".join(p for p in partes if p))
+            self.prep.grid_remove()
+            self.linha_sessao.grid()
+            if subtitulo is not None:
+                subtitulo.grid_remove()
+        else:
+            self.linha_sessao.grid_remove()
+            self.prep.grid()
+            if subtitulo is not None:
+                subtitulo.grid()
+            self.medidor_sessao.zerar()
 
     # ============================================================ eventos
     def ao_evento(self, tipo: str, dado) -> None:
@@ -838,8 +903,8 @@ class PaginaTranscrever(Pagina):
             self.situacao = "fim"
             self._aplicar_situacao()
             self._faixa("Erro", "O documento final não pôde ser gravado",
-                        f"{dado}. O áudio e o diário da audiência estão na pasta _audio; use "
-                        "“Recuperar transcrição interrompida”.")
+                        f"{_maiuscula(str(dado)).rstrip('.')}. O áudio e o diário da audiência "
+                        "estão na pasta _audio; use “Recuperar transcrição interrompida”.")
         elif tipo == "nivel_teste":
             self.medidor.definir(dado)
         elif tipo == "aviso_teste":
@@ -862,6 +927,7 @@ class PaginaTranscrever(Pagina):
     def _evento_sessao(self, tipo: str, dado) -> None:
         if tipo == "nivel":
             self.medidor.definir(dado)
+            self.medidor_sessao.definir(dado)
         elif tipo == "estado":
             texto = str(dado)
             if texto.lower().startswith(("gravando", "pausado")):
@@ -898,12 +964,32 @@ class PaginaTranscrever(Pagina):
         self.texto.delete("1.0", "end")
         self.texto.configure(state="disabled")
         self._vazio = False
+        self._seguir_fim = True
         self.ultimo_falante = None
+
+    # ---------------------------------------------------------------- rolagem
+    def _rolar_pela_barra(self, *args) -> None:
+        self.texto.yview(*args)
+        self._lembrar_posicao()
+
+    def _lembrar_posicao(self) -> None:
+        """Depois de uma rolagem do usuário: está no fim (segue as falas) ou
+        subiu para reler (a tela não o arrasta de volta)?"""
+        def medir():
+            try:
+                self._seguir_fim = self.texto.yview()[1] >= 0.999
+            except tk.TclError:
+                pass
+        self.texto.after_idle(medir)
+
+    def _manter_no_fim(self) -> None:
+        if self._seguir_fim:
+            self.texto.after_idle(lambda: self.texto.see("end"))
 
     def _escrever_fala(self, fala) -> None:
         if getattr(self, "_vazio", False):
             self._limpar_texto()
-        no_fim = self.texto.yview()[1] > 0.98
+        no_fim = self._seguir_fim
         rotulo = (getattr(fala, "falante", "") or "").strip()
         texto = (getattr(fala, "texto", "") or "").strip()
         if not texto:
@@ -1056,12 +1142,25 @@ class PaginaTranscrever(Pagina):
             dialogos.erro(self.janela.raiz, "Abrir a pasta", str(erro))
 
     def _espelhar_se_preciso(self) -> None:
+        """Espelho automático na nuvem ao fim de cada transcrição.
+
+        Tarefa própria (a de apoio podia estar ocupada lendo os microfones, e
+        o espelho era descartado sem aviso), interrompível (o fechar do
+        programa não espera a cópia do acervo inteiro) e nunca durante o
+        fechamento (a audiência salva ao fechar não dispara cópia nova).
+        """
         destino = self.cfg.texto("compartilhar", "pasta_nuvem")
         if not (destino and self.cfg.flag("compartilhar", "espelhar_automaticamente")):
             return
+        if getattr(self.janela, "_fechando", False):
+            return
         from ..compartilhar import nuvem
 
-        self.tarefa_apoio.iniciar(nuvem.espelhar, self.cfg.pasta_acervo, Path(destino))
+        tarefa = self.tarefa_nuvem
+        recusa = tarefa.iniciar(nuvem.espelhar, self.cfg.pasta_acervo, Path(destino), None,
+                                tarefa.parar.is_set)
+        if recusa:
+            log.info("espelho na nuvem adiado: %s", recusa)
 
     def indicador(self):
         if self.situacao in ("gravando", "iniciando") and self.sessao is not None:

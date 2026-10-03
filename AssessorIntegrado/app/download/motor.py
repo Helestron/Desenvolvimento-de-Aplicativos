@@ -94,7 +94,10 @@ def fabrica_navegador_padrao(tribunal, opcoes: OpcoesDownload):
         executavel, escolha = (escolha if Path(escolha).is_file() else None), "auto"
     return Navegador(
         caminhos.PERFIS / f"{sistema}-{tribunal.sigla}",
-        visivel=opcoes.navegador_visivel(sistema),
+        # O eProc abre SEMPRE com janela: captcha, escolha de perfil e o
+        # Keycloak só se resolvem nela. Depois do login o portal a minimiza
+        # (CDP) se "mostrar o navegador" estiver desligado.
+        visivel=opcoes.navegador_visivel(sistema) or sistema == "eproc",
         canal=escolha,
         executavel=executavel,
         espera_s=opcoes.espera_s,

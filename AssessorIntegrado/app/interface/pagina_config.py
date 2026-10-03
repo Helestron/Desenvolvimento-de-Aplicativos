@@ -43,6 +43,7 @@ class PaginaConfig(Pagina):
 
     def montar(self) -> None:
         self._vars: dict = {}
+        self.editores: list[EditorAcesso] = []
         self.tarefa_login = self.nova_tarefa("Testar o login", (NAVEGADOR,))
         self.tarefa_modelo = self.nova_tarefa("Baixar o modelo de transcrição")
         self.tarefa_falantes = self.nova_tarefa("Instalar a separação de falantes", (MODELO_REVISAO,))
@@ -239,6 +240,7 @@ class PaginaConfig(Pagina):
     def _montar_tribunal(self) -> None:
         for w in self.area_tribunal.winfo_children():
             w.destroy()
+        self.editores = []
         t = self._tribunal()
         if t is None:
             return
@@ -261,6 +263,7 @@ class PaginaConfig(Pagina):
                               nota=("Usado para o que não for achado no "
                                     f"{t.nome_sistema}." if alvo is not t else ""))
             ed.grid(row=0, column=0, sticky="ew")
+            self.editores.append(ed)
             self._endereco(quadro, alvo, 1)
             rodape = ttk.Frame(quadro)
             rodape.grid(row=2, column=0, sticky="ew", pady=(px(12), 0))
@@ -284,12 +287,17 @@ class PaginaConfig(Pagina):
         e = ttk.Entry(q, textvariable=var)
         e.grid(row=1, column=0, sticky="ew")
 
+        # Compara com o ÚLTIMO valor gravado, e não com o da montagem: sem
+        # isto, corrigir A→B e depois voltar B→A não gravava a volta.
+        gravado = [atual]
+
         def salvar(_evento=None):
             novo = var.get().strip()
-            if novo == atual:
+            if novo == gravado[0]:
                 return
             try:
                 tribunais.definir_endereco(t.portal, grau, novo)
+                gravado[0] = novo
                 log.info("Endereço de %s corrigido para %s.", t.portal, novo or "o do catálogo")
             except OSError as erro:
                 dialogos.erro(self.janela.raiz, "Endereço", str(erro))
@@ -533,10 +541,10 @@ class PaginaConfig(Pagina):
                                           "tonal")
         self.btn_verificar.pack(side="left")
         estilo.botao(botoes, "Abrir a pasta de registros",
-                     lambda: sistema.abrir_pasta(caminhos.LOGS)).pack(side="left", padx=(px(8), 0))
+                     lambda: self._abrir(caminhos.LOGS, pasta=True)).pack(side="left",
+                                                                         padx=(px(8), 0))
         estilo.botao(botoes, "Abrir o config.ini",
-                     lambda: sistema.abrir_arquivo(self.cfg.arquivo)).pack(side="left",
-                                                                           padx=(px(8), 0))
+                     lambda: self._abrir(self.cfg.arquivo)).pack(side="left", padx=(px(8), 0))
         estilo.botao(botoes, "Refazer o assistente inicial", self.janela.abrir_assistente,
                      "texto").pack(side="left", padx=(px(8), 0))
 
@@ -548,6 +556,13 @@ class PaginaConfig(Pagina):
         self.quadro_verif.grid(row=4, column=0, sticky="ew", pady=(px(8), 0))
         self.quadro_verif.grid_remove()
         componentes.DicaTabela(self.arvore_verif, ("detalhe", "item"))
+
+    def _abrir(self, alvo, pasta: bool = False) -> None:
+        # Sem try, a falha sumia em silêncio (pythonw não tem console).
+        try:
+            sistema.abrir_pasta(alvo) if pasta else sistema.abrir_arquivo(alvo)
+        except Exception as erro:
+            dialogos.erro(self.janela.raiz, "Abrir", f"Não consegui abrir {alvo}:\n{erro}")
 
     def verificar(self) -> None:
         def pronto(itens):
@@ -597,6 +612,14 @@ class PaginaConfig(Pagina):
                 var.set(self.cfg.flag(*chave))
         if hasattr(self, "estado_falantes") and not self.tarefa_falantes.ativa:
             self._conferir_falantes()
+        # o mesmo portal pode ter mudado na página Baixar ou no assistente
+        for ed in self.editores:
+            ed.recarregar()
+
+    def ao_esconder(self) -> None:
+        # a barra lateral não tira o foco do campo: grava a senha digitada
+        for ed in self.editores:
+            ed.salvar()
 
     def ao_evento(self, tipo: str, dado) -> None:
         if tipo == "modelo":
