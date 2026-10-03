@@ -718,7 +718,7 @@ def tabela(pai, colunas: list[tuple], altura: int = 8):
     arvore.grid(row=0, column=0, sticky="nsew", padx=(px(4), 0), pady=px(4))
     barra = ttk.Scrollbar(quadro, orient="vertical", command=arvore.yview)
     barra.grid(row=0, column=1, sticky="ns", pady=px(8), padx=(0, px(4)))
-    arvore.configure(yscrollcommand=barra.set)
+    arvore.configure(yscrollcommand=rolagem_automatica(barra))
     for tag, cor in (("ok", estilo.VERDE), ("falha", estilo.VINHO), ("andamento", estilo.AZUL),
                      ("aguardando", estilo.TINTA_FRACA), ("aviso", estilo.AMBAR_TINTA)):
         arvore.tag_configure(tag, foreground=cor)
@@ -728,6 +728,22 @@ def tabela(pai, colunas: list[tuple], altura: int = 8):
 
 
 # =========================================================== miudezas
+def rolagem_automatica(barra: ttk.Scrollbar):
+    """yscrollcommand que esconde a barra quando tudo cabe (uma barra cinza
+    de ponta a ponta numa caixa vazia parece defeito)."""
+    def ajustar(primeiro, ultimo):
+        barra.set(primeiro, ultimo)
+        cabe = float(primeiro) <= 0.0 and float(ultimo) >= 1.0
+        try:
+            if cabe and barra.winfo_ismapped():
+                barra.grid_remove()
+            elif not cabe and not barra.winfo_ismapped():
+                barra.grid()
+        except tk.TclError:
+            pass
+    return ajustar
+
+
 def divisoria(pai, **grid) -> tk.Frame:
     """Fio horizontal de 1 px na cor LINHA (o ttk.Separator do clam sai escuro)."""
     return tk.Frame(pai, height=1, background=estilo.LINHA, borderwidth=0)

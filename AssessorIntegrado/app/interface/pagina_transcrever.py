@@ -344,8 +344,8 @@ class PaginaTranscrever(Pagina):
 
         corpo, _, _ = componentes.estrutura(
             self, "Transcrever audiência",
-            "Transcrição simultânea pelo microfone. O documento é salvo em Word, na pasta "
-            "Transcricoes do acervo, com o número do processo no nome.", rolavel=False)
+            "Transcrição simultânea pelo microfone. O documento do Word fica na pasta "
+            "“Transcricoes” do acervo, com o número do processo no nome.", rolavel=False)
         corpo.columnconfigure(1, weight=1)
 
         # ------------------------------------------- 1. preparação (uma linha)
@@ -384,14 +384,14 @@ class PaginaTranscrever(Pagina):
         q.columnconfigure(0, weight=1)
         ttk.Label(q, text="Microfone", foreground=estilo.TINTA_FRACA,
                   font=estilo.FONTE_NOTA).grid(row=0, column=0, sticky="w", pady=(0, px(3)))
-        self.btn_testar = estilo.botao(q, "Testar", self.testar_microfone, "texto", pequeno=True)
-        self.btn_testar.grid(row=0, column=1, sticky="e", pady=(0, px(1)))
         self.var_mic = tk.StringVar(value="Procurando microfones…")
         self.c_mic = ttk.Combobox(q, textvariable=self.var_mic, state="readonly", height=10)
         self.c_mic.grid(row=1, column=0, columnspan=2, sticky="ew")
         self.c_mic.bind("<<ComboboxSelected>>", lambda _e: self._salvar_microfone())
         self.medidor = Medidor(q, largura=px(200), altura=px(6))
-        self.medidor.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(px(6), 0))
+        self.medidor.grid(row=2, column=0, sticky="ew", pady=(px(6), 0))
+        self.btn_testar = estilo.botao(q, "Testar", self.testar_microfone, "texto", pequeno=True)
+        self.btn_testar.grid(row=2, column=1, sticky="e", padx=(px(6), 0), pady=(px(4), 0))
         self.dica_mic = ttk.Label(q, text="", font=estilo.FONTE_NOTA, foreground=estilo.TINTA_FRACA,
                                   justify="left")
         self.dica_mic.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(px(4), 0))
@@ -425,7 +425,7 @@ class PaginaTranscrever(Pagina):
         self.redondo.grid(row=0, column=0, rowspan=2, sticky="w")
         self.relogio = ttk.Label(controle, text="00:00:00", font=estilo.FONTE_RELOGIO)
         self.relogio.grid(row=0, column=1, sticky="sw", padx=(px(14), 0))
-        self.estado_sessao = componentes.EstadoLinha(controle, "Pronto para começar", "neutro",
+        self.estado_sessao = componentes.EstadoLinha(controle, "Pronto", "neutro",
                                                      fonte=estilo.FONTE)
         self.estado_sessao.grid(row=1, column=1, sticky="nw", padx=(px(14), 0))
         self.btn_encerrar = estilo.botao(esq, "Encerrar e salvar", self.encerrar, "cuidado")
@@ -472,7 +472,7 @@ class PaginaTranscrever(Pagina):
         self.texto.grid(row=0, column=0, sticky="nsew", padx=(px(2), 0), pady=px(2))
         rolagem = ttk.Scrollbar(caixa, orient="vertical", command=self.texto.yview)
         rolagem.grid(row=0, column=1, sticky="ns", pady=px(8), padx=(0, px(4)))
-        self.texto.configure(yscrollcommand=rolagem.set)
+        self.texto.configure(yscrollcommand=componentes.rolagem_automatica(rolagem))
         self.texto.tag_configure("rotulo", font=estilo.FONTE_TRANSCRICAO_NEGRITO,
                                  foreground=estilo.AZUL_PROFUNDO, spacing1=px(10))
         self.texto.tag_configure("hora", font=estilo.FONTE_NOTA, foreground=estilo.APAGADO)
@@ -569,9 +569,8 @@ class PaginaTranscrever(Pagina):
             self.dica_mic.configure(text=_maiuscula(erro), foreground=estilo.VINHO)
         elif not lista:
             self.dica_mic.configure(
-                text="Nenhum microfone encontrado. Ligue o microfone e confira em Configurações "
-                     "do Windows › Privacidade › Microfone se os aplicativos da área de trabalho "
-                     "podem usá-lo.", foreground=estilo.VINHO)
+                text="Nenhum microfone encontrado. Confira se ele está ligado e se o Windows "
+                     "permite o acesso (Privacidade › Microfone).", foreground=estilo.VINHO)
         else:
             self.dica_mic.configure(text="", foreground=estilo.TINTA_FRACA)
         if modelo is not None:
@@ -772,7 +771,7 @@ class PaginaTranscrever(Pagina):
         s = self.situacao
         botao = {"pronta": "iniciar", "fim": "iniciar", "gravando": "pausar", "pausada": "retomar"}
         self.redondo.definir(botao.get(s, "aguarde"))
-        textos = {"pronta": ("Pronto para começar", "neutro"),
+        textos = {"pronta": ("Pronto", "neutro"),
                   "iniciando": ("Abrindo o microfone…", "ocupado"),
                   "gravando": ("Gravando", "erro"),
                   "pausada": ("Pausado", "aviso"),
