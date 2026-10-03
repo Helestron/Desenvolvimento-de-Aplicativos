@@ -831,7 +831,7 @@ class PortalESAJ:
                 recado + f"O {self.nome} enviou um código de verificação para o seu e-mail "
                 "(o cadastrado no portal). Digite-o aqui. O código vale cerca de 3 minutos; "
                 "se não chegar, peça outro.",
-                min(restante, 600))
+                min(restante, 600), reenviavel=True)
             if codigo is None:
                 if self.ctx.cancelado():
                     raise Cancelado()
@@ -1180,7 +1180,9 @@ class PortalESAJ:
             if faltaram:
                 fls = descrever_buracos([(_inteiro(p.get("pagina_inicial")) or 0,
                                           _inteiro(p.get("pagina_final")) or 0) for p in faltaram])
-                detalhes.append(f"{len(faltaram)} peça(s) não vieram e têm página de aviso no lugar")
+                detalhes.append("1 peça não veio e tem página de aviso no lugar"
+                                if len(faltaram) == 1 else
+                                f"{len(faltaram)} peças não vieram e têm página de aviso no lugar")
                 r.incompleto = ", ".join(x for x in (r.incompleto, fls) if x)
 
         r.paginas = paginas or 0
@@ -1193,7 +1195,9 @@ class PortalESAJ:
                 pasta = destino.parent / "_controle" / "midias" / numero.nome_arquivo
                 r.midias = self.baixar_midias(midias, pasta)
             else:
-                detalhes.append(f"{len(midias)} gravação(ões) de audiência nos autos, não baixada(s)")
+                detalhes.append("1 gravação de audiência nos autos, não baixada"
+                                if len(midias) == 1 else
+                                f"{len(midias)} gravações de audiência nos autos, não baixadas")
         r.detalhe = "; ".join(detalhes)
         try:
             alvo = destino.parent / "_controle" / f"{numero.nome_arquivo}_capa.txt"

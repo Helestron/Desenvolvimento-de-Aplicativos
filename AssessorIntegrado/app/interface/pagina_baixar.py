@@ -36,7 +36,7 @@ log = logging.getLogger("interface.download")
 
 COLUNAS = [("n", "Nº", 46, "e", False), ("processo", "Processo", 214, "w", False),
            ("tribunal", "Tribunal", 150, "w", False), ("situacao", "Situação", 160, "w", False),
-           ("folhas", "Folhas", 62, "e", False), ("obs", "Observação", 220, "w", True)]
+           ("paginas", "Páginas", 70, "e", False), ("obs", "Observação", 220, "w", True)]
 
 _FALHAS = {"ERRO", "NAO_ENCONTRADO", "SEM_ACESSO", "NAO_SUPORTADO", "SIGILOSO_SEM_SENHA"}
 OPCOES = (("pular_baixados", "Pular os que já estão na pasta"),
@@ -81,13 +81,19 @@ class PaginaBaixar(Pagina):
         self.faixa_portal = Faixa(corpo, "Info")
         self.faixa_portal.grid(row=0, column=0, sticky="ew", pady=(0, px(16)))
         self.faixa_portal.grid_remove()
+        # Sigiloso que não pôde sair do acervo: fica à vista até ser resolvido
+        # (o recado do portal acima sai de cena ao fim do lote; este, não).
+        self.faixa_sigilo = Faixa(corpo, "Erro")
+        self.faixa_sigilo.grid(row=1, column=0, sticky="ew", pady=(0, px(16)))
+        self.faixa_sigilo.grid_remove()
+        self._sigilos_presos: list[Path] = []
 
         # ------------------------------------------------------- passo 1
         secao(corpo, "Relação de processos", 1,
               "Excel, Word, PDF, CSV ou texto: o programa encontra os números sozinho, em "
-              "qualquer coluna ou parágrafo.").grid(row=1, column=0, sticky="ew")
+              "qualquer coluna ou parágrafo.").grid(row=2, column=0, sticky="ew")
         barra = ttk.Frame(corpo)
-        barra.grid(row=2, column=0, sticky="ew", pady=(px(12), px(10)))
+        barra.grid(row=3, column=0, sticky="ew", pady=(px(12), px(10)))
         barra.columnconfigure(3, weight=1)
         estilo.botao(barra, "Abrir arquivo (Excel, Word, PDF…)", self.abrir_arquivo,
                      "tonal").grid(row=0, column=0)
@@ -98,10 +104,10 @@ class PaginaBaixar(Pagina):
         self.btn_limpar.grid(row=0, column=4, sticky="e")
 
         self.info_lista = ttk.Label(corpo, text="", foreground=estilo.TINTA_FRACA, justify="left")
-        self.info_lista.grid(row=3, column=0, sticky="ew")
+        self.info_lista.grid(row=4, column=0, sticky="ew")
         estilo.acompanhar_largura(self.info_lista)
         self.faixa_lista = Faixa(corpo, "Aviso")
-        self.faixa_lista.grid(row=4, column=0, sticky="ew", pady=(px(8), 0))
+        self.faixa_lista.grid(row=5, column=0, sticky="ew", pady=(px(8), 0))
 
         self.vazio = ttk.Frame(corpo, style="Faixa.TFrame", padding=(px(20), px(18)))
         self.vazio.columnconfigure(1, weight=1)
@@ -124,15 +130,15 @@ class PaginaBaixar(Pagina):
         # ------------------------------------------------------- passo 2
         secao(corpo, "Acesso aos portais", 2,
               "O programa reconhece o tribunal pelo número e entra com o SEU acesso. "
-              "Nada é enviado a terceiros.").grid(row=6, column=0, sticky="ew", pady=(px(28), 0))
+              "Nada é enviado a terceiros.").grid(row=7, column=0, sticky="ew", pady=(px(28), 0))
         self.area_acessos = ttk.Frame(corpo)
-        self.area_acessos.grid(row=7, column=0, sticky="ew", pady=(px(12), 0))
+        self.area_acessos.grid(row=8, column=0, sticky="ew", pady=(px(12), 0))
         self.area_acessos.columnconfigure(0, weight=1)
 
         # ------------------------------------------------------- passo 3
-        secao(corpo, "Destino e opções", 3).grid(row=8, column=0, sticky="ew", pady=(px(28), 0))
+        secao(corpo, "Destino e opções", 3).grid(row=9, column=0, sticky="ew", pady=(px(28), 0))
         destino = ttk.Frame(corpo, style="Faixa.TFrame", padding=(px(14), px(10)))
-        destino.grid(row=9, column=0, sticky="ew", pady=(px(12), 0))
+        destino.grid(row=10, column=0, sticky="ew", pady=(px(12), 0))
         destino.columnconfigure(1, weight=1)
         tk.Label(destino, text="Pasta:", background=estilo.FAIXA_CLARA,
                  foreground=estilo.TINTA_FRACA).grid(row=0, column=0, sticky="w",
@@ -147,7 +153,7 @@ class PaginaBaixar(Pagina):
         estilo.botao(destino, "Abrir", self.abrir_destino, superficie="Faixa").grid(
             row=0, column=3, padx=(px(8), 0))
         opcoes = ttk.Frame(corpo)
-        opcoes.grid(row=10, column=0, sticky="ew", pady=(px(10), 0))
+        opcoes.grid(row=11, column=0, sticky="ew", pady=(px(10), 0))
         opcoes.columnconfigure((0, 1), weight=1, uniform="op")
         for i, (chave, texto) in enumerate(OPCOES):
             var = tk.BooleanVar(value=self.cfg.flag("download", chave))
@@ -157,7 +163,7 @@ class PaginaBaixar(Pagina):
                 row=i // 2, column=i % 2, sticky="w", pady=px(2))
 
         self.detalhes = Detalhes(corpo, "Detalhes técnicos do download")
-        self.detalhes.grid(row=11, column=0, sticky="ew", pady=(px(24), 0))
+        self.detalhes.grid(row=12, column=0, sticky="ew", pady=(px(24), 0))
 
         # ------------------------------------------------------- rodapé
         rodape.columnconfigure(0, weight=1)
@@ -301,11 +307,11 @@ class PaginaBaixar(Pagina):
         numeros = self.numeros
         if not numeros:
             self.quadro_tabela.grid_remove()
-            self.vazio.grid(row=5, column=0, sticky="ew", pady=(px(10), 0))
+            self.vazio.grid(row=6, column=0, sticky="ew", pady=(px(10), 0))
             self.btn_limpar.state(["disabled"])
             return
         self.vazio.grid_remove()
-        self.quadro_tabela.grid(row=5, column=0, sticky="ew", pady=(px(10), 0))
+        self.quadro_tabela.grid(row=6, column=0, sticky="ew", pady=(px(10), 0))
         self.btn_limpar.state(["!disabled"])
         # Uma consulta ao catálogo por TRIBUNAL, não por processo: com
         # endereços corrigidos pelo usuário, cada consulta relê um JSON, e uma
@@ -774,12 +780,93 @@ class PaginaBaixar(Pagina):
         for r in resumo.itens:
             self._atualizar_linha(r)
         self._recolher_recado_portal()
+        # Os de lotes anteriores que ainda estão lá continuam na lista.
+        for p in getattr(resumo, "sigilosos_no_acervo", None) or []:
+            if Path(p) not in self._sigilos_presos:
+                self._sigilos_presos.append(Path(p))
+        presos = self._mostrar_sigilos_presos()
         self._atualizar_rodape()
         estilo.piscar_na_barra(self.janela.raiz)
         log.info("Lote concluído: %s", resumo.texto())
         if self.cfg.flag("compartilhar", "espelhar_automaticamente") and \
                 self.cfg.texto("compartilhar", "pasta_nuvem"):
-            self._espelhar()
+            if presos:
+                # A cópia de segredo de justiça iria para a nuvem.
+                log.warning("Espelho na nuvem NÃO feito: %s no acervo.",
+                            plural(len(presos), "processo sigiloso", "processos sigilosos"))
+            else:
+                self._espelhar()
+
+    # ------------------------------------------------- sigiloso no acervo
+    def _sigilos_ainda_no_acervo(self) -> list[Path]:
+        """Os PDFs sigilosos que não puderam sair do acervo e ainda estão lá
+        (movidos à mão, saem da lista)."""
+        ficam = []
+        for p in self._sigilos_presos:
+            try:
+                if p.exists():
+                    ficam.append(p)
+            except OSError:
+                ficam.append(p)                 # sem como conferir: continua o aviso
+        self._sigilos_presos = ficam
+        return ficam
+
+    def _mostrar_sigilos_presos(self) -> list[Path]:
+        """Alerta fixo sobre o sigiloso que ficou no acervo.
+
+        Não é o recado do portal (que some ao fim do lote): fica à vista até
+        o PDF sair do acervo, inclusive depois de "Limpar a lista".
+        """
+        presos = self._sigilos_ainda_no_acervo()
+        faixa = self.faixa_sigilo
+        faixa.limpar_acoes()
+        if not presos:
+            faixa.grid_remove()
+            return presos
+        um = len(presos) == 1
+        lotes = sorted({p.parent.name for p in presos})
+        destinos = ", ".join(f"“{self.cfg.pasta_sigilosos / lote}”" for lote in lotes)
+        linhas = [f"•  {_numero_do_pdf(p)} (pasta “{p.parent.name}”)" for p in presos]
+        texto = ("\n".join(linhas) + "\n\n"
+                 + ("O PDF deste processo em segredo de justiça não pôde ser levado"
+                    if um else "Os PDFs destes processos em segredo de justiça não puderam ser "
+                               "levados")
+                 + " para a pasta de sigilosos (provavelmente "
+                 + ("estava aberto" if um else "estavam abertos")
+                 + " em outro programa). Enquanto "
+                 + ("ele estiver" if um else "eles estiverem")
+                 + " no acervo, o espelho na nuvem não é feito.\n\n"
+                 + "O que fazer: feche o PDF e "
+                 + ("mova-o" if um else "mova-os")
+                 + f" para {destinos}. Feito isso, o programa limpa o resto sozinho no "
+                   "próximo preparo dos arquivos para IA e no próximo espelho na nuvem.")
+        faixa.definir(texto=texto, titulo=("Processo sigiloso ficou no acervo" if um
+                                           else "Processos sigilosos ficaram no acervo"))
+        faixa.acao("Mostrar o PDF" if um else "Abrir a pasta do lote", self._mostrar_pdf_preso)
+        faixa.acao("Abrir a pasta de sigilosos", self._abrir_pasta_sigilosos)
+        faixa.grid()
+        componentes.mostrar_no_rolavel(faixa)
+        return presos
+
+    def _mostrar_pdf_preso(self) -> None:
+        presos = self._sigilos_ainda_no_acervo()
+        if not presos:
+            self._mostrar_sigilos_presos()
+            return
+        try:
+            sistema.abrir_pasta(presos[0].parent, selecionar=presos[0])
+        except Exception as erro:
+            dialogos.erro(self.janela.raiz, "Abrir a pasta", str(erro))
+
+    def _abrir_pasta_sigilosos(self) -> None:
+        presos = self._sigilos_ainda_no_acervo()
+        pasta = self.cfg.pasta_sigilosos
+        if presos:
+            pasta = pasta / presos[0].parent.name
+        try:
+            sistema.abrir_pasta(pasta)
+        except Exception as erro:
+            dialogos.erro(self.janela.raiz, "Abrir a pasta", str(erro))
 
     def _espelhar(self) -> None:
         # Nunca durante o fechamento (o lote interrompido ao fechar chega aqui
@@ -803,6 +890,8 @@ class PaginaBaixar(Pagina):
         # assistente enquanto esta página estava escondida.
         for ed in self.editores:
             ed.recarregar()
+        if self._sigilos_presos:
+            self._mostrar_sigilos_presos()   # movido à mão: o alerta sai
         if self.estado in ("vazio", "pronto"):
             self._atualizar_destino()
             self._atualizar_rodape()
@@ -834,6 +923,14 @@ class PaginaBaixar(Pagina):
             feitos, total, _ = self.progresso
             return [f"Baixar processos ({feitos} de {total} concluídos; o relatório é salvo)"]
         return [t.nome for t in (self.tarefa_ler, self.tarefa_nuvem) if t.ativa]
+
+
+def _numero_do_pdf(caminho: Path) -> str:
+    """O número do processo, como nos autos, a partir do nome do PDF."""
+    try:
+        return cnj.ler_nome_arquivo(Path(caminho).stem).formatado
+    except cnj.NumeroInvalido:
+        return Path(caminho).name
 
 
 def _maiuscula(texto: str) -> str:

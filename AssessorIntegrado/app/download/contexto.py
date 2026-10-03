@@ -43,12 +43,18 @@ class Contexto:
         """O usuário pediu para parar? Consultado com frequência pelo motor."""
         return False
 
-    def pedir_codigo(self, titulo: str, mensagem: str, prazo_s: int = 600) -> str | None:
+    def pedir_codigo(self, titulo: str, mensagem: str, prazo_s: int = 600,
+                     reenviavel: bool = True) -> str | None:
         """Pede ao usuário o código de verificação e BLOQUEIA até a resposta.
 
         Devolve o código digitado; ``""`` quando o usuário pede um código
         novo (o anterior vale poucos minutos); ``None`` quando ele cancela,
         fecha o diálogo ou o prazo acaba.
+
+        ``reenviavel``: dá para pedir outro código ao portal? Sim para o
+        enviado por e-mail (e-SAJ); não para o do aplicativo autenticador
+        (eProc), que muda sozinho a cada 30 segundos - aí quem acompanha
+        não oferece "pedir novo código".
         """
         return None
 
@@ -100,7 +106,9 @@ class ContextoTerminal(Contexto):
         if r.sigiloso:
             extra.append("sigiloso")
         if r.incompleto:
-            extra.append(f"folhas ausentes: {r.incompleto}")
+            # No eProc faltam documentos (eventos); no e-SAJ, folhas numeradas.
+            extra.append(f"documentos ausentes: {r.incompleto}" if r.sistema == "eproc"
+                         else f"folhas ausentes: {r.incompleto}")
         if r.detalhe:
             extra.append(r.detalhe)
         sufixo = f" ({'; '.join(extra)})" if extra else ""
@@ -125,7 +133,8 @@ class ContextoTerminal(Contexto):
             return self._entrada(prompt)
         return input(prompt)
 
-    def pedir_codigo(self, titulo: str, mensagem: str, prazo_s: int = 600) -> str | None:
+    def pedir_codigo(self, titulo: str, mensagem: str, prazo_s: int = 600,
+                     reenviavel: bool = True) -> str | None:
         self.avisar(titulo, mensagem)
         try:
             interativo = self._entrada is not None or bool(sys.stdin and sys.stdin.isatty())
@@ -137,9 +146,14 @@ class ContextoTerminal(Contexto):
             self._print("  Não há terminal para digitar o código. Rode de novo "
                         "num Prompt de Comando, ou use o programa pela janela.")
             return None
+        # O código do aplicativo autenticador não se pede de novo: o próprio
+        # aplicativo mostra outro a cada 30 segundos. Enter em branco, aí,
+        # só faz o programa perguntar outra vez.
+        convite = ("  Código recebido (Enter em branco pede outro; 'sair' cancela): "
+                   if reenviavel else
+                   "  Código do aplicativo ('sair' cancela): ")
         try:
-            texto = self._ler("  Código recebido (Enter em branco pede outro; "
-                              "'sair' cancela): ")
+            texto = self._ler(convite)
         except KeyboardInterrupt:
             # Ctrl+C aqui é "parar", como no resto do lote - e não "não tenho
             # o código", que encerraria só este tribunal e seguiria adiante.

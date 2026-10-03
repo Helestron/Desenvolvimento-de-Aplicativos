@@ -91,6 +91,8 @@ class TestEProcDeMentira(apoio.PastaTemporaria):
         self.assertEqual(ctx.pedidos_codigo[0][0], "Código do autenticador")
         self.assertIn("aplicativo autenticador", ctx.pedidos_codigo[0][1])
         self.assertIn("não aceitou", ctx.pedidos_codigo[1][1])
+        self.assertEqual(ctx.reenviaveis, [False] * 3,
+                         "não existe 'pedir novo código' para o autenticador")
         self.assertEqual(falso.logins, 2)
         # nenhum link montado à mão: todo endereço interno veio da sessão
         self.assertEqual(falso.sem_assinatura, [])

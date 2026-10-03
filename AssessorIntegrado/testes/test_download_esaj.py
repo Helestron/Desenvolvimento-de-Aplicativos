@@ -424,6 +424,7 @@ class TestCodigoPorEmail(unittest.TestCase):
         self.assertIn("não aceitou", ctx.pedidos_codigo[2][1])
         self.assertIn("Pedi outro", ctx.pedidos_codigo[2][1])
         self.assertLessEqual(ctx.pedidos_codigo[0][2], 600)
+        self.assertTrue(all(ctx.reenviaveis), "o código por e-mail pode ser pedido de novo")
 
     def test_sem_codigo_falha_com_orientacao(self):
         p = PortalDoCodigo(apoio.ContextoGravador(codigos=[]))
@@ -662,7 +663,8 @@ class TestBaixar(apoio.PastaTemporaria):
             self.assertEqual([t[2] for t in doc.get_toc()], [1, 3, 6])
         capa = self.tmp / "Lote" / "_controle" / f"{N.nome_arquivo}_capa.txt"
         self.assertIn("Procedimento Comum Cível", capa.read_text(encoding="utf-8"))
-        self.assertIn("gravação(ões) de audiência", r.detalhe)
+        self.assertIn("gravação de audiência nos autos, não baixada", r.detalhe)
+        self.assertNotIn("(ões)", r.detalhe)
         self.assertEqual([p.name for p in (self.tmp / "Lote").iterdir() if p.is_file()],
                          [f"{N.nome_arquivo}.pdf"], "na raiz do lote, só o PDF")
 
@@ -765,7 +767,8 @@ class TestBaixar(apoio.PastaTemporaria):
         r = p.baixar(N, self.destino())
         self.assertEqual(r.situacao, modelos.OK)
         self.assertIn("peça a peça", r.detalhe)
-        self.assertIn("1 peça(s) não vieram", r.detalhe)
+        self.assertIn("1 peça não veio e tem página de aviso no lugar", r.detalhe)
+        self.assertNotIn("(s)", r.detalhe)
         self.assertEqual(r.incompleto, "6-7, 8")
         with pymupdf.open(self.destino()) as doc:
             self.assertEqual(len(doc), 4)
@@ -835,7 +838,7 @@ class TestBaixar(apoio.PastaTemporaria):
         r = p.baixar(N, self.destino())
         self.assertEqual(r.situacao, modelos.OK)
         self.assertEqual(r.paginas, 10, "uma peça e nove páginas de aviso")
-        self.assertIn("9 peça(s) não vieram", r.detalhe)
+        self.assertIn("9 peças não vieram e têm página de aviso no lugar", r.detalhe)
 
     def test_sem_pdf_nem_pecas_e_erro_para_repetir(self):
         p = PortalDeDownload(servidor="falha", pecas_ok=())

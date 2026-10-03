@@ -624,8 +624,9 @@ class SessaoAoVivo:
             if self._pendentes:
                 aguardando = ("" if self.modelo_pronto.is_set() or self._modelo_falhou
                               else " (esperando o modelo carregar)")
-                self._emitir("estado", f"Concluindo a transcrição: {self._pendentes} "
-                                       f"trecho(s) na fila{aguardando}...")
+                na_fila = ("1 trecho na fila" if self._pendentes == 1
+                           else f"{self._pendentes} trechos na fila")
+                self._emitir("estado", f"Concluindo a transcrição: {na_fila}{aguardando}...")
             self._fila.put(None)
             if self._trabalhador is not None:
                 self._trabalhador.join()
@@ -633,12 +634,18 @@ class SessaoAoVivo:
 
             meta = self._meta_atual(True)
             observacoes = []
+            guardar_audio = self.cfg.flag("transcricao", "salvar_audio")
             if self._nao_transcritos:
+                # O DOCX vai para os autos: registra o fato, sem instruções de
+                # uso do programa (essas ficam na tela, no aviso e no erro).
+                n = self._nao_transcritos
+                fato = ("1 trecho de fala não foi transcrito" if n == 1
+                        else f"{n} trechos de fala não foram transcritos")
                 observacoes.append(
-                    f"{self._nao_transcritos} trecho(s) de fala não foram transcritos "
-                    "(modelo indisponível ou falha). Estão na gravação: use \"Transcrever "
-                    "uma gravação\" para obtê-los.")
-            if not self.cfg.flag("transcricao", "salvar_audio"):
+                    f"{fato} (modelo de transcrição indisponível ou falha técnica)"
+                    + ("; o áudio correspondente consta da gravação." if guardar_audio
+                       else "."))
+            if not guardar_audio:
                 meta.gravacao = "não guardada (opção desligada em Configurações)"
             meta.observacao = " ".join(observacoes)
             self.meta = meta
@@ -657,7 +664,7 @@ class SessaoAoVivo:
 
             if refinar:
                 final = self._refinar(final)
-            if not self.cfg.flag("transcricao", "salvar_audio") and self.caminho_audio:
+            if not guardar_audio and self.caminho_audio:
                 try:
                     self.caminho_audio.unlink(missing_ok=True)
                 except OSError:

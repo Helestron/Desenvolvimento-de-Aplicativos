@@ -173,15 +173,40 @@ def _mtime(p: Path) -> float:
 
 # ================================================================ transcrição
 def nova_sessao(numero, cfg, eventos: Callable[[str, object], None], *, tipo: str = "",
-                participantes: dict[str, str] | None = None, falante: str = ""):
+                participantes: dict[str, str] | None = None, falante: str = "",
+                sigiloso: bool = False):
     """Cria (sem iniciar) a sessão ao vivo. iniciar() e encerrar() bloqueiam:
-    chame-os de uma thread de trabalho."""
+    chame-os de uma thread de trabalho. 'sigiloso': documento, gravação e
+    diário vão para a pasta dos sigilosos, fora do acervo."""
     try:
         from ..transcricao.ao_vivo import SessaoAoVivo
     except ImportError as erro:
         raise _ausente(erro, "transcrição") from erro
     return SessaoAoVivo(numero, cfg, eventos, tipo=tipo, participantes=participantes,
-                        falante=falante)
+                        falante=falante, sigiloso=sigiloso)
+
+
+def processo_sigiloso(cfg, numero) -> bool:
+    """Os autos do processo estão na pasta de sigilosos? Pré-marca a caixa
+    "Processo em segredo de justiça" das transcrições. Nunca levanta."""
+    if numero is None:
+        return False
+    try:
+        from ..transcricao.documento import processo_sigiloso as _sigiloso
+
+        return bool(_sigiloso(cfg, numero))
+    except Exception as erro:
+        log.debug("não consegui conferir se %s é sigiloso: %s", numero, erro)
+        return False
+
+
+def na_pasta_dos_sigilosos(cfg, caminho) -> bool:
+    """O arquivo está dentro da pasta de sigilosos (fora do acervo)?"""
+    try:
+        pasta = Path(cfg.pasta_sigilosos).resolve()
+        return Path(caminho).resolve().is_relative_to(pasta)
+    except Exception:
+        return False
 
 
 def recuperaveis(cfg) -> list[Path]:
@@ -259,7 +284,7 @@ def baixar_modelo(nome: str, progresso: Callable[[float, str], None] | None = No
 
 def transcrever_gravacao(origem: Path, numero, cfg, progresso, cancelado, *,
                          rotulos_manuais=None, destino: Path | None = None, tipo: str = "",
-                         participantes: dict | None = None) -> Path:
+                         participantes: dict | None = None, sigiloso: bool = False) -> Path:
     try:
         from ..transcricao import arquivo
     except ImportError as erro:
@@ -275,7 +300,8 @@ def transcrever_gravacao(origem: Path, numero, cfg, progresso, cancelado, *,
             meta = None
     extra = {"meta": meta} if meta is not None else {}
     return arquivo.transcrever_arquivo(origem, numero, cfg, progresso, cancelado,
-                                       rotulos_manuais=rotulos_manuais, destino=destino, **extra)
+                                       rotulos_manuais=rotulos_manuais, destino=destino,
+                                       sigiloso=sigiloso, **extra)
 
 
 def excecao_cancelado(erro: BaseException) -> bool:
@@ -610,7 +636,8 @@ def estado_ia(cfg) -> dict:
     except Exception as erro:
         log.debug("estado do Claude: %s", erro)
     try:
-        estado["chatgpt"] = dict(chatgpt.estado())
+        # O conector do ChatGPT só conta como ligado se aponta para ESTE acervo.
+        estado["chatgpt"] = dict(chatgpt.estado(cfg.pasta_acervo))
     except Exception as erro:
         log.debug("estado do ChatGPT: %s", erro)
     estado["chatgpt_desktop"] = chatgpt_desktop_instalado()

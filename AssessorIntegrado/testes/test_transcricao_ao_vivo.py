@@ -208,7 +208,11 @@ class TestSessaoAoVivo(BaseSessao):
         self.assertEqual(len(eventos.de("erro")), 1)
         self.assertIn("Transcrever uma gravação", eventos.de("erro")[0])
         f = ficha(ler_docx(final)[1])
-        self.assertIn("4 trecho(s) de fala não foram transcritos", f["Observação"])
+        self.assertIn("4 trechos de fala não foram transcritos", f["Observação"])
+        self.assertIn("consta da gravação", f["Observação"])
+        # o DOCX vai para os autos: informa o fato, sem mandar clicar em nada
+        self.assertNotIn("Transcrever uma gravação", f["Observação"])
+        self.assertNotIn("(s)", f["Observação"])
         import soundfile as sf
 
         self.assertAlmostEqual(sf.info(str(s.caminho_audio)).duration, 16.0, delta=0.01)
@@ -220,7 +224,9 @@ class TestSessaoAoVivo(BaseSessao):
         textos = [f.texto for f in s.falas if f.falante]
         self.assertEqual(textos, ["Bom dia a todos.", "Eu vi o acidente.", "Nada mais."])
         self.assertEqual(len(eventos.de("aviso")), 1)
-        self.assertIn("1 trecho(s)", ficha(ler_docx(final)[1])["Observação"])
+        obs = ficha(ler_docx(final)[1])["Observação"]
+        self.assertIn("1 trecho de fala não foi transcrito", obs)
+        self.assertNotIn("Transcrever uma gravação", obs)
 
     def test_microfone_indisponivel_nao_deixa_lixo(self):
         class SemMicrofone:
@@ -305,6 +311,16 @@ class TestSemGuardarAudio(BaseSessao):
         s, _, final = self.rodar()
         self.assertFalse(s.caminho_audio.exists())
         self.assertIn("não guardada", ficha(ler_docx(final)[1])["Gravação"])
+
+    def test_trecho_perdido_sem_gravacao_nao_remete_a_ela(self):
+        # Sem o áudio guardado, o documento não pode dizer que o trecho
+        # "consta da gravação".
+        self.modelo.falhar_em = 1
+        with self.assertLogs("transcricao.ao_vivo", "ERROR"):
+            _, _, final = self.rodar()
+        obs = ficha(ler_docx(final)[1])["Observação"]
+        self.assertIn("1 trecho de fala não foi transcrito", obs)
+        self.assertNotIn("gravação", obs)
 
 
 class TestRecuperacao(BaseSessao):

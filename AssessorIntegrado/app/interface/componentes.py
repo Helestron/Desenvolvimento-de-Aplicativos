@@ -9,6 +9,7 @@
     EstadoLinha ....... ponto colorido + frase curta ("Microfone pronto")
     Medidor ........... nível do microfone
     Detalhes .......... registro técnico recolhível, com limite de linhas
+    CaixaSigilo ....... "Processo em segredo de justiça" das transcrições
     tabela ............ Treeview com rolagem, num quadro de cantos macios
     copiar ............ área de transferência
 """
@@ -940,6 +941,78 @@ def rotulo(pai, texto: str = "", fraco: bool = False, nota: bool = False, negrit
     if quebra:
         estilo.acompanhar_largura(r)
     return r
+
+
+# ============================================================ sigilo
+ROTULO_SIGILO = "Processo em segredo de justiça"
+NOTA_SIGILO = ("A transcrição e a gravação ficam na pasta dos sigilosos, fora do acervo "
+               "compartilhado.")
+NOTA_SIGILO_AUTOS = ("Os autos estão na pasta dos sigilosos: a transcrição e a gravação também "
+                     "ficam lá, fora do acervo compartilhado.")
+
+
+class CaixaSigilo(ttk.Frame):
+    """A caixa "Processo em segredo de justiça" das transcrições, com a frase
+    que diz onde os arquivos ficam.
+
+    presumir(True) - os autos estão na pasta de sigilosos - marca e trava a
+    caixa: lá, a transcrição é sigilosa de qualquer jeito (a marcação só
+    acrescenta sigilo, nunca o tira). Se o número mudar para outro processo,
+    a marcação automática sai; a feita pelo usuário fica. 'motivo_fixo'
+    (ex.: a gravação está na pasta de sigilosos) marca e trava desde o início.
+    """
+
+    def __init__(self, pai, motivo_fixo: str = "", **opcoes):
+        super().__init__(pai, **opcoes)
+        self.columnconfigure(0, weight=1)
+        self._motivo_fixo = motivo_fixo
+        self._autos = False
+        self._automatica = False
+        self._travada = False
+        self.var = tk.BooleanVar(value=bool(motivo_fixo))
+        self.caixa = ttk.Checkbutton(self, text=ROTULO_SIGILO, variable=self.var,
+                                     command=self._clicada)
+        self.caixa.grid(row=0, column=0, sticky="w")
+        self.nota = ttk.Label(self, text="", foreground=estilo.TINTA_FRACA,
+                              font=estilo.FONTE_NOTA, justify="left")
+        self.nota.grid(row=1, column=0, sticky="ew", pady=(px(2), 0))
+        estilo.acompanhar_largura(self.nota)
+        self._atualizar()
+
+    @property
+    def marcada(self) -> bool:
+        return bool(self.var.get()) or self._autos or bool(self._motivo_fixo)
+
+    def presumir(self, autos_sigilosos: bool) -> None:
+        self._autos = bool(autos_sigilosos)
+        if self._autos:
+            if not self.var.get():
+                self._automatica = True
+        elif self._automatica:
+            self.var.set(False)
+            self._automatica = False
+        self._atualizar()
+
+    def travar(self, travada: bool) -> None:
+        """Durante a audiência, a caixa não muda (a pasta já foi escolhida)."""
+        self._travada = bool(travada)
+        self._atualizar()
+
+    def _clicada(self) -> None:
+        self._automatica = False
+        self._atualizar()
+
+    def _atualizar(self) -> None:
+        forcada = self._autos or bool(self._motivo_fixo)
+        if forcada:
+            self.var.set(True)
+        self.caixa.state(["disabled"] if self._travada or forcada else ["!disabled"])
+        if self.var.get():
+            self.nota.configure(text=self._motivo_fixo or (NOTA_SIGILO_AUTOS if self._autos
+                                                           else NOTA_SIGILO))
+            self.nota.grid()
+        else:
+            self.nota.grid_remove()
 
 
 def campo(pai, titulo: str, variavel: tk.Variable | None = None, largura: int = 30,

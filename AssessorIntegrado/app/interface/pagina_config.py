@@ -383,7 +383,7 @@ class PaginaConfig(Pagina):
 
         self._titulo(pai, "Separação automática de falantes", 4,
                      "Na revisão final, separa as vozes e dá a cada uma o nome marcado durante a "
-                     "audiência. Componente opcional (cerca de 50 MB).")
+                     f"audiência. Componente opcional (cerca de {tamanho_falantes_mb()} MB).")
         self._marcar(pai, "transcricao", "separar_falantes",
                      "Separar as vozes na revisão final, se o componente estiver instalado", 5)
         linha = ttk.Frame(pai)
@@ -683,6 +683,17 @@ def _python() -> str:
     import platform
 
     return platform.python_version()
+
+
+def tamanho_falantes_mb() -> int:
+    """O tamanho do componente de falantes, o mesmo número da verificação e
+    do instalador; import tardio (sherpa-onnx pode faltar) e valor de reserva."""
+    try:
+        from ..transcricao import falantes
+
+        return int(falantes.TAMANHO_MB)
+    except Exception:
+        return 60
 
 
 def _maiuscula(texto: str) -> str:

@@ -31,6 +31,31 @@ class TestContextoTerminal(unittest.TestCase):
         ctx = ContextoTerminal(saida=io.StringIO(), entrada=lambda p: "sair")
         self.assertIsNone(ctx.pedir_codigo("t", "m"))
 
+    def test_codigo_do_autenticador_nao_oferece_pedir_outro(self):
+        # O aplicativo autenticador (eProc) muda sozinho: "Enter em branco
+        # pede outro" seria oferecer o que não existe.
+        convites = []
+        ctx = ContextoTerminal(saida=io.StringIO(),
+                               entrada=lambda p: convites.append(p) or "654321")
+        self.assertEqual(ctx.pedir_codigo("Código do autenticador", "Digite.", 60,
+                                          reenviavel=False), "654321")
+        self.assertNotIn("pede outro", convites[0])
+        self.assertIn("'sair' cancela", convites[0])
+        # o do e-mail (e-SAJ), padrão, continua oferecendo
+        ctx = ContextoTerminal(saida=io.StringIO(),
+                               entrada=lambda p: convites.append(p) or "111")
+        ctx.pedir_codigo("Código do e-SAJ", "Veja o e-mail.")
+        self.assertIn("Enter em branco pede outro", convites[1])
+
+    def test_assinatura_compativel_com_a_tela(self):
+        # Os portais passam 'reenviavel' por nome; todo Contexto precisa aceitá-lo.
+        import inspect
+        from app.interface.tarefas import ContextoTela
+        for classe in (Contexto, ContextoTerminal, ContextoTela, apoio.ContextoGravador):
+            with self.subTest(classe=classe.__name__):
+                self.assertIn("reenviavel", inspect.signature(classe.pedir_codigo).parameters)
+        self.assertIsNone(Contexto().pedir_codigo("t", "m", 60, reenviavel=False))
+
     def test_sem_teclado_nao_trava(self):
         def sem_teclado(prompt):
             raise EOFError
@@ -59,6 +84,18 @@ class TestContextoTerminal(unittest.TestCase):
         self.assertFalse(ctx.cancelado())
         ctx.parar()
         self.assertTrue(ctx.cancelado())
+
+    def test_faltantes_no_eproc_sao_documentos_e_no_esaj_folhas(self):
+        saida = io.StringIO()
+        ctx = ContextoTerminal(saida=saida)
+        ctx.item(modelos.ResultadoProcesso(1, A.formatado, "TJRS", "eproc", modelos.OK,
+                                           incompleto="ev. 4 PET1"))
+        ctx.item(modelos.ResultadoProcesso(2, B.formatado, "TJAL", "esaj", modelos.OK,
+                                           incompleto="6-7"))
+        linhas = saida.getvalue().splitlines()
+        self.assertIn("documentos ausentes: ev. 4 PET1", linhas[0])
+        self.assertNotIn("folhas", linhas[0])
+        self.assertIn("folhas ausentes: 6-7", linhas[1])
 
     def test_contexto_base_nao_faz_nada_e_nao_cancela(self):
         ctx = Contexto()
@@ -118,12 +155,53 @@ class TestCli(apoio.PastaTemporaria):
         self.assertFalse(c["opcoes"].atualizar_ia)
         self.assertEqual(c["opcoes"].modo_login("esaj"), "manual")
         self.assertIsInstance(c["ctx"], ContextoTerminal)
-        self.assertIn("2 processo(s) na relação", texto)
+        self.assertIn("2 processos na relação", texto)
+
+    def test_relacao_baixada_por_link_e_apagada_depois_de_lida(self):
+        # A relação pode trazer as senhas dos sigilosos: lida, sai do disco.
+        from app.nucleo import listas
+        baixadas = []
+
+        def baixar_falso(url, pasta):
+            pasta.mkdir(parents=True, exist_ok=True)
+            arquivo = pasta / "Pauta do link.txt"
+            arquivo.write_text(f"{A.formatado}\n{B.formatado} ; segredo1\n", encoding="utf-8")
+            baixadas.append(arquivo)
+            return arquivo
+
+        with mock.patch.object(caminhos, "TEMP", self.tmp / "temp"), \
+                mock.patch.object(listas, "baixar_link", baixar_falso):
+            codigo, texto = self.rodar(["--lista", "https://exemplo.invalid/pauta", "--sem-ia"])
+        self.assertEqual(codigo, 0)
+        self.assertEqual(self.capturado["senhas"], {B.formatado: "segredo1"})
+        self.assertIn("2 processos na relação", texto)
+        self.assertFalse(baixadas[0].exists(), "a relação baixada ficou no disco")
+        self.assertEqual(self.capturado["destino"].name, "Pauta do link")
+
+    def test_relacao_do_link_ilegivel_tambem_e_apagada(self):
+        from app.nucleo import listas
+        baixadas = []
+
+        def baixar_falso(url, pasta):
+            pasta.mkdir(parents=True, exist_ok=True)
+            arquivo = pasta / "ilegivel.txt"
+            arquivo.write_text("nada aqui ; segredo", encoding="utf-8")
+            baixadas.append(arquivo)
+            return arquivo
+
+        with mock.patch.object(caminhos, "TEMP", self.tmp / "temp"), \
+                mock.patch.object(listas, "baixar_link", baixar_falso):
+            codigo, texto = self.rodar(["--lista", "https://exemplo.invalid/x"])
+        self.assertEqual(codigo, 2)
+        self.assertIn("Não consegui ler a relação", texto)
+        self.assertFalse(baixadas[0].exists())
 
     def test_numeros_avulsos_e_destino_escolhido(self):
         destino = self.tmp / "Outra pasta"
-        codigo, _ = self.rodar([A.formatado, "--destino", str(destino), "--rebaixar", "--midias"])
+        codigo, texto = self.rodar([A.formatado, "--destino", str(destino), "--rebaixar",
+                                    "--midias"])
         self.assertEqual(codigo, 0)
+        self.assertIn("1 processo na relação", texto)
         self.assertEqual(self.capturado["destino"], destino)
         self.assertFalse(self.capturado["opcoes"].pular_baixados)
         self.assertTrue(self.capturado["opcoes"].baixar_midias)

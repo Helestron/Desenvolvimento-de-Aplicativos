@@ -262,7 +262,8 @@ def _ao_vivo(args, numero, cfg) -> int:
         _imprimir(f"Falha ao encerrar: {erro}")
         return FALHOU
     reais = [f for f in falas if (f.fim - f.inicio) >= 0.01]   # sem as marcas de pausa
-    _imprimir(f"{len(reais)} fala(s) transcrita(s). Documento: {final}")
+    quantas = "1 fala transcrita" if len(reais) == 1 else f"{len(reais)} falas transcritas"
+    _imprimir(f"{quantas}. Documento: {final}")
     if erros and not reais:
         return FALHOU
     return OK if reais else NADA

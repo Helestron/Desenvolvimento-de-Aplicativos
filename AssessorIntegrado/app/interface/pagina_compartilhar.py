@@ -246,7 +246,9 @@ class PaginaCompartilhar(Pagina):
         texto = ttk.Label(quadro, foreground=estilo.TINTA_FRACA, justify="left", text=(
             "Uma cópia do acervo numa pasta sincronizada, para usar o ChatGPT ou o Claude pela "
             "web e pelo celular (conectores do OneDrive e do Google Drive). Só o que mudou é "
-            "copiado, e nada é apagado lá. Confira antes se a política do tribunal permite."))
+            "copiado, e nada é apagado lá, com uma exceção: as cópias de processos que estão na "
+            "pasta de sigilosos são retiradas do espelho. Confira antes se a política do "
+            "tribunal permite."))
         texto.grid(row=1, column=1, sticky="ew", pady=(px(4), px(12)))
         estilo.acompanhar_largura(texto)
         linha = ttk.Frame(quadro)
@@ -317,9 +319,14 @@ class PaginaCompartilhar(Pagina):
                     "usar a sua assinatura (e não cobrança por uso).")
         code.nota.configure(text=nota)
 
-        if estado.get("mcp_acervo"):
+        if estado.get("mcp_acervo") and claude.get("desktop"):
             cowork.estado.definir("Instalado · acervo conectado", "ok")
             self.btn_conectar.configure(text="Reconectar o acervo")
+        elif estado.get("mcp_acervo"):
+            # o registro é só um arquivo: existe também sem o app
+            cowork.estado.definir("Acervo registrado, mas o Claude Desktop não está instalado",
+                                  "aviso")
+            self.btn_conectar.configure(text="Conectar o acervo ao Claude")
         elif claude.get("desktop"):
             cowork.estado.definir("Instalado · acervo ainda não conectado", "aviso")
             self.btn_conectar.configure(text="Conectar o acervo ao Claude")
@@ -493,8 +500,22 @@ class PaginaCompartilhar(Pagina):
 
         acervo = self.cfg.pasta_acervo
 
-        def pronto(alterados):
-            if alterados:
+        def registrar():
+            # O registro é só um arquivo de configuração: grava-se mesmo sem o
+            # app, mas sem ele ninguém lê o conector - e a pessoa precisa saber.
+            return claude.registrar_mcp(acervo), claude.claude_desktop_instalado()
+
+        def pronto(resultado):
+            alterados, instalado = resultado
+            if not instalado:
+                self._recado("Aviso", "Falta instalar o Claude Desktop",
+                             "O conector “assessor-integrado” foi registrado, mas o app Claude "
+                             "Desktop não está instalado neste computador, e sem ele o conector "
+                             "não tem uso. Instale o app, entre com a sua conta e volte aqui "
+                             "para clicar em “Reconectar o acervo”: assim o conector vale "
+                             "também para o app recém-instalado.",
+                             [("Instalar o Claude Desktop", self._instalar_claude_desktop)])
+            elif alterados:
                 self._recado("Sucesso", "Acervo conectado ao Claude Desktop",
                              "Feche e abra o Claude Desktop para ele carregar o conector "
                              "“assessor-integrado” (ferramentas que só leem os autos, sem alterar nada).")
@@ -507,8 +528,15 @@ class PaginaCompartilhar(Pagina):
         def falhou(erro):
             dialogos.erro(self.janela.raiz, "Não consegui conectar", _maiuscula(str(erro)))
 
-        self.em_segundo_plano(self.tarefa_abrir, claude.registrar_mcp, acervo,
-                              ao_concluir=pronto, ao_falhar=falhou)
+        self.em_segundo_plano(self.tarefa_abrir, registrar, ao_concluir=pronto, ao_falhar=falhou)
+
+    def _instalar_claude_desktop(self) -> None:
+        from ..compartilhar import claude
+
+        try:
+            claude.instalar_claude_desktop()
+        except Exception as erro:
+            dialogos.erro(self.janela.raiz, "Claude Desktop", str(erro))
 
     def abrir_claude(self) -> None:
         from ..compartilhar import claude
@@ -602,7 +630,9 @@ class PaginaCompartilhar(Pagina):
             else:
                 dialogos.erro(self.janela.raiz, "Não consegui gerar o pacote", str(erro))
 
-        if self.em_segundo_plano(self.tarefa, chatgpt.gerar_pacote, acervo, destino,
+        cfg = self.cfg              # a pasta de sigilosos DESTA configuração fica de fora
+        if self.em_segundo_plano(self.tarefa,
+                                 lambda: chatgpt.gerar_pacote(acervo, destino, cfg=cfg),
                                  ao_concluir=pronto, ao_falhar=falhou):
             self._recado("Info", "Gerando o pacote…", "Copiando os autos e os textos. Pode "
                                                        "continuar usando o programa.")

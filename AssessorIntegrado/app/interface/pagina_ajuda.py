@@ -25,7 +25,8 @@ GUIAS = (
         "compartilhado. Os números são encontrados em qualquer coluna ou parágrafo.",
         "Confira o acesso: usuário e senha, certificado digital ou entrada manual. Se o portal "
         "pedir um código (e-mail ou aplicativo autenticador), uma janela pede que você o digite.",
-        "Clique em “Baixar”. Cada processo vira um PDF com o número no nome, na pasta do lote. "
+        "Clique em “Baixar N processos”, o botão azul no rodapé (N é a quantidade da relação). "
+        "Cada processo vira um PDF com o número no nome, na pasta do lote. "
         "Com a opção “Separar os sigilosos” (marcada por padrão), os sigilosos vão para a "
         "pasta Sigilosos, fora do acervo.",
     )),

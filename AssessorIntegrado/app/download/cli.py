@@ -72,9 +72,18 @@ def _ler_relacao(args, listas, caminhos):
         if alvo.lower().startswith(("http://", "https://")):
             print("Baixando a relação do link...")
             arquivo = listas.baixar_link(alvo, caminhos.TEMP / "relacoes")
+            try:
+                leitura = listas.ler_arquivo(arquivo)
+            finally:
+                # A relação pode trazer as senhas dos sigilosos: lida, não fica
+                # no disco (só o nome do arquivo segue, para nomear o lote).
+                try:
+                    Path(arquivo).unlink()
+                except OSError:
+                    log.warning("não consegui apagar a relação baixada %s", Path(arquivo).name)
         else:
             arquivo = Path(alvo).expanduser()
-        leitura = listas.ler_arquivo(arquivo)
+            leitura = listas.ler_arquivo(arquivo)
         origem = Path(arquivo).stem
     if args.processos:
         leitura.juntar(listas.ler_texto("\n".join(args.processos)))
@@ -151,11 +160,13 @@ def main(argv: list[str] | None = None, *, configurar_log: bool = True) -> int:
     if not numeros:
         print("\nNenhum número de processo foi encontrado.")
         return 2
-    print(f"\n{len(numeros)} processo(s) na relação" + (f" ({leitura.formato})." if leitura.formato else "."))
+    quantos = "1 processo" if len(numeros) == 1 else f"{len(numeros)} processos"
+    print(f"\n{quantos} na relação" + (f" ({leitura.formato})." if leitura.formato else "."))
     for aviso in leitura.avisos:
         print(f"  aviso: {aviso}")
     if leitura.corrompidos:
-        print(f"  {len(leitura.corrompidos)} número(s) corrompido(s) pelo Excel foram ignorados.")
+        print("  1 número corrompido pelo Excel foi ignorado." if len(leitura.corrompidos) == 1
+              else f"  {len(leitura.corrompidos)} números corrompidos pelo Excel foram ignorados.")
     for n in leitura.digito_errado:
         print(f"  atenção: o dígito verificador de {n.formatado} não confere (tento assim mesmo).")
 

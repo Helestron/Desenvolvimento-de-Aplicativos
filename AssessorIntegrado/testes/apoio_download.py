@@ -78,6 +78,7 @@ class ContextoGravador(Contexto):
         self.itens = []           # cópias (situação, número) de cada item publicado
         self.avisos = []
         self.pedidos_codigo = []
+        self.reenviaveis = []     # o 'reenviavel' de cada pedido, na mesma ordem
         self.codigos = list(codigos or [])
         self._cancelado = False
         self.cancelar_em = cancelar_em    # número formatado: cancela quando ele começar
@@ -99,8 +100,9 @@ class ContextoGravador(Contexto):
     def cancelar(self):
         self._cancelado = True
 
-    def pedir_codigo(self, titulo, mensagem, prazo_s=600):
+    def pedir_codigo(self, titulo, mensagem, prazo_s=600, reenviavel=True):
         self.pedidos_codigo.append((titulo, mensagem, prazo_s))
+        self.reenviaveis.append(reenviavel)
         return self.codigos.pop(0) if self.codigos else None
 
     def avisar(self, titulo, mensagem):

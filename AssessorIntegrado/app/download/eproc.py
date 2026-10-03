@@ -1948,7 +1948,9 @@ class PortalEProc:
         codigo = self.ctx.pedir_codigo(
             "Código do autenticador",
             recado + "Digite o código de 6 dígitos do seu aplicativo autenticador "
-            f"({self.nome}).", max(30, min(restante, 120)))
+            f"({self.nome}).", max(30, min(restante, 120)),
+            # o autenticador muda sozinho a cada 30 s: não há "pedir novo código"
+            reenviavel=False)
         if codigo is None:
             if self.ctx.cancelado():
                 raise Cancelado()
