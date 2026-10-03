@@ -169,13 +169,16 @@ class PaginaInicio(Pagina):
         modelo = cfg.texto("transcricao", "modelo_ao_vivo") or "small"
         dados["modelo"] = (modelo, servicos.modelo_instalado(modelo))
         momento, lista, erro = self._microfones
-        if lista is None or time.monotonic() - momento > INTERVALO_MICROFONE_S:
+        transcrever = self.janela.paginas.get("transcrever")
+        gravando = bool(transcrever is not None and transcrever.tarefa_sessao.ativa)
+        # com a audiência gravando, o microfone está em uso: não mexe no PortAudio
+        if not gravando and (lista is None or time.monotonic() - momento > INTERVALO_MICROFONE_S):
             try:
                 lista, erro = servicos.listar_microfones(), ""
             except Exception as e:
                 lista, erro = [], str(e)
             self._microfones = (time.monotonic(), lista, erro)
-        dados["microfones"] = (lista, erro)
+        dados["microfones"] = (lista or [], erro)
         try:
             dados["ia"] = servicos.estado_ia(cfg)
         except Exception as e:

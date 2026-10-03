@@ -26,7 +26,9 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # false: o run em andamento termina (instalar e testar no Windows leva
+  # dezenas de minutos); só o pendente mais antigo é substituído pelo novo.
+  cancel-in-progress: false
 
 jobs:
   windows:
