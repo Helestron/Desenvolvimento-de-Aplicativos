@@ -1,6 +1,6 @@
 # Helestron — Manual do usuário
 
-Versão 1.0.0 · para Windows 10 e 11 (64 bits)
+Versão 1.0.1 · para Windows 10 e 11 (64 bits)
 
 O Helestron reúne, numa única janela, as tarefas do gabinete que mais tomam
 tempo:
@@ -73,7 +73,7 @@ erro), para o botão de gravar e para os botões que encerram ou apagam algo.
 
 O Helestron substitui o antigo Assessor Integrado. O que mudou:
 
-- a instalação é feita por **um único arquivo**, `Helestron-Setup-1.0.0.exe`,
+- a instalação é feita por **um único arquivo**, `Helestron-Setup-1.0.1.exe`,
   sem o `INSTALAR.bat`, sem PowerShell e sem baixar nada durante a
   instalação;
 - as pastas de trabalho passaram para `Documentos\Helestron`; os arquivos do
@@ -104,7 +104,7 @@ O Helestron substitui o antigo Assessor Integrado. O que mudou:
 ### Do que você precisa
 
 - **Windows 10 (versão 1809 ou mais recente) ou Windows 11, de 64 bits.**
-- Espaço em disco: o programa ocupa pouco mais de 1 GB. O assistente mostra
+- Espaço em disco: o programa ocupa cerca de 850 MB. O assistente mostra
   o espaço necessário antes de copiar.
 - Para baixar processos e ler a pauta, o **Google Chrome** ou o **Microsoft
   Edge** (o Edge já vem no Windows).
@@ -120,7 +120,7 @@ O Helestron substitui o antigo Assessor Integrado. O que mudou:
 1. **Baixe o instalador.** Na página de versões do Helestron
    (<https://github.com/Helestron/Desenvolvimento-de-Aplicativos/releases>),
    abra a versão mais recente e, na lista de arquivos (**Assets**), clique em
-   **`Helestron-Setup-1.0.0.exe`** (cerca de 600 MB). Deixe-o na pasta
+   **`Helestron-Setup-1.0.1.exe`** (cerca de 400 MB). Deixe-o na pasta
    **Downloads**: é lá que o botão **Reparar** o procura, se um dia for
    preciso (veja [Problemas comuns](#o-helestron-não-pôde-abrir-antivírus)).
 
@@ -232,8 +232,8 @@ mensagem que diz qual é) em vez de quebrar no meio do uso (veja
 O instalador aceita o modo silencioso do NSIS:
 
 ```bat
-Helestron-Setup-1.0.0.exe /S
-Helestron-Setup-1.0.0.exe /S /D=D:\Programas\Helestron
+Helestron-Setup-1.0.1.exe /S
+Helestron-Setup-1.0.1.exe /S /D=D:\Programas\Helestron
 ```
 
 - `/S` instala sem nenhuma tela, na pasta padrão
@@ -248,7 +248,7 @@ Helestron-Setup-1.0.0.exe /S /D=D:\Programas\Helestron
   usar o programa**, e não como SYSTEM nem com outra conta, senão o Helestron
   vai para o perfil errado.
 - Para esperar o fim num script do `cmd`, use
-  `start /wait "" Helestron-Setup-1.0.0.exe /S` e leia o `%ERRORLEVEL%`.
+  `start /wait "" Helestron-Setup-1.0.1.exe /S` e leia o `%ERRORLEVEL%`.
 - A conferência final roda também no modo silencioso, e o relatório fica em
   `%LOCALAPPDATA%\Helestron\Logs\verificacao-instalacao.txt`.
 - Numa atualização, o Claude Desktop e o Codex podem continuar abertos, mesmo
@@ -272,7 +272,7 @@ Códigos de saída:
 | 9 | instalado e conferido, mas o computador não tem como abrir a janela do Helestron: falta o Microsoft Edge WebView2 Runtime (e o Edge), e o navegador padrão é o Internet Explorer; instale o WebView2 Runtime |
 
 Para conferir a impressão digital do instalador, no PowerShell:
-`Get-FileHash .\Helestron-Setup-1.0.0.exe -Algorithm SHA256`, e compare com o
+`Get-FileHash .\Helestron-Setup-1.0.1.exe -Algorithm SHA256`, e compare com o
 arquivo `.sha256` da página de versões.
 
 A desinstalação silenciosa é descrita em [Desinstalar](#desinstalar).
@@ -1391,7 +1391,7 @@ foi interrompida no meio. **Os seus dados não foram afetados.**
 - Clique em **Reparar**: o Helestron procura o instalador na pasta
   **Downloads** do Windows (também quando a informática a levou para outro
   lugar). Ele só aceita o arquivo com o nome publicado
-  (`Helestron-Setup-1.0.0.exe`, ou `Helestron-Setup-1.0.0 (1).exe`, quando
+  (`Helestron-Setup-1.0.1.exe`, ou `Helestron-Setup-1.0.1 (1).exe`, quando
   baixado de novo), confere que é mesmo o instalador do Helestron (e, se o
   arquivo `.sha256` estiver ao lado, a impressão digital dele) e nunca
   escolhe uma versão mais antiga que a instalada. Antes de abrir, a tela

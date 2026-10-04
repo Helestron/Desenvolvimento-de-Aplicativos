@@ -1,4 +1,4 @@
-# Helestron — especificação técnica (versão 1.0.0)
+# Helestron — especificação técnica (versão 1.0.1)
 
 Documento de referência para a reconstrução do antigo “Assessor Integrado” como
 **Helestron**. Tudo o que for dúvida de comportamento se decide aqui; o que não
@@ -1187,7 +1187,7 @@ para ficar nítido.
    `manifesto.json` e a própria lista por último, e depois `P <pasta>`, das
    mais fundas para as de cima) e o script NSIS (`@REGISTRO@`: a lista desta
    versão vai embutida no instalador), e roda `makensis` →
-   `dist/Helestron-Setup-1.0.0.exe` + `.sha256`.
+   `dist/Helestron-Setup-1.0.1.exe` + `.sha256`.
 
 Instalador NSIS (`instalador/helestron.nsi`): Unicode, MUI2, **Português do
 Brasil**, `RequestExecutionLevel user`, pasta padrão

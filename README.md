@@ -38,7 +38,7 @@ instalador de um só arquivo, interface nova e a pauta de audiências.
 
 ## Instalação
 
-1. Baixe o **`Helestron-Setup-1.0.0.exe`** na
+1. Baixe o **`Helestron-Setup-1.0.1.exe`** na
    [página de versões](https://github.com/Helestron/Desenvolvimento-de-Aplicativos/releases)
    (a versão mais recente, em **Assets**).
 2. Dê dois cliques no arquivo. Se o Windows mostrar “O Windows protegeu o
@@ -62,7 +62,7 @@ e do Codex. Numa atualização, uma audiência sendo transcrita nunca é
 interrompida (o instalador pede que ela seja encerrada antes), e o conector
 do acervo aberto pelo Claude Desktop ou pelo Codex não trava a cópia. Para a
 equipe de informática, há o modo silencioso,
-`Helestron-Setup-1.0.0.exe /S [/D=pasta]` (com `/D=` numa pasta que já tem
+`Helestron-Setup-1.0.1.exe /S [/D=pasta]` (com `/D=` numa pasta que já tem
 outros arquivos, o Helestron vai para `<pasta>\Helestron`), com códigos de
 saída próprios: 0 (instalado), 2 (a conferência encontrou problema), 3 (a
 pasta escolhida e a subpasta `Helestron` dentro dela já têm arquivos de
@@ -79,7 +79,7 @@ problemas comuns, está no **[manual do usuário](docs/MANUAL.md)**.
 ### Requisitos
 
 - Windows 10 (versão 1809 ou mais recente) ou Windows 11, **64 bits**;
-- pouco mais de 1 GB livre em disco para o programa;
+- cerca de 1 GB livre em disco para o programa;
 - Google Chrome ou Microsoft Edge (o Edge já vem no Windows), para os
   portais;
 - Microsoft Edge WebView2 Runtime 101 ou mais recente, que já vem no
