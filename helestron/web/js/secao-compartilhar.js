@@ -202,7 +202,7 @@
             acoes: [botao({ rotulo: "Abrir no Claude Code", tipo: "tonal", tamanho: "pequeno", acao: executar("Claude Code", api.compartilhar.claudeCode) })],
           }),
           destino({
-            id: "destino-cowork", nomeIcone: "brilho", cor: "indigo", nome: "Claude Cowork",
+            id: "destino-cowork", nomeIcone: "brilho", cor: "cobalto", nome: "Claude Cowork",
             situacao: claude.desktop ? estadoLinha("Claude Desktop instalado", "verde") : estadoLinha("Claude Desktop não instalado", "cinza"),
             texto: "No app Claude Desktop, o Cowork trabalha na pasta do acervo. O pedido inicial vai copiado: é só colar.",
             acoes: [botao({ rotulo: "Abrir no Cowork", tipo: "tonal", tamanho: "pequeno", acao: abrirCopiando("Claude Cowork", api.compartilhar.cowork, "o pedido inicial", () => pedidoInicial) })],
@@ -229,7 +229,7 @@
             acoes: [botao({ rotulo: "Abrir no Codex", tipo: "tonal", tamanho: "pequeno", acao: executar("Codex", api.compartilhar.codex) })],
           }),
           destino({
-            id: "destino-pacote", nomeIcone: "pacote", cor: "ambar", nome: "Pacote para o ChatGPT",
+            id: "destino-pacote", nomeIcone: "pacote", cor: "aco", nome: "Pacote para o ChatGPT",
             situacao: estadoLinha("Sigilosos ficam de fora", "azul"),
             texto: "Uma pasta e um .zip com os autos, os textos, as transcrições, o índice e as instruções, para anexar numa conversa ou num Projeto.",
             acoes: [botao({ rotulo: "Gerar o pacote", tipo: "tonal", tamanho: "pequeno", acao: async () => {

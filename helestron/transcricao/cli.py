@@ -18,17 +18,23 @@ import logging
 import sys
 from pathlib import Path
 
+try:
+    from ..nucleo.argumentos import ArgumentParser   # argparse em português
+except ImportError:  # pragma: no cover - instalação sem o módulo
+    from argparse import ArgumentParser
+
 log = logging.getLogger("transcricao.cli")
 
 OK, FALHOU, USO, NADA, INTERROMPIDO = 0, 1, 2, 3, 130
 
 
-class _Analisador(argparse.ArgumentParser):
-    """argparse que não encerra o processo (devolve o código a main)."""
+class _Analisador(ArgumentParser):
+    """argparse em português que não encerra o processo (devolve o código a main)."""
 
     def error(self, message):  # noqa: D401 - assinatura do argparse
         self.print_usage(sys.stderr)
-        raise _ErroDeUso(f"{self.prog}: {message}")
+        traduzir = getattr(self, "mensagem_de_erro", None)
+        raise _ErroDeUso(traduzir(message) if traduzir else f"{self.prog}: erro: {message}")
 
 
 class _ErroDeUso(Exception):

@@ -27,12 +27,18 @@ O que vale para todas as entradas:
   processo, ou se os autos do processo estão na pasta de sigilosos - a
   mesma regra do compartilhamento e da transcrição. Vale para a lista, o
   histórico e a planilha, que mascara as partes por padrão (inclusive nas
-  alterações e no texto da busca) e nunca é gravada dentro do acervo.
+  alterações e no texto da busca) e nunca é gravada dentro do acervo;
+* o sigilo que a pauta REVELA (processo que o programa ainda não tratava como
+  sigiloso, nem pela pauta nem pela pasta dos sigilosos) vale na hora: a
+  sincronização, a captura e a importação o informam em 'sigilosos_novos' e a
+  quem pediu (quando_revelar_sigilo: o servidor tira do acervo o que houver
+  dele e avisa o usuário; a linha de comando faz o mesmo por conta própria).
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 import time as _time
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -81,6 +87,92 @@ def _frase(erro: BaseException) -> str:
     return texto[:1].upper() + texto[1:]
 
 
+# ====================================================== sigilo revelado
+MAX_NUMEROS_NO_AVISO = 3
+
+
+def no_acervo(cfg, numeros) -> list[str]:
+    """Dos processos 'numeros' (como a pauta os mostra), os que têm alguma coisa
+    no acervo compartilhado com a IA: autos ou transcrição fora da pasta dos
+    sigilosos, ou o texto dos autos em _ia/texto. Nunca levanta: na dúvida
+    (acervo ilegível), todos contam."""
+    nomes: dict[str, str] = {}
+    for numero in numeros or []:
+        try:
+            nomes[cnj.ler(str(numero)).nome_arquivo] = str(numero)
+        except cnj.NumeroInvalido:
+            continue
+    if not nomes:
+        return []
+    try:
+        from ..compartilhar.mcp_servidor import Acervo
+
+        acervo = Acervo(Path(cfg.pasta_acervo), sigilosos=cfg.pasta_sigilosos)
+        achados = {chave for chave in nomes if (acervo.cache / f"{chave}.txt").is_file()}
+        for sufixo in (".pdf", ".docx"):
+            achados |= {chave for chave, _p in acervo.numerados(sufixo) if chave in nomes}
+    except Exception as erro:
+        log.warning("não consegui conferir o acervo dos processos sigilosos: %s", erro)
+        return list(nomes.values())
+    return [numero for chave, numero in nomes.items() if chave in achados]
+
+
+def quem_corre(numeros: list[str]) -> str:
+    """"o processo X corre", "os processos X e Y correm", "5 processos (X, Y, Z
+    e mais 2) correm" - o começo do aviso do sigilo revelado."""
+    if len(numeros) == 1:
+        return f"o processo {numeros[0]} corre"
+    if len(numeros) <= MAX_NUMEROS_NO_AVISO:
+        return f"os processos {', '.join(numeros[:-1])} e {numeros[-1]} correm"
+    mostrar = ", ".join(numeros[:MAX_NUMEROS_NO_AVISO])
+    return (f"{len(numeros)} processos ({mostrar} e mais "
+            f"{len(numeros) - MAX_NUMEROS_NO_AVISO}) correm")
+
+
+def frase_sigilo_revelado(cfg, numeros: list[str], preso_no_acervo: bool = False) -> str:
+    """O aviso ao usuário quando a pauta revela que processos com arquivos no
+    acervo correm em segredo de justiça, e o programa os está tirando dali (o
+    preparo rápido do acervo, que o servidor acabou de pedir)."""
+    um = len(numeros) == 1
+    dele, ele = ("dele", "ele") if um else ("deles", "eles")
+    sai = "sai" if um else "saem"
+    frase = f"A pauta indica que {quem_corre(numeros)} em segredo de justiça. "
+    if preso_no_acervo:
+        # o preparo espera: há arquivo de processo sigiloso que não pôde sair do acervo
+        return frase + (f"{ele.capitalize()} {sai} do acervo e da IA quando o Helestron puder "
+                        "preparar o acervo de novo: antes, feche o arquivo de processo "
+                        "sigiloso que ficou preso no acervo (veja em Compartilhar).")
+    try:
+        separar = bool(cfg.flag("download", "separar_sigilosos"))
+    except Exception:
+        separar = True
+    if separar:
+        frase += (f"O Helestron está levando os autos e as transcrições {dele} para a pasta dos "
+                  f"sigilosos, e {ele} {sai} do índice e do texto lidos pela IA")
+    else:
+        frase += (f"Com a separação dos sigilosos desligada, os arquivos {dele} continuam no "
+                  f"acervo, mas {ele} {sai} do índice e do texto lidos pela IA")
+    nuvem, automatico = "", False
+    try:
+        nuvem = str(cfg.texto("compartilhar", "pasta_nuvem") or "").strip()
+        automatico = bool(cfg.flag("compartilhar", "espelhar_automaticamente"))
+        if nuvem:
+            from .. import servicos
+
+            if servicos.conflito_da_nuvem(nuvem, cfg.pasta_acervo):
+                nuvem = ""
+    except Exception:
+        nuvem = ""
+    if nuvem and automatico:
+        frase += " e do espelho na nuvem."
+    elif nuvem:
+        frase += (f". A cópia {dele} na nuvem sai no próximo espelho (Compartilhar › Espelhar "
+                  "agora).")
+    else:
+        frase += "."
+    return frase
+
+
 class ServicoPauta:
     """A pauta de audiências: consulta, sincronização, captura, importação, exportação."""
 
@@ -105,6 +197,11 @@ class ServicoPauta:
         # A senha digitada sem "Lembrar neste computador" ({portal: (usuário, senha)}):
         # o servidor entrega o dicionário da sessão (o mesmo do download).
         self.credenciais_sessao: dict[str, tuple[str, str]] | None = None
+        # Quem quer saber do sigilo que a pauta revela (quando_revelar_sigilo) e o
+        # que se revelou antes de alguém pedir.
+        self._ao_revelar_sigilo: Callable[[list[str]], None] | None = None
+        self._revelados_pendentes: list[str] = []
+        self._trava_revelados = threading.Lock()
 
     # ================================================================ apoio
     @property
@@ -147,6 +244,69 @@ class ServicoPauta:
         """
         chave = modelos.chave_processo(str(getattr(numero, "formatado", numero) or ""))
         return bool(chave) and chave in self._sigilosos_do_banco()[0]
+
+    # ======================================================= sigilo revelado
+    @property
+    def ao_revelar_sigilo(self) -> Callable[[list[str]], None] | None:
+        return self._ao_revelar_sigilo
+
+    def quando_revelar_sigilo(self, funcao: Callable[[list[str]], None] | None) -> None:
+        """'funcao(numeros)' é chamada quando a sincronização, a captura ou a
+        importação revela processo em segredo de justiça que o programa ainda
+        não tratava como sigiloso (nem pela pauta, nem pela pasta dos
+        sigilosos). É o servidor: ele tira do acervo, na hora, o que houver do
+        processo e avisa o usuário - sem esperar o próximo compartilhamento,
+        download ou transcrição. O que se revelou antes (o monitor rodou antes
+        de a janela abrir a Pauta) é entregue agora."""
+        with self._trava_revelados:
+            self._ao_revelar_sigilo = funcao
+            pendentes, self._revelados_pendentes = self._revelados_pendentes, []
+        if funcao is not None and pendentes:
+            self._entregar_revelados(pendentes)
+
+    def _sigilosos_conhecidos(self) -> set[str] | None:
+        """Antes de gravar: as chaves dos processos que o programa já trata como
+        sigilosos (a pauta e a pasta dos sigilosos). None: o banco não pôde ser
+        lido - aí nada conta como revelado agora (o preparo seguinte, antes de
+        qualquer compartilhamento, aplica a regra do mesmo jeito)."""
+        try:
+            conhecidos = set(self.armazem.processos_sigilosos())
+        except Exception as erro:
+            log.warning("não consegui ler na pauta os processos sigilosos: %s", erro)
+            return None
+        return conhecidos | self._na_pasta_de_sigilosos()
+
+    def _revelados(self, conhecidos: set[str] | None, resultado: dict) -> list[str]:
+        """Os processos que a gravação revelou sigilosos (números como a pauta os
+        mostra): vão para resultado['sigilosos_novos'] e para quem pediu."""
+        if conhecidos is None:
+            return []
+        try:
+            depois = self.armazem.processos_sigilosos()
+        except Exception as erro:
+            log.warning("não consegui conferir na pauta os processos sigilosos: %s", erro)
+            return []
+        novos = sorted(numero for chave, numero in depois.items() if chave not in conhecidos)
+        if not novos:
+            return []
+        resultado["sigilosos_novos"] = novos
+        log.warning("A pauta indica segredo de justiça em %d processo%s que o programa ainda "
+                    "não tratava como sigiloso%s.", len(novos), "s" if len(novos) != 1 else "",
+                    "s" if len(novos) != 1 else "")
+        self._entregar_revelados(novos)
+        return novos
+
+    def _entregar_revelados(self, numeros: list[str]) -> None:
+        with self._trava_revelados:
+            funcao = self._ao_revelar_sigilo
+            if funcao is None:
+                self._revelados_pendentes += [n for n in numeros
+                                              if n not in self._revelados_pendentes]
+                return
+        try:
+            funcao(list(numeros))
+        except Exception as erro:          # o aviso nunca derruba a sincronização
+            log.warning("não consegui aplicar na hora o sigilo revelado pela pauta: %s", erro)
 
     def _na_pasta_de_sigilosos(self) -> set[str]:
         """As chaves CNJ dos processos com autos (ou transcrição) na pasta de sigilosos.
@@ -504,6 +664,7 @@ class ServicoPauta:
         resultado = {"novas": 0, "atualizadas": 0, "canceladas": 0, "removidas": 0, "total": 0,
                      "alteracoes": 0, "fontes": [], "erros": [], "avisos": [],
                      "periodo": {"de": de.isoformat(), "ate": ate.isoformat()}}
+        conhecidos = self._sigilosos_conhecidos()
         sucesso = False
         for i, fonte in enumerate(escolhidas):
             if ctx.cancelado():
@@ -539,6 +700,8 @@ class ServicoPauta:
             ctx.progresso(len(escolhidas), len(escolhidas), "")
         except Exception:
             pass
+        # mesmo com fontes que falharam: o que as outras gravaram vale
+        self._revelados(conhecidos, resultado)
         if sucesso:
             self.armazem.definir_meta("ultima_sincronizacao", self.relogio())
             self._publicar_mudancas(resultado)
@@ -680,6 +843,7 @@ class ServicoPauta:
                 pass
             resultado = cap.esperar()
         audiencias = resultado.audiencias
+        conhecidos = self._sigilosos_conhecidos()
         balanco = self.armazem.gravar(audiencias, id_fonte, None, registrar_novas=not primeira,
                                       agora=self.relogio())
         campos = {}
@@ -693,6 +857,7 @@ class ServicoPauta:
         dados = balanco.como_dict()
         dados.update({"capturadas": len(audiencias), "telas": resultado.telas,
                       "url": resultado.url, "motivo": resultado.motivo, "fonte": id_fonte})
+        self._revelados(conhecidos, dados)
         if audiencias:
             self._publicar_mudancas(dados)
             ctx.status(f"Captura concluída: {len(audiencias)} audiência"
@@ -711,6 +876,7 @@ class ServicoPauta:
         except importacao.RelatorioInvalido as erro:
             raise ValueError(_frase(erro)) from erro
         audiencias = rec.audiencias
+        conhecidos = self._sigilosos_conhecidos()
         # A mesma audiência já trazida do portal (processo, data e hora) não é
         # duplicada: o relatório só completa o que faltava nela. O par é um a um
         # (pelo tipo, como na sincronização): duas audiências do processo no
@@ -752,6 +918,7 @@ class ServicoPauta:
         resultado = {"novas": balanco.novas, "atualizadas": atualizadas,
                      "ignoradas": rec.ignoradas, "avisos": list(rec.avisos),
                      "total": len(audiencias), "arquivo": Path(caminho).name}
+        self._revelados(conhecidos, resultado)
         self._evento("pauta", {"tipo": "atualizada", "dados": {
             "novas": resultado["novas"], "atualizadas": atualizadas, "total": len(audiencias)}})
         return resultado

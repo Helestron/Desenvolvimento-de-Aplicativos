@@ -509,8 +509,135 @@ class TestPublicoNaoDesfazOSigilo(unittest.TestCase):
         self.assertTrue(all(a.sigiloso for a in r.audiencias))
 
     def test_regras_do_arquivo_e_embutidas_iguais(self):
+        self.assertEqual(R.dados["sigilo"], regras.PADROES["sigilo"])
         self.assertEqual(R.dados["sem_sigilo"], regras.PADROES["sem_sigilo"])
         self.assertEqual(R.dados["negativos"], regras.PADROES["negativos"])
+
+
+class TestSigiloSoComIndicacaoPositiva(unittest.TestCase):
+    """O processo dado como sigiloso sai do acervo e da IA de vez: só a indicação
+    POSITIVA e inequívoca marca. "Nível 1" do andar do fórum, a negação ("Segredo de
+    justiça: não", "Sem segredo de justiça", "Não sigiloso"), o nível 0 e o
+    "sigiloso" solto de outra coisa ("testemunha sigilosa") nunca marcam; o selo
+    de verdade continua marcando (os casos que já davam certo também estão aqui)."""
+
+    N = ap.numero("0700961")
+    ICONE = "<img src='data:,' title='Segredo de Justiça'>"
+    COLUNAS = ("processo", "local", "classe", "observacoes", "partes", "sigilo")
+    ROTULOS = {"processo": "Processo", "local": "Local", "classe": "Classe",
+               "observacoes": "Observações", "partes": "Partes", "sigilo": "Sigilo"}
+
+    def audiencia(self, campo: str, valor: str):
+        celulas = {"processo": self.N, "local": "Sala 2", "classe": "Procedimento Comum",
+                   "observacoes": "", "partes": "Fulano x Banco", "sigilo": ""}
+        celulas[campo] = (self.N + " " + valor) if campo == "processo" else valor
+        cab = "".join(f"<th>{self.ROTULOS[c]}</th>" for c in self.COLUNAS)
+        linha = "".join(f"<td>{celulas[c]}</td>" for c in self.COLUNAS)
+        html = (f"<table><tr><th>Data</th><th>Hora</th><th>Tipo</th>{cab}</tr>"
+                f"<tr><td>05/10/2026</td><td>09:00</td><td>Instrução</td>{linha}</tr></table>")
+        r = reconhecer_html(html, "esaj", contexto="Pauta de audiências")
+        self.assertEqual(len(r.audiencias), 1, html)
+        return r.audiencias[0]
+
+    def test_tabela_com_cabecalho(self):
+        sigilosos = [
+            ("partes", "(Segredo de Justiça)"),
+            ("partes", f"Ministério Público x João da Silva {self.ICONE}"),
+            ("local", f"Sala da Defensoria Pública {self.ICONE}"),
+            ("local", "Sala 3 <img src='data:,' title='Visualizar'>"
+                      "<img src='data:,' alt='Sigiloso'>"),
+            ("classe", "Ação Civil Pública - Segredo de Justiça"),
+            ("classe", "Alimentos (Segredo de Justiça)"),
+            ("processo", "(Sigiloso)"),
+            ("processo", self.ICONE),
+            ("observacoes", "Processo em segredo de justiça"),
+            ("observacoes", "Segredo de Justiça: sim"),
+            ("sigilo", "Segredo de Justiça"),
+            ("sigilo", "Nível 1"),
+            ("sigilo", "Sigiloso (Nível 2)"),
+            ("sigilo", "Sim"),
+            ("sigilo", "X"),
+            ("sigilo", self.ICONE),
+        ]
+        publicos = [
+            ("local", "Fórum Des. Jairon Maia, Nível 1, Sala 3"),
+            ("local", "Sala 5 - Bloco Nível 2"),
+            ("local", "Sala 2 <img src='data:,' title='Nível 1'>"),
+            ("observacoes", "Segredo de justiça: não"),
+            ("observacoes", "Segredo de Justiça? NÃO"),
+            ("observacoes", "Sem segredo de justiça"),
+            ("observacoes", "Não sigiloso"),
+            ("observacoes", "Processo não é sigiloso"),
+            ("observacoes", "Não corre em segredo de justiça"),
+            ("observacoes", "Oitiva de testemunha sigilosa (Prov. 32)"),
+            ("observacoes", "Retirado o sigilo dos autos"),
+            ("observacoes", "Nível de sigilo: 0 (público)"),
+            ("observacoes", "Pedido de segredo de justiça pendente"),
+            ("classe", "Ação Civil Pública"),
+            ("partes", "Ministério Público x João"),
+            ("partes", "Segredo de justiça: não"),
+            ("sigilo", "Não"),
+            ("sigilo", "Nível 0"),
+            ("sigilo", "Público"),
+            ("sigilo", "Sem sigilo (Nível 0)"),
+            ("sigilo", "Segredo de justiça: não"),
+        ]
+        for campo, valor in sigilosos:
+            with self.subTest(campo=campo, valor=valor):
+                self.assertTrue(self.audiencia(campo, valor).sigiloso)
+        for campo, valor in publicos:
+            with self.subTest(campo=campo, valor=valor):
+                self.assertFalse(self.audiencia(campo, valor).sigiloso)
+        # a máscara do portal não vira nome de parte; a negação não é máscara
+        self.assertEqual(self.audiencia("partes", "(Segredo de Justiça)").partes, "")
+        self.assertEqual(self.audiencia("partes", "Segredo de justiça: não").partes,
+                         "Segredo de justiça: não")
+
+    def test_linhas_sem_cabecalho(self):
+        rec = Reconhecedor(R, "esaj", "TJAL")
+
+        def linha(*textos, dicas=""):
+            return [Celula(texto="05/10/2026 09:00"), Celula(texto=self.N),
+                    *(Celula(texto=x) for x in textos), Celula(texto="", dicas=dicas)]
+
+        for textos, dicas in ((("Segredo de Justiça", "Fulano x Banco"), ""),
+                              (("(Sigiloso)",), ""),
+                              (("Instrução",), "Segredo de Justiça (Nível 1) | Sigiloso"),
+                              (("Instrução",), "Visualizar | Sigiloso")):
+            with self.subTest(textos=textos, dicas=dicas):
+                self.assertTrue(rec.linha_livre(linha(*textos, dicas=dicas)).sigiloso)
+        for textos, dicas in ((("Fórum, Nível 1, Sala 3", "Fulano x Banco"), ""),
+                              (("Segredo de justiça: não",), ""),
+                              (("Sem segredo de justiça",), ""),
+                              (("Público",), ""),
+                              (("Instrução",), "Nível 1")):
+            with self.subTest(textos=textos, dicas=dicas):
+                self.assertFalse(rec.linha_livre(linha(*textos, dicas=dicas)).sigiloso)
+
+    def test_detalhe_na_linha_de_baixo(self):
+        def html(detalhe):
+            return ("<table><caption>Pauta de audiências</caption><tr><th>Data</th><th>Hora</th>"
+                    "<th>Processo</th><th>Tipo</th><th>Situação</th></tr>"
+                    f"<tr><td rowspan=2>05/10/2026</td><td rowspan=2>09:00</td>"
+                    f"<td rowspan=2>{self.N}</td><td>Conciliação</td><td>Designada</td></tr>"
+                    f"<tr><td colspan=2>{detalhe}</td></tr></table>")
+
+        a = reconhecer_html(html("(Segredo de Justiça)"), "esaj").audiencias
+        self.assertEqual(len(a), 1)
+        self.assertTrue(a[0].sigiloso)
+        for detalhe in ("Segredo de justiça: não", "Fórum, Nível 1, Sala 3"):
+            with self.subTest(detalhe=detalhe):
+                a = reconhecer_html(html(detalhe), "esaj").audiencias
+                self.assertEqual(len(a), 1)
+                self.assertFalse(a[0].sigiloso)
+                self.assertIn(detalhe, a[0].observacoes, "o texto fica como observação")
+
+    def test_dicas_de_cada_icone_separadas(self):
+        """O 'title'/'alt' de cada ícone é guardado à parte: "Visualizar" ao lado de
+        "Sigiloso" não esconde o selo."""
+        t = tabelas_do_html("<table><tr><td><img title='Visualizar'><img alt='Sigiloso'>"
+                            "</td></tr></table>")
+        self.assertEqual(t[0].linhas[0][0].dicas, "Visualizar | Sigiloso")
 
 
 # ======================================================= segunda revisão

@@ -24,6 +24,14 @@
  * O Python acha a própria biblioteca (Lib\os.py) a partir da pasta deste
  * executável: o lançador PRECISA morar na raiz da pasta do Python.
  *
+ * Antes do Py_Main, confere os arquivos sem os quais nem a tela de erro do
+ * programa abre (o Python sem Lib\encodings não inicia; sem o __main__.py,
+ * o registro.py ou o caminhos.py do pacote, ele fecha sem dizer nada): se
+ * faltar algum, a mensagem diz qual e o que fazer. E, aberto pelo atalho
+ * (sem argumentos), se o programa fechar com erro em menos de
+ * PRAZO_SAIDA_RAPIDA_MS sem ter mostrado janela nenhuma, a mensagem aponta o
+ * registro do programa (Logs) - em vez de o clique no atalho não dar em nada.
+ *
  * Compilação (construir.py faz isto):
  *   x86_64-w64-mingw32-windres helestron.rc -O coff -o recursos.o
  *   x86_64-w64-mingw32-gcc -municode -mwindows -O2 -s helestron.c recursos.o -o Helestron.exe
@@ -37,6 +45,8 @@
 #endif
 
 #include <windows.h>
+#include <shellapi.h>
+#include <shlobj.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
@@ -47,6 +57,29 @@
 #define SAIDA_SEM_DLL 3
 #define SAIDA_DLL_ESTRANHO 4
 #define SAIDA_SEM_MEMORIA 5
+#define SAIDA_FALTA_ARQUIVO 6
+
+/* O programa que fecha com erro antes disto, sem ter mostrado janela, ganha
+   a mensagem que aponta o registro (Logs). */
+#define PRAZO_SAIDA_RAPIDA_MS 20000
+
+/* Os módulos sem os quais nem a tela de erro do programa abre (relativos à
+   pasta do programa, sem a extensão): cada um vale como .py ou como .pyc ao
+   lado - o que o Python consegue importar (o .pyc de __pycache__ sozinho,
+   sem o .py, ele não usa). */
+static const wchar_t *const ESSENCIAIS[] = {
+    L"Lib\\encodings\\__init__",
+    L"Lib\\site-packages\\helestron\\__init__",
+    L"Lib\\site-packages\\helestron\\__main__",
+    L"Lib\\site-packages\\helestron\\nucleo\\__init__",
+    L"Lib\\site-packages\\helestron\\nucleo\\caminhos",
+    L"Lib\\site-packages\\helestron\\nucleo\\registro",
+    L"Lib\\site-packages\\helestron\\aplicativo\\__init__",
+    L"Lib\\site-packages\\helestron\\aplicativo\\inicio",
+    L"Lib\\site-packages\\helestron\\aplicativo\\integridade",
+    L"Lib\\site-packages\\helestron\\aplicativo\\erro",
+    NULL
+};
 
 typedef int (*FuncaoPyMain)(int argc, wchar_t **argv);
 
@@ -94,12 +127,12 @@ static int chamada_do_instalador(int argc, wchar_t **argv)
 
 static void avisar(const wchar_t *texto, DWORD codigo)
 {
-    wchar_t mensagem[1400];
+    wchar_t mensagem[2400];
     _snwprintf(mensagem, sizeof(mensagem) / sizeof(mensagem[0]) - 1,
                L"%ls\n\n"
                L"Isso costuma acontecer quando o antivírus põe um arquivo do programa em "
                L"quarentena, ou quando a instalação foi interrompida.\n\n"
-               L"O que fazer: instale o Helestron de novo com o Helestron-Setup. Ele conserta "
+               L"O que fazer: reinstale o Helestron com o Helestron-Setup. Ele conserta "
                L"a instalação sem apagar os seus dados (configurações, senhas, processos e "
                L"transcrições). Se o problema voltar, peça ao suporte que libere a pasta do "
                L"programa no antivírus.\n\n(código do Windows: %lu)",
@@ -107,6 +140,94 @@ static void avisar(const wchar_t *texto, DWORD codigo)
     mensagem[sizeof(mensagem) / sizeof(mensagem[0]) - 1] = L'\0';
     MessageBoxW(NULL, mensagem, L"O Helestron não pôde abrir",
                 MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
+}
+
+/* O primeiro arquivo essencial que falta (caminho completo, em achado),
+   ou 0 se estão todos lá. */
+static int falta_essencial(const wchar_t *pasta, wchar_t *achado, size_t capacidade,
+                           DWORD *erro)
+{
+    for (int i = 0; ESSENCIAIS[i] != NULL; i++) {
+        wchar_t py[1200], pyc[1200];
+        _snwprintf(py, 1199, L"%ls%ls.py", pasta, ESSENCIAIS[i]);
+        _snwprintf(pyc, 1199, L"%ls%ls.pyc", pasta, ESSENCIAIS[i]);
+        py[1199] = pyc[1199] = L'\0';
+        if (GetFileAttributesW(py) != INVALID_FILE_ATTRIBUTES ||
+            GetFileAttributesW(pyc) != INVALID_FILE_ATTRIBUTES)
+            continue;
+        *erro = GetLastError();
+        wcsncpy(achado, py, capacidade - 1);
+        achado[capacidade - 1] = L'\0';
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * Vigia de janelas: o programa (qualquer thread deste processo) mostrou
+ * alguma janela? A janela do Helestron, a tela de erro, a caixa de mensagem
+ * do próprio Python... Um gancho de eventos fora de contexto, numa thread
+ * com fila de mensagens própria (a principal fica presa no Py_Main).
+ */
+static volatile LONG abriu_janela = 0;
+
+static void CALLBACK ao_mostrar(HWINEVENTHOOK gancho, DWORD evento, HWND janela, LONG objeto,
+                                LONG filho, DWORD thread, DWORD quando)
+{
+    (void)gancho; (void)evento; (void)filho; (void)thread; (void)quando;
+    if (janela != NULL && objeto == OBJID_WINDOW)
+        InterlockedExchange(&abriu_janela, 1);
+}
+
+static DWORD WINAPI vigiar_janelas(LPVOID pronto)
+{
+    MSG msg;
+    PeekMessageW(&msg, NULL, WM_USER, WM_USER, PM_NOREMOVE);   /* cria a fila */
+    HWINEVENTHOOK gancho = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, NULL,
+                                           ao_mostrar, GetCurrentProcessId(), 0,
+                                           WINEVENT_OUTOFCONTEXT);
+    if (gancho == NULL)
+        InterlockedExchange(&abriu_janela, 1);    /* sem vigia, nada de aviso a mais */
+    SetEvent((HANDLE)pronto);
+    while (GetMessageW(&msg, NULL, 0, 0) > 0)
+        DispatchMessageW(&msg);
+    if (gancho != NULL)
+        UnhookWinEvent(gancho);
+    return 0;
+}
+
+/* A pasta do registro do programa (helestron/nucleo/caminhos.py: LOCAL\Logs). */
+static void pasta_dos_registros(wchar_t *destino, DWORD capacidade)
+{
+    wchar_t local[1024];
+    DWORD n = GetEnvironmentVariableW(L"HELESTRON_LOCAL", local, 1024);
+    if (n > 0 && n < 1024)
+        _snwprintf(destino, capacidade - 1, L"%ls\\Logs", local);
+    else if (ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Helestron\\Logs", destino,
+                                       capacidade) == 0)
+        wcsncpy(destino, L"%LOCALAPPDATA%\\Helestron\\Logs", capacidade - 1);
+    destino[capacidade - 1] = L'\0';
+}
+
+static void avisar_saida_rapida(int codigo)
+{
+    wchar_t logs[1100], mensagem[2400];
+    pasta_dos_registros(logs, 1100);
+    _snwprintf(mensagem, sizeof(mensagem) / sizeof(mensagem[0]) - 1,
+               L"O Helestron fechou logo depois de começar, sem abrir a janela "
+               L"(código %d).\n\n"
+               L"O motivo ficou anotado no registro do programa, na pasta:\n%ls\n\n"
+               L"Abra o Helestron de novo. Se ele fechar outra vez, reinstale-o com o "
+               L"Helestron-Setup (os seus dados são mantidos) ou envie ao suporte os arquivos "
+               L"dessa pasta.\n\nDeseja abrir a pasta do registro agora?",
+               codigo, logs);
+    mensagem[sizeof(mensagem) / sizeof(mensagem[0]) - 1] = L'\0';
+    if (MessageBoxW(NULL, mensagem, L"O Helestron não pôde abrir",
+                    MB_YESNO | MB_DEFBUTTON2 | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST)
+            == IDYES) {
+        SHCreateDirectoryExW(NULL, logs, NULL);     /* o programa pode nem ter chegado a criá-la */
+        ShellExecuteW(NULL, L"open", logs, NULL, NULL, SW_SHOWNORMAL);
+    }
 }
 
 int WINAPI wWinMain(HINSTANCE instancia, HINSTANCE anterior, PWSTR linha, int mostrar)
@@ -168,6 +289,20 @@ int WINAPI wWinMain(HINSTANCE instancia, HINSTANCE anterior, PWSTR linha, int mo
         return SAIDA_DLL_ESTRANHO;
     }
 
+    /* Os arquivos de partida: sem eles, o Python fecharia sem dizer nada.
+       (Nas chamadas do instalador, quem informa é ele, pelo código.) */
+    if (!silencioso) {
+        wchar_t faltando[1200], texto[1500];
+        DWORD erro = 0;
+        if (falta_essencial(pasta, faltando, 1200, &erro)) {
+            _snwprintf(texto, sizeof(texto) / sizeof(texto[0]) - 1,
+                       L"Falta um arquivo do programa:\n%ls", faltando);
+            texto[sizeof(texto) / sizeof(texto[0]) - 1] = L'\0';
+            avisar(texto, erro);
+            return SAIDA_FALTA_ARQUIVO;
+        }
+    }
+
     /* [Helestron.exe, -I, -m, helestron, argumentos do usuário...] */
     wchar_t **novo = (wchar_t **)calloc((size_t)argc + 4, sizeof(wchar_t *));
     if (novo == NULL)
@@ -181,7 +316,30 @@ int WINAPI wWinMain(HINSTANCE instancia, HINSTANCE anterior, PWSTR linha, int mo
         novo[n++] = argv[i];
     novo[n] = NULL;
 
+    /* Aberto pelo atalho (sem argumentos): vigia se alguma janela aparece. */
+    int pelo_atalho = (argc == 1);
+    HANDLE vigia = NULL;
+    DWORD id_vigia = 0;
+    if (pelo_atalho) {
+        HANDLE pronto = CreateEventW(NULL, TRUE, FALSE, NULL);
+        if (pronto != NULL) {
+            vigia = CreateThread(NULL, 0, vigiar_janelas, pronto, 0, &id_vigia);
+            if (vigia != NULL)
+                WaitForSingleObject(pronto, 2000);
+            CloseHandle(pronto);
+        }
+    }
+    ULONGLONG inicio = GetTickCount64();
+
     int codigo = py_main(n, novo);
+
+    if (vigia != NULL) {
+        ULONGLONG duracao = GetTickCount64() - inicio;
+        PostThreadMessageW(id_vigia, WM_QUIT, 0, 0);
+        WaitForSingleObject(vigia, 2000);
+        if (codigo != 0 && duracao < PRAZO_SAIDA_RAPIDA_MS && !abriu_janela)
+            avisar_saida_rapida(codigo);
+    }
 
     /* O processo termina aqui: não há o que liberar com cuidado. */
     return codigo;

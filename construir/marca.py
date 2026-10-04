@@ -580,11 +580,29 @@ def previa(pasta: Path) -> list[Path]:
     return saida
 
 
+def _classe_do_analisador() -> type:
+    """O ArgumentParser em português do programa (helestron/nucleo/argumentos.py),
+    carregado pelo arquivo; sem ele, o do argparse."""
+    import importlib.util
+
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "helestron_argumentos", RAIZ / "helestron" / "nucleo" / "argumentos.py")
+        modulo = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(modulo)
+        return modulo.ArgumentParser
+    except (OSError, ImportError, AttributeError, SyntaxError):
+        return argparse.ArgumentParser
+
+
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Gera o ícone e as imagens do instalador.")
-    p.add_argument("--recursos", type=Path, default=RECURSOS)
-    p.add_argument("--web", type=Path, default=WEB_MARCA)
-    p.add_argument("--previa", type=Path, help="grava também as folhas de conferência")
+    p = _classe_do_analisador()(prog="python construir/marca.py",
+                                description="Gera o ícone e as imagens do instalador.")
+    p.add_argument("--recursos", type=Path, default=RECURSOS, metavar="PASTA",
+                   help="onde gravar o ícone e as imagens do instalador (padrão: helestron/recursos)")
+    p.add_argument("--web", type=Path, default=WEB_MARCA, metavar="PASTA",
+                   help="onde gravar a marca da interface (padrão: helestron/web/img/marca)")
+    p.add_argument("--previa", type=Path, metavar="PASTA", help="grava também as folhas de conferência")
     a = p.parse_args(argv)
     for arquivo in gerar(a.recursos, a.web):
         print(arquivo)

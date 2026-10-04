@@ -511,6 +511,20 @@ class Armazem:
         chaves.discard("")
         return chaves, {x["id"] for x in linhas}
 
+    def processos_sigilosos(self) -> dict[str, str]:
+        """{chave CNJ: número como a pauta o mostra} dos processos marcados
+        sigilosos em qualquer registro (como sigilosas())."""
+        with self._trava:
+            linhas = self._c().execute(
+                "SELECT DISTINCT processo FROM audiencias WHERE sigiloso = 1 AND processo != ''"
+            ).fetchall()
+        saida: dict[str, str] = {}
+        for x in linhas:
+            chave = modelos.chave_processo(x["processo"])
+            if chave:
+                saida.setdefault(chave, x["processo"])
+        return saida
+
     # ----------------------------------------------------------- histórico
     def alteracoes(self, desde: datetime | None = None, de: date | None = None,
                    ate: date | None = None, limite: int = LIMITE_ALTERACOES) -> list[dict]:

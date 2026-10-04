@@ -596,7 +596,7 @@ a {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-/* blocos de ícone coloridos (como nos Ajustes do iOS) */
+/* blocos de ícone (como nos Ajustes do iOS, em monocromia azul) */
 .bloco-icone {
   width: 30px;
   height: 30px;
@@ -627,16 +627,19 @@ a {
   stroke-width: 1.8;
 }
 
+/* Só azuis, navy e cinzas (o pedido: azul, cinza e branco): o tom distingue
+   o assunto. Verde, âmbar e vermelho dizem estado, e ficam nos pontos, nas
+   pílulas, nas faixas, nos avisos, no anel e no botão de gravar. Por onde
+   passa o traço branco do ícone (de 20 % a 80 % da altura), o contraste é
+   de 3:1 ou mais. */
 .cor-azul { background: linear-gradient(180deg, #3388FA, #0A66E8); }
+.cor-celeste { background: linear-gradient(180deg, #5D9CF5, #3576E4); }
+.cor-ciano { background: linear-gradient(180deg, #2FA2D8, #1279B4); }
+.cor-cobalto { background: linear-gradient(180deg, #4B6FE2, #2747B8); }
+.cor-aco { background: linear-gradient(180deg, #5A86B5, #36618F); }
 .cor-navy { background: linear-gradient(180deg, #2A4C82, #12284A); }
-.cor-celeste { background: linear-gradient(180deg, #6FA8FF, #3F7FEF); }
-.cor-ciano { background: linear-gradient(180deg, #3DB0E0, #1584C2); }
-.cor-indigo { background: linear-gradient(180deg, #6C7BF2, #4352D6); }
-.cor-cinza { background: linear-gradient(180deg, #9AA2B1, #6B7280); }
 .cor-ardosia { background: linear-gradient(180deg, #6E819E, #48597A); }
-.cor-verde { background: linear-gradient(180deg, #3CBB72, #1F9D55); }
-.cor-ambar { background: linear-gradient(180deg, #E8A93D, #C27C0E); }
-.cor-vermelho { background: linear-gradient(180deg, #F26464, #D93A3A); }
+.cor-cinza { background: linear-gradient(180deg, #8C95A5, #646B79); }
 
 /* ------------------------------------------------------------ botões */
 .botao {
@@ -2824,6 +2827,18 @@ button.item-simples:hover {
 
 .resultado-teste.ok {
   color: var(--verde-texto);
+}
+
+/* A última sincronização da fonte falhou (Ajustes › Pauta): o ponto âmbar
+   diz o estado, e o quadrado do ícone fica no tom da paleta. */
+.linha-erro-fonte {
+  display: block;
+  color: var(--ambar-texto);
+}
+
+.linha-erro-fonte .ponto {
+  margin-right: 6px;
+  vertical-align: 1px;
 }
 
 .ouvindo {

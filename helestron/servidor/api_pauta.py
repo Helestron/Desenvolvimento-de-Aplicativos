@@ -9,6 +9,12 @@ mesma sessão do download): rodam como tarefa, com o recurso 'navegador' -
 não andam junto com um download. E a mesma senha: a guardada no cofre e a
 digitada com "Lembrar neste computador" desligado (app.credenciais_sessao,
 como em api_processos), que vale até fechar o Helestron.
+
+O sigilo que a pauta revela vale na hora (sigilo_revelado): processo que a
+sincronização (inclusive a do monitor), a captura ou a importação mostra em
+segredo de justiça, e que ainda tinha arquivos no acervo, sai dele já - o
+preparo rápido do acervo (api_compartilhar.depois_de_salvar), com o aviso
+ao usuário -, sem esperar o próximo compartilhamento, download ou transcrição.
 """
 
 from __future__ import annotations
@@ -44,6 +50,44 @@ def registrar(r: Roteador) -> None:
 
 
 # ===================================================================== apoio
+def servico_da_pauta(app):
+    """O ServicoPauta do programa (app.pauta()), com o sigilo revelado ligado ao
+    preparo do acervo. O mesmo serviço é o do monitor: ligado aqui, vale também
+    para a sincronização automática (e o que ela revelou antes é tratado agora)."""
+    servico = app.pauta()
+    ligar = getattr(servico, "quando_revelar_sigilo", None)
+    if callable(ligar) and getattr(servico, "ao_revelar_sigilo", None) is None:
+        try:
+            ligar(lambda numeros: sigilo_revelado(app, numeros))
+        except Exception as erro:          # o resto da pauta segue
+            log.warning("o aviso do sigilo revelado pela pauta não foi ligado: %s", erro)
+    return servico
+
+
+def sigilo_revelado(app, numeros: list[str]) -> None:
+    """A pauta acaba de mostrar em segredo de justiça processos que o programa
+    ainda não tratava como sigilosos. Os que têm arquivos no acervo saem dele
+    agora: o preparo rápido (api_compartilhar.depois_de_salvar - leva autos e
+    transcrições para a pasta dos sigilosos, apaga o texto em _ia/texto, refaz
+    o INDICE.md e, com o espelho automático ligado, tira a cópia da nuvem). E o
+    usuário fica sabendo, com o aviso no canto da janela."""
+    from ..pauta.servico import frase_sigilo_revelado, no_acervo
+    from .api_compartilhar import depois_de_salvar, presos
+
+    if getattr(app, "fechando", False):
+        return
+    lista = no_acervo(app.cfg, numeros)
+    if not lista:
+        return                     # nada deles no acervo: nada sai, nada a avisar
+    preso = bool(presos(app))
+    depois_de_salvar(app)
+    frase = frase_sigilo_revelado(app.cfg, lista, preso_no_acervo=preso)
+    log.info("%s", frase)
+    app.hub.publicar("aviso", {"titulo": "Processo em segredo de justiça" if len(lista) == 1
+                               else "Processos em segredo de justiça",
+                               "mensagem": frase, "nivel": "aviso"})
+
+
 def data(texto, campo: str) -> date | None:
     if texto in (None, ""):
         return None
@@ -132,7 +176,7 @@ def _tribunal(sigla: str, sistema_: str) -> str:
 # ==================================================================== consulta
 def listar(p: Pedido) -> dict:
     app = p.app
-    servico = app.pauta()
+    servico = servico_da_pauta(app)
     hoje = date.today()
     de = data(p.arg("de"), "de") or hoje
     ate = data(p.arg("ate"), "ate") or hoje + timedelta(days=max(1, _inteiro(app.cfg,
@@ -152,11 +196,11 @@ def listar(p: Pedido) -> dict:
 
 
 def fontes(p: Pedido) -> list[dict]:
-    return list(p.app.pauta().fontes())
+    return list(servico_da_pauta(p.app).fontes())
 
 
 def salvar_fonte(p: Pedido) -> dict:
-    servico = p.app.pauta()
+    servico = servico_da_pauta(p.app)
     sistema_ = p.campo("sistema", obrigatorio=True, tipo=str).strip().lower()
     sigla = _tribunal(p.campo("tribunal", obrigatorio=True, tipo=str), sistema_)
     rotulo = p.campo("rotulo", padrao="", tipo=str).strip() or \
@@ -170,17 +214,17 @@ def salvar_fonte(p: Pedido) -> dict:
 
 
 def remover_fonte(p: Pedido) -> dict:
-    p.app.pauta().remover_fonte(p.params["id"])
+    servico_da_pauta(p.app).remover_fonte(p.params["id"])
     p.app.hub.publicar("estado", {})
     return {"id": p.params["id"]}
 
 
 def alteracoes(p: Pedido) -> list[dict]:
-    return list(p.app.pauta().alteracoes(momento(p.arg("desde"), "desde")))
+    return list(servico_da_pauta(p.app).alteracoes(momento(p.arg("desde"), "desde")))
 
 
 def alteracoes_vistas(p: Pedido) -> dict:
-    p.app.pauta().marcar_vistas()
+    servico_da_pauta(p.app).marcar_vistas()
     p.app.hub.publicar("estado", {})
     return {}
 
@@ -188,7 +232,7 @@ def alteracoes_vistas(p: Pedido) -> dict:
 # ==================================================================== tarefas
 def sincronizar(p: Pedido) -> dict:
     app = p.app
-    servico = app.pauta()
+    servico = servico_da_pauta(app)
     lista = p.campo("fontes", padrao=None)
     if lista is not None and not isinstance(lista, list):
         raise erro_400("“fontes” deve ser uma lista de ids.", "campo_invalido")
@@ -214,7 +258,7 @@ def sincronizar(p: Pedido) -> dict:
 
 def capturar(p: Pedido) -> dict:
     app = p.app
-    servico = app.pauta()
+    servico = servico_da_pauta(app)
     sistema_ = p.campo("sistema", obrigatorio=True, tipo=str).strip().lower()
     sigla = _tribunal(p.campo("tribunal", obrigatorio=True, tipo=str), sistema_)
     _com_senha_da_sessao(app, servico)
@@ -232,7 +276,7 @@ def capturar(p: Pedido) -> dict:
 
 def importar(p: Pedido) -> dict:
     app = p.app
-    servico = app.pauta()
+    servico = servico_da_pauta(app)
     if p.tipo_corpo == "multipart/form-data":
         with p.envio(app.pasta_envios()) as envio:
             arquivo = envio.arquivo("arquivo")
@@ -255,7 +299,7 @@ def importar(p: Pedido) -> dict:
 
 def exportar(p: Pedido) -> dict:
     app = p.app
-    servico = app.pauta()
+    servico = servico_da_pauta(app)
     de, ate = _periodo(data(p.campo("de"), "de"), data(p.campo("ate"), "ate"),
                        (date.today(), date.today() + timedelta(days=30)))
     filtros = {}
@@ -281,7 +325,7 @@ def exportar(p: Pedido) -> dict:
 
 def monitoramento(p: Pedido) -> dict:
     app = p.app
-    servico = app.pauta()
+    servico = servico_da_pauta(app)
     ativo = p.campo("ativo", obrigatorio=True, tipo=bool)
     intervalo = p.campo("intervalo_horas", padrao=None, tipo=int)
     if intervalo is None:
@@ -301,7 +345,7 @@ def baixar_autos(p: Pedido) -> dict:
     from .api_processos import iniciar_lote
 
     app = p.app
-    servico = app.pauta()
+    servico = servico_da_pauta(app)
     ids = p.campo("ids", padrao=None)
     if ids is not None and not isinstance(ids, list):
         raise erro_400("“ids” deve ser uma lista.", "campo_invalido")

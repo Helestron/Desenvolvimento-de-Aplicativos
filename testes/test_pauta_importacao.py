@@ -696,5 +696,48 @@ class TestSigiloDoRelatorioNaPlanilha(apoio.PastaTemporaria):
                          ["(segredo de justiça)", "(segredo de justiça)"])
 
 
+class TestRelatorioSoMarcaSigiloComSelo(apoio.PastaTemporaria):
+    """O relatório importado vira a regra única do sigilo (nucleo/sigilo.py: a
+    pauta marca, o processo sai do acervo e da IA). Textos comuns do Local e das
+    Observações não podem marcar ninguém; o selo de verdade continua marcando."""
+
+    CASOS = [  # (local, observações, partes, sigiloso?)
+        ("Fórum Des. Jairon Maia, Nível 1, Sala 3", "", "Fulano x Banco", False),
+        ("Sala 5 - Bloco Nível 2", "", "Empresa x Empresa", False),
+        ("Sala 2 - Térreo", "Segredo de justiça: não", "Beltrano x Estado", False),
+        ("Sala 2", "Sem segredo de justiça", "Cicrano x Município", False),
+        ("Sala 2", "Não sigiloso", "A x B", False),
+        ("Sala 2", "Nível de sigilo: 0 (público)", "Fulana x Banco", False),
+        ("Sala 2", "Oitiva de testemunha sigilosa (Prov. 32)", "MP x Réu", False),
+        ("Sala 1", "Retirado o sigilo dos autos", "A x B", False),
+        ("Sala 1", "", "A x B", False),
+        ("Sala 1", "", "(Segredo de Justiça)", True),
+        ("Sala 1", "Processo em segredo de justiça", "A x B", True),
+        ("Sala 1", "Segredo de Justiça", "Ministério Público x Adolescente", True),
+    ]
+
+    def test_importacao_e_regra_unica(self):
+        from helestron.nucleo import sigilo
+
+        amb = ap.config_temporaria(self.tmp)
+        banco = self.tmp / "pauta.sqlite3"
+        servico = ServicoPauta(amb.cfg, banco)
+        self.addCleanup(servico.fechar)
+        numeros = [ap.numero(f"07009{i:02d}") for i in range(len(self.CASOS))]
+        linhas = ["Data;Hora;Processo;Tipo;Situação;Local;Observações;Partes"]
+        for n, (local, obs, partes, _) in zip(numeros, self.CASOS):
+            linhas.append(f"20/10/2026;09:00;{n};Instrução;Designada;{local};{obs};{partes}")
+        (self.tmp / "rel.csv").write_text("\n".join(linhas) + "\n", encoding="utf-8")
+        r = servico.importar(self.tmp / "rel.csv")
+        self.assertEqual(r["total"], len(self.CASOS))
+        sigilo.esquecer_pauta()
+        marcados = sigilo.chaves_da_pauta(banco)
+        for n, (local, obs, partes, esperado) in zip(numeros, self.CASOS):
+            with self.subTest(local=local, observacoes=obs, partes=partes):
+                self.assertEqual(n in marcados, esperado)
+        self.assertEqual(r["sigilosos_novos"],
+                         sorted(n for n, caso in zip(numeros, self.CASOS) if caso[3]))
+
+
 if __name__ == "__main__":
     unittest.main()

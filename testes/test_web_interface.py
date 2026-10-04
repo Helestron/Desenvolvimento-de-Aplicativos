@@ -32,6 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
+from testes.test_web_contrato import azul_ou_cinza
+
 RAIZ = Path(__file__).resolve().parents[1]
 WEB = RAIZ / "helestron" / "web"
 ESPECIFICACAO = RAIZ / "docs" / "ESPECIFICACAO.md"
@@ -66,6 +68,15 @@ SOBREPOSTOS = """(() => { const t = document.querySelector('.ao-vivo-topo'); if 
     if (x > 1 && y > 1) r.push(cx[i].className + ' × ' + cx[j].className);
   }
   return r; })()"""
+
+
+# Fundo de cada quadrado de ícone à vista (o gradiente e a cor), com o texto
+# da linha ou do cartão em que está, para dizer qual saiu da paleta.
+CORES_DOS_BLOCOS = """(() => [...document.querySelectorAll('#pagina .bloco-icone, #pagina .alteracao-icone')]
+  .filter(e => e.getClientRects().length)
+  .map(e => [((e.closest('.linha, .destino, .guia, .acao-item, .alteracao, .cartao') || e).textContent || '')
+      .trim().replace(/\\s+/g, ' ').slice(0, 50),
+    getComputedStyle(e).backgroundImage + ' ' + getComputedStyle(e).backgroundColor]))()"""
 
 
 def numero_cnj(sequencial: int, ano: int, j: int, tr: int, origem: int) -> str:
@@ -392,6 +403,18 @@ class InterfaceNoNavegador(unittest.TestCase):
         cortados = pagina.evaluate(CORTADOS)
         self.assertEqual(cortados, [], f"números de processo cortados em {secao}")
 
+    def blocos_fora_da_paleta(self, pagina) -> list[str]:
+        """Quadrados de ícone à vista com alguma cor fora dos tons de azul e cinza."""
+        fora = []
+        for rotulo, fundo in pagina.evaluate(CORES_DOS_BLOCOS):
+            for m in re.finditer(r"rgba?\((\d+), (\d+), (\d+)(?:, ([\d.]+))?\)", fundo):
+                if m.group(4) is not None and float(m.group(4)) == 0:
+                    continue            # fundo transparente (o do gradiente)
+                cor = tuple(int(m.group(i)) for i in (1, 2, 3))
+                if not azul_ou_cinza(cor):
+                    fora.append(f"{rotulo} → rgb{cor}")
+        return fora
+
     def sem_rolagem_horizontal(self, pagina, secao):
         larguras = pagina.evaluate(
             "[document.documentElement.scrollWidth, innerWidth, document.getElementById('conteudo').scrollWidth,"
@@ -486,6 +509,9 @@ class InterfaceNoNavegador(unittest.TestCase):
         self.assertTrue(pagina.locator(".ouvindo").count() == 0 or pagina.locator(".ouvindo").is_hidden())
         self.assertIn("0700231-15.2024.8.02.0001.docx", pagina.locator(".documento-pronto").inner_text())
         self.capturar(pagina, "fluxo-documento")
+        # "Transcrição salva" (era verde) e "Revisar com o modelo preciso"
+        # (era índigo): quadrados de ícone em azul; o estado está no título.
+        self.assertEqual(self.blocos_fora_da_paleta(pagina), [])
         iniciou = pagina.evaluate(
             "Helestron.demo.chamadas.find(c => c.rota === 'POST /api/transcricao/iniciar').corpo")
         self.assertEqual(iniciou["processo"], "0700231-15.2024.8.02.0001")
@@ -1436,6 +1462,45 @@ class InterfaceNoNavegador(unittest.TestCase):
                 self.assertIn("Sigilosos nunca vão para a IA",
                               pagina.locator(".cartao-funcao[data-funcao='compartilhar'] .cartao-funcao-meta").inner_text())
                 self.sem_problemas(pagina)
+
+    def test_quadrados_de_icone_so_em_azul_navy_e_cinza(self):
+        """Quadrados de ícone só em azul, navy e cinza (o pedido: azul, cinza e branco).
+
+        Ajustes tinha Download em verde, Transcrição em vermelho e
+        Compartilhar em índigo; Compartilhar, o Cowork em índigo e o Pacote em
+        âmbar; a fonte da pauta com erro e o endereço corrigido ficavam em
+        âmbar, o acesso com senha em verde. O estado continua à vista, no
+        ponto e na pílula."""
+        pagina = self.abrir()
+        pagina.evaluate("""() => { const responder = Helestron.demo.responder;
+            Helestron.demo.responder = async (r, p) => {
+              const v = await responder(r, p);
+              if (r === 'GET /api/pauta/fontes' && v.length) v[v.length - 1].ultimo_erro = 'O portal não respondeu.';
+              if (r === 'GET /api/tribunais/enderecos') return [{ portal: 'esaj:TJAL', grau: '1', rotulo: '1º grau',
+                url: 'https://www2.tjal.jus.br/esaj-novo', rotulo_portal: 'e-SAJ · TJAL' }];
+              return v; }; }""")
+        rotas = SECOES[:5] + [f"ajustes/{s}" for s in ("acessos", "pastas", "unidade", "download", "transcricao",
+                                                         "pauta", "compartilhar", "sobre")] + ["ajuda"]
+        for rota in rotas:
+            with self.subTest(tela=rota):
+                pagina.evaluate("s => { location.hash = '#/' + s; }", rota)
+                secao, _, grupo = rota.partition("/")
+                self.esperar_secao(pagina, secao)
+                if grupo:
+                    pagina.wait_for_selector(f"#ajustes-{grupo}")
+                    pagina.wait_for_function("() => !document.querySelector('.ajustes-detalhe [aria-busy=\"true\"]')")
+                pagina.wait_for_timeout(300)        # as listas que chegam depois
+                self.assertEqual(self.blocos_fora_da_paleta(pagina), [])
+                if rota == "ajustes/acessos":
+                    pagina.wait_for_selector("#grupo-enderecos .linha:has-text('esaj-novo')")
+                    self.assertEqual(self.blocos_fora_da_paleta(pagina), [])
+        # A fonte com erro diz o estado no ponto âmbar, ao lado do texto.
+        pagina.evaluate("location.hash = '#/ajustes/pauta'")
+        erro = pagina.locator(".linha:has-text('Último erro: O portal não respondeu.')")
+        erro.wait_for()
+        self.assertEqual(erro.locator(".ponto.ponto-ambar").count(), 1)
+        self.sem_problemas(pagina)
+
 
 if __name__ == "__main__":
     unittest.main()

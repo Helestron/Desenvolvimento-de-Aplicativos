@@ -83,13 +83,42 @@ PADROES: dict = {
                       "em aberto|aberta"],
     ],
     "situacao_padrao": "Designada",
-    "sigilo": "segredo de justica|sigilos[oa]|\\bem sigilo\\b|sigilo\\s*\\(?\\s*nivel\\s*[1-9]|"
-              "nivel\\s*[1-9]",
-    # "Público" só desfaz o selo quando é o rótulo do nível, sozinho na célula: o
-    # "Ministério Público" (ou a "Ação Civil Pública") ao lado de "Segredo de
-    # Justiça" não tira o sigilo de ninguém
-    "sem_sigilo": "sem sigilo|nivel\\s*0|nao sigilos|^\\(?\\s*public[oa]\\s*\\)?$|"
-                  "sigilo\\W*public[oa]",
+    # O selo de sigilo, procurado célula a célula (fora da coluna Sigilo). Só a
+    # indicação POSITIVA e inequívoca: o processo dado como sigiloso sai do acervo
+    # e da IA de vez. "Nível 1" sozinho é o andar do fórum, e não sigilo (o nível
+    # puro só vale na coluna Sigilo); "sigiloso" solto ("testemunha sigilosa") também
+    # não: só a célula que é o selo ("Sigiloso") ou o processo dito sigiloso.
+    "sigilo": "segredo\\s+de\\s+justica"
+              "|\\b(?:processo|autos|feito|audiencia)\\s+(?:(?:e|esta|corre|tramita)\\s+)?"
+              "(?:(?:em|sob)\\s+sigilo\\b|sigilos[oa]s?\\b)"
+              "|\\b(?:tramita|corre)\\s+(?:em|sob)\\s+sigilo\\b"
+              "|^\\W*(?:(?:em|sob)\\s+sigilo|sigilos[oa]s?)\\W*$"
+              "|\\b(?:sigilo|segredo)\\w*\\W+(?:\\w+\\W+){0,3}?nivel\\s*[1-9]"
+              "|\\bnivel\\s*[1-9]\\W+(?:\\w+\\W+){0,2}?(?:sigil|segredo)"
+              "|\\bnivel\\s+de\\s+sigilo\\W*[1-9]"
+              "|\\bsigilo\\W+sim\\b",
+    # O que desfaz o selo na MESMA célula: a negação ("Segredo de justiça: não",
+    # "Sem segredo de justiça", "Não sigiloso", "Processo não é sigiloso"), o nível
+    # 0, o sigilo retirado e a menção que não afirma nada ("pedido de segredo de
+    # justiça"). "Público" só desfaz o selo quando é o rótulo do nível, sozinho na
+    # célula: o "Ministério Público" (ou a "Ação Civil Pública") ao lado de "Segredo
+    # de Justiça" não tira o sigilo de ninguém.
+    "sem_sigilo": "\\bsem\\s+(?:o\\s+)?(?:sigilo|segredo)"
+                  "|\\bnivel\\s*(?:de\\s+sigilo\\W*)?0\\b"
+                  "|\\bnao\\W+sigilos"
+                  "|^\\W*public[oa]\\W*$"
+                  "|sigilo\\W*public[oa]"
+                  "|(?:segredo\\s+de\\s+justica|sigilos[oa]s?|sigilo)\\W{0,3}(?:nao\\b|n$)"
+                  "|\\bnao\\s+(?:(?:e|esta|corre|tramita|ha|possui|tem|consta|foi|mais|caso|"
+                  "se\\s+trata)\\s+)*(?:(?:em|sob|de|do|da|o|a|um|uma)\\s+)*(?:segredo|sigil)"
+                  "|\\b(?:retirad|levantad|revogad|afastad|indeferid)\\w*\\s+"
+                  "(?:(?:o|do|de|a|da)\\s+)*(?:sigilo|segredo)"
+                  "|\\b(?:sigilo|segredo\\s+de\\s+justica)\\s+(?:foi\\s+)?"
+                  "(?:retirad|levantad|revogad|afastad|indeferid)"
+                  "|\\b(?:sigilo|segredo\\s+de\\s+justica)\\W*(?:inexistente|ausente)"
+                  "|\\b(?:pedido|pedir|requerimento|requer\\w*|analisar|avaliar|verificar|"
+                  "eventual|possivel|sobre|se\\s+ha)\\s+(?:(?:de|do|o|a)\\s+)?"
+                  "segredo\\s+de\\s+justica",
     "negativos": ["prazo", "evento", "intimac", "movimentac", "movimento", "publicac", "expedi",
                   "peticao", "documento", "distribuic", "distribuid", "recebimento", "conclus",
                   "juntada", "mandado", "citac", "remessa", "ultimo andamento"],

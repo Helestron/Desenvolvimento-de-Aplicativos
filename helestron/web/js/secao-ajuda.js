@@ -43,7 +43,7 @@
       nota: "Também dá para importar o relatório de audiências exportado do SAJ ou do eProc (planilha, PDF ou HTML).",
     },
     {
-      id: "excel", icone: "planilha", cor: "verde", titulo: "Exportar a pauta para o Excel", rota: "pauta",
+      id: "excel", icone: "planilha", cor: "celeste", titulo: "Exportar a pauta para o Excel", rota: "pauta",
       passos: [
         "Na Pauta, escolha o período e, se quiser, filtre por sistema, situação ou busca.",
         "Clique em Exportar Excel, confira as datas e clique em Exportar.",
@@ -52,7 +52,7 @@
       nota: "A planilha tem as abas Pauta, Resumo e Alterações e fica em Documentos\\Helestron\\Pauta, fora do acervo da IA. As partes dos processos sigilosos saem como “(segredo de justiça)”, salvo se você pedir o contrário.",
     },
     {
-      id: "ia", icone: "brilho", cor: "indigo", titulo: "Compartilhar com a IA", rota: "compartilhar",
+      id: "ia", icone: "brilho", cor: "cobalto", titulo: "Compartilhar com a IA", rota: "compartilhar",
       passos: [
         "Em Compartilhar, clique em Preparar acervo para a IA: o texto dos autos, o índice e as regras de trabalho ficam prontos.",
         "Escolha onde trabalhar: Claude Code, Claude Cowork, ChatGPT Work ou Codex.",

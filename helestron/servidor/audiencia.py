@@ -423,16 +423,31 @@ class GerenteAudiencia:
 MOTIVO_AUTOS = ("Os autos deste processo (ou uma transcrição ou gravação dele) estão na pasta "
                 "dos sigilosos.")
 MOTIVO_PAUTA = "A pauta de audiências indica que este processo corre em segredo de justiça."
+# O incidente ("/01") herda o sigilo do principal (a regra única, nucleo/sigilo.py)
+MOTIVO_AUTOS_PRINCIPAL = ("Este processo é incidente de um processo sigiloso: os autos do "
+                          "principal (ou uma transcrição ou gravação dele) estão na pasta dos "
+                          "sigilosos.")
+MOTIVO_PAUTA_PRINCIPAL = ("Este processo é incidente de um processo sigiloso: a pauta de "
+                          "audiências indica que o principal corre em segredo de justiça.")
 
 
 def sigilo_conhecido(app, numero) -> str:
     """Por que o programa já sabe que o processo é sigiloso ("" = não sabe).
 
     Os arquivos na pasta dos sigilosos (autos, transcrição, gravação) ou a
-    pauta (o portal disse "segredo de justiça"). Nunca levanta: pauta
-    indisponível ou ocupada não impede a audiência.
+    pauta (o portal disse "segredo de justiça") - do próprio processo ou, no
+    incidente, do principal. Nunca levanta: pauta indisponível ou ocupada
+    não impede a audiência.
     """
+    from ..nucleo import sigilo
+
     if servicos.processo_sigiloso(app.cfg, numero):
+        try:
+            if sigilo.principal(numero) and not sigilo.na_pasta(app.cfg.pasta_sigilosos, numero,
+                                                                herdar=False):
+                return MOTIVO_AUTOS_PRINCIPAL
+        except Exception:
+            pass
         return MOTIVO_AUTOS
     try:
         pauta = app.pauta_ou_none()
@@ -442,6 +457,11 @@ def sigilo_conhecido(app, numero) -> str:
     except Exception as erro:
         log.warning("não consegui conferir na pauta se %s é sigiloso: %s",
                     getattr(numero, "formatado", numero), erro)
+    try:
+        if sigilo.motivo_da_pauta(numero) == sigilo.MOTIVO_PAUTA_PRINCIPAL:
+            return MOTIVO_PAUTA_PRINCIPAL
+    except Exception:              # nunca impede a audiência
+        pass
     return ""
 
 

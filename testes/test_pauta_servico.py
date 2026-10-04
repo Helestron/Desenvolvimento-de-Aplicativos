@@ -525,6 +525,72 @@ class TestSigiloPorProcesso(Base):
                                         for c in linha))
 
 
+class TestSigiloRevelado(Base):
+    """O processo que a pauta revela sigiloso (e que o programa ainda não tratava
+    como tal) é informado na hora - no resultado e a quem pediu (o servidor, que
+    tira do acervo o que houver dele) -, uma vez só."""
+
+    PERIODO = (date(2026, 10, 1), date(2026, 10, 31))
+
+    def setUp(self):
+        super().setUp()
+        self.revelados: list[list[str]] = []
+        self.n1, self.n2 = ap.numero("0700131"), ap.numero("0700132")
+
+    def relatorio(self, partes1="(Segredo de Justiça)", partes2="João x Município"):
+        (self.tmp / "rel.csv").write_text(
+            "Data;Hora;Processo;Tipo;Partes\n"
+            f"06/10/2026;09:00;{self.n1};Conciliação;{partes1}\n"
+            f"07/10/2026;10:00;{self.n2};Una;{partes2}\n", encoding="utf-8")
+        return self.tmp / "rel.csv"
+
+    def test_importar(self):
+        self.servico.quando_revelar_sigilo(self.revelados.append)
+        r = self.servico.importar(self.relatorio())
+        self.assertEqual(r["sigilosos_novos"], [self.n1])
+        self.assertEqual(self.revelados, [[self.n1]])
+        # importar de novo: nada de novo
+        r = self.servico.importar(self.relatorio())
+        self.assertNotIn("sigilosos_novos", r)
+        self.assertEqual(self.revelados, [[self.n1]])
+        # a negação não revela nada
+        r = self.servico.importar(self.relatorio(partes2="Segredo de justiça: não"))
+        self.assertNotIn("sigilosos_novos", r)
+        self.assertFalse(self.servico.processo_sigiloso(self.n2))
+
+    def test_ja_na_pasta_dos_sigilosos_nao_e_novo(self):
+        self.amb.sigilosos.mkdir(parents=True)
+        (self.amb.sigilosos / f"{self.n1}.pdf").write_bytes(apoio.pdf_bytes(1))
+        self.servico.quando_revelar_sigilo(self.revelados.append)
+        r = self.servico.importar(self.relatorio())
+        self.assertNotIn("sigilosos_novos", r)
+        self.assertEqual(self.revelados, [])
+
+    def test_sincronizar_e_o_que_ninguem_ouviu_ainda(self):
+        """O monitor sincroniza antes de o servidor pedir o aviso: o revelado fica
+        guardado e é entregue quando o pedido chega."""
+        self.servico.salvar_fonte("TJAL", "esaj", "")
+        ExtratorFalso.roteiro["esaj-tjal"] = [
+            ([aud("0700131", date(2026, 10, 6), "09:00", sigiloso=True),
+              aud("0700132", date(2026, 10, 7), "10:00")], True, "https://portal.invalid/p")]
+        r = self.servico.sincronizar(apoio.ContextoGravador(), None, *self.PERIODO)
+        self.assertEqual(r["sigilosos_novos"], [self.n1])
+        self.servico.quando_revelar_sigilo(self.revelados.append)
+        self.assertEqual(self.revelados, [[self.n1]])
+        self.servico.quando_revelar_sigilo(self.revelados.append)
+        self.assertEqual(self.revelados, [[self.n1]], "entregue uma vez só")
+
+    def test_quem_ouve_e_falha_nao_derruba_a_importacao(self):
+        def falha(numeros):
+            raise RuntimeError("acervo fora do ar")
+
+        self.servico.quando_revelar_sigilo(falha)
+        with self.assertLogs("pauta.servico", "WARNING") as registro:
+            r = self.servico.importar(self.relatorio())
+        self.assertEqual(r["novas"], 2)
+        self.assertIn("acervo fora do ar", "\n".join(registro.output))
+
+
 class TestRelatorioDepoisSincronizacao(Base):
     """Importar o relatório (a sincronização falhou) e depois sincronizar: a
     audiência não fica em dobro."""

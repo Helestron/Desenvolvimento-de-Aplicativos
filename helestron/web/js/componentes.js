@@ -233,14 +233,16 @@
     "Suspensa": "navy",
   };
 
-  // Tipos de audiência (8.1) → cor do ponto do selo.
+  // Tipos de audiência (8.1) → cor do ponto do selo. Tons de azul e cinza:
+  // o tipo não é estado (vermelho, âmbar e verde pareciam erro, aviso e
+  // "pronto"), e o nome do tipo vai escrito ao lado.
   const COR_TIPO = {
     "Conciliação": "#4C8DFF",
     "Instrução e julgamento": "#1B3560",
-    "Una": "#5B6CF0",
-    "Custódia": "#D93A3A",
-    "Justificação": "#C27C0E",
-    "Mediação": "#1F9D55",
+    "Una": "#2747B8",
+    "Custódia": "#0E6E9E",
+    "Justificação": "#5A86B5",
+    "Mediação": "#3DB0E0",
     "Outra": "#A1A7B3",
   };
 

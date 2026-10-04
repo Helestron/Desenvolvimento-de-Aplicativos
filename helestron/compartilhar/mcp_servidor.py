@@ -19,7 +19,7 @@ ferramenta altera ou apaga arquivo.
 
 from __future__ import annotations
 
-import argparse
+import contextlib
 import json
 import logging
 import os
@@ -29,6 +29,11 @@ from pathlib import Path
 from .. import __version__
 from ..nucleo import caminhos, cnj, sigilo
 from . import textos
+
+try:
+    from ..nucleo.argumentos import ArgumentParser   # argparse em português
+except ImportError:  # pragma: no cover - instalação sem o módulo
+    from argparse import ArgumentParser
 
 log = logging.getLogger("mcp")
 
@@ -86,6 +91,23 @@ def pastas_do_programa() -> tuple[Path, ...]:
     return tuple(pastas)
 
 
+def _prefixo(pasta) -> str:
+    """O caminho da pasta como texto comparável (os.path.normcase: no Windows,
+    minúsculas e barra invertida), terminado pelo separador."""
+    texto = os.path.normcase(os.path.abspath(pasta))
+    return texto if texto.endswith(os.sep) else texto + os.sep
+
+
+def _partes_sob(caminho, prefixo: str) -> list[str] | None:
+    """As partes de 'caminho' abaixo da pasta de 'prefixo' (_prefixo), ou None
+    se estiver fora. Por texto: Path.relative_to, chamado para cada arquivo
+    do acervo, era o grosso do tempo de uma busca."""
+    texto = os.path.normcase(os.path.abspath(caminho))
+    if not texto.startswith(prefixo):
+        return None
+    return texto[len(prefixo):].split(os.sep)
+
+
 class Recorte:
     """O que, debaixo da raiz, é de fato acervo.
 
@@ -101,14 +123,28 @@ class Recorte:
             self._raiz_real = self.raiz.resolve()
         except (OSError, RuntimeError):
             self._raiz_real = self.raiz.absolute()
+        self._prefixo = _prefixo(self.raiz)
+        self._prefixo_real = _prefixo(self._raiz_real)
         pastas = ([Path(sigilosos)] if sigilosos else []) + list(pastas_do_programa())
         self._fora = [r for r in (_partes_relativas(p, self.raiz) for p in pastas)
                       if r is not None]
         self._pastas_reais: dict[Path, Path] = {}
 
-    def _excluida(self, partes: tuple[str, ...]) -> bool:
+    def _excluida(self, partes) -> bool:
+        if not self._fora:
+            return False
         baixo = tuple(q.lower() for q in partes)
         return any(baixo[:len(f)] == f for f in self._fora)
+
+    def partes(self, p: Path) -> list[str] | None:
+        """As partes do caminho de 'p' abaixo da raiz (None: fora dela)."""
+        return _partes_sob(p, self._prefixo)
+
+    def pasta_excluida(self, pasta: Path) -> bool:
+        """A pasta (debaixo da raiz) é dos sigilosos ou do programa? Quem
+        percorre o acervo nem entra nela."""
+        partes = self.partes(pasta)
+        return partes is None or self._excluida(partes)
 
     def _real(self, p: Path) -> Path:
         # Uma resolução por pasta (e não por arquivo): no Windows, cada uma
@@ -121,15 +157,20 @@ class Recorte:
             real = self._pastas_reais[pasta] = pasta.resolve()
         return real / p.name
 
-    def aceita(self, p: Path) -> bool:
-        """O arquivo 'p' (debaixo da raiz) pode ser servido e espelhado?"""
+    def aceita(self, p: Path, partes: list[str] | None = None) -> bool:
+        """O arquivo 'p' (debaixo da raiz) pode ser servido e espelhado?
+        ('partes': as de self.partes(p), se quem chama já as tem.)"""
+        if partes is None:
+            partes = self.partes(p)
+        if partes is None or self._excluida(partes[:-1]):
+            return False
         try:
-            if self._excluida(p.relative_to(self.raiz).parts[:-1]):
-                return False
-            real = self._real(p).relative_to(self._raiz_real)
+            real = _partes_sob(self._real(p), self._prefixo_real)
         except (ValueError, OSError, RuntimeError):
+            return False
+        if real is None:
             return False        # link ou junção para fora do acervo
-        return not self._excluida(real.parts[:-1])
+        return not self._excluida(real[:-1])
 
 
 def chaves_sigilosas(sigilosos: Path | None, raiz: Path | None = None,
@@ -163,36 +204,71 @@ class Acervo:
         self.cache = self.raiz / "_ia" / "texto"
         self._sigilosos = sigilosos
         self.pauta = pauta
+        # Durante um pedido (pedido()): a listagem, a pasta dos sigilosos e a
+        # regra do sigilo, apuradas uma vez só. Fora dele, nada é guardado.
+        self._do_pedido: dict | None = None
+
+    @contextlib.contextmanager
+    def pedido(self):
+        """Um pedido da IA (ou uma consulta que lista o acervo mais de uma
+        vez): a listagem dos arquivos e a regra do sigilo são apuradas uma
+        vez, no início, e valem até o fim dele. Sem isto, 'buscar' no acervo
+        inteiro relistava o acervo e reaplicava a regra para cada processo
+        (com 3.000 PDFs, cerca de 25 minutos). Pedidos dentro de pedidos usam
+        o do mais externo."""
+        if self._do_pedido is not None:
+            yield self
+            return
+        self._do_pedido = {}
+        try:
+            yield self
+        finally:
+            self._do_pedido = None
+
+    def _guardado(self, chave, calcular):
+        if self._do_pedido is None:
+            return calcular()
+        if chave not in self._do_pedido:
+            self._do_pedido[chave] = calcular()
+        return self._do_pedido[chave]
 
     def pasta_sigilosos(self) -> Path | None:
         if self._sigilosos is _DO_CONFIG:
-            return pasta_sigilosos_configurada()
+            return self._guardado("pasta_sigilosos", pasta_sigilosos_configurada)
         return Path(self._sigilosos) if self._sigilosos else None
 
     def sigilosas(self) -> set[str]:
-        """As chaves dos processos sigilosos (a regra única), lidas agora."""
-        return chaves_sigilosas(self.pasta_sigilosos(), self.raiz, self.pauta)
+        """As chaves dos processos sigilosos (a regra única), lidas agora (ou
+        no início do pedido em curso). O incidente de um deles também conta
+        ('chave in sigilosas')."""
+        return self._guardado("sigilosas", lambda: chaves_sigilosas(
+            self.pasta_sigilosos(), self.raiz, self.pauta))
 
     # ------------------------------------------------------------ descoberta
     def _arquivos(self, sufixo: str) -> list[Path]:
+        return list(self._guardado(("arquivos", sufixo), lambda: self._listar(sufixo)))
+
+    def _listar(self, sufixo: str) -> tuple[Path, ...]:
         if not self.raiz.exists():
-            return []
+            return ()
         # Pasta de sigilosos e pastas do programa dentro do acervo, e link
         # ou junção para fora dele: ficam de fora
         recorte = Recorte(self.raiz, self.pasta_sigilosos())
         saida = []
         for p in self.raiz.rglob(f"*{sufixo}"):
-            rel = p.relative_to(self.raiz).parts
+            rel = recorte.partes(p)
+            if rel is None:
+                continue
             partes = {q.lower() for q in rel[:-1]}
             # _ia é cache; Produtos é o que a própria IA escreveu; _controle
             # guarda mídias e diagnóstico; ~$ é o arquivo-trava do Word.
             if partes & _PASTAS_FORA or p.name.startswith("~$") \
                     or p.name.endswith((".parcial", ".tmp")):
                 continue
-            if not recorte.aceita(p):
+            if not recorte.aceita(p, rel):
                 continue
             saida.append(p)
-        return sorted(saida)
+        return tuple(sorted(saida))
 
     def numerados(self, sufixo: str):
         """(chave, arquivo) de cada arquivo do acervo nomeado com um número,
@@ -214,6 +290,9 @@ class Acervo:
                 yield chave, p
 
     def pdfs(self) -> dict[str, Path]:
+        return dict(self._guardado("pdfs", self._pdfs))
+
+    def _pdfs(self) -> dict[str, Path]:
         achados: dict[str, Path] = {}
         for chave, p in self._numeros(".pdf"):
             # O mais recente vence, se o mesmo processo estiver em dois lotes
@@ -233,9 +312,11 @@ class Acervo:
         # como nos autos ("...0001/01"): os dois são o incidente.
         return cnj.ler_nome_arquivo(numero).nome_arquivo
 
-    def texto_processo(self, numero: str) -> tuple[Path, str]:
+    def texto_processo(self, numero: str, pdfs: dict[str, Path] | None = None) -> tuple[Path, str]:
+        """(PDF, texto) dos autos. 'pdfs': a listagem já feita (self.pdfs()),
+        para quem consulta vários processos de uma vez."""
         chave = self._chave(numero)
-        pdf = self.pdfs().get(chave)
+        pdf = (pdfs if pdfs is not None else self.pdfs()).get(chave)
         if pdf is None:
             raise LookupError(f"o processo {numero} não está no acervo")
         txt = textos.garantir_texto(pdf, self.cache / f"{chave}.txt")
@@ -280,11 +361,17 @@ class Acervo:
         return cab + trecho + aviso
 
     def buscar(self, termo: str, numero: str | None = None) -> str:
-        alvos = ([self._chave(numero)] if numero else sorted(self.pdfs()))
+        with self.pedido():
+            return self._buscar(termo, numero)
+
+    def _buscar(self, termo: str, numero: str | None) -> str:
+        # A listagem (e a regra do sigilo) uma vez só, para todos os processos
+        pdfs = self.pdfs()
+        alvos = ([self._chave(numero)] if numero else sorted(pdfs))
         linhas = []
         for chave in alvos:
             try:
-                _, texto = self.texto_processo(chave)
+                _, texto = self.texto_processo(chave, pdfs)
             except LookupError as erro:
                 linhas.append(str(erro))
                 continue
@@ -426,7 +513,9 @@ class Servidor:
         if nome not in funcoes:
             raise _ErroRPC(-32602, f"ferramenta desconhecida: {nome}")
         try:
-            texto = funcoes[nome]()
+            # Cada chamada vê o acervo e a regra do sigilo de agora, apurados uma vez
+            with self.acervo.pedido():
+                texto = funcoes[nome]()
             return {"content": [{"type": "text", "text": texto}], "isError": False}
         except (LookupError, cnj.NumeroInvalido, ValueError) as erro:
             return {"content": [{"type": "text", "text": f"Erro: {erro}"}], "isError": True}
@@ -467,7 +556,9 @@ def servir(raiz: Path, entrada=None, saida=None) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="python -m helestron mcp")
+    p = ArgumentParser(prog="python -m helestron mcp",
+                       description="Servidor MCP (só de leitura) do acervo, para o Claude "
+                                   "Desktop, o ChatGPT Work e o Codex.")
     p.add_argument("--pasta", type=Path,
                    help="raiz do acervo (padrão: a pasta do acervo dos Ajustes)")
     args = p.parse_args(argv)

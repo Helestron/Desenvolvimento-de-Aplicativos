@@ -78,7 +78,7 @@
         botao: "Ver a pauta",
       },
       {
-        rota: "compartilhar", icone: "brilho", cor: "indigo",
+        rota: "compartilhar", icone: "brilho", cor: "cobalto",
         titulo: "Compartilhar com IA",
         texto: "O acervo pronto para o Claude e o ChatGPT, sem anexar arquivo por arquivo.",
         meta: [icone("cadeado", { tamanho: 14 }), " Sigilosos nunca vão para a IA"],

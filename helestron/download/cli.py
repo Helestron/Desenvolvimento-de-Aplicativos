@@ -11,18 +11,22 @@ Códigos de saída: 0 tudo certo; 1 parte falhou ou ficou pendente;
 
 from __future__ import annotations
 
-import argparse
 import getpass
 import logging
 import sys
 from datetime import datetime
 from pathlib import Path
 
+try:
+    from ..nucleo.argumentos import ArgumentParser   # argparse em português
+except ImportError:  # pragma: no cover - instalação sem o módulo
+    from argparse import ArgumentParser
+
 log = logging.getLogger("download.cli")
 
 
-def criar_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+def criar_parser() -> ArgumentParser:
+    p = ArgumentParser(
         prog="python -m helestron baixar",
         description="Baixa os processos de uma relação (Excel, Word, PDF, CSV, TXT ou "
                     "link compartilhado): um PDF por processo, nomeado com o número.")

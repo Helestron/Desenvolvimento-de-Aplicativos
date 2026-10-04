@@ -36,10 +36,12 @@ from ..nucleo import caminhos, sistema
 log = logging.getLogger("compartilhar.claude")
 
 NOME_MCP = "helestron"
-# Nomes do conector na versão anterior (Assessor Integrado): saem do arquivo
-# ao registrar o novo, para não ficar um conector apontando para um Python
-# que não existe mais.
-NOMES_ANTIGOS = ("assessor-integrado",)
+# Nomes do conector na versão anterior (Assessor Integrado - o desinstalador
+# dela procurava os dois): saem do arquivo ao registrar o novo, ao remover o
+# conector (desinstalação) e na limpeza que o instalador faz
+# (compartilhar.limpar_restos_antigos), para não ficar um conector apontando
+# para um Python que não existe mais.
+NOMES_ANTIGOS = ("assessor-integrado", "assessor_integrado")
 URL_DOWNLOAD_DESKTOP = "https://claude.ai/download"
 # Instalador do Claude Desktop para Windows (pacote MSIX, por usuário).
 URL_INSTALADOR_DESKTOP = "https://claude.ai/api/desktop/win32/x64/setup/latest/redirect"
@@ -282,18 +284,40 @@ def mcp_registrado(pasta_acervo: Path | None = None) -> bool:
     return False
 
 
-def remover_mcp() -> list[Path]:
+def remover_mcp(arquivos: list[Path] | None = None,
+                nomes: tuple[str, ...] = (NOME_MCP, *NOMES_ANTIGOS)) -> list[Path]:
+    """Tira do Claude Desktop o conector do acervo - e o da versão anterior
+    (NOMES_ANTIGOS). Os outros servidores do usuário ficam; o arquivo
+    anterior é guardado ao lado ("...antes-do-helestron-<data>.json"), e o
+    que tem JSON inválido não é tocado. Devolve os arquivos alterados."""
     alterados = []
-    for arq in arquivos_config_desktop():
+    for arq in arquivos if arquivos is not None else arquivos_config_desktop():
         try:
             dados = _ler_json(arq)
         except (OSError, ValueError):
             continue
-        if NOME_MCP in dados.get("mcpServers", {}):
-            del dados["mcpServers"][NOME_MCP]
+        servidores = dados.get("mcpServers")
+        if not isinstance(servidores, dict):
+            continue
+        achados = [n for n in nomes if n in servidores]
+        if not achados:
+            continue
+        for nome in achados:
+            del servidores[nome]
+        try:
             _gravar_json(arq, dados)
-            alterados.append(arq)
+        except OSError as erro:
+            log.warning("não consegui tirar o conector de %s (%s)", arq, erro)
+            continue
+        alterados.append(arq)
+        log.info("Conector %s retirado de %s.", ", ".join(achados), arq)
     return alterados
+
+
+def remover_conectores_antigos(arquivos: list[Path] | None = None) -> list[Path]:
+    """Só o conector da versão anterior (Assessor Integrado); o do Helestron
+    fica. Devolve os arquivos alterados (cada um com a cópia do anterior)."""
+    return remover_mcp(arquivos, NOMES_ANTIGOS)
 
 
 PROMPT_INICIAL = (

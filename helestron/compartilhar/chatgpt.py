@@ -43,7 +43,9 @@ URL_DOWNLOAD_APP = "https://openai.com/chatgpt/download/"
 LOJA_APP = "ms-windows-store://pdp/?productid=9PLM9XGG6VKS"
 COMANDO_INSTALAR_CODEX = "irm https://chatgpt.com/codex/install.ps1 | iex"
 NOME_MCP = "helestron"
-NOMES_ANTIGOS = ("assessor_integrado",)    # o da versão anterior: sai ao registrar
+# Os da versão anterior (Assessor Integrado - o desinstalador dela procurava
+# os dois): saem ao registrar, ao remover e na limpeza do instalador.
+NOMES_ANTIGOS = ("assessor_integrado", "assessor-integrado")
 LIMITE_ARQUIVO_MB = 500     # o ChatGPT recusa arquivo acima de ~512 MB
 
 
@@ -147,12 +149,12 @@ def bloco_toml(pasta_acervo: Path) -> str:
     return "\n".join(linhas) + "\n"
 
 
-def _sem_bloco(texto: str) -> str:
+def _sem_bloco(texto: str, nomes: tuple[str, ...] = (NOME_MCP, *NOMES_ANTIGOS)) -> str:
     """O config.toml sem o nosso bloco (e suas subtabelas), nem o da versão
-    anterior."""
+    anterior ('nomes': os blocos que saem)."""
     linhas = texto.splitlines()
     saida, dentro = [], False
-    nomes = "|".join(re.escape(n) for n in (NOME_MCP, *NOMES_ANTIGOS))
+    nomes = "|".join(re.escape(n) for n in nomes)
     cab = re.compile(r"^\s*\[\s*mcp_servers\.(?:\"?)(?:" + nomes + r")(?:\"?)\s*(\.|\])")
     for linha in linhas:
         if linha.lstrip().startswith("["):
@@ -216,19 +218,60 @@ def mcp_codex_registrado(arquivo: Path | None = None, pasta_acervo: Path | None 
     return str(Path(pasta_acervo).resolve()) in (entrada.get("args") or [])
 
 
-def remover_mcp_codex(arquivo: Path | None = None) -> bool:
+def _copia_de_seguranca(arquivo: Path) -> Path:
+    """Guarda o config.toml como está, ao lado, antes de mexer nele."""
+    copia = arquivo.with_name(f"config.antes-do-helestron-{datetime.now():%Y%m%d-%H%M%S}.toml")
+    n = 2
+    while copia.exists():
+        copia = arquivo.with_name(
+            f"config.antes-do-helestron-{datetime.now():%Y%m%d-%H%M%S}-{n}.toml")
+        n += 1
+    shutil.copy2(arquivo, copia)
+    return copia
+
+
+def remover_mcp_codex(arquivo: Path | None = None,
+                      nomes: tuple[str, ...] = (NOME_MCP, *NOMES_ANTIGOS)) -> bool:
+    """Tira do config.toml o conector do acervo - e o da versão anterior
+    (NOMES_ANTIGOS) -, guardando antes uma cópia do arquivo. O resto fica.
+    Devolve se o arquivo mudou."""
     arquivo = Path(arquivo or arquivo_config_codex())
     try:
         atual = arquivo.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return False
-    novo = _sem_bloco(atual) + "\n"
+    novo = _sem_bloco(atual, nomes) + "\n"
     if novo.strip() == atual.strip():
         return False
+    _copia_de_seguranca(arquivo)
     tmp = arquivo.with_name(arquivo.name + ".tmp")
     tmp.write_text(novo, encoding="utf-8", newline="\n")
     os.replace(tmp, arquivo)
+    log.info("Conector retirado do ChatGPT/Codex em %s.", arquivo)
     return True
+
+
+def remover_conectores_antigos_codex(arquivo: Path | None = None) -> bool:
+    """Só o conector da versão anterior (Assessor Integrado); o do Helestron
+    fica. Arquivo com TOML inválido não é tocado. Devolve se o arquivo mudou."""
+    import tomllib
+
+    arquivo = Path(arquivo or arquivo_config_codex())
+    try:
+        atual = arquivo.read_text(encoding="utf-8-sig")
+    except (FileNotFoundError, OSError):
+        return False
+    try:
+        tomllib.loads(atual)
+    except tomllib.TOMLDecodeError as erro:
+        log.warning("não mexi em %s: o TOML é inválido (%s)", arquivo, erro)
+        return False
+    novo = _sem_bloco(atual, NOMES_ANTIGOS) + "\n"
+    try:
+        tomllib.loads(novo)          # nunca gravar um arquivo que o app não leria
+    except tomllib.TOMLDecodeError:
+        return False
+    return remover_mcp_codex(arquivo, NOMES_ANTIGOS)
 
 
 def _config():
@@ -268,8 +311,9 @@ def gerar_pacote(acervo: Path, destino: Path, numeros: list[str] | None = None,
     presos = getattr(rel, "sigilosos_no_acervo", None)
     if isinstance(presos, list) and presos:
         # O pacote nunca levaria o sigiloso (o Acervo o tira), mas a regra é
-        # uma só: com sigiloso preso no acervo, nada se compartilha.
-        raise preparo.SigilosoNoAcervo(presos)
+        # uma só: com os autos de um sigiloso presos no acervo, nada se
+        # compartilha.
+        raise preparo.SigilosoNoAcervo(presos, cfg, getattr(rel, "motivos", None))
     ac = Acervo(acervo) if cfg is None else Acervo(acervo, sigilosos=cfg.pasta_sigilosos)
     pdfs = ac.pdfs()
     trans = ac.transcricoes()

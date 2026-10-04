@@ -177,6 +177,26 @@ jobs:
           Write-Host ("{0}: {1:N0} MB, SHA-256 conferido" -f $exe.Name, ($exe.Length / 1MB))
           [IO.File]::AppendAllText($env:GITHUB_ENV, "SETUP=$($exe.FullName)`n")
 
+      - name: Restos da versao anterior (Assessor Integrado), antes de instalar
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # O atalho que a versao anterior criava (o pythonw do runtime dela, com o
+          # iniciar.pyw) e um de mesmo nome que nao e dela; no Claude Desktop, o
+          # conector antigo ao lado de outro servidor do usuario.
+          $shell = New-Object -ComObject WScript.Shell
+          $antigo = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Assessor Integrado.lnk'))
+          $antigo.TargetPath = 'C:\Assessor Antigo\runtime\python\pythonw.exe'
+          $antigo.Arguments = '-E -s "C:\Assessor Antigo\iniciar.pyw"'
+          $antigo.Save()
+          $outro = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Programs')) 'Assessor Integrado.lnk'))
+          $outro.TargetPath = Join-Path $env:WINDIR 'notepad.exe'
+          $outro.Save()
+          $pasta = Join-Path $env:APPDATA 'Claude'
+          New-Item -ItemType Directory -Force -Path $pasta | Out-Null
+          $json = '{"mcpServers": {"assessor-integrado": {"command": "C:\\Assessor Antigo\\runtime\\python\\python.exe", "args": ["-m", "app.mcp"]}, "outro": {"command": "outro.exe", "args": []}}}'
+          [IO.File]::WriteAllText((Join-Path $pasta 'claude_desktop_config.json'), $json, (New-Object System.Text.UTF8Encoding($false)))
+
       - name: Instalar em silencio (/S, pasta com espaco e acento)
         shell: powershell
         timeout-minutes: 20
@@ -197,6 +217,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $itens = @('Helestron.exe', 'Desinstalar.exe', 'python.exe', 'pythonw.exe', 'python312.dll',
                      'vcruntime140.dll', 'msvcp140.dll', 'manifesto.json', 'helestron.ico',
+                     'arquivos-instalados.txt',
                      'Lib\site-packages\helestron\__main__.py',
                      'Lib\site-packages\helestron\__pycache__\__main__.cpython-312.pyc',
                      'Lib\site-packages\helestron\web\index.html',
@@ -226,6 +247,21 @@ jobs:
           if ($reg.DisplayVersion -ne $manifesto.versao) { throw 'DisplayVersion diferente da versao do manifesto' }
           if ($reg.InstallLocation -ne $env:PASTA) { throw "InstallLocation errado: $($reg.InstallLocation)" }
           if ($reg.UninstallString -notlike '*Desinstalar.exe*') { throw 'UninstallString errado' }
+          # a versao anterior: o atalho dela saiu; o de mesmo nome que nao e dela ficou
+          if (Test-Path -LiteralPath (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Assessor Integrado.lnk')) {
+            throw 'O atalho da versao anterior (Assessor Integrado) ficou na Area de Trabalho'
+          }
+          $outro = Join-Path ([Environment]::GetFolderPath('Programs')) 'Assessor Integrado.lnk'
+          if (-not (Test-Path -LiteralPath $outro)) { throw 'O instalador apagou um atalho que nao era da versao anterior' }
+          Remove-Item -LiteralPath $outro
+          # o conector antigo sai do Claude Desktop (num processo a parte, sem a instalacao esperar)
+          $cfg = Join-Path $env:APPDATA 'Claude\claude_desktop_config.json'
+          $limite = (Get-Date).AddSeconds(90)
+          while (((Get-Content -LiteralPath $cfg -Raw) -match 'assessor-integrado') -and ((Get-Date) -lt $limite)) { Start-Sleep -Seconds 2 }
+          $texto = Get-Content -LiteralPath $cfg -Raw
+          Write-Host "Claude Desktop: $texto"
+          if ($texto -match 'assessor-integrado') { throw 'O conector da versao anterior ficou no Claude Desktop' }
+          if ($texto -notmatch '"outro"') { throw 'A limpeza tirou um conector que nao era da versao anterior' }
 
       - name: Verificar a instalacao (Helestron.exe --verificar-instalacao)
         shell: powershell
@@ -566,6 +602,50 @@ jobs:
             throw 'O conector continuou registrado no Codex/ChatGPT Work'
           }
           Write-Host 'Desinstalacao OK: programa removido, documentos e configuracao mantidos.'
+
+      - name: Pasta com arquivos do usuario (subpasta propria; nada do usuario e apagado)
+        shell: powershell
+        timeout-minutes: 20
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # /D= numa pasta que ja tem coisas do usuario, com nomes que o programa
+          # tambem usa: o Helestron vai para <pasta>\Helestron, e a desinstalacao
+          # apaga so o que a instalacao pos la (a lista arquivos-instalados.txt).
+          $pasta = 'C:\Pasta do Usuario'
+          $arquivos = @{ 'share\orcamento.txt' = 'orcamento'; 'Scripts\backup.bat' = 'echo backup';
+                         'Lib\minha-lib.txt' = 'lib'; 'modelos\contrato.txt' = 'contrato'; 'leia-me.txt' = 'leia' }
+          foreach ($rel in $arquivos.Keys) {
+            $alvo = Join-Path $pasta $rel
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $alvo) | Out-Null
+            Set-Content -LiteralPath $alvo -Value $arquivos[$rel] -Encoding Ascii
+          }
+          $p = Start-Process -FilePath $env:SETUP -ArgumentList ('/S /D=' + $pasta) -PassThru
+          $null = $p.Handle
+          $p.WaitForExit()
+          Write-Host "Instalador terminou com o codigo $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "O instalador terminou com o codigo $($p.ExitCode)" }
+          $sub = Join-Path $pasta 'Helestron'
+          if (-not (Test-Path -LiteralPath (Join-Path $sub 'Helestron.exe'))) { throw 'O Helestron nao foi para a subpasta Helestron' }
+          if (Test-Path -LiteralPath (Join-Path $pasta 'Helestron.exe')) { throw 'O Helestron se misturou com os arquivos do usuario' }
+          $chave = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Helestron'
+          $reg = Get-ItemProperty -LiteralPath $chave
+          if ($reg.InstallLocation -ne $sub) { throw "InstallLocation errado: $($reg.InstallLocation)" }
+          $p = Start-Process -FilePath (Join-Path $sub 'Desinstalar.exe') -ArgumentList '/S' -PassThru
+          $null = $p.Handle
+          $p.WaitForExit()
+          $limite = (Get-Date).AddMinutes(5)
+          while (((Test-Path -LiteralPath (Join-Path $sub 'python312.dll')) -or (Test-Path -LiteralPath $chave)) -and ((Get-Date) -lt $limite)) {
+            Start-Sleep -Seconds 2
+          }
+          foreach ($item in @('Helestron.exe', 'python312.dll', 'Lib', 'manifesto.json', 'arquivos-instalados.txt')) {
+            if (Test-Path -LiteralPath (Join-Path $sub $item)) { throw "O programa ficou na subpasta: $item" }
+          }
+          foreach ($rel in $arquivos.Keys) {
+            $alvo = Join-Path $pasta $rel
+            if (-not (Test-Path -LiteralPath $alvo)) { throw "A instalacao ou a desinstalacao apagou $rel do usuario" }
+            if ((Get-Content -LiteralPath $alvo -Raw).Trim() -ne $arquivos[$rel]) { throw "$rel do usuario mudou" }
+          }
+          Write-Host 'Pasta do usuario OK: o Helestron ficou na subpasta e nada do usuario saiu.'
 
       - name: Juntar registros e capturas
         if: always()

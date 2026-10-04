@@ -1198,7 +1198,8 @@ def _registros_mcp(acervo: Path) -> tuple[list[str], list[str]]:
     servidores = dados.get("mcp_servers") or {}
     if isinstance(servidores, dict):
         if any(n in servidores for n in chatgpt.NOMES_ANTIGOS):
-            problemas.append("o ChatGPT/Codex ainda tem o conector da versão anterior")
+            problemas.append("o ChatGPT/Codex ainda tem o conector da versão anterior "
+                             "(Assessor Integrado)")
         atual = servidores.get(chatgpt.NOME_MCP)
         if isinstance(atual, dict):
             if atual.get("command") != esperada["command"] or atual.get("args") != esperada["args"]:

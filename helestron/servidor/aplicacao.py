@@ -93,9 +93,15 @@ class Aplicacao:
         self.credenciais_sessao: dict[str, tuple[str, str]] = {}
         # Senhas de processos sigilosos que vieram na relação (coluna "senha").
         self.senhas_relacao: dict[str, str] = {}
-        # PDFs sigilosos que não puderam sair do acervo (abertos em outro
-        # programa): enquanto existirem, nada de espelho na nuvem.
+        # Autos (PDF) de processos sigilosos que não puderam sair do acervo
+        # (abertos em outro programa): enquanto existirem, nada se
+        # compartilha (nem o espelho na nuvem).
         self.sigilosos_presos: list[Path] = []
+        # O resto de processo sigiloso que ficou no acervo (a minuta, a
+        # transcrição aberta no Word, o relatório aberto no Excel): não trava
+        # o compartilhamento, mas aparece no Início, com o que fazer.
+        self.sigilosos_avisos: list[Path] = []
+        self.sigilosos_motivos: dict[Path, str] = {}
         self.janela = None          # helestron.aplicativo.janela (mostrar, diálogos...)
         self.monitor = None         # helestron.aplicativo.monitor.MonitorPauta
         self.autoteste = None       # helestron.aplicativo.autoteste.Autoteste

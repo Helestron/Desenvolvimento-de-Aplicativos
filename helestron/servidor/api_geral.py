@@ -87,6 +87,16 @@ def ping(p: Pedido) -> dict:
             "porta": app.porta, "fechando": app.fechando}
 
 
+def _chave_do_arquivo(caminho) -> str | None:
+    """O processo que dá nome ao arquivo (Numero.nome_arquivo), ou None."""
+    from ..nucleo import cnj
+
+    try:
+        return cnj.ler_nome_arquivo(Path(caminho).name).nome_arquivo
+    except cnj.NumeroInvalido:
+        return None
+
+
 def _pendencias(app) -> list[dict]:
     cfg = app.cfg
     saida = []
@@ -107,20 +117,29 @@ def _pendencias(app) -> list[dict]:
                          "mensagem": "Informe o seu usuário e a sua senha do e-SAJ ou do eProc: "
                                      "o Helestron entra por você para baixar processos e ler a "
                                      "pauta.", "acao": "ajustes#acessos"})
-    presos = [p for p in app.sigilosos_presos if Path(p).exists()]
+    from ..compartilhar.preparo import frase_sigilosos_no_acervo
+
+    motivos = getattr(app, "sigilosos_motivos", None)
+    motivos = motivos if isinstance(motivos, dict) else {}
+    presos = [Path(p) for p in app.sigilosos_presos if Path(p).exists()]
     app.sigilosos_presos = presos
+    avisos = [Path(p) for p in getattr(app, "sigilosos_avisos", None) or []
+              if Path(p).exists() and Path(p) not in presos]
+    app.sigilosos_avisos = avisos
+    if avisos:
+        # Não trava nada, mas o arquivo (e o que fazer) fica à vista
+        saida.insert(0, {"chave": "sigilo-arquivos",
+                         "titulo": "Arquivo de processo sigiloso no acervo" if len(avisos) == 1
+                         else "Arquivos de processos sigilosos no acervo",
+                         "mensagem": frase_sigilosos_no_acervo(avisos, cfg, motivos, trava=False),
+                         "acao": "compartilhar", "arquivos": [str(x) for x in avisos]})
     if presos:
-        um = len(presos) == 1
+        processos = {_chave_do_arquivo(p) for p in presos} - {None}
         saida.insert(0, {"chave": "sigilo",
-                         "titulo": "Processo sigiloso no acervo" if um
+                         "titulo": "Processo sigiloso no acervo" if len(processos) <= 1
                          else "Processos sigilosos no acervo",
-                         "mensagem": ("O PDF de um processo em segredo de justiça não pôde ser "
-                                      "levado para a pasta dos sigilosos" if um else
-                                      f"{len(presos)} PDFs de processos em segredo de justiça não "
-                                      "puderam ser levados para a pasta dos sigilosos")
-                                     + " (provavelmente aberto em outro programa). Feche o PDF e "
-                                       "mova-o; até lá, o espelho na nuvem fica suspenso.",
-                         "acao": "processos", "arquivos": [str(x) for x in presos]})
+                         "mensagem": frase_sigilosos_no_acervo(presos, cfg, motivos),
+                         "acao": "compartilhar", "arquivos": [str(x) for x in presos]})
     if app.pendencia_pauta:
         saida.append(dict(app.pendencia_pauta))
     return saida

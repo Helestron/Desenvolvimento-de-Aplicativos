@@ -159,6 +159,60 @@ class TestManifesto(unittest.TestCase):
                                      "python.exe": integridade.CONTEUDO})
 
 
+class TestRegistroDaInstalacao(unittest.TestCase):
+    """arquivos-instalados.txt: a lista do que a instalação põe na pasta do
+    programa - a atualização e o desinstalador apagam só o que está nela."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.arvore = _arvore_exemplo(self.tmp)
+        (self.arvore / "Lib" / "site-packages" / "helestron" / "__pycache__").mkdir()
+        (self.arvore / "Lib" / "site-packages" / "helestron" / "__pycache__" / "x.cpython-312.pyc").write_bytes(b"pyc")
+        (self.arvore / "Lib" / "site-packages" / "helestron" / "ação.py").write_text("# ç\n", encoding="utf-8")
+        construcao.gerar_manifesto(self.arvore, "1.0.0")
+
+    def test_formato(self):
+        arquivo = construcao.gerar_registro(self.arvore, "1.0.0", self.tmp / "obra" / "arquivos-instalados.txt")
+        dados = arquivo.read_bytes()
+        self.assertEqual(dados[:2], b"\xff\xfe")                   # UTF-16 LE com BOM
+        texto = dados[2:].decode("utf-16-le")
+        self.assertTrue(texto.endswith("\r\n"))
+        linhas = texto[:-2].split("\r\n")
+        self.assertTrue(linhas[0].startswith("Helestron 1.0.0 - "), linhas[0])
+        corpo = linhas[1:]
+        arquivos = [l[2:] for l in corpo if l.startswith("A ")]
+        pastas = [l[2:] for l in corpo if l.startswith("P ")]
+        self.assertEqual(len(arquivos) + len(pastas), len(corpo))
+        # arquivos primeiro, depois as pastas
+        self.assertEqual(corpo, [f"A {a}" for a in arquivos] + [f"P {p}" for p in pastas])
+        todos = sorted(p.relative_to(self.arvore).as_posix().replace("/", "\\")
+                       for p in self.arvore.rglob("*") if p.is_file())
+        self.assertEqual(sorted(set(arquivos) - {"Desinstalar.exe", "arquivos-instalados.txt"}), todos)
+        self.assertIn("Lib\\site-packages\\helestron\\ação.py", arquivos)
+        # o manifesto e a própria lista por último: até o fim da remoção, a
+        # pasta continua sendo reconhecida como do Helestron
+        self.assertEqual(arquivos[-3:], ["Desinstalar.exe", "manifesto.json", "arquivos-instalados.txt"])
+        # as pastas, das mais fundas para as de cima, sem a raiz
+        esperadas = {p.relative_to(self.arvore).as_posix().replace("/", "\\")
+                     for p in self.arvore.rglob("*") if p.is_dir()}
+        self.assertEqual(set(pastas), esperadas)
+        profundidades = [p.count("\\") for p in pastas]
+        self.assertEqual(profundidades, sorted(profundidades, reverse=True))
+        self.assertLess(pastas.index("Lib\\site-packages\\helestron\\__pycache__"), pastas.index("Lib"))
+        self.assertNotIn("", pastas)
+        self.assertTrue(all("/" not in l and ".." not in l for l in corpo))
+
+    def test_script_usa_a_lista_gravada(self):
+        registro = construcao.gerar_registro(self.arvore, "1.0.0", self.tmp / "lista.txt")
+        script = construcao.script_nsis(self.arvore, "1.0.0", self.tmp / "Setup.exe", RECURSOS, registro)
+        self.assertIn(f'"{registro.resolve().as_posix()}"', script)
+        self.assertNotIn("@REGISTRO@", script)
+        # sem a lista, a construção a grava ao lado da árvore
+        script = construcao.script_nsis(self.arvore, "1.0.0", self.tmp / "Setup.exe", RECURSOS)
+        self.assertTrue((self.tmp / "arquivos-instalados.txt").is_file())
+
+
 # =================================================================== rodas
 def _arquivo_pypi(nome: str, conteudo: bytes = b"") -> dict:
     dados = conteudo or nome.encode()
@@ -559,25 +613,110 @@ class TestScriptNsis(unittest.TestCase):
         secao = self.script[self.script.index('Section "Helestron (programa)"'):]
         self.assertLess(secao.index("Call FecharHelestron"), secao.index("File /r"))
         self.assertLess(secao.index("Call EsperarArquivosLivres"), secao.index("File /r"))
-        self.assertLess(secao.index("Call LiberarArquivos"), secao.index("!insertmacro RemoverPrograma"))
-        self.assertLess(secao.index("!insertmacro RemoverPrograma"), secao.index("Call AfastarPresos"))
-        self.assertLess(secao.index("Call AfastarPresos"), secao.index("File /r"))
+        self.assertLess(secao.index("Call LiberarArquivos"), secao.index("Call RemoverPrograma"))
+        self.assertLess(secao.index("Call RemoverPrograma"), secao.index("File /r"))
+        # a lista do que vai ser copiado chega antes da cópia: uma cópia
+        # interrompida ainda é reconhecida (e removida) pela próxima instalação
+        self.assertLess(secao.index('!insertmacro ExtrairRegistro "$INSTDIR\\${REGISTRO}"'),
+                        secao.index("File /r"))
         self.assertIn("--encerrar", self.script)
         conferir = self.script[self.script.index('Section "-Conferir a instalação"'):]
         self.assertIn('--verificar-instalacao --relatorio "${RELATORIO}"', conferir)
         self.assertIn("SetErrorLevel 2", conferir)
         self.assertIn("/SD IDNO", conferir)               # o modo silencioso não para em pergunta
 
-    def test_remover_programa_lista_o_que_foi_instalado(self):
-        inicio = self.script.index("!macro RemoverPrograma")
-        macro = self.script[inicio:self.script.index("!macroend", inicio)]
-        for linha in ('RMDir /r "$INSTDIR\\Lib"', 'RMDir /r "$INSTDIR\\DLLs"', 'RMDir /r "$INSTDIR\\modelos"',
-                      'Delete "$INSTDIR\\python312.dll"', 'Delete "$INSTDIR\\Helestron.exe"',
-                      'Delete "$INSTDIR\\manifesto.json"', 'RMDir /r "$INSTDIR\\Scripts"'):
-            self.assertIn(linha, macro)
-        # nunca a pasta inteira (ela pode ter coisas do usuário)
-        self.assertNotRegex(self.script, r'RMDir /r "\$INSTDIR"')
-        self.assertNotRegex(self.script, r'RMDir /r "\$INSTDIR\\\*')
+    def test_remover_programa_so_pela_lista_da_instalacao(self):
+        """A atualização e a desinstalação apagavam com RMDir /r as pastas da
+        raiz do programa e mais Scripts, share, tcl, include e libs: numa pasta
+        que não era só do Helestron, levavam as do usuário (e o que ele
+        tivesse posto em Lib ou em modelos)."""
+        self.assertIn('!define REGISTRO "arquivos-instalados.txt"', self.script)
+        funcao = self.script[self.script.index("Function ${UN}RemoverPrograma"):]
+        funcao = funcao[:funcao.index("FunctionEnd")]
+        self.assertIn('FileReadUTF16LE $0 $1', funcao)
+        self.assertIn('Call ${UN}RemoverArquivo', funcao)
+        self.assertIn('RMDir "$INSTDIR\\$1"', funcao)                 # a pasta só sai vazia
+        # sem a lista (instalação de antes dela), a desta versão
+        self.assertIn('!insertmacro ExtrairRegistro "$PLUGINSDIR\\${REGISTRO}"', funcao)
+        self.assertIn(f'File "/oname=${{DESTINO}}" "{(self.tmp / "arquivos-instalados.txt").resolve().as_posix()}"',
+                      self.script)
+        # nenhuma pasta por nome: os únicos RMDir /r são a .antigos, as
+        # __pycache__ da lista, a pasta de dados do Helestron (com o sim do
+        # usuário) e nunca $INSTDIR inteira
+        recursivos = sorted(set(re.findall(r'RMDir /r "([^"]+)"', self.script)))
+        self.assertEqual(recursivos, ["$INSTDIR\\$1", "$LOCALAPPDATA\\Helestron", "${PASTA_ANTIGOS}"])
+        self.assertIn('${If} $2 == "\\__pycache__"\n          RMDir /r "$INSTDIR\\$1"', funcao)
+        for nome in ("Scripts", "share", "tcl", "include", "libs", "Lib", "DLLs", "modelos"):
+            self.assertNotIn(f'"$INSTDIR\\{nome}"', self.script)
+        self.assertFalse(hasattr(construcao, "LEGADO_RAIZ"))
+        # a remoção só acontece numa pasta que já era do Helestron
+        secao = self.script[self.script.index('Section "Helestron (programa)"'):]
+        self.assertRegex(secao, r'\$\{If\} \$EraDoHelestron == 1\n\s+RMDir /r "\$\{PASTA_ANTIGOS\}"'
+                                r'\n\s+Call LiberarArquivos\n(?:.*\n){2}\s+Call RemoverPrograma')
+
+    def test_pasta_com_outras_coisas_recebe_o_helestron_numa_subpasta(self):
+        self.assertIn("!define PASTA_OCUPADA 3", self.script)
+        destino = self.script[self.script.index("Function ConferirDestino"):]
+        destino = destino[:destino.index("FunctionEnd")]
+        for trecho in ("Call EhDoHelestron", "Call PastaVazia", 'StrCpy $R0 "$R0\\Helestron"',
+                       "StrCpy $INSTDIR $R0", '"recusada"', '"ajustada"', '"atualizacao"', '"nova"'):
+            self.assertIn(trecho, destino)
+        # o manifesto de outro programa não conta: só o do Helestron
+        eh = self.script[self.script.index("Function EhDoHelestron"):]
+        eh = eh[:eh.index("FunctionEnd")]
+        self.assertIn("""${If} $R2 S== '"nome": "Helestron"'""", eh)
+        self.assertIn('${If} $R2 S== "Helestron "', eh)
+        # na página (com a pergunta) e na seção (o /S com /D=), antes de gravar
+        pagina = self.script[self.script.index("Function ConferirPasta"):]
+        pagina = pagina[:pagina.index("FunctionEnd")]
+        self.assertLess(pagina.index("Call ConferirDestino"), pagina.index("Call PodeGravarNaPasta"))
+        self.assertIn("MB_OKCANCEL", pagina)
+        # o NSIS relê a pasta do campo depois da função: sem isto, a pasta própria se perdia
+        self.assertIn('SendMessage $1 ${WM_SETTEXT} 0 "STR:$INSTDIR"', pagina)
+        secao = self.script[self.script.index('Section "Helestron (programa)"'):]
+        self.assertLess(secao.index("Call ConferirDestino"), secao.index("Call PodeGravarNaPasta"))
+        self.assertLess(secao.index("SetErrorLevel ${PASTA_OCUPADA}"), secao.index("File /r"))
+        self.assertIn("3 = a pasta escolhida", self.script)
+
+    def test_restos_do_assessor_integrado(self):
+        """O atalho "Assessor Integrado" da versão anterior ficava na Área de
+        Trabalho e no Menu Iniciar, e os conectores dela no Claude Desktop."""
+        secao = self.script[self.script.index('Section "Helestron (programa)"'):]
+        secao = secao[:secao.index("SectionEnd")]
+        self.assertIn('Push "$DESKTOP\\Assessor Integrado.lnk"\n  Call ApagarAtalhoAntigo', secao)
+        self.assertIn('Push "$SMPROGRAMS\\Assessor Integrado.lnk"\n  Call ApagarAtalhoAntigo', secao)
+        atalho = self.script[self.script.index("Function ApagarAtalhoAntigo"):]
+        atalho = atalho[:atalho.index("FunctionEnd")]
+        # só o atalho que é mesmo da versão anterior
+        self.assertIn('${If} $R1 == "\\runtime\\python\\pythonw.exe"', atalho)
+        self.assertIn('${AndIf} $R2 == "\\iniciar.pyw"', atalho)
+        self.assertLess(atalho.index("$R2 == \"\\iniciar.pyw\""), atalho.index('Delete "$R0"'))
+        # a limpeza dos conectores: num processo à parte, sem console e sem esperar
+        chamada = re.search(r"Exec '\"\$INSTDIR\\pythonw\.exe\" -I -c \"from helestron\.compartilhar "
+                            r"import (\w+); (\w+)\.(\w+)\(\)\"'", secao)
+        self.assertIsNotNone(chamada)
+        self.assertNotIn("ExecWait '\"$INSTDIR\\pythonw.exe", secao)
+        modulo, mesmo, funcao = chamada.groups()
+        self.assertEqual(modulo, mesmo)
+        # o nome confere com o do programa
+        import importlib
+
+        programa = importlib.import_module(f"helestron.compartilhar.{modulo}")
+        self.assertTrue(callable(getattr(programa, funcao)), funcao)
+        self.assertEqual(funcao, "limpar_restos_antigos")
+
+    def test_pagina_concluir_sem_cortar_o_texto(self):
+        """Com a caixa "Abrir o Helestron", o MUI2 dava ao texto 40 unidades
+        (5 linhas) e cortava o terceiro parágrafo; as unidades acompanham a
+        fonte, e a conta de linhas vale em 100 % e em 125 %."""
+        texto = re.search(r'!define MUI_FINISHPAGE_TEXT "([^"]*)"', self.script).group(1)
+        altura = 60 if "!define MUI_FINISHPAGE_TEXT_LARGE" in self.script else 40
+        linhas_que_cabem = altura // 8                  # 8 unidades por linha da fonte
+        # 195 unidades de largura: ~48 caracteres médios; 44 por linha deixa folga
+        paragrafos = texto.split("$\\r$\\n")
+        linhas = sum(max(1, -(-len(p) // 44)) for p in paragrafos)
+        self.assertLessEqual(linhas, linhas_que_cabem - 1, paragrafos)
+        self.assertIn("Ajustes", texto)
 
     def test_desinstalador_pergunta_e_preserva_documentos(self):
         desinstalar = self.script[self.script.index('Section "Uninstall"'):]
@@ -606,12 +745,11 @@ class TestScriptNsis(unittest.TestCase):
         self.assertIn("Call un.FecharHelestron", self.script)
 
     def test_arquivos_presos_sao_renomeados_e_nenhum_processo_e_morto(self):
-        lista = self.script[self.script.index("!macro AfastarLista"):]
-        lista = lista[:lista.index("!macroend")]
-        for linha in ('!insertmacro AfastarPasta "${UN}" "Lib"', '!insertmacro AfastarPasta "${UN}" "DLLs"',
-                      '!insertmacro AfastarArquivo "${UN}" "python312.dll"',
-                      '!insertmacro AfastarArquivo "${UN}" "python.exe"'):
-            self.assertIn(linha, lista)
+        remover = self.script[self.script.index("Function ${UN}RemoverArquivo"):]
+        remover = remover[:remover.index("FunctionEnd")]
+        self.assertIn('Delete "$R9"', remover)
+        self.assertIn("$Afastar == 1", remover)
+        self.assertIn('Rename "$R9" "$PastaAfastados\\$NumAfastados-$R7"', remover)
         self.assertIn('Rename "$INSTDIR\\python312.dll" "$PastaAfastados\\python312.dll"', self.script)
         self.assertIn("advpack.dll,DelNodeRunDLL32", self.script)
         self.assertIn("HKCU \"${CHAVE_RUNONCE}\"", self.script)
@@ -746,6 +884,33 @@ int wmain(int argc, wchar_t **argv) {
 }
 """
 
+_RODAR_C = r"""
+/* rodar.exe: roda, crua, a linha de comando de RODAR_LINHA e devolve o código
+   dela. O /D= do NSIS tem de ser o último argumento e SEM aspas, mesmo com
+   espaço no caminho - e o Wine põe aspas no argumento com espaço. */
+#include <windows.h>
+int wmain(void) {
+    static wchar_t linha[8192];
+    if (!GetEnvironmentVariableW(L"RODAR_LINHA", linha, 8192)) return 99;
+    STARTUPINFOW si = { sizeof(si) }; PROCESS_INFORMATION pi;
+    if (!CreateProcessW(NULL, linha, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) return 98;
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD c = 0; GetExitCodeProcess(pi.hProcess, &c); return (int)c;
+}
+"""
+_ATALHOS_NSI = r"""
+Target amd64-unicode
+RequestExecutionLevel user
+SilentInstall silent
+OutFile "atalhos.exe"
+Section
+  SetShellVarContext current
+  CreateDirectory "$SMPROGRAMS"
+  CreateShortcut "$DESKTOP\Assessor Integrado.lnk" "C:\Assessor Antigo\runtime\python\pythonw.exe" '-E -s "C:\Assessor Antigo\iniciar.pyw"'
+  CreateShortcut "$SMPROGRAMS\Assessor Integrado.lnk" "C:\Outro\runtime\python\pythonw.exe" '-E -s "C:\Outro\outro.pyw"'
+SectionEnd
+"""
+
 
 @unittest.skipUnless(MAKENSIS and MINGW and WINE64,
                      "precisa do makensis, do MinGW-w64 e do Wine de 64 bits")
@@ -770,11 +935,13 @@ class TestInstaladorNoWine(unittest.TestCase):
         gcc = shutil.which("x86_64-w64-mingw32-gcc")
         for nome, codigo, opcoes, saida in (("stub.c", _STUB_C, ["-municode"], "stub.exe"),
                                             ("dll.c", _DLL_C, ["-shared"], "falso.dll"),
-                                            ("segurar.c", _SEGURAR_C, ["-municode"], "segurar.exe")):
+                                            ("segurar.c", _SEGURAR_C, ["-municode"], "segurar.exe"),
+                                            ("rodar.c", _RODAR_C, ["-municode"], "rodar.exe")):
             (fontes / nome).write_text(codigo, encoding="utf-8")
             subprocess.run([gcc, *opcoes, "-O2", "-s", "-o", str(fontes / saida), str(fontes / nome)],
                            check=True, capture_output=True)
         cls.segurar = fontes / "segurar.exe"
+        cls.rodar = fontes / "rodar.exe"
         arvore = cls.tmp / "obra" / "Helestron"
         (arvore / "Lib" / "site-packages" / "helestron").mkdir(parents=True)
         (arvore / "DLLs").mkdir()
@@ -782,20 +949,46 @@ class TestInstaladorNoWine(unittest.TestCase):
         shutil.copy(fontes / "stub.exe", arvore / "python.exe")
         shutil.copy(fontes / "falso.dll", arvore / "python312.dll")
         shutil.copy(fontes / "falso.dll", arvore / "DLLs" / "_socket.pyd")
+        shutil.copy(fontes / "stub.exe", arvore / "pythonw.exe")
         (arvore / "Lib" / "os.py").write_text("# os\n", encoding="utf-8")
+        (arvore / "Lib" / "velho.py").write_text("# só nesta versão\n", encoding="utf-8")
         (arvore / "Lib" / "site-packages" / "helestron" / "__init__.py").write_text("# h\n")
+        (arvore / "Lib" / "site-packages" / "helestron" / "__pycache__").mkdir()
+        (arvore / "Lib" / "site-packages" / "helestron" / "__pycache__" / "__init__.cpython-312.pyc").write_bytes(b"pyc")
+        (arvore / "modelos" / "faster-whisper-small").mkdir(parents=True)
+        (arvore / "modelos" / "faster-whisper-small" / "model.bin").write_bytes(b"\0" * 32)
         construcao.gerar_manifesto(arvore, "1.0.0")
-        cls.setup = cls.tmp / "obra" / "Helestron-Setup-1.0.0.exe"
-        script = construcao.script_nsis(arvore, "1.0.0", cls.setup, RECURSOS)
+        cls.setup = cls._compilar(arvore, "1.0.0")
+        # a versão seguinte: sem o Lib\velho.py, com o Lib\novo.py
+        arvore2 = cls.tmp / "obra2" / "Helestron"
+        shutil.copytree(arvore, arvore2)
+        (arvore2 / "Lib" / "velho.py").unlink()
+        (arvore2 / "Lib" / "novo.py").write_text("# novo\n", encoding="utf-8")
+        construcao.gerar_manifesto(arvore2, "1.0.1")
+        cls.setup2 = cls._compilar(arvore2, "1.0.1")
+        # os atalhos "Assessor Integrado": o da versão anterior (o pythonw do
+        # runtime dela, com o iniciar.pyw) e um de mesmo nome que não é dela
+        (fontes / "atalhos.nsi").write_text(_ATALHOS_NSI, encoding="utf-8")
+        r = subprocess.run([MAKENSIS, "-V2", "-INPUTCHARSET", "UTF8", str(fontes / "atalhos.nsi")],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+        cls.atalhos = fontes / "atalhos.exe"
+        subprocess.run([WINE64, "wineboot", "-i"], env=cls.env, capture_output=True, timeout=300)
+        cls.c = cls.tmp / "prefixo" / "drive_c"
+        cls.alvo = cls.c / "TesteArea" / "Helestron"
+
+    @classmethod
+    def _compilar(cls, arvore: Path, versao: str) -> Path:
+        setup = arvore.parent / f"Helestron-Setup-{versao}.exe"
+        script = construcao.script_nsis(arvore, versao, setup, RECURSOS)
         script = script.replace("Unicode true", "Target amd64-unicode")
         script = script.replace("SetCompressor /SOLID /FINAL lzma", "SetCompressor /FINAL zlib")
         script = script.replace("SetCompressorDictSize 64\n", "")
-        (cls.tmp / "obra" / "h.nsi").write_text(script, encoding="utf-8")
-        r = subprocess.run([MAKENSIS, "-V2", "-INPUTCHARSET", "UTF8", str(cls.tmp / "obra" / "h.nsi")],
+        (arvore.parent / "h.nsi").write_text(script, encoding="utf-8")
+        r = subprocess.run([MAKENSIS, "-V2", "-INPUTCHARSET", "UTF8", str(arvore.parent / "h.nsi")],
                            capture_output=True, text=True)
         assert r.returncode == 0, r.stdout + r.stderr
-        subprocess.run([WINE64, "wineboot", "-i"], env=cls.env, capture_output=True, timeout=300)
-        cls.alvo = cls.tmp / "prefixo" / "drive_c" / "TesteArea" / "Helestron"
+        return setup
 
     @classmethod
     def tearDownClass(cls):
@@ -809,8 +1002,37 @@ class TestInstaladorNoWine(unittest.TestCase):
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                               timeout=espera).returncode
 
-    def instalar(self, destino: str | None = None) -> int:
-        return self.wine(self.setup, "/S", f"/D={destino or self.ALVO_WIN}")
+    def instalar(self, destino: str | None = None, setup: Path | None = None) -> int:
+        setup_win = "Z:" + str(setup or self.setup).replace("/", "\\")
+        linha = f'"{setup_win}" /S /D={destino or self.ALVO_WIN}'
+        return subprocess.run([WINE64, str(self.rodar)], env=dict(self.env, RODAR_LINHA=linha),
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=240).returncode
+
+    def desinstalar(self, pasta: Path) -> None:
+        """Desinstalar.exe /S: ele se copia para a pasta temporária e segue de lá."""
+        self.wine(pasta / "Desinstalar.exe", "/S")
+        limite = time.monotonic() + 60
+        while ((pasta / "Desinstalar.exe").exists() or (pasta / "arquivos-instalados.txt").exists()) \
+                and time.monotonic() < limite:
+            time.sleep(0.2)
+        time.sleep(1)
+
+    def local_instalado(self) -> str:
+        saida = subprocess.run([WINE64, "reg", "query",
+                                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Helestron",
+                                "/v", "InstallLocation"], env=self.env, capture_output=True,
+                               text=True, timeout=60).stdout
+        achado = re.search(r"InstallLocation\s+REG_SZ\s+(.+?)\s*$", saida, re.M)
+        return achado.group(1) if achado else ""
+
+    @staticmethod
+    def conteudo(pasta: Path) -> dict[str, bytes]:
+        return {p.relative_to(pasta).as_posix(): p.read_bytes() for p in pasta.rglob("*") if p.is_file()}
+
+    @staticmethod
+    def registro(pasta: Path) -> list[str]:
+        return (pasta / "arquivos-instalados.txt").read_bytes()[2:].decode("utf-16-le").splitlines()
 
     def runonce(self) -> str:
         return subprocess.run([WINE64, "reg", "query",
@@ -869,6 +1091,118 @@ class TestInstaladorNoWine(unittest.TestCase):
     def test_pasta_sem_permissao(self):
         self.assertEqual(self.instalar(r"Z:\proc\Helestron"), 8)
 
+    # Os três cenários da pasta: nova (o setUp), com arquivos do usuário e a
+    # atualização. Antes, a atualização e a desinstalação apagavam com RMDir /r
+    # as pastas Lib, DLLs e modelos e mais Scripts, share, tcl, include e
+    # libs - numa pasta que não era só do Helestron, com o que o usuário
+    # tivesse dentro delas.
+    def test_pasta_nova_a_desinstalacao_apaga_so_o_que_a_instalacao_pos(self):
+        linhas = self.registro(self.alvo)
+        self.assertTrue(linhas[0].startswith("Helestron 1.0.0 - "))
+        self.assertIn("A Lib\\velho.py", linhas)
+        self.assertIn("P Lib\\site-packages\\helestron\\__pycache__", linhas)
+        # o usuário (ou outro programa) põe coisas dentro da pasta do programa
+        do_usuario = {"Lib/minhas-notas.txt": b"notas", "modelos/contrato-modelo.docx": b"docx",
+                      "Scripts/backup.bat": b"@echo off", "share/orcamento.txt": b"R$ 10"}
+        for rel, dados in do_usuario.items():
+            (self.alvo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.alvo / rel).write_bytes(dados)
+        # um .pyc que o Python gravou depois (não está na lista): sai com a __pycache__
+        (self.alvo / "Lib/site-packages/helestron/__pycache__/novo.cpython-312.pyc").write_bytes(b"pyc")
+        self.desinstalar(self.alvo)
+        for rel in ("Helestron.exe", "python.exe", "pythonw.exe", "python312.dll", "manifesto.json",
+                    "arquivos-instalados.txt", "Desinstalar.exe", "DLLs", "Lib/os.py",
+                    "Lib/site-packages", "modelos/faster-whisper-small"):
+            self.assertFalse((self.alvo / rel).exists(), rel)
+        sobrou = {rel: dados for rel, dados in self.conteudo(self.alvo).items() if rel != "chamadas.txt"}
+        self.assertEqual(sobrou, do_usuario)
+
+    def test_pasta_com_arquivos_do_usuario_recebe_o_helestron_numa_subpasta(self):
+        pasta = self.c / "Meus Programas"
+        do_usuario = {"share/orcamento.txt": b"R$ 10", "Scripts/backup.bat": b"@echo off",
+                      "tcl/notas.txt": b"tcl", "include/meu.h": b"#pragma once", "libs/meu.lib": b"lib",
+                      "Lib/minha-lib.txt": b"lib", "DLLs/minha.dll": b"MZ", "modelos/contrato.docx": b"docx",
+                      "OutroPrograma/dados.txt": b"dados", "leia-me.txt": b"leia",
+                      # o manifesto.json de outro programa não faz da pasta uma do Helestron
+                      "manifesto.json": b'{\n "nome": "Outro",\n "arquivos": {}\n}\n'}
+        shutil.rmtree(pasta, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, pasta, True)
+        for rel, dados in do_usuario.items():
+            (pasta / rel).parent.mkdir(parents=True, exist_ok=True)
+            (pasta / rel).write_bytes(dados)
+        subpasta = pasta / "Helestron"
+        self.assertEqual(self.instalar(r"C:\Meus Programas"), 0)
+        self.assertTrue((subpasta / "python312.dll").is_file())
+        self.assertTrue((subpasta / "Lib" / "os.py").is_file())
+        self.assertFalse((pasta / "python312.dll").exists())
+        self.assertFalse((pasta / "Lib" / "os.py").exists())
+        self.assertEqual(self.local_instalado(), r"C:\Meus Programas\Helestron")
+        fora = {rel: d for rel, d in self.conteudo(pasta).items() if not rel.startswith("Helestron/")}
+        self.assertEqual(fora, do_usuario)
+        # a atualização (a pasta vem do registro) e a desinstalação: nada do usuário sai
+        self.assertEqual(self.wine(self.setup2, "/S"), 0)
+        self.assertTrue((subpasta / "Lib" / "novo.py").is_file())
+        self.assertFalse((subpasta / "Lib" / "velho.py").exists())
+        fora = {rel: d for rel, d in self.conteudo(pasta).items() if not rel.startswith("Helestron/")}
+        self.assertEqual(fora, do_usuario)
+        self.desinstalar(subpasta)
+        self.assertFalse((subpasta / "python312.dll").exists())
+        self.assertFalse((subpasta / "Lib").exists())
+        restos = {rel for rel in self.conteudo(pasta) if rel.startswith("Helestron/")}
+        self.assertLessEqual(restos, {"Helestron/chamadas.txt"})          # o registro do programa falso
+        self.assertEqual({rel: d for rel, d in self.conteudo(pasta).items() if not rel.startswith("Helestron/")},
+                         do_usuario)
+
+    def test_pasta_e_subpasta_com_outras_coisas_recusa_sem_copiar(self):
+        pasta = self.c / "Pasta Cheia"
+        shutil.rmtree(pasta, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, pasta, True)
+        (pasta / "Helestron").mkdir(parents=True)
+        (pasta / "planilha.xlsx").write_bytes(b"xlsx")
+        (pasta / "Helestron" / "outro.txt").write_bytes(b"outro")
+        self.assertEqual(self.instalar(r"C:\Pasta Cheia"), 3)
+        self.assertEqual(self.conteudo(pasta), {"planilha.xlsx": b"xlsx", "Helestron/outro.txt": b"outro"})
+
+    def test_atualizacao_apaga_so_o_que_a_versao_anterior_instalou(self):
+        do_usuario = {"Lib/minhas-notas.txt": b"notas", "Scripts/backup.bat": b"@echo off"}
+        for rel, dados in do_usuario.items():
+            (self.alvo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.alvo / rel).write_bytes(dados)
+        self.assertEqual(self.instalar(setup=self.setup2), 0)
+        self.assertFalse((self.alvo / "Lib" / "velho.py").exists())       # só a 1.0.0 tinha
+        self.assertTrue((self.alvo / "Lib" / "novo.py").is_file())
+        self.assertTrue(self.registro(self.alvo)[0].startswith("Helestron 1.0.1 - "))
+        self.assertIn("A Lib\\novo.py", self.registro(self.alvo))
+        for rel, dados in do_usuario.items():
+            self.assertEqual((self.alvo / rel).read_bytes(), dados, rel)
+        # uma instalação de antes da lista (só com o manifesto do Helestron):
+        # vale a lista da versão que chega, arquivo por arquivo
+        (self.alvo / "arquivos-instalados.txt").unlink()
+        self.assertEqual(self.instalar(), 0)
+        self.assertTrue(self.registro(self.alvo)[0].startswith("Helestron 1.0.0 - "))
+        self.assertTrue((self.alvo / "Lib" / "velho.py").is_file())
+        for rel, dados in do_usuario.items():
+            self.assertEqual((self.alvo / rel).read_bytes(), dados, rel)
+
+    def test_restos_do_assessor_integrado(self):
+        self.assertEqual(self.wine(self.atalhos), 0)
+        antigo = next(self.c.glob("users/*/Desktop/Assessor Integrado.lnk"))
+        outro = next(self.c.glob("users/*/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/"
+                                 "Assessor Integrado.lnk"))
+        (self.alvo / "chamadas.txt").unlink(missing_ok=True)
+        self.assertEqual(self.instalar(), 0)
+        self.assertFalse(antigo.exists(), "o atalho da versão anterior ficou")
+        self.assertTrue(outro.exists(), "apagou um atalho que não é da versão anterior")
+        # a limpeza dos conectores antigos, num processo à parte (sem esperar por ele)
+        limite = time.monotonic() + 30
+        chamadas = ""
+        while "limpar_restos_antigos" not in chamadas and time.monotonic() < limite:
+            time.sleep(0.3)
+            chamadas = (self.alvo / "chamadas.txt").read_text(encoding="utf-8", errors="replace") \
+                if (self.alvo / "chamadas.txt").exists() else ""
+        self.assertIn("pythonw.exe -I -c from helestron.compartilhar import migracao; "
+                      "migracao.limpar_restos_antigos()", chamadas)
+
     def test_sem_como_abrir_a_janela(self):
         (self.alvo / "verificar-codigo.txt").write_text("9")
         self.assertEqual(self.instalar(), 9)
@@ -890,7 +1224,8 @@ class TestLancador(unittest.TestCase):
         self.assertIn("int WINAPI wWinMain", self.fonte)
         # a mensagem própria, em português, quando falta o DLL
         self.assertIn("Falta o arquivo %ls na pasta do programa", self.fonte)
-        self.assertIn("instale o Helestron de novo com o Helestron-Setup", self.fonte)
+        self.assertIn("reinstale o Helestron com o Helestron-Setup", self.fonte)
+        self.assertIn("antivírus", self.fonte)
         # o instalador nunca fica preso numa caixa de mensagem
         self.assertIn('L"--encerrar"', self.fonte)
         self.assertIn('L"--verificar-instalacao"', self.fonte)
@@ -956,6 +1291,181 @@ class TestLancador(unittest.TestCase):
         self.assertIn("1.0.0".encode("utf-16-le"), dados)
         # o ícone inteiro (a maior imagem, PNG de 256 px) foi para dentro do executável
         self.assertIn(b"\x89PNG", dados)
+
+
+_PYTHON_FALSO_C = r"""
+/* python312.dll falso: o Py_Main anota os argumentos em py_main.txt e faz o
+   que FALSO_MODO pede - sair com aquele código, ou mostrar uma janela por meio
+   segundo e sair com 1. */
+#include <windows.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <wchar.h>
+__declspec(dllexport) int Py_Main(int argc, wchar_t **argv) {
+    wchar_t modo[64] = L"0", caminho[1024];
+    GetEnvironmentVariableW(L"FALSO_MODO", modo, 64);
+    GetModuleFileNameW(NULL, caminho, 1024);
+    wchar_t *barra = wcsrchr(caminho, L'\\'); if (barra) barra[1] = 0;
+    wcscat(caminho, L"py_main.txt");
+    FILE *f = _wfopen(caminho, L"a");
+    if (f) { for (int i = 1; i < argc; i++) fwprintf(f, L"%ls ", argv[i]); fwprintf(f, L"\n"); fclose(f); }
+    if (wcscmp(modo, L"janela") == 0) {
+        HWND j = CreateWindowExW(0, L"STATIC", L"Janela do programa", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                                 10, 10, 300, 200, NULL, NULL, NULL, NULL);
+        DWORD fim = GetTickCount() + 500; MSG m;
+        while (GetTickCount() < fim) {
+            while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) DispatchMessageW(&m);
+            Sleep(20);
+        }
+        DestroyWindow(j);
+        return 1;
+    }
+    return _wtoi(modo);
+}
+"""
+
+
+def _texto_do_trace(linha: str) -> str:
+    """O texto de 'trace:msgbox:MSGBOX_OnInit L"..."' (o debugstr_w do Wine)."""
+    bruto = linha.split('L"', 1)[1].rsplit('"', 1)[0]
+    saida, i = [], 0
+    while i < len(bruto):
+        c = bruto[i]
+        if c == "\\" and i + 1 < len(bruto):
+            seguinte = bruto[i + 1]
+            if seguinte in "0123456789abcdef" and re.fullmatch(r"[0-9a-f]{4}", bruto[i + 1:i + 5] or ""):
+                saida.append(chr(int(bruto[i + 1:i + 5], 16)))
+                i += 5
+                continue
+            saida.append({"n": "\n", "r": "\r", "t": "\t"}.get(seguinte, seguinte))
+            i += 2
+            continue
+        saida.append(c)
+        i += 1
+    return "".join(saida)
+
+
+@unittest.skipUnless(MINGW and WINE64 and os.environ.get("DISPLAY"),
+                     "precisa do MinGW-w64, do Wine de 64 bits e de uma tela (xvfb-run)")
+class TestLancadorNoWine(unittest.TestCase):
+    """O Helestron.exe de verdade, com um python312.dll falso, no Wine. Antes,
+    sem o __main__.py, o registro.py, o caminhos.py ou o Lib\\encodings, o
+    atalho não fazia nada: o Python fechava com 1, sem janela e sem mensagem."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="helestron-lancador-"))
+        casa = cls.tmp / "casa"
+        casa.mkdir()
+        cls.env = dict(os.environ, WINEPREFIX=str(cls.tmp / "prefixo"), WINEDEBUG="-all,trace+msgbox",
+                       HOME=str(casa), XDG_DATA_HOME=str(casa / "dados"),
+                       XDG_CONFIG_HOME=str(casa / "config"), XDG_CACHE_HOME=str(casa / "cache"),
+                       WINEDLLOVERRIDES="mscoree,mshtml=;winemenubuilder.exe=d;winedbg.exe=d")
+        cls.env.pop("HELESTRON_LOCAL", None)
+        cls.exe = construcao.compilar_lancador("1.0.0", cls.tmp / "obra", RECURSOS / "helestron.ico")
+        fonte = cls.tmp / "falso.c"
+        fonte.write_text(_PYTHON_FALSO_C, encoding="utf-8")
+        cls.dll = cls.tmp / "python312.dll"
+        subprocess.run([shutil.which("x86_64-w64-mingw32-gcc"), "-shared", "-municode", "-O2", "-s",
+                        "-o", str(cls.dll), str(fonte)], check=True, capture_output=True)
+        subprocess.run([WINE64, "wineboot", "-i"], env=cls.env, capture_output=True, timeout=300)
+        cls.pasta = cls.tmp / "prefixo" / "drive_c" / "Programa Helestron"
+
+    @classmethod
+    def tearDownClass(cls):
+        subprocess.run([str(Path(WINE64).with_name("wineserver")), "-k"], env=cls.env,
+                       capture_output=True, timeout=60)
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def setUp(self):
+        shutil.rmtree(self.pasta, ignore_errors=True)
+        self.pasta.mkdir(parents=True)
+        shutil.copy(self.exe, self.pasta / "Helestron.exe")
+        shutil.copy(self.dll, self.pasta / "python312.dll")
+        pacote = Path("Lib") / "site-packages" / "helestron"
+        for rel in (Path("Lib") / "encodings" / "__init__.py", pacote / "__init__.py", pacote / "__main__.py",
+                    pacote / "nucleo" / "__init__.py", pacote / "nucleo" / "caminhos.py",
+                    pacote / "nucleo" / "registro.py", pacote / "aplicativo" / "__init__.py",
+                    pacote / "aplicativo" / "inicio.py", pacote / "aplicativo" / "integridade.py",
+                    pacote / "aplicativo" / "erro.py"):
+            (self.pasta / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.pasta / rel).write_text("# m\n", encoding="utf-8")
+
+    def abrir(self, *args, modo: str = "0") -> tuple[int | None, str | None, str]:
+        """(código de saída, texto da caixa de mensagem, argumentos que o Py_Main recebeu)."""
+        saida = self.tmp / "wine.log"
+        with open(saida, "w") as registro:
+            processo = subprocess.Popen([WINE64, str(self.pasta / "Helestron.exe"), *args],
+                                        env=dict(self.env, FALSO_MODO=modo), stdin=subprocess.DEVNULL,
+                                        stdout=subprocess.DEVNULL, stderr=registro)
+        limite = time.monotonic() + 40
+        caixa = None
+        while time.monotonic() < limite:
+            linhas = [l for l in saida.read_text(errors="replace").splitlines() if "MSGBOX_OnInit" in l]
+            if linhas:
+                caixa = _texto_do_trace(linhas[0])
+                break
+            if processo.poll() is not None:
+                break
+            time.sleep(0.2)
+        if caixa is not None:
+            subprocess.run([str(Path(WINE64).with_name("wineserver")), "-k"], env=self.env,
+                           capture_output=True, timeout=60)
+            processo.wait(30)
+            codigo = None
+        else:
+            codigo = processo.wait(30)
+            time.sleep(0.5)
+            linhas = [l for l in saida.read_text(errors="replace").splitlines() if "MSGBOX_OnInit" in l]
+            caixa = _texto_do_trace(linhas[0]) if linhas else None
+        anotado = self.pasta / "py_main.txt"
+        chamado = anotado.read_text(encoding="utf-8", errors="replace") if anotado.exists() else ""
+        anotado.unlink(missing_ok=True)
+        return codigo, caixa, chamado
+
+    def test_tudo_no_lugar_abre_sem_mensagem(self):
+        codigo, caixa, chamado = self.abrir()
+        self.assertEqual(codigo, 0)
+        self.assertIsNone(caixa)
+        self.assertIn("-I -m helestron", chamado)
+
+    def test_falta_um_modulo_de_partida(self):
+        for rel in ("Lib/site-packages/helestron/aplicativo/erro.py", "Lib/encodings/__init__.py",
+                    "Lib/site-packages/helestron/nucleo/registro.py", "Lib/site-packages/helestron/__main__.py"):
+            with self.subTest(rel=rel):
+                self.setUp()
+                (self.pasta / rel).unlink()
+                codigo, caixa, chamado = self.abrir()
+                self.assertIsNotNone(caixa, "nenhuma mensagem")
+                self.assertTrue(caixa.startswith("Falta um arquivo do programa:"), caixa)
+                self.assertIn(rel.replace("/", "\\"), caixa)
+                self.assertEqual(chamado, "", "o Python rodou mesmo assim")
+
+    def test_pyc_ao_lado_vale_pelo_py(self):
+        modulo = self.pasta / "Lib/site-packages/helestron/aplicativo/erro.py"
+        modulo.unlink()
+        modulo.with_suffix(".pyc").write_bytes(b"pyc")
+        codigo, caixa, chamado = self.abrir()
+        self.assertEqual((codigo, caixa), (0, None))
+        self.assertNotEqual(chamado, "")
+
+    def test_fechou_logo_sem_janela_aponta_o_registro(self):
+        codigo, caixa, chamado = self.abrir(modo="1")
+        self.assertIsNotNone(caixa, "o atalho fechou sem dizer nada")
+        self.assertIn("sem abrir a janela (código 1)", caixa)
+        self.assertIn("\\Helestron\\Logs", caixa)
+        self.assertNotEqual(chamado, "")
+
+    def test_fechou_com_janela_ou_por_outra_chamada_sem_mensagem_a_mais(self):
+        # o programa mostrou a janela dele (ou a caixa dele): nada a acrescentar
+        self.assertEqual(self.abrir(modo="janela")[:2], (1, None))
+        # com argumentos (o autoteste do CI, uma linha de comando), nunca
+        self.assertEqual(self.abrir("--autoteste", "C:\\x", modo="1")[:2], (1, None))
+        # o instalador (--encerrar, --verificar-instalacao) nunca recebe caixa,
+        # nem com um arquivo de partida faltando: quem informa é ele
+        (self.pasta / "Lib/site-packages/helestron/nucleo/registro.py").unlink()
+        self.assertEqual(self.abrir("--encerrar", modo="1")[:2], (1, None))
+        self.assertEqual(self.abrir("--verificar-instalacao", modo="2")[:2], (2, None))
 
 
 # =================================================================== marca
@@ -1204,6 +1714,25 @@ if (-not $mcp.WaitForExit(30000)) {{ $mcp.Kill(); throw 'o MCP nao saiu' }}
                 else:
                     self.assertIn("-32700", saida)
 
+    @unittest.skipUnless(yaml, "PyYAML ausente")
+    def test_pasta_do_usuario_e_restos_da_versao_anterior_no_windows(self):
+        dados = yaml.safe_load(self.texto)
+        passos = {p.get("name", ""): p.get("run", "") for p in dados["jobs"]["windows"]["steps"]}
+        nomes = list(passos)
+        restos = next(n for n in nomes if n.startswith("Restos da versao anterior"))
+        instalar = next(n for n in nomes if n.startswith("Instalar em silencio"))
+        self.assertLess(nomes.index(restos), nomes.index(instalar))
+        self.assertIn("Assessor Integrado.lnk", passos[restos])
+        self.assertIn("iniciar.pyw", passos[restos])
+        conferir = passos["Conferir arquivos, atalhos e registro"]
+        self.assertIn("'arquivos-instalados.txt'", conferir)
+        self.assertIn("assessor-integrado", conferir)
+        usuario = next(n for n in nomes if n.startswith("Pasta com arquivos do usuario"))
+        self.assertGreater(nomes.index(usuario), nomes.index("Desinstalar em silencio (documentos do usuario ficam)"))
+        for trecho in ("'/S /D=' + $pasta", "Join-Path $pasta 'Helestron'", "'share\\orcamento.txt'",
+                       "'Scripts\\backup.bat'", "'Lib\\minha-lib.txt'", "Desinstalar.exe"):
+            self.assertIn(trecho, passos[usuario])
+
     def test_texto_com_acento_entra_por_env(self):
         self.assertIn("PASTA: 'C:\\Teste Área\\Helestron'", self.texto)
         self.assertIn("audiência de instrução e julgamento", self.texto)
@@ -1227,6 +1756,14 @@ class TestRepositorio(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         for opcao in ("--sem-modelo", "--modelo", "--cache", "--python-tar", "--saida", "--sem-falantes"):
             self.assertIn(opcao, r.stdout)
+        # em português, como as outras linhas de comando do programa
+        self.assertIn("uso: python construir/construir.py", r.stdout)
+        self.assertIn("mostra esta ajuda e sai", r.stdout)
+        self.assertNotIn("usage:", r.stdout)
+        r = subprocess.run([sys.executable, str(CONSTRUIR / "construir.py"), "--xyz"],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("erro: argumento não reconhecido: --xyz", r.stderr)
 
     def test_opcoes_incompativeis(self):
         saida = io.StringIO()

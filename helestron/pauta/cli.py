@@ -13,6 +13,11 @@ a quem prefere o Prompt de Comando.
 
 Códigos de saída: 0 tudo certo; 1 falhou (a frase diz por quê); 2 uso
 errado (opção inválida, data ilegível).
+
+Se sincronizar ou importar revela processo em segredo de justiça que ainda
+tinha arquivos no acervo, o comando faz na hora o preparo rápido do acervo
+(como a janela): os autos e as transcrições vão para a pasta dos sigilosos,
+e o processo sai do índice e do texto lidos pela IA. A saída diz o que saiu.
 """
 
 from __future__ import annotations
@@ -24,38 +29,12 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+try:                                   # argparse em português (ajuda, títulos e erros)
+    from ..nucleo.argumentos import ArgumentParser
+except ImportError:                    # pragma: no cover - instalação sem o módulo
+    from argparse import ArgumentParser
+
 log = logging.getLogger("pauta.cli")
-
-
-class _Formatador(argparse.HelpFormatter):
-    def add_usage(self, usage, actions, groups, prefix=None):
-        # prefix "" é o argparse montando o nome do subcomando: fica sem prefixo
-        return super().add_usage(usage, actions, groups, "uso: " if prefix is None else prefix)
-
-
-class _Parser(argparse.ArgumentParser):
-    """argparse em português (ajuda, títulos e erros)."""
-
-    def __init__(self, *args, **kwargs):
-        kwargs.setdefault("formatter_class", _Formatador)
-        kwargs["add_help"] = False
-        super().__init__(*args, **kwargs)
-        self._positionals.title = "argumentos"
-        self._optionals.title = "opções"
-        self.add_argument("-h", "--help", action="help", default=argparse.SUPPRESS,
-                          help="mostra esta ajuda e sai")
-
-    def error(self, message):
-        traducoes = (("the following arguments are required", "faltam os argumentos"),
-                     ("unrecognized arguments", "argumentos não reconhecidos"),
-                     ("invalid choice", "escolha inválida"),
-                     ("expected one argument", "falta o valor"),
-                     ("argument", "argumento"))
-        for de, para in traducoes:
-            message = message.replace(de, para)
-        self.print_usage(sys.stderr)
-        print(f"{self.prog}: erro: {message}", file=sys.stderr)
-        raise SystemExit(2)
 
 
 def _data(texto: str) -> date:
@@ -71,10 +50,10 @@ def _data(texto: str) -> date:
 
 
 def criar_parser() -> argparse.ArgumentParser:
-    p = _Parser(prog="python -m helestron pauta",
-                description="Pauta de audiências do Helestron: sincronizar com o e-SAJ e o eProc, "
-                            "importar relatórios, listar e exportar em Excel.")
-    sub = p.add_subparsers(dest="comando", parser_class=_Parser, metavar="COMANDO",
+    p = ArgumentParser(prog="python -m helestron pauta",
+                       description="Pauta de audiências do Helestron: sincronizar com o e-SAJ e o "
+                                   "eProc, importar relatórios, listar e exportar em Excel.")
+    sub = p.add_subparsers(dest="comando", parser_class=ArgumentParser, metavar="COMANDO",
                            title="comandos")
 
     s = sub.add_parser("sincronizar", help="lê a pauta nos portais (fontes configuradas)")
@@ -170,6 +149,7 @@ def _sincronizar(args, servico) -> int:
         print(f"  aviso: {aviso}")
     for e in r.get("erros") or []:
         print(f"  {e['rotulo']}: {e['mensagem']}")
+    _aplicar_sigilo_revelado(servico.cfg, r.get("sigilosos_novos") or [])
     return 1 if r.get("erros") else 0
 
 
@@ -196,6 +176,7 @@ def _exportar(args, servico) -> int:
 
 def _importar(args, servico) -> int:
     codigo = 0
+    revelados: list[str] = []
     for nome in args.arquivos:
         caminho = Path(nome.strip().strip('"')).expanduser()
         try:
@@ -211,7 +192,52 @@ def _importar(args, servico) -> int:
               f"{_plural(r['ignoradas'], 'linha ignorada', 'linhas ignoradas')}.")
         for aviso in r.get("avisos") or []:
             print(f"  aviso: {aviso}")
+        revelados += [n for n in r.get("sigilosos_novos") or [] if n not in revelados]
+    _aplicar_sigilo_revelado(servico.cfg, revelados)
     return codigo
+
+
+def _aplicar_sigilo_revelado(cfg, numeros: list[str]) -> None:
+    """A pauta revelou processos em segredo de justiça: o que houver deles no
+    acervo sai agora (o preparo rápido, como a janela faz), e a saída diz o quê."""
+    from .servico import no_acervo, quem_corre
+
+    lista = no_acervo(cfg, numeros) if numeros else []
+    if not lista:
+        return
+    from .. import servicos
+
+    um = len(lista) == 1
+    print(f"Segredo de justiça: a pauta indica que {quem_corre(lista)} em segredo de justiça, "
+          f"e {'ele tinha' if um else 'eles tinham'} arquivos no acervo. Preparando o acervo...")
+    rel = servicos.atualizar_indice(cfg)
+    if rel is None:
+        print("  Não consegui preparar o acervo (veja o registro). Antes de compartilhar o "
+              "acervo com a IA, use: python -m helestron preparar", file=sys.stderr)
+        return
+    if rel.sigilosos_levados:
+        print(f"  {_plural(rel.sigilosos_levados, 'processo levado', 'processos levados')} "
+              "para a pasta dos sigilosos; fora do índice e do texto lidos pela IA.")
+    elif not rel.sigilosos_no_acervo:
+        try:
+            separar = bool(cfg.flag("download", "separar_sigilosos"))
+        except Exception:
+            separar = True
+        print("  Fora do índice e do texto lidos pela IA" + (
+            "." if separar else " (com a separação dos sigilosos desligada, os arquivos "
+                                "continuam no acervo)."))
+    if rel.sigilosos_no_acervo:
+        nomes = ", ".join(p.name for p in rel.sigilosos_no_acervo[:5])
+        print(f"  ATENÇÃO: não consegui levar para a pasta dos sigilosos: {nomes} (arquivo "
+              "aberto em outro programa?). Feche-o e mova-o para a pasta dos sigilosos antes "
+              "de compartilhar o acervo.", file=sys.stderr)
+    try:
+        nuvem = str(cfg.texto("compartilhar", "pasta_nuvem") or "").strip()
+    except Exception:
+        nuvem = ""
+    if nuvem:
+        print("  A cópia na nuvem sai no próximo espelho (na janela: Compartilhar › Espelhar "
+              "agora).")
 
 
 def _listar(args, servico) -> int:

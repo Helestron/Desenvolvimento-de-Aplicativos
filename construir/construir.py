@@ -33,8 +33,10 @@ As oito etapas (docs/ESPECIFICACAO.md, seção 10):
      manifesto), compilado com o MinGW e conferido com o objdump.
   7. manifesto.json: versão, e o SHA-256 e o tamanho de cada arquivo - o
      programa o confere ao abrir e o instalador, no fim da instalação.
-  8. Script NSIS (instalador/helestron.nsi, com a lista exata do que esta
-     versão instala) e makensis -> dist/Helestron-Setup-<versão>.exe.
+  8. A lista do que esta versão instala (arquivos-instalados.txt, que vai
+     para a pasta do programa: a próxima atualização e o desinstalador apagam
+     só o que está nela), o script NSIS (instalador/helestron.nsi) e o
+     makensis -> dist/Helestron-Setup-<versão>.exe.
 
 As imagens da marca (ícone, bitmaps do instalador) são as versionadas em
 helestron/recursos, geradas por construir/marca.py; --marca as gera de novo
@@ -119,9 +121,6 @@ REMOVER_PASTAS = ("Scripts", "include", "Include", "libs", "tcl", "share", "Lib/
 REMOVER_ARQUIVOS = ("DLLs/_tkinter.pyd", "DLLs/tcl86t.dll", "DLLs/tk86t.dll", "DLLs/_test*.pyd",
                     "DLLs/_ctypes_test.pyd", "Lib/turtle.py")     # aceitam curinga
 REMOVER_PADROES = ("*.pdb",)
-# Nomes da raiz que versões anteriores tiveram (o instalador os remove ao
-# atualizar, se existirem): os que a etapa 4 tira, caso um dia voltem.
-LEGADO_RAIZ = ("Scripts", "include", "libs", "tcl", "share")
 
 
 class ErroConstrucao(RuntimeError):
@@ -707,36 +706,47 @@ def gerar_manifesto(arvore: Path, versao: str) -> dict:
 
 
 # ============================================================= etapa 8
-def _itens_da_raiz(arvore: Path) -> tuple[list[str], list[str]]:
-    """(pastas, arquivos) da raiz da pasta do programa - mais as pastas de
-    versões anteriores."""
-    pastas = sorted({p.name for p in arvore.iterdir() if p.is_dir()} | set(LEGADO_RAIZ),
-                    key=str.lower)
-    arquivos = sorted((p.name for p in arvore.iterdir() if p.is_file()), key=str.lower)
-    return pastas, arquivos
+NOME_REGISTRO = "arquivos-instalados.txt"
+NOME_DESINSTALADOR = "Desinstalar.exe"
 
 
-def linhas_remover_programa(arvore: Path) -> str:
-    """As linhas do macro RemoverPrograma: cada item da raiz da pasta do
-    programa (pastas com RMDir /r, arquivos com Delete), mais os nomes de
-    versões anteriores."""
-    pastas, arquivos = _itens_da_raiz(arvore)
-    linhas = [f'  RMDir /r "$INSTDIR\\{nome}"' for nome in pastas]
-    linhas += [f'  Delete "$INSTDIR\\{nome}"' for nome in arquivos]
-    return "\n".join(linhas)
+def linhas_do_registro(arvore: Path) -> list[str]:
+    """As linhas da lista do que a instalação põe na pasta do programa:
+    "A <arquivo>" para cada arquivo (e o Desinstalar.exe, que o instalador
+    grava) e, depois, "P <pasta>" para cada pasta, das mais fundas para as
+    de cima - o instalador apaga os arquivos um a um e as pastas só se
+    ficarem vazias. Caminhos relativos, com "\\". O manifesto.json e a própria
+    lista vêm por último: até o fim da remoção, a pasta continua sendo
+    reconhecida como do Helestron."""
+    finais = (NOME_DESINSTALADOR, NOME_MANIFESTO, NOME_REGISTRO)
+    arquivos = sorted((p.relative_to(arvore).as_posix() for p in arvore.rglob("*")
+                       if p.is_file() and p.relative_to(arvore).as_posix() not in finais),
+                      key=str.lower)
+    pastas = sorted((p.relative_to(arvore).as_posix() for p in arvore.rglob("*") if p.is_dir()),
+                    key=lambda rel: (-rel.count("/"), rel.lower()))
+    return ([f"A {rel}" for rel in (*arquivos, *finais)]
+            + [f"P {rel}" for rel in pastas])
 
 
-def linhas_afastar_presos(arvore: Path) -> str:
-    """As linhas do macro AfastarLista: os mesmos itens do RemoverPrograma,
-    para renomear o que ficou preso (o servidor MCP aberto pelo Claude
-    Desktop) em vez de esperar por ele."""
-    pastas, arquivos = _itens_da_raiz(arvore)
-    linhas = [f'  !insertmacro AfastarPasta "${{UN}}" "{nome}"' for nome in pastas]
-    linhas += [f'  !insertmacro AfastarArquivo "${{UN}}" "{nome}"' for nome in arquivos]
-    return "\n".join(linhas)
+def gerar_registro(arvore: Path, versao: str, destino: Path) -> Path:
+    """Grava a lista (linhas_do_registro) em destino, em UTF-16 com BOM e
+    CRLF - o que o FileReadUTF16LE do NSIS lê, com qualquer caractere -,
+    depois do cabeçalho "Helestron <versão> ...", pelo qual o instalador
+    reconhece uma pasta que já tem o Helestron."""
+    cabecalho = (f"Helestron {versao} - arquivos instalados nesta pasta. A atualização e o "
+                 "desinstalador apagam só o que está nesta lista.")
+    linhas = [cabecalho] + [linha.replace("/", "\\") for linha in linhas_do_registro(arvore)]
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    destino.write_bytes("\ufeff".encode("utf-16-le") + ("\r\n".join(linhas) + "\r\n").encode("utf-16-le"))
+    return destino
 
 
-def script_nsis(arvore: Path, versao: str, saida_exe: Path, recursos: Path) -> str:
+def script_nsis(arvore: Path, versao: str, saida_exe: Path, recursos: Path,
+                registro: Path | None = None) -> str:
+    """O helestron.nsi com os valores desta construção. Sem registro, a lista
+    do que a versão instala é gravada ao lado da árvore (gerar_registro)."""
+    if registro is None:
+        registro = gerar_registro(arvore, versao, arvore.parent / NOME_REGISTRO)
     valores = {
         "VERSAO": versao,
         "VERSAO_WIN": versao_windows(versao),
@@ -747,12 +757,11 @@ def script_nsis(arvore: Path, versao: str, saida_exe: Path, recursos: Path) -> s
         "BOAS_VINDAS": (recursos / "instalador-boas-vindas.bmp").resolve().as_posix(),
         "CABECALHO": (recursos / "instalador-cabecalho.bmp").resolve().as_posix(),
         "TAMANHO_KB": str(max(1, tamanho_da_arvore(arvore) // 1024)),
-        "REMOVER_PROGRAMA": linhas_remover_programa(arvore),
-        "AFASTAR_PRESOS": linhas_afastar_presos(arvore),
+        "REGISTRO": registro.resolve().as_posix(),
         "URL_PROJETO": URL_PROJETO,
     }
     if os.name == "nt":     # o makensis do Windows quer barras invertidas
-        for chave in ("ARVORE", "SAIDA", "ICONE", "BOAS_VINDAS", "CABECALHO"):
+        for chave in ("ARVORE", "SAIDA", "ICONE", "BOAS_VINDAS", "CABECALHO", "REGISTRO"):
             valores[chave] = valores[chave].replace("/", "\\")
     return renderizar(MODELO_NSIS.read_text(encoding="utf-8"), valores)
 
@@ -870,8 +879,11 @@ def construir(args: argparse.Namespace) -> Path:
     etapa(8, "Instalador (NSIS)")
     saida.mkdir(parents=True, exist_ok=True)
     exe_final = saida / f"Helestron-Setup-{versao}.exe"
+    registro = gerar_registro(arvore, versao, obra / NOME_REGISTRO)
+    info(f"{registro.name}: a lista do que esta versão instala (a atualização e o "
+         "desinstalador apagam só o que está nela)")
     script = obra / "helestron.nsi"
-    script.write_text(script_nsis(arvore, versao, exe_final, RECURSOS), encoding="utf-8")
+    script.write_text(script_nsis(arvore, versao, exe_final, RECURSOS, registro), encoding="utf-8")
     exe_final.unlink(missing_ok=True)
     rodar_makensis(script)
     if not exe_final.is_file():
@@ -884,15 +896,32 @@ def construir(args: argparse.Namespace) -> Path:
     return exe_final
 
 
+def classe_do_analisador() -> type:
+    """O ArgumentParser em português do programa (helestron/nucleo/argumentos.py,
+    só biblioteca padrão), carregado pelo arquivo: importar o pacote helestron
+    aqui não é preciso. Sem ele, o do argparse."""
+    import importlib.util
+
+    arquivo = PACOTE / "nucleo" / "argumentos.py"
+    try:
+        spec = importlib.util.spec_from_file_location("helestron_argumentos", arquivo)
+        modulo = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(modulo)
+        return modulo.ArgumentParser
+    except (OSError, ImportError, AttributeError, SyntaxError):
+        return argparse.ArgumentParser
+
+
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Constrói o Helestron-Setup-<versão>.exe.")
-    p.add_argument("--saida", default=str(RAIZ / "dist"), help="pasta do instalador (padrão: dist)")
-    p.add_argument("--cache", default=str(CONSTRUIR / "cache"),
+    p = classe_do_analisador()(prog="python construir/construir.py",
+                               description="Constrói o Helestron-Setup-<versão>.exe.")
+    p.add_argument("--saida", metavar="PASTA", default=str(RAIZ / "dist"), help="pasta do instalador (padrão: dist)")
+    p.add_argument("--cache", metavar="PASTA", default=str(CONSTRUIR / "cache"),
                    help="downloads reaproveitáveis (padrão: construir/cache)")
-    p.add_argument("--obra", default=str(CONSTRUIR / "obra"),
+    p.add_argument("--obra", metavar="PASTA", default=str(CONSTRUIR / "obra"),
                    help="pasta de trabalho (padrão: construir/obra)")
-    p.add_argument("--python-tar", help="o .tar.gz do python-build-standalone já baixado")
-    p.add_argument("--modelo", help="pasta com o faster-whisper-small já baixado")
+    p.add_argument("--python-tar", metavar="ARQ", help="o .tar.gz do python-build-standalone já baixado")
+    p.add_argument("--modelo", metavar="PASTA", help="pasta com o faster-whisper-small já baixado")
     p.add_argument("--sem-modelo", action="store_true",
                    help="instalador sem o modelo de transcrição (baixado no primeiro uso)")
     p.add_argument("--sem-falantes", action="store_true",

@@ -12,6 +12,11 @@ e qualquer uma basta:
    portal, o do relatório importado, o que já saiu da pauta): o sigilo é do
    processo, não da linha (Armazem.sigilosas, contrato C4).
 
+O INCIDENTE (o dependente "...0001-01", o cumprimento de sentença, por
+exemplo) herda o sigilo do principal: as partes e o conteúdo são os mesmos.
+O contrário não vale - o principal não fica sigiloso só por causa de um
+incidente (Sigilosas, contem).
+
 É esta regra que o compartilhamento (INDICE.md, CLAUDE.md/AGENTS.md, MCP,
 _ia/texto, pacote, espelho na nuvem), o download e a transcrição consultam:
 processo assim nunca vai para a IA nem para a nuvem, o download o grava na
@@ -46,6 +51,11 @@ SUBPASTA_AUDIO = "_audio"                # gravações e diários, dentro de Tra
 MOTIVO_PASTA = ("os autos, uma transcrição ou uma gravação dele estão na pasta dos "
                 "sigilosos")
 MOTIVO_PAUTA = "a pauta de audiências indica que ele corre em segredo de justiça"
+# O incidente de um processo sigiloso (o sigilo vem do principal)
+MOTIVO_PASTA_PRINCIPAL = ("é incidente de um processo sigiloso: os autos, uma transcrição ou "
+                          "uma gravação do principal estão na pasta dos sigilosos")
+MOTIVO_PAUTA_PRINCIPAL = ("é incidente de um processo sigiloso: a pauta de audiências indica "
+                          "que o principal corre em segredo de justiça")
 
 PAUTA_DO_PROGRAMA = object()   # o banco da pauta do programa (caminhos.ARQUIVO_PAUTA)
 VALIDADE_PAUTA_S = 30.0        # releitura forçada, mesmo sem mudança aparente no banco
@@ -56,6 +66,50 @@ _lidas: dict[str, tuple[tuple, frozenset[str], float]] = {}
 
 
 # ===================================================================== apoio
+_TAMANHO_PRINCIPAL = len("0000000-00.0000.0.00.0000")
+
+
+def principal(nome) -> str | None:
+    """O principal (Numero.nome_arquivo) de um incidente ("...0001-01" ->
+    "...0001"); None se 'nome' não for incidente nem número."""
+    texto = getattr(nome, "nome_arquivo", None) or str(nome or "")
+    # O caminho rápido (a regra é consultada para cada arquivo do acervo):
+    # o nome_arquivo do principal ("NNNNNNN-DD.AAAA.J.TR.OOOO") e o do incidente.
+    if len(texto) >= _TAMANHO_PRINCIPAL and texto[7] == "-" and texto[10] == ".":
+        if len(texto) == _TAMANHO_PRINCIPAL:
+            return None
+        if texto[_TAMANHO_PRINCIPAL] == "-" and texto[_TAMANHO_PRINCIPAL + 1:].isdigit():
+            return texto[:_TAMANHO_PRINCIPAL]
+    try:
+        n = cnj.ler_nome_arquivo(texto)
+    except cnj.NumeroInvalido:
+        return None
+    return n.principal if n.dependente else None
+
+
+def contem(chaves, nome) -> bool:
+    """O processo 'nome' (Numero.nome_arquivo) está entre os sigilosos
+    'chaves' - ele mesmo ou, se for incidente, o principal dele?"""
+    if not chaves or not nome:
+        return False
+    if frozenset.__contains__(chaves, nome) if isinstance(chaves, frozenset) else nome in chaves:
+        return True
+    p = principal(nome)
+    if p is None:
+        return False
+    return frozenset.__contains__(chaves, p) if isinstance(chaves, frozenset) else p in chaves
+
+
+class Sigilosas(frozenset):
+    """Os processos sigilosos (Numero.nome_arquivo). 'chave in sigilosas' é
+    verdadeiro também para o incidente de um processo sigiloso: o incidente
+    ("...0001-01") herda o sigilo do principal ("...0001"). O principal não
+    fica sigiloso só por causa de um incidente."""
+
+    def __contains__(self, chave) -> bool:
+        return contem(self, chave)
+
+
 def _nome(numero) -> str | None:
     """O Numero.nome_arquivo de um Numero ou de um texto (None se não houver)."""
     nome = getattr(numero, "nome_arquivo", None)
@@ -87,7 +141,7 @@ def _candidatos(sigilosos: Path, prefixo: str = "*") -> list[Path]:
 
 
 # ========================================================== pasta dos sigilosos
-def chaves_na_pasta(sigilosos, raiz=None) -> set[str]:
+def chaves_na_pasta(sigilosos, raiz=None) -> Sigilosas:
     """Os processos (Numero.nome_arquivo) com autos, transcrição, gravação ou
     diário na pasta dos sigilosos.
 
@@ -95,13 +149,13 @@ def chaves_na_pasta(sigilosos, raiz=None) -> set[str]:
     pasta dos sigilosos, o que é do acervo não vira sigiloso por isso.
     """
     if not sigilosos:
-        return set()
+        return Sigilosas()
     sigilosos = Path(sigilosos)
     dentro_dela = _partes_relativas(raiz, sigilosos) if raiz is not None else None
     try:
         candidatos = _candidatos(sigilosos)
     except OSError:
-        return set()
+        return Sigilosas()
     achados: set[str] = set()
     for p in candidatos:
         if dentro_dela is not None:
@@ -113,22 +167,26 @@ def chaves_na_pasta(sigilosos, raiz=None) -> set[str]:
             achados.add(cnj.ler_nome_arquivo(p.stem).nome_arquivo)
         except cnj.NumeroInvalido:
             continue
-    return achados
+    return Sigilosas(achados)
 
 
-def na_pasta(sigilosos, numero) -> bool:
+def na_pasta(sigilosos, numero, herdar: bool = True) -> bool:
     """O processo tem autos, transcrição, gravação ou diário na pasta dos
-    sigilosos? (A consulta de um número só: procura só o que tem o nome dele.)"""
+    sigilosos? O incidente também, se o principal tiver ('herdar'). (A
+    consulta de um número só: procura só o que tem o nome dele.)"""
     nome = _nome(numero)
     if not nome or not sigilosos:
         return False
+    do_principal = principal(nome) if herdar else None
+    alvos = {nome, do_principal} - {None}
+    prefixo = do_principal or nome      # o nome do incidente começa pelo do principal
     try:
-        candidatos = _candidatos(Path(sigilosos), f"{glob.escape(nome)}*")
+        candidatos = _candidatos(Path(sigilosos), f"{glob.escape(prefixo)}*")
     except (OSError, ValueError, TypeError):
         return False
     for p in candidatos:
         try:
-            if cnj.ler_nome_arquivo(p.stem).nome_arquivo == nome:
+            if cnj.ler_nome_arquivo(p.stem).nome_arquivo in alvos:
                 return True
         except cnj.NumeroInvalido:
             continue
@@ -170,7 +228,7 @@ def _nome_da_chave(chave: str) -> str | None:
     return (replace(n, dependente=dependente) if dependente else n).nome_arquivo
 
 
-def chaves_da_pauta(pauta=PAUTA_DO_PROGRAMA) -> set[str]:
+def chaves_da_pauta(pauta=PAUTA_DO_PROGRAMA) -> Sigilosas:
     """Os processos (Numero.nome_arquivo) que a pauta marca sigilosos.
 
     'pauta': o banco (padrão: o do programa); None não consulta a pauta.
@@ -178,19 +236,19 @@ def chaves_da_pauta(pauta=PAUTA_DO_PROGRAMA) -> set[str]:
     """
     arquivo = _arquivo_da_pauta(pauta)
     if arquivo is None:
-        return set()
+        return Sigilosas()
     try:
         if not arquivo.is_file():
-            return set()
+            return Sigilosas()
     except OSError:
-        return set()
+        return Sigilosas()
     chave = str(arquivo)
     assinatura = _assinatura(arquivo)
     with _trava:
         guardado = _lidas.get(chave)
     if guardado is not None and guardado[0] == assinatura \
             and time.monotonic() - guardado[2] < VALIDADE_PAUTA_S:
-        return set(guardado[1])
+        return Sigilosas(guardado[1])
     try:
         from ..pauta.armazem import Armazem
 
@@ -204,19 +262,23 @@ def chaves_da_pauta(pauta=PAUTA_DO_PROGRAMA) -> set[str]:
                     str(erro)[:160],
                     "valem a pasta dos sigilosos e o que a pauta já tinha indicado" if guardado
                     else "vale só a pasta dos sigilosos")
-        return set(guardado[1]) if guardado else set()
-    nomes = frozenset(n for n in (_nome_da_chave(c) for c in marcadas) if n)
+        return Sigilosas(guardado[1]) if guardado else Sigilosas()
+    nomes = Sigilosas(n for n in (_nome_da_chave(c) for c in marcadas) if n)
     with _trava:
         # A assinatura de ANTES da leitura: se o banco mudou no meio, a
         # próxima consulta o lê de novo.
         _lidas[chave] = (assinatura, nomes, time.monotonic())
-    return set(nomes)
+    return nomes
 
 
-def na_pauta(numero, pauta=PAUTA_DO_PROGRAMA) -> bool:
-    """A pauta marca este processo sigiloso? Nunca levanta."""
+def na_pauta(numero, pauta=PAUTA_DO_PROGRAMA, herdar: bool = True) -> bool:
+    """A pauta marca este processo sigiloso (ou, se for incidente e
+    'herdar', o principal dele)? Nunca levanta."""
     nome = _nome(numero)
-    return bool(nome) and nome in chaves_da_pauta(pauta)
+    if not nome:
+        return False
+    chaves = chaves_da_pauta(pauta)
+    return contem(chaves, nome) if herdar else frozenset.__contains__(chaves, nome)
 
 
 def esquecer_pauta() -> None:
@@ -226,25 +288,43 @@ def esquecer_pauta() -> None:
 
 
 # ===================================================================== regra
-def chaves_sigilosas(sigilosos, raiz=None, pauta=PAUTA_DO_PROGRAMA) -> set[str]:
+def chaves_sigilosas(sigilosos, raiz=None, pauta=PAUTA_DO_PROGRAMA) -> Sigilosas:
     """TODOS os processos sigilosos que o programa conhece (Numero.nome_arquivo):
     os da pasta dos sigilosos (autos, transcrição, gravação, diário) e os
-    que a pauta marca. 'raiz': o acervo (ver chaves_na_pasta)."""
-    return chaves_na_pasta(sigilosos, raiz) | chaves_da_pauta(pauta)
+    que a pauta marca. 'raiz': o acervo (ver chaves_na_pasta). Num
+    Sigilosas: 'chave in ...' vale também para o incidente de um deles."""
+    return Sigilosas(chaves_na_pasta(sigilosos, raiz) | chaves_da_pauta(pauta))
+
+
+def motivo_da_pasta(sigilosos, numero) -> str:
+    """MOTIVO_PASTA, MOTIVO_PASTA_PRINCIPAL (o incidente de um processo com
+    autos, transcrição ou gravação na pasta dos sigilosos) ou ""."""
+    if na_pasta(sigilosos, numero, herdar=False):
+        return MOTIVO_PASTA
+    if principal(_nome(numero)) and na_pasta(sigilosos, numero):
+        return MOTIVO_PASTA_PRINCIPAL
+    return ""
+
+
+def motivo_da_pauta(numero, pauta=PAUTA_DO_PROGRAMA) -> str:
+    """MOTIVO_PAUTA, MOTIVO_PAUTA_PRINCIPAL (o incidente de um processo que a
+    pauta marca sigiloso) ou ""."""
+    if na_pauta(numero, pauta, herdar=False):
+        return MOTIVO_PAUTA
+    if principal(_nome(numero)) and na_pauta(numero, pauta):
+        return MOTIVO_PAUTA_PRINCIPAL
+    return ""
 
 
 def motivo(cfg, numero, pauta=PAUTA_DO_PROGRAMA) -> str:
     """Por que o programa já sabe que o processo é sigiloso ("" = não sabe):
-    MOTIVO_PASTA ou MOTIVO_PAUTA. Nunca levanta."""
+    MOTIVO_PASTA ou MOTIVO_PAUTA (ou, no incidente de um processo sigiloso,
+    MOTIVO_PASTA_PRINCIPAL ou MOTIVO_PAUTA_PRINCIPAL). Nunca levanta."""
     try:
         sigilosos = cfg.pasta_sigilosos
     except Exception:
         sigilosos = None
-    if na_pasta(sigilosos, numero):
-        return MOTIVO_PASTA
-    if na_pauta(numero, pauta):
-        return MOTIVO_PAUTA
-    return ""
+    return motivo_da_pasta(sigilosos, numero) or motivo_da_pauta(numero, pauta)
 
 
 def processo_sigiloso(cfg, numero, pauta=PAUTA_DO_PROGRAMA) -> bool:

@@ -48,7 +48,9 @@ class TestCLI(apoio.PastaTemporaria):
         self.assertIn("sincronizar", saida)
         codigo, _, erro = self.rodar("voar")
         self.assertEqual(codigo, 2)
-        self.assertIn("escolha inválida", erro)
+        self.assertIn("python -m helestron pauta: erro:", erro)
+        self.assertIn("'voar'", erro)
+        self.assertNotIn("invalid choice", erro)
         codigo, _, erro = self.rodar("exportar", "--de", "31/02/2026")
         self.assertEqual(codigo, 2)
         self.assertIn("data inválida", erro)
@@ -105,6 +107,63 @@ class TestCLI(apoio.PastaTemporaria):
         codigo, _, erro = self.rodar("exportar", "--sem-partes-sigilosos",
                                      "--incluir-partes-sigilosos")
         self.assertEqual(codigo, 2)
+
+    def test_ajuda_e_erros_em_portugues(self):
+        """A linha de comando fala português do Brasil do começo ao fim: nem a
+        ajuda nem os erros do argparse ("usage", "options", "choose from",
+        "the following arguments are required") aparecem em inglês."""
+        ingles = ("usage:", "options:", "positional arguments", "show this help",
+                  "the following arguments are required", "unrecognized arguments",
+                  "invalid choice", "choose from", "expected one argument")
+        casos = {
+            "ajuda": (("--help",), 0, ("uso: python -m helestron pauta", "opções:",
+                                       "mostra esta ajuda e sai", "comandos:")),
+            "ajuda do comando": (("importar", "--help"), 0, ("argumentos:", "opções:",
+                                                             "mostra esta ajuda e sai")),
+            "falta o arquivo": (("importar",), 2, ("arquivos",)),
+            "opção desconhecida": (("listar", "--xyz"), 2, ("--xyz",)),
+            "escolha errada": (("exportar", "--sistema", "pje"), 2, ("'pje'", "esaj")),
+            "falta o valor": (("listar", "--de"), 2, ("--de",)),
+        }
+        for nome, (argv, esperado, trechos) in casos.items():
+            with self.subTest(nome=nome):
+                codigo, saida, erro = self.rodar(*argv)
+                self.assertEqual(codigo, esperado)
+                texto = saida + erro
+                for trecho in trechos:
+                    self.assertIn(trecho, texto)
+                if esperado == 2:
+                    self.assertIn("erro:", erro)
+                    self.assertIn("uso:", erro)
+                for palavra in ingles:
+                    self.assertNotIn(palavra, texto.lower())
+
+    def test_sigilo_revelado_tira_do_acervo(self):
+        """O relatório revela que um processo com autos no acervo corre em segredo de
+        justiça: a linha de comando o tira do acervo na hora e diz o que fez. A
+        negação ("Segredo de justiça: não") não tira ninguém."""
+        lote = self.amb.acervo / "Processos" / "Lote 1"
+        lote.mkdir(parents=True)
+        for n in (N1, N2):
+            (lote / f"{n}.pdf").write_bytes(apoio.pdf_bytes(1, "autos"))
+        (self.tmp / "sig.csv").write_text(
+            "Data;Hora;Processo;Observações;Partes\n"
+            f"05/10/2026;09:00;{N1};;(Segredo de Justiça)\n"
+            f"06/10/2026;09:00;{N2};Segredo de justiça: não;João x Município\n",
+            encoding="utf-8")
+        codigo, saida, erro = self.rodar("importar", str(self.tmp / "sig.csv"))
+        self.assertEqual(codigo, 0, erro)
+        self.assertIn(f"Segredo de justiça: a pauta indica que o processo {N1} corre em segredo "
+                      "de justiça, e ele tinha arquivos no acervo. Preparando o acervo...", saida)
+        self.assertIn("1 processo levado para a pasta dos sigilosos; fora do índice e do texto "
+                      "lidos pela IA.", saida)
+        self.assertNotIn(N2 + " corre", saida)
+        self.assertFalse((lote / f"{N1}.pdf").exists())
+        self.assertTrue((self.amb.sigilosos / "Lote 1" / f"{N1}.pdf").exists())
+        self.assertTrue((lote / f"{N2}.pdf").exists(), "o processo público fica no acervo")
+        # importar de novo não repete nada
+        codigo, saida, _ = self.rodar("importar", str(self.tmp / "sig.csv"))
+        self.assertNotIn("Segredo de justiça:", saida)
 
     def test_importar_com_erro(self):
         codigo, saida, erro = self.rodar("importar", str(self.tmp / "rel.csv"),

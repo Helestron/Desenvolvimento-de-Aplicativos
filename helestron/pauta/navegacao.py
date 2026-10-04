@@ -83,10 +83,12 @@ JS_TABELAS = r"""() => {
           .map((a) => a.href).filter((h) => /^https?:/i.test(h)).slice(0, 5);
         const dicas = Array.from(c.querySelectorAll("[title], img[alt]"))
           .map((e) => e.getAttribute("title") || e.getAttribute("alt") || "")
-          .filter(Boolean).slice(0, 6).join(" ");
-        const proprio = c.getAttribute("title") || "";
+          .map(limpar).filter(Boolean).slice(0, 6);
+        const proprio = limpar(c.getAttribute("title") || "");
+        // cada dica por si, separadas por " | " (tabelas.SEPARADOR_DICAS)
         celulas.push({texto: limpar(c.innerText || c.textContent || ""), links,
-                      dicas: limpar(proprio + " " + dicas), th: c.tagName === "TH",
+                      dicas: [proprio].concat(dicas).filter(Boolean).join(" | "),
+                      th: c.tagName === "TH",
                       colspan: c.colSpan || 1, rowspan: c.rowSpan || 1,
                       aninhada: !!c.querySelector("table")});
       }

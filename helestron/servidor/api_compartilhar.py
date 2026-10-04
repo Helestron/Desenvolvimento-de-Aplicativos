@@ -1,13 +1,18 @@
 """API de Compartilhar com IA: preparar o acervo e entregá-lo a cada ferramenta.
 
-A regra do sigilo vale aqui por inteiro: com processo sigiloso preso no
-acervo (o motor ou o preparo não conseguiu tirá-lo de lá), nada de preparo,
-pacote ou espelho na nuvem até o PDF sair - a IA leria o texto dele, e a
-nuvem levaria a cópia. Antes de recusar, o programa tenta de novo levá-lo
-para a pasta dos sigilosos (o arquivo pode ter sido fechado). E todo
-compartilhamento começa pelo preparo (nucleo/sigilo.py: o processo que o
-programa já sabe sigiloso - pela pasta dos sigilosos ou pela pauta - sai do
-acervo e do índice antes de a ferramenta abrir ou de a nuvem receber a cópia).
+A regra do sigilo vale aqui por inteiro: com os autos (PDF) de um processo
+sigiloso presos no acervo (o motor ou o preparo não conseguiu tirá-los de
+lá), nada de preparo, pacote ou espelho na nuvem até o PDF sair - a IA
+leria o texto dele, e a nuvem levaria a cópia. Antes de recusar, o programa
+tenta de novo levá-lo para a pasta dos sigilosos (o arquivo pode ter sido
+fechado), e a recusa diz qual arquivo é, por que ficou e para onde movê-lo.
+O resto do processo que não pôde sair (a minuta do usuário, o produto da IA
+em Produtos/, a transcrição aberta no Word, o relatório do lote aberto no
+Excel) não trava nada - o índice, o conector, o pacote e a nuvem já o deixam
+de fora -, mas fica avisado no Início. E todo compartilhamento começa pelo
+preparo (nucleo/sigilo.py: o processo que o programa já sabe sigiloso - pela
+pasta dos sigilosos ou pela pauta - sai do acervo e do índice antes de a
+ferramenta abrir ou de a nuvem receber a cópia).
 """
 
 from __future__ import annotations
@@ -43,28 +48,66 @@ def registrar(r: Roteador) -> None:
 
 # ===================================================================== sigilo
 def presos(app) -> list[Path]:
+    """Os autos de processo sigiloso que ainda estão presos no acervo."""
     ficam = [Path(p) for p in app.sigilosos_presos if Path(p).exists()]
     app.sigilosos_presos = ficam
     return ficam
 
 
-def registrar_presos(app, arquivos) -> list[Path]:
-    """Guarda os sigilosos que ficaram no acervo (o preparo não conseguiu
-    levá-los): até saírem, nada se compartilha. Devolve a lista recebida."""
+def pendentes(app) -> list[Path]:
+    """O resto de processo sigiloso que ficou no acervo (só avisa)."""
+    ficam = [Path(p) for p in getattr(app, "sigilosos_avisos", []) if Path(p).exists()]
+    app.sigilosos_avisos = ficam
+    return ficam
+
+
+def _motivos(app) -> dict:
+    if not isinstance(getattr(app, "sigilosos_motivos", None), dict):
+        app.sigilosos_motivos = {}
+    return app.sigilosos_motivos
+
+
+def registrar_presos(app, arquivos, motivos: dict | None = None) -> list[Path]:
+    """Guarda os autos de sigiloso que ficaram no acervo (o preparo não
+    conseguiu levá-los): até saírem, nada se compartilha. Devolve a lista
+    recebida."""
     lista = [Path(p) for p in arquivos] if isinstance(arquivos, (list, tuple)) else []
     for p in lista:
         if p not in app.sigilosos_presos:
             app.sigilosos_presos.append(p)
+    _motivos(app).update({Path(k): v for k, v in (motivos or {}).items()})
     return lista
+
+
+def registrar_pendentes(app, arquivos, motivos: dict | None = None) -> list[Path]:
+    """Guarda o resto de processo sigiloso que ficou no acervo (o aviso do
+    Início). Devolve a lista recebida."""
+    lista = [Path(p) for p in arquivos] if isinstance(arquivos, (list, tuple)) else []
+    if not isinstance(getattr(app, "sigilosos_avisos", None), list):
+        app.sigilosos_avisos = []
+    for p in lista:
+        if p not in app.sigilosos_avisos:
+            app.sigilosos_avisos.append(p)
+    _motivos(app).update({Path(k): v for k, v in (motivos or {}).items()})
+    return lista
+
+
+def _registrar_preparo(app, rel) -> list[Path]:
+    """O que o preparo não conseguiu tirar do acervo: os autos (travam) e o
+    resto (avisa). Devolve os autos."""
+    motivos = getattr(rel, "motivos", None)
+    motivos = motivos if isinstance(motivos, dict) else None
+    registrar_pendentes(app, getattr(rel, "sigilosos_avisos", None), motivos)
+    return registrar_presos(app, getattr(rel, "sigilosos_no_acervo", None), motivos)
 
 
 def _tentar_de_novo(app, lista: list[Path]) -> None:
     """Leva de novo para a pasta dos sigilosos os arquivos presos de processo
     que a regra única dá como sigiloso (pasta dos sigilosos, pauta) - os que
     o preparo não conseguiu levar: o PDF que estava aberto pode ter sido
-    fechado. O que sair deixa de ser preso. O sigilo que só o portal apurou
-    no download continua com o caminho do download ("Tentar de novo", ou
-    mover à mão)."""
+    fechado. O que sair deixa de ser preso; o que continuar fica com o motivo
+    de agora. O sigilo que só o portal apurou no download continua com o
+    caminho do download ("Tentar de novo", ou mover à mão)."""
     try:
         from ..download.motor import retirar_do_acervo
         from ..nucleo import cnj, sigilo
@@ -77,42 +120,48 @@ def _tentar_de_novo(app, lista: list[Path]) -> None:
     vistos: set[str] = set()
     for p in lista:
         try:
-            chave = cnj.ler_nome_arquivo(p.stem).nome_arquivo
+            chave = cnj.ler_nome_arquivo(p.name).nome_arquivo
         except cnj.NumeroInvalido:
             continue
         if chave in vistos or chave not in sigilosas:
             continue
         vistos.add(chave)
         try:
-            retirar_do_acervo(app.cfg, chave)
+            ret = retirar_do_acervo(app.cfg, chave)
         except Exception as erro:          # continua preso; a recusa explica
             log.warning("não consegui levar %s para a pasta dos sigilosos: %s", p.name, erro)
+            continue
+        _motivos(app).update(ret.motivos)
+        registrar_pendentes(app, ret.avisam)
 
 
 def exigir_sem_sigiloso(app) -> None:
+    """Recusa (409) o compartilhamento enquanto os autos de um processo
+    sigiloso estiverem presos no acervo - depois de tentar levá-los de novo.
+    A frase diz qual arquivo é (o caminho dentro do acervo), por que ficou e
+    para onde movê-lo."""
     lista = presos(app)
     if lista:
         _tentar_de_novo(app, lista)
         lista = presos(app)
     if lista:
-        um = len(lista) == 1
+        from ..compartilhar.preparo import frase_sigilosos_no_acervo
+
         raise ErroApi(409, "sigiloso_no_acervo",
-                      ("Um processo em segredo de justiça ficou no acervo" if um else
-                       f"{len(lista)} processos em segredo de justiça ficaram no acervo")
-                      + ": " + ", ".join(p.name for p in lista[:5])
-                      + ". Feche o PDF e mova-o para a pasta dos sigilosos antes de compartilhar.")
+                      frase_sigilosos_no_acervo(lista, app.cfg, _motivos(app)))
 
 
 def preparar_e_conferir(app, **opcoes):
     """O preparo do acervo (preparo.atualizar_contexto(app.cfg, **opcoes)) e,
-    se um processo sigiloso não pôde sair do acervo, a recusa (SigilosoNoAcervo,
-    com a frase da tela; o arquivo fica entre os presos)."""
+    se os autos de um processo sigiloso não puderam sair do acervo, a recusa
+    (SigilosoNoAcervo, com a frase da tela; o arquivo fica entre os presos).
+    O resto que ficou só é avisado (pendentes)."""
     from ..compartilhar import preparo
 
     rel = preparo.atualizar_contexto(app.cfg, **opcoes)
-    ficaram = registrar_presos(app, getattr(rel, "sigilosos_no_acervo", None))
+    ficaram = _registrar_preparo(app, rel)
     if ficaram:
-        raise preparo.SigilosoNoAcervo(ficaram)
+        raise preparo.SigilosoNoAcervo(ficaram, app.cfg, _motivos(app))
     return rel
 
 
@@ -173,9 +222,10 @@ def nuvem_sem_conflito(cfg, destino) -> bool:
 
 def _atualizar_indice(app) -> None:
     """INDICE.md em dia (servicos.atualizar_indice) e, se o preparo não
-    conseguiu tirar do acervo um processo sigiloso, o arquivo entre os presos."""
+    conseguiu tirar do acervo um processo sigiloso, os autos entre os presos
+    (e o resto entre os avisos)."""
     rel = servicos.atualizar_indice(app.cfg)
-    registrar_presos(app, getattr(rel, "sigilosos_no_acervo", None))
+    _registrar_preparo(app, rel)
 
 
 def _indice_em_segundo_plano(app) -> None:
@@ -190,6 +240,7 @@ def estado(p: Pedido) -> dict:
     dados["pasta_acervo"] = str(app.cfg.pasta_acervo)
     dados["pasta_nuvem"] = app.cfg.texto("compartilhar", "pasta_nuvem")
     dados["sigilosos_no_acervo"] = [str(x) for x in presos(app)]
+    dados["sigilosos_avisos"] = [str(x) for x in pendentes(app)]
     dados["pasta_pacotes"] = str(pasta_pacotes())
     return dados
 
@@ -213,6 +264,10 @@ def _preparo_rapido(app) -> None:
 
 
 # =================================================================== preparar
+def _lista(valor) -> list:
+    return list(valor) if isinstance(valor, (list, tuple)) else []
+
+
 def preparar(p: Pedido) -> dict:
     app = p.app
     exigir_sem_sigiloso(app)
@@ -225,7 +280,8 @@ def preparar(p: Pedido) -> dict:
         tw.definir_status(resumo + ".")
         return {"resumo": resumo, "processos": getattr(rel, "processos", 0),
                 "transcricoes": getattr(rel, "transcricoes", 0),
-                "erros": list(getattr(rel, "erros", []) or [])[:20]}
+                "erros": _lista(getattr(rel, "erros", None))[:20],
+                "avisos": _lista(getattr(rel, "avisos", None))[:20]}
 
     tw = app.tarefas.iniciar("preparo", "Preparar o acervo para a IA", alvo, chave="preparo")
     return {"tarefa": tw.id}

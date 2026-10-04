@@ -132,7 +132,7 @@
     return { titulo: { nova: "Nova audiência", alterada: "Audiência alterada", cancelada: "Audiência cancelada", removida: "Saiu da pauta" }[alt.tipo] || "Alteração", sub: [base, a.tipo].filter(Boolean).join(" · "), campos };
   }
 
-  const COR_ALTERACAO = { nova: ["mais", "cor-azul"], alterada: ["lapis", "cor-ambar"], cancelada: ["x", "cor-cinza"], removida: ["lixeira", "cor-ardosia"] };
+  const COR_ALTERACAO = { nova: ["mais", "cor-azul"], alterada: ["lapis", "cor-navy"], cancelada: ["x", "cor-cinza"], removida: ["lixeira", "cor-ardosia"] };
 
   function itemAlteracao(alt, naoVista) {
     const d = descricaoAlteracao(alt);

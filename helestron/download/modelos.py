@@ -249,9 +249,15 @@ class ResumoLote:
     destino: Path
     relatorio: Path
     minutos: float = 0.0
-    # Cópias de processos sigilosos que NÃO puderam sair do acervo (arquivo
+    # Autos de processos sigilosos que NÃO puderam sair do acervo (arquivo
     # aberto em outro programa): com isto não vazio, não espelhe o acervo.
     sigilosos_no_acervo: list[str] = field(default_factory=list)
+    # O resto de processo sigiloso que ficou no acervo (a transcrição aberta
+    # no Word, a gravação em curso, a minuta, a capa): não trava o
+    # compartilhamento - o índice, o conector, o pacote e a nuvem já o
+    # deixam de fora -, mas é avisado.
+    sigilosos_avisos: list[str] = field(default_factory=list)
+    sigilosos_motivos: dict[str, str] = field(default_factory=dict)   # arquivo -> por que ficou
 
     def _com(self, *situacoes: str) -> list[ResultadoProcesso]:
         return [r for r in self.itens if r.situacao in situacoes]

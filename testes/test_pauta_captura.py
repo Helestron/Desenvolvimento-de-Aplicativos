@@ -92,6 +92,10 @@ class TestCapturaNoNavegador(apoio.PastaTemporaria):
         esperadas = ap.no_periodo(ap.audiencias_padrao(), ap.INICIO, ap.FIM)[:6]
         self.assertEqual([a["processo"] for a in lista], [f.processo for f in esperadas])
         self.assertEqual({a["fonte"] for a in lista}, {"esaj-tjal"})
+        # o sigilo que a captura revelou é informado (o servidor tira o processo do acervo)
+        self.assertEqual(r.get("sigilosos_novos"),
+                         sorted(f.processo for f in esperadas if f.sigiloso))
+        self.assertTrue(r["sigilosos_novos"])
         self.assertEqual(web.proibidas, [])
         self.assertEqual(ctx.avisos[0][0], "Captura da pauta")
         self.assertEqual(ctx.status_[-1], "Captura concluída: 6 audiências. O endereço ficou "

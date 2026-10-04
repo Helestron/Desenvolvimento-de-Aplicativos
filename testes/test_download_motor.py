@@ -12,6 +12,7 @@ import contextlib
 import csv
 import io
 import os
+import shutil
 import sys
 import types
 import unittest
@@ -451,6 +452,32 @@ class TestSigiloSabidoPeloPrograma(BaseMotor):
         self.assertEqual(self.no_acervo(), [])
         self.assertEqual(apoio.PortalFalso.todos[0].chamadas, [])
 
+    def test_incidente_de_processo_sigiloso_e_sigiloso(self):
+        """Regressão: a regra comparava o número exato, e o incidente ("/01")
+        do principal que a pauta (ou a pasta) dava como sigiloso ia para o
+        acervo quando o portal não mostrava o selo."""
+        inc = apoio.numero("0700001", tr="02", dependente="01")
+        self.marcar_na_pauta(TJAL1)                  # o principal
+        resumo = self.rodar([inc, TJAL2])
+        r = self.item(resumo, inc)
+        self.assertEqual(r.situacao, modelos.OK)
+        self.assertTrue(r.sigiloso)
+        self.assertEqual(r.arquivo, str(self.sig / f"{inc.nome_arquivo}.pdf"))
+        self.assertIn(f"tratado como sigiloso: {sigilo.MOTIVO_PAUTA_PRINCIPAL}", r.detalhe)
+        self.assertEqual(self.no_acervo(), [])
+        # o principal na pasta dos sigilosos também basta (sem o relatório
+        # anterior do lote, que já o dava como sigiloso)
+        sigilo.esquecer_pauta()
+        self.pauta.unlink()
+        (self.sig / f"{inc.nome_arquivo}.pdf").unlink()
+        shutil.rmtree(self.destino / "_controle")
+        shutil.rmtree(self.sig / "_controle")
+        (self.sig / f"{self.nome}.pdf").write_bytes(apoio.pdf_bytes(1))
+        resumo = self.rodar([inc])
+        self.assertIn(f"tratado como sigiloso: {sigilo.MOTIVO_PASTA_PRINCIPAL}",
+                      resumo.itens[0].detalhe)
+        self.assertTrue((self.sig / f"{inc.nome_arquivo}.pdf").exists())
+
     def test_tela_do_sigiloso_sabido_nao_vai_para_o_diagnostico(self):
         """O navegador fica sabendo que a tela é de processo sigiloso enquanto
         o portal o busca: o diagnóstico dela (com as partes) não é guardado."""
@@ -491,7 +518,9 @@ class TestTranscricoesDoSigiloso(BaseMotor):
     def conteudos(self, pasta):
         return sorted(p.read_text(encoding="utf-8") for p in pasta.iterdir() if p.is_file())
 
-    def test_transcricoes_vao_junto_sem_sobrescrever_e_sem_o_incidente(self):
+    def test_transcricoes_vao_junto_sem_sobrescrever_e_com_as_do_incidente(self):
+        """O incidente herda o sigilo do principal: as transcrições dele saem
+        junto (antes, ficavam no acervo, ao alcance da IA e da nuvem)."""
         n, inc, sessao = self.nome, self.inc.nome_arquivo, self.sessao
         for nome in (f"{n}.docx", f"{n} (2).docx", f"{inc}.docx", f"{inc} (2).docx",
                      f"{TJAL2.nome_arquivo}.docx"):
@@ -507,13 +536,15 @@ class TestTranscricoesDoSigiloso(BaseMotor):
         resumo = self.rodar([TJAL1, TJAL2], roteiro={TJAL1.formatado: ["ok_sigiloso"]})
         r = self.item(resumo, TJAL1)
         self.assertEqual(r.situacao, modelos.OK, r.detalhe)
-        # no acervo, só o que é do incidente e do outro processo
+        # no acervo, só o que é do outro processo
         self.assertEqual(sorted(p.name for p in self.trans.iterdir() if p.is_file()),
-                         sorted([f"{inc}.docx", f"{inc} (2).docx", f"{TJAL2.nome_arquivo}.docx"]))
-        self.assertEqual(sorted(p.name for p in self.audio.iterdir()),
-                         sorted([f"{inc} 2026-09-16 15h00.flac", f"{inc} 2026-09-16 15h00.jsonl"]))
-        # na pasta de sigilosos: tudo, sem perder o que já estava lá
-        self.assertEqual(self.conteudos(self.sig), sorted(["antigo", f"{n}.docx", f"{n} (2).docx"]))
+                         [f"{TJAL2.nome_arquivo}.docx"])
+        self.assertEqual(sorted(p.name for p in self.audio.iterdir()), [])
+        # na pasta de sigilosos: tudo (o do incidente também), sem perder o que já estava lá
+        self.assertEqual(self.conteudos(self.sig),
+                         sorted(["antigo", f"{n}.docx", f"{n} (2).docx", f"{inc}.docx",
+                                 f"{inc} (2).docx"]))
+        self.assertTrue((self.sig / "_audio" / f"{inc} 2026-09-16 15h00.flac").exists())
         self.assertEqual((self.sig / f"{n}.docx").read_text(encoding="utf-8"), "antigo")
         # a gravação, o diário e a trava continuam com o mesmo nome entre si
         audio_sig = self.sig / "_audio"
@@ -523,7 +554,7 @@ class TestTranscricoesDoSigiloso(BaseMotor):
             self.assertEqual((audio_sig / f"{sessao} (2){final}").read_text(encoding="utf-8"),
                              f"{sessao}{final}")
         self.assertTrue((audio_sig / f"{sessao} - revisão.docx").exists())
-        self.assertIn("6 arquivos de transcrição de audiência levados para a pasta de sigilosos",
+        self.assertIn("10 arquivos de transcrição de audiência levados para a pasta de sigilosos",
                       r.detalhe)
         self.assertEqual(resumo.sigilosos_no_acervo, [])
         # o público não mexe nas transcrições
@@ -576,9 +607,15 @@ class TestTranscricoesDoSigiloso(BaseMotor):
         self.assertTrue(flac.exists() and diario.exists(), "a gravação em curso não sai do lugar")
         self.assertTrue((self.trans / f"{self.nome}.docx").exists())
         self.assertFalse(self.sig.exists())
-        self.assertEqual(r.situacao, modelos.ERRO)
+        # Só os autos travam o compartilhamento: a gravação em curso é avisada
+        self.assertEqual(r.situacao, modelos.OK, r.detalhe)
         self.assertIn("audiência sendo gravada", r.detalhe)
-        self.assertIn(str(flac), resumo.sigilosos_no_acervo)
+        self.assertIn(str(flac), resumo.sigilosos_avisos)
+        self.assertEqual(resumo.sigilosos_no_acervo, [])
+        self.assertEqual(resumo.sigilosos_motivos[str(flac)],
+                         "a audiência está sendo gravada agora")
+        self.assertTrue(any("(a audiência está sendo gravada agora)" in m
+                            for _, m in self.ctx.avisos), self.ctx.avisos)
 
     def test_transcricao_aberta_no_word_e_falha_e_avisada(self):
         self.escrever(self.trans, f"{self.nome}.docx")
@@ -592,11 +629,13 @@ class TestTranscricoesDoSigiloso(BaseMotor):
         with mock.patch.object(motor, "_mover", falha):
             resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["ok_sigiloso"]})
         r = resumo.itens[0]
-        self.assertEqual(r.situacao, modelos.ERRO)
+        # Só os autos travam o compartilhamento: a transcrição presa é avisada
+        self.assertEqual(r.situacao, modelos.OK, r.detalhe)
         self.assertIn("arquivo de transcrição no acervo que não pôde ser levado", r.detalhe)
         self.assertIn(f"{self.nome}.docx", r.detalhe)
         self.assertIn("1 arquivo de transcrição de audiência levado", r.detalhe)
-        self.assertEqual(resumo.sigilosos_no_acervo, [str(self.trans / f"{self.nome}.docx")])
+        self.assertEqual(resumo.sigilosos_no_acervo, [])
+        self.assertEqual(resumo.sigilosos_avisos, [str(self.trans / f"{self.nome}.docx")])
         self.assertTrue(any("sigiloso" in t.lower() for t, _ in self.ctx.avisos))
 
     def test_sem_separar_sigilosos_nada_se_move(self):
@@ -1355,7 +1394,7 @@ class TestRotulosCitados(unittest.TestCase):
         antigos = ("INSTALAR.bat", "Configurações >", "AssessorIntegrado", "Instalar o componente",
                    "instalar o componente", "Configurações do Helestron", "tela de Configurações")
         permitidos = {"compartilhar/claude.py", "compartilhar/chatgpt.py", "compartilhar/nuvem.py",
-                      "verificar.py"}
+                      "compartilhar/migracao.py", "verificar.py"}
         for arquivo in sorted(pacote.rglob("*")):
             if arquivo.suffix not in (".py", ".js", ".html", ".json", ".css") or \
                     "__pycache__" in arquivo.parts:

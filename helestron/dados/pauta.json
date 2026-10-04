@@ -61,8 +61,9 @@
   ],
   "situacao_padrao": "Designada",
 
-  "sigilo": "segredo de justica|sigilos[oa]|\\bem sigilo\\b|sigilo\\s*\\(?\\s*nivel\\s*[1-9]|nivel\\s*[1-9]",
-  "sem_sigilo": "sem sigilo|nivel\\s*0|nao sigilos|^\\(?\\s*public[oa]\\s*\\)?$|sigilo\\W*public[oa]",
+  "_sigilo": "Selo de segredo de justiça: só a indicação POSITIVA e inequívoca marca o processo como sigiloso (ele sai do acervo e da IA de vez). Cada célula é julgada por si: sigilo diz o que marca; sem_sigilo, o que desfaz o selo na mesma célula (a negação, o nível 0, o sigilo retirado). O nível puro (\"Nível 1\") só vale na coluna Sigilo.",
+  "sigilo": "segredo\\s+de\\s+justica|\\b(?:processo|autos|feito|audiencia)\\s+(?:(?:e|esta|corre|tramita)\\s+)?(?:(?:em|sob)\\s+sigilo\\b|sigilos[oa]s?\\b)|\\b(?:tramita|corre)\\s+(?:em|sob)\\s+sigilo\\b|^\\W*(?:(?:em|sob)\\s+sigilo|sigilos[oa]s?)\\W*$|\\b(?:sigilo|segredo)\\w*\\W+(?:\\w+\\W+){0,3}?nivel\\s*[1-9]|\\bnivel\\s*[1-9]\\W+(?:\\w+\\W+){0,2}?(?:sigil|segredo)|\\bnivel\\s+de\\s+sigilo\\W*[1-9]|\\bsigilo\\W+sim\\b",
+  "sem_sigilo": "\\bsem\\s+(?:o\\s+)?(?:sigilo|segredo)|\\bnivel\\s*(?:de\\s+sigilo\\W*)?0\\b|\\bnao\\W+sigilos|^\\W*public[oa]\\W*$|sigilo\\W*public[oa]|(?:segredo\\s+de\\s+justica|sigilos[oa]s?|sigilo)\\W{0,3}(?:nao\\b|n$)|\\bnao\\s+(?:(?:e|esta|corre|tramita|ha|possui|tem|consta|foi|mais|caso|se\\s+trata)\\s+)*(?:(?:em|sob|de|do|da|o|a|um|uma)\\s+)*(?:segredo|sigil)|\\b(?:retirad|levantad|revogad|afastad|indeferid)\\w*\\s+(?:(?:o|do|de|a|da)\\s+)*(?:sigilo|segredo)|\\b(?:sigilo|segredo\\s+de\\s+justica)\\s+(?:foi\\s+)?(?:retirad|levantad|revogad|afastad|indeferid)|\\b(?:sigilo|segredo\\s+de\\s+justica)\\W*(?:inexistente|ausente)|\\b(?:pedido|pedir|requerimento|requer\\w*|analisar|avaliar|verificar|eventual|possivel|sobre|se\\s+ha)\\s+(?:(?:de|do|o|a)\\s+)?segredo\\s+de\\s+justica",
 
   "negativos": ["prazo", "evento", "intimac", "movimentac", "movimento", "publicac", "expedi",
                 "peticao", "documento", "distribuic", "distribuid", "recebimento", "conclus",

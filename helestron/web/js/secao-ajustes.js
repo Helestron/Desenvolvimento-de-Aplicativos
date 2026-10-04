@@ -17,13 +17,13 @@
 
   // 'curto' é o nome no índice (cabe na coluna estreita); 'titulo', o da página.
   const GRUPOS = [
-    { id: "acessos", curto: "Acessos", titulo: "Acessos aos portais", icone: "chave", cor: "azul", sub: "Usuário e senha do e-SAJ e do eProc, e como o Helestron entra em cada um." },
+    { id: "acessos", curto: "Acessos", titulo: "Acessos aos portais", icone: "chave", cor: "aco", sub: "Usuário e senha do e-SAJ e do eProc, e como o Helestron entra em cada um." },
     { id: "pastas", curto: "Pastas", titulo: "Pastas", icone: "pasta", cor: "celeste", sub: "Onde ficam o acervo, os processos sigilosos e a pauta exportada." },
-    { id: "unidade", curto: "Unidade", titulo: "Unidade", icone: "predio", cor: "navy", sub: "Os dados que aparecem no cabeçalho das transcrições." },
-    { id: "download", curto: "Download", titulo: "Download", icone: "doc-baixar", cor: "verde", sub: "Como os processos são baixados dos portais." },
-    { id: "transcricao", curto: "Transcrição", titulo: "Transcrição", icone: "microfone", cor: "vermelho", sub: "Modelos, participantes e o que vai no documento." },
+    { id: "unidade", curto: "Unidade", titulo: "Unidade", icone: "predio", cor: "ardosia", sub: "Os dados que aparecem no cabeçalho das transcrições." },
+    { id: "download", curto: "Download", titulo: "Download", icone: "doc-baixar", cor: "navy", sub: "Como os processos são baixados dos portais." },
+    { id: "transcricao", curto: "Transcrição", titulo: "Transcrição", icone: "microfone", cor: "azul", sub: "Modelos, participantes e o que vai no documento." },
     { id: "pauta", curto: "Pauta", titulo: "Pauta", icone: "calendario", cor: "ciano", sub: "Fontes da pauta, monitoramento e exportação." },
-    { id: "compartilhar", curto: "Compartilhar", titulo: "Compartilhar", icone: "brilho", cor: "indigo", sub: "Preparo do acervo e espelho na nuvem." },
+    { id: "compartilhar", curto: "Compartilhar", titulo: "Compartilhar", icone: "brilho", cor: "cobalto", sub: "Preparo do acervo e espelho na nuvem." },
     { id: "sobre", curto: "Diagnóstico", titulo: "Sobre e diagnóstico", icone: "info", cor: "cinza", sub: "Versão, verificação da instalação e registros." },
   ];
 
@@ -377,7 +377,7 @@
           : a.tem_senha ? `Senha guardada${a.usuario ? " · " + a.usuario : ""}` : "Sem senha guardada";
         const teste = a.tem_senha ? situacaoDoTeste(a.portal) : null;
         const l = linha({
-          icone: a.tem_senha ? "chave" : "pessoa", cor: a.tem_senha ? "verde" : "cinza",
+          icone: a.tem_senha ? "chave" : "pessoa", cor: a.tem_senha ? "aco" : "cinza",
           titulo: rotulo,
           sub: teste ? el("span", {}, el("span", { estilo: { display: "block" }, texto: sub }), teste) : sub,
           acessorio: el("span", { classe: "grupo-botoes", estilo: { flexWrap: "nowrap" } }, testar, alterar),
@@ -466,7 +466,7 @@
       try { lista = await api.acessos.enderecos(); } catch (_e) { lista = []; }
       if (!ctx.vivo) return;
       const linhas = lista.map((e) => linha({
-        icone: "link", cor: "ambar", titulo: `${e.rotulo_portal || e.portal} — ${e.rotulo}`,
+        icone: "link", cor: "aco", titulo: `${e.rotulo_portal || e.portal} — ${e.rotulo}`,
         sub: el("span", { classe: "caminho", texto: e.url }),
         acessorio: el("span", { classe: "grupo-botoes", estilo: { flexWrap: "nowrap" } },
           botao({ rotulo: "Alterar", tamanho: "pequeno", tipo: "texto", acao: async () => { if (await corrigirEndereco(e.portal)) carregar(); } }),
@@ -591,7 +591,7 @@
       try { fontes = await api.pauta.fontes(); } catch (_e) { fontes = []; }
       if (!ctx.vivo) return;
       const linhas = fontes.map((f) => linha({
-        icone: f.modo === "capturado" ? "capturar" : "sincronizar", cor: f.ultimo_erro ? "ambar" : "ciano",
+        icone: f.modo === "capturado" ? "capturar" : "sincronizar", cor: "ciano",
         titulo: f.rotulo || `${nomeSistema(f.sistema)} · ${f.tribunal}`,
         sub: el("span", {},
           el("span", { estilo: { display: "block" }, texto: [
@@ -606,7 +606,9 @@
             : f.exige_presenca
               ? `Fica fora do monitoramento automático: ${f.motivo_presenca || "o login exige você à frente"}. Sincronize na tela Pauta quando quiser, ou use a entrada por usuário e senha, com a senha guardada, em Acessos aos portais.`
               : "Fica fora do monitoramento até a primeira sincronização bem-sucedida (ou uma captura)." }),
-          f.ultimo_erro ? el("span", { estilo: { display: "block", color: "var(--ambar-texto, var(--ambar))" }, texto: "Último erro: " + f.ultimo_erro }) : null),
+          // O estado (a última sincronização falhou) vai no ponto âmbar; o
+          // quadrado do ícone fica no tom da paleta.
+          f.ultimo_erro ? el("span", { classe: "linha-erro-fonte" }, el("span", { classe: "ponto ponto-ambar", "aria-hidden": "true" }), "Último erro: " + f.ultimo_erro) : null),
         acessorio: el("span", { classe: "grupo-botoes", estilo: { flexWrap: "nowrap" } },
           f.monitorada ? pilula("Monitorada", "verde", "sino") : f.exige_presenca ? pilula("Só com você", "ambar", "pessoa") : pilula("Sem endereço salvo", "cinza"),
           botao({ icone: "lixeira", titulo: "Remover esta fonte", tamanho: "pequeno", tipo: "texto", acao: async () => {

@@ -21,7 +21,16 @@
 ;      programa em uso, não apagar) e apagados depois - no próximo logon
 ;      (RunOnce) ou na próxima abertura do Helestron. Nenhum processo é
 ;      encerrado: o Claude reabre o conector, já com a versão nova;
-;    * a pasta escolhida é conferida (dá para gravar nela?) antes de copiar;
+;    * a pasta escolhida é conferida antes de copiar: dá para gravar nela? E
+;      ela já tem coisas de outro programa (ou do usuário)? Nesse caso o
+;      Helestron vai para uma pasta própria dentro dela, <pasta>\Helestron,
+;      e nada se mistura;
+;    * a atualização e a desinstalação apagam SÓ os arquivos que a instalação
+;      pôs na pasta, um a um, pela lista gravada nela (arquivos-instalados.txt)
+;      - nunca uma pasta inteira: o que o usuário tiver posto lá fica;
+;    * para quem usava o Assessor Integrado (a versão anterior), tira o atalho
+;      antigo da Área de Trabalho e do Menu Iniciar e os conectores antigos do
+;      Claude Desktop e do Codex;
 ;    * no fim, roda "Helestron.exe --verificar-instalacao" (confere o
 ;      SHA-256 de cada arquivo e importa todos os módulos) e, se algo faltar,
 ;      diz o que é e onde está o relatório - em vez de o programa quebrar na
@@ -31,8 +40,10 @@
 ;    * modo silencioso para o CI: Helestron-Setup.exe /S [/D=pasta].
 ;
 ;  Códigos de saída: 0 = instalado; 2 = a conferência final encontrou
-;  problemas; 4 = o Helestron (ou o que prende os arquivos) continuou
-;  aberto; 5 = outro instalador aberto; 6 = Windows não suportado;
+;  problemas; 3 = a pasta escolhida (e a subpasta Helestron dentro dela) já
+;  tem coisas de outro programa ou do usuário: nada foi copiado; 4 = o
+;  Helestron (ou o que prende os arquivos) continuou aberto; 5 = outro
+;  instalador aberto; 6 = Windows não suportado;
 ;  7 = audiência sendo transcrita no Helestron (rode de novo depois);
 ;  8 = sem permissão para gravar na pasta escolhida; 9 = instalado, mas o
 ;  computador não tem como abrir a janela (falta o WebView2 Runtime).
@@ -61,6 +72,15 @@ CRCCheck force
 !define SEM_JANELA 9
 !define PASTA_ANTIGOS "$INSTDIR\.antigos"
 !define CHAVE_RUNONCE "Software\Microsoft\Windows\CurrentVersion\RunOnce"
+; a limpeza de <pasta>\.antigos no próximo logon (sem console nem administrador)
+!define LIMPEZA_ANTIGOS '"$SYSDIR\rundll32.exe" advpack.dll,DelNodeRunDLL32'
+; A lista do que a instalação pôs na pasta (construir.gerar_registro): uma
+; linha por item, "A <arquivo>" ou "P <pasta>", em UTF-16, depois do
+; cabeçalho "Helestron <versão> ...". A atualização e o desinstalador apagam
+; só o que está nela.
+!define REGISTRO "arquivos-instalados.txt"
+; o código de saída da pasta recusada (com coisas de outro programa ou do usuário)
+!define PASTA_OCUPADA 3
 ; o que a conferência final grava (o mesmo arquivo padrão do programa)
 !define RELATORIO "$LOCALAPPDATA\Helestron\Logs\verificacao-instalacao.txt"
 
@@ -85,6 +105,8 @@ Var Encerrou        ; 1 = o --encerrar fechou o Helestron (ou não havia nenhum 
 Var Afastar         ; 1 = arquivos presos por outro processo do programa: renomear
 Var PastaAfastados  ; ${PASTA_ANTIGOS}\<instante>
 Var NumAfastados
+Var PastaEscolhida  ; a pasta que o usuário (ou o /D=) escolheu, antes da conferência
+Var EraDoHelestron  ; 1 = a pasta já tinha uma instalação do Helestron (atualização)
 
 ; ------------------------------------------------------------------ visual
 !define MUI_ICON "@ICONE@"
@@ -134,7 +156,12 @@ Var NumAfastados
 !undef MUI_INSTFILESPAGE_ABORTHEADER_SUBTEXT
 
 !define MUI_FINISHPAGE_TITLE "Pronto!"
-!define MUI_FINISHPAGE_TEXT "O Helestron está instalado. Para abri-lo depois, use o atalho no Menu Iniciar ou na Área de Trabalho.$\r$\n$\r$\nNa primeira vez, cadastre o seu acesso ao e-SAJ e ao eProc em Ajustes.$\r$\n$\r$\nClique em Concluir para fechar este assistente."
+; Com a caixa "Abrir o Helestron", o MUI2 dá ao texto 40 unidades de altura
+; (5 linhas) e corta o que passar; com TEXT_LARGE, 60 (7,5 linhas). As
+; unidades acompanham a fonte: a conta vale em 100 % e em 125 %. O texto
+; ocupa 5 a 6 linhas (sem o "Clique em Concluir...", que só repetia o botão).
+!define MUI_FINISHPAGE_TEXT_LARGE
+!define MUI_FINISHPAGE_TEXT "O Helestron está instalado. Para abri-lo depois, use o atalho no Menu Iniciar ou na Área de Trabalho.$\r$\n$\r$\nNa primeira vez, cadastre o seu acesso ao e-SAJ e ao eProc em Ajustes."
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_TEXT "Abrir o Helestron"
 !define MUI_FINISHPAGE_RUN_FUNCTION AbrirHelestron
@@ -181,30 +208,10 @@ VIAddVersionKey /LANG=${LANG_PORTUGUESEBR} "FileVersion" "${VERSAO}"
 VIAddVersionKey /LANG=${LANG_PORTUGUESEBR} "ProductVersion" "${VERSAO}"
 
 ; ============================================================== utilidades
-; Remove os arquivos e pastas do PROGRAMA (a lista vem da construção: o que
-; esta versão instala, mais nomes de versões anteriores). Nunca um
-; "RMDir /r $INSTDIR": se o usuário tiver escolhido uma pasta com outras
-; coisas, elas ficam.
-!macro RemoverPrograma
-@REMOVER_PROGRAMA@
-!macroend
-
-; Os arquivos que o RemoverPrograma não conseguiu apagar (presos por um
-; processo do programa: o servidor MCP do Claude Desktop) - renomeados para
-; ${PASTA_ANTIGOS}. A lista vem da construção, como a do RemoverPrograma.
-!macro AfastarPasta UN NOME
-  ${If} ${FileExists} "$INSTDIR\${NOME}\*.*"
-    ${Locate} "$INSTDIR\${NOME}" "/L=F /M=*.*" "${UN}AfastarUm"
-    RMDir /r "$INSTDIR\${NOME}"
-  ${EndIf}
-!macroend
-!macro AfastarArquivo UN NOME
-  ${If} ${FileExists} "$INSTDIR\${NOME}"
-    StrCpy $R9 "$INSTDIR\${NOME}"
-    StrCpy $R7 "${NOME}"
-    Call ${UN}AfastarUm
-    Pop $R9
-  ${EndIf}
+; A lista desta versão (a mesma que vai para $INSTDIR\${REGISTRO}), para a
+; instalação anterior que não tem a dela.
+!macro ExtrairRegistro DESTINO
+  File "/oname=${DESTINO}" "@REGISTRO@"
 !macroend
 
 !macro FuncoesDeArquivos UN
@@ -241,7 +248,7 @@ FunctionEnd
 ; para gravação. Se o Helestron fechou e outro processo do programa ainda os
 ; prende (o servidor MCP aberto pelo Claude Desktop ou pelo Codex), depois de
 ; 10 s marca $Afastar - os arquivos presos serão renomeados (LiberarArquivos,
-; AfastarPresos). Se o próprio Helestron não fechou, espera 20 s e pergunta.
+; RemoverArquivo). Se o próprio Helestron não fechou, espera 20 s e pergunta.
 Function ${UN}EsperarArquivosLivres
   Push $0
   Push $1
@@ -296,12 +303,17 @@ Function ${UN}LiberarArquivos
   Pop $0
 FunctionEnd
 
-; Um arquivo que sobrou depois do RemoverPrograma ($R9 = caminho, $R7 = nome):
-; apaga ou, preso, renomeia para $PastaAfastados. Chamado pelo ${Locate}.
-Function ${UN}AfastarUm
+; Apaga um arquivo do programa ($R9 = caminho). Preso por um processo do
+; programa (o servidor MCP do Claude Desktop) e com $Afastar, renomeia-o para
+; $PastaAfastados (o Windows deixa renomear um arquivo em uso, não apagar).
+Function ${UN}RemoverArquivo
+  Push $R7
   ClearErrors
   Delete "$R9"
   ${If} ${Errors}
+  ${AndIf} $Afastar == 1
+  ${AndIf} ${FileExists} "$R9"
+    ${GetFileName} "$R9" $R7
     IntOp $NumAfastados $NumAfastados + 1
     ClearErrors
     Rename "$R9" "$PastaAfastados\$NumAfastados-$R7"
@@ -310,17 +322,76 @@ Function ${UN}AfastarUm
     ${EndIf}
   ${EndIf}
   ClearErrors
-  Push "continuar"
+  Pop $R7
 FunctionEnd
 
-Function ${UN}AfastarPresos
-  ${If} $Afastar == 1
-    Push $R7
-    Push $R9
-    !insertmacro AfastarLista "${UN}"
-    Pop $R9
-    Pop $R7
+; Remove o PROGRAMA: os arquivos e as pastas que a instalação pôs aqui, um a
+; um, pela lista dela ($INSTDIR\${REGISTRO}); sem a lista (uma instalação de
+; antes dela), pela lista desta versão. Nunca uma pasta inteira: o que não
+; estiver na lista (do usuário, de outro programa) fica, e uma pasta só sai
+; se ficar vazia - menos as __pycache__ do programa, onde só o Python grava.
+Function ${UN}RemoverPrograma
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  Push $R9
+  ${If} ${FileExists} "$INSTDIR\${REGISTRO}"
+    StrCpy $3 "$INSTDIR\${REGISTRO}"
+  ${Else}
+    InitPluginsDir
+    !insertmacro ExtrairRegistro "$PLUGINSDIR\${REGISTRO}"
+    StrCpy $3 "$PLUGINSDIR\${REGISTRO}"
   ${EndIf}
+  ClearErrors
+  FileOpen $0 "$3" r
+  ${IfNot} ${Errors}
+    FileReadUTF16LE $0 $1         ; o cabeçalho
+    ${Do}
+      ClearErrors
+      FileReadUTF16LE $0 $1
+      ${If} ${Errors}
+        ${Break}
+      ${EndIf}
+      ; sem a quebra de linha do fim
+      StrCpy $2 $1 1 -1
+      ${If} $2 == "$\n"
+        StrCpy $1 $1 -1
+      ${EndIf}
+      StrCpy $2 $1 1 -1
+      ${If} $2 == "$\r"
+        StrCpy $1 $1 -1
+      ${EndIf}
+      StrCpy $2 $1 2
+      StrCpy $1 $1 "" 2
+      ${If} $1 == ""
+        ${Continue}
+      ${EndIf}
+      ${If} $2 == "A "
+        ; a própria lista sai por último, depois de lida
+        ${If} $1 != "${REGISTRO}"
+          StrCpy $R9 "$INSTDIR\$1"
+          Call ${UN}RemoverArquivo
+        ${EndIf}
+      ${ElseIf} $2 == "P "
+        StrCpy $2 $1 "" -12
+        ${If} $2 == "\__pycache__"
+          RMDir /r "$INSTDIR\$1"
+        ${Else}
+          RMDir "$INSTDIR\$1"
+        ${EndIf}
+      ${EndIf}
+    ${Loop}
+    FileClose $0
+  ${EndIf}
+  StrCpy $R9 "$INSTDIR\${REGISTRO}"
+  Call ${UN}RemoverArquivo
+  ClearErrors
+  Pop $R9
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
 FunctionEnd
 
 ; O que ficou em ${PASTA_ANTIGOS} (ainda em uso) some no próximo logon, sem
@@ -328,14 +399,10 @@ FunctionEnd
 Function ${UN}AgendarLimpeza
   RMDir /r "${PASTA_ANTIGOS}"
   ${If} ${FileExists} "${PASTA_ANTIGOS}\*.*"
-    WriteRegStr HKCU "${CHAVE_RUNONCE}" "HelestronLimpeza" '"$SYSDIR\rundll32.exe" advpack.dll,DelNodeRunDLL32 "${PASTA_ANTIGOS}"'
+    WriteRegStr HKCU "${CHAVE_RUNONCE}" "HelestronLimpeza" '${LIMPEZA_ANTIGOS} "${PASTA_ANTIGOS}"'
   ${EndIf}
 FunctionEnd
 
-!macroend
-
-!macro AfastarLista UN
-@AFASTAR_PRESOS@
 !macroend
 
 !insertmacro FuncoesDeArquivos ""
@@ -367,15 +434,244 @@ Function PodeGravarNaPasta
   Exch $0
 FunctionEnd
 
-; A página da pasta: só segue com uma pasta em que dê para gravar (o
-; instalador roda sem administrador; C:\Program Files não serve).
+; A pasta $R0 tem uma instalação do Helestron? A lista dela (o cabeçalho
+; "Helestron <versão> ...") ou o manifesto.json do Helestron (o de uma
+; instalação de antes da lista: {"nome": "Helestron", ...}). Empurra 1 ou 0.
+Function EhDoHelestron
+  Exch $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R4
+  Push $R5
+  StrCpy $R3 0
+  ClearErrors
+  FileOpen $R1 "$R0\${REGISTRO}" r
+  ${IfNot} ${Errors}
+    FileReadUTF16LE $R1 $R2
+    FileClose $R1
+    StrCpy $R2 $R2 10
+    ${If} $R2 S== "Helestron "
+      StrCpy $R3 1
+    ${EndIf}
+  ${EndIf}
+  ClearErrors
+  ${If} $R3 == 0
+    FileOpen $R1 "$R0\manifesto.json" r
+    ${IfNot} ${Errors}
+      ${For} $R4 1 4
+        ClearErrors
+        FileRead $R1 $R2
+        ${If} ${Errors}
+          ${Break}
+        ${EndIf}
+        ; sem o recuo
+        ${Do}
+          StrCpy $R5 $R2 1
+          ${If} $R5 != " "
+          ${AndIf} $R5 != "$\t"
+            ${Break}
+          ${EndIf}
+          StrCpy $R2 $R2 "" 1
+        ${Loop}
+        StrCpy $R2 $R2 19
+        ${If} $R2 S== '"nome": "Helestron"'
+          StrCpy $R3 1
+          ${Break}
+        ${EndIf}
+      ${Next}
+      FileClose $R1
+    ${EndIf}
+  ${EndIf}
+  ClearErrors
+  StrCpy $R0 $R3
+  Pop $R5
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Exch $R0
+FunctionEnd
+
+; A pasta $R0 não existe ou está vazia? Empurra 1 ou 0. A .antigos que a
+; limpeza agendada pelo Helestron vai apagar (o RunOnce desta pasta: uma
+; desinstalação com o conector do acervo aberto) não conta.
+Function PastaVazia
+  Exch $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R4
+  StrCpy $R3 1
+  ReadRegStr $R4 HKCU "${CHAVE_RUNONCE}" "HelestronLimpeza"
+  ClearErrors
+  FindFirst $R1 $R2 "$R0\*.*"
+  ${IfNot} ${Errors}
+    ${Do}
+      ${If} $R2 != "."
+      ${AndIf} $R2 != ".."
+        ${If} $R2 != ".antigos"
+        ${OrIf} $R4 != '${LIMPEZA_ANTIGOS} "$R0\.antigos"'
+          StrCpy $R3 0
+          ${Break}
+        ${EndIf}
+      ${EndIf}
+      ClearErrors
+      FindNext $R1 $R2
+      ${If} ${Errors}
+        ${Break}
+      ${EndIf}
+    ${Loop}
+    FindClose $R1
+  ${EndIf}
+  ClearErrors
+  StrCpy $R0 $R3
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Exch $R0
+FunctionEnd
+
+; A pasta escolhida ($INSTDIR) pode receber o Helestron? Sim se não existe,
+; se está vazia ou se já tem o Helestron (atualização). Com outras coisas (do
+; usuário, de outro programa), o Helestron vai para uma pasta própria dentro
+; dela, <pasta>\Helestron - o que o botão Procurar do assistente já faz -,
+; para nada se misturar: a atualização e a desinstalação só apagam o que a
+; instalação pôs lá, mas uma pasta "Lib" ou "modelos" do usuário receberia
+; arquivos do programa. Empurra "nova", "atualizacao", "ajustada" ($INSTDIR
+; passou a <pasta>\Helestron) ou "recusada" (a subpasta Helestron também tem
+; outras coisas). $PastaEscolhida guarda a pasta de antes.
+Function ConferirDestino
+  Push $R0
+  Push $R1
+  Push $R2
+  StrCpy $PastaEscolhida $INSTDIR
+  StrCpy $R0 $INSTDIR
+  StrCpy $R1 $R0 1 -1
+  ${If} $R1 == "\"
+    StrCpy $R0 $R0 -1          ; C:\ -> C:
+  ${EndIf}
+  Push $R0
+  Call EhDoHelestron
+  Pop $R1
+  ${If} $R1 == 1
+    StrCpy $R2 "atualizacao"
+  ${Else}
+    Push $R0
+    Call PastaVazia
+    Pop $R1
+    ${If} $R1 == 1
+      StrCpy $R2 "nova"
+    ${Else}
+      StrCpy $R0 "$R0\Helestron"
+      Push $R0
+      Call EhDoHelestron
+      Pop $R1
+      ${If} $R1 == 1
+        StrCpy $R2 "ajustada"
+      ${Else}
+        Push $R0
+        Call PastaVazia
+        Pop $R1
+        ${If} $R1 == 1
+          StrCpy $R2 "ajustada"
+        ${Else}
+          StrCpy $R2 "recusada"
+        ${EndIf}
+      ${EndIf}
+      ${If} $R2 == "ajustada"
+        StrCpy $INSTDIR $R0
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  StrCpy $R0 $R2
+  Pop $R2
+  Pop $R1
+  Exch $R0
+FunctionEnd
+
+; A página da pasta: só segue com uma pasta que possa receber o Helestron
+; (ConferirDestino) e em que dê para gravar (o instalador roda sem
+; administrador; C:\Program Files não serve).
 Function ConferirPasta
+  Call ConferirDestino
+  Pop $0
+  ${If} $0 == "recusada"
+    MessageBox MB_OK|MB_ICONEXCLAMATION "A pasta escolhida já tem outros arquivos, e a pasta Helestron dentro dela também:$\r$\n$PastaEscolhida$\r$\n$\r$\nPara não misturar o Helestron com arquivos de outros programas (ou seus), escolha uma pasta vazia. A pasta sugerida ($LOCALAPPDATA\Programs\Helestron) serve."
+    Abort
+  ${ElseIf} $0 == "ajustada"
+    ${If} ${Cmd} `MessageBox MB_OKCANCEL|MB_ICONINFORMATION "A pasta escolhida já tem outros arquivos:$\r$\n$PastaEscolhida$\r$\n$\r$\nPara não misturar o Helestron com eles, ele será instalado numa pasta própria dentro dela:$\r$\n$INSTDIR$\r$\n$\r$\nClique em OK para continuar ou em Cancelar para escolher outra pasta." IDCANCEL`
+      StrCpy $INSTDIR $PastaEscolhida
+      Abort
+    ${EndIf}
+    ; a página relê a pasta do campo depois desta função (e o mostra de
+    ; novo no Voltar): o campo passa a ter a pasta própria
+    FindWindow $1 "#32770" "" $HWNDPARENT
+    GetDlgItem $1 $1 1019
+    SendMessage $1 ${WM_SETTEXT} 0 "STR:$INSTDIR"
+  ${EndIf}
   Call PodeGravarNaPasta
   Pop $0
   ${If} $0 != "ok"
     MessageBox MB_OK|MB_ICONEXCLAMATION "Não há permissão para gravar na pasta:$\r$\n$INSTDIR$\r$\n$\r$\nEscolha uma pasta do seu usuário. A pasta sugerida ($LOCALAPPDATA\Programs\Helestron) não precisa de administrador."
+    StrCpy $INSTDIR $PastaEscolhida
     Abort
   ${EndIf}
+FunctionEnd
+
+; O atalho "Assessor Integrado" da versão anterior ($R0 = o .lnk): apagado só
+; se for mesmo dela - o alvo é o pythonw.exe do runtime antigo
+; (<pasta>\runtime\python\pythonw.exe) e o argumento, o iniciar.pyw. Um
+; atalho de mesmo nome que aponte para outra coisa fica. A leitura é a do
+; Windows (IShellLinkW e IPersistFile::Load).
+!define CLSID_SHELLLINK "{00021401-0000-0000-C000-000000000046}"
+!define IID_ISHELLLINKW "{000214F9-0000-0000-C000-000000000046}"
+!define IID_IPERSISTFILE "{0000010B-0000-0000-C000-000000000046}"
+Function ApagarAtalhoAntigo
+  Exch $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R4
+  Push $R5
+  ${If} ${FileExists} "$R0"
+    StrCpy $R3 ""
+    StrCpy $R4 ""
+    System::Call 'ole32::CoCreateInstance(g "${CLSID_SHELLLINK}", p 0, i 1, g "${IID_ISHELLLINKW}", *p .R1) i .R5'
+    ${If} $R5 = 0
+      ; QueryInterface(IPersistFile), Load(arquivo, STGM_READ), GetPath, GetArguments
+      System::Call '$R1->0(g "${IID_IPERSISTFILE}", *p .R2) i .R5'
+      ${If} $R5 = 0
+        System::Call '$R2->5(w R0, i 0) i .R5'
+        ${If} $R5 = 0
+          System::Call '$R1->3(w .R3, i ${NSIS_MAX_STRLEN}, p 0, i 0)'
+          System::Call '$R1->10(w .R4, i ${NSIS_MAX_STRLEN})'
+        ${EndIf}
+        System::Call '$R2->2()'
+      ${EndIf}
+      System::Call '$R1->2()'
+    ${EndIf}
+    ; o alvo termina em \runtime\python\pythonw.exe; os argumentos, em iniciar.pyw (com ou sem aspas)
+    StrCpy $R1 $R3 "" -27
+    StrCpy $R2 $R4 1 -1
+    ${If} $R2 == '"'
+      StrCpy $R4 $R4 -1
+    ${EndIf}
+    StrCpy $R2 $R4 "" -12
+    ${If} $R1 == "\runtime\python\pythonw.exe"
+    ${AndIf} $R2 == "\iniciar.pyw"
+      Delete "$R0"
+      DetailPrint "Atalho da versão anterior (Assessor Integrado) removido: $R0"
+    ${EndIf}
+  ${EndIf}
+  ClearErrors
+  Pop $R5
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Pop $R0
 FunctionEnd
 
 ; ============================================================== instalação
@@ -406,7 +702,23 @@ Section "Helestron (programa)" SecPrograma
   SetShellVarContext current
   SetDetailsPrint both
 
-  ; 0. dá para gravar na pasta? (no modo silencioso, /D=, não há a página)
+  ; 0. a pasta escolhida: nada se mistura com o que não é do Helestron (no
+  ;    modo silencioso, /D=, não há a página; na interativa, ela já ajustou)
+  Call ConferirDestino
+  Pop $0
+  ${If} $0 == "recusada"
+    MessageBox MB_OK|MB_ICONSTOP "A pasta escolhida já tem outros arquivos, e a pasta Helestron dentro dela também:$\r$\n$PastaEscolhida$\r$\n$\r$\nPara não misturar o Helestron com arquivos de outros programas (ou do usuário), instale numa pasta vazia. A pasta sugerida ($LOCALAPPDATA\Programs\Helestron) serve." /SD IDOK
+    SetErrorLevel ${PASTA_OCUPADA}
+    Abort "A pasta escolhida tem arquivos de outros programas; nada foi copiado."
+  ${ElseIf} $0 == "ajustada"
+    DetailPrint "A pasta escolhida ($PastaEscolhida) já tem outros arquivos: o Helestron vai para $INSTDIR."
+  ${EndIf}
+  StrCpy $EraDoHelestron 0
+  ${If} $0 == "atualizacao"
+    StrCpy $EraDoHelestron 1
+  ${EndIf}
+
+  ; ...e dá para gravar nela?
   Call PodeGravarNaPasta
   Pop $0
   ${If} $0 != "ok"
@@ -419,24 +731,24 @@ Section "Helestron (programa)" SecPrograma
   Call FecharHelestron
   Call EsperarArquivosLivres
 
-  ; 2. remove o programa da versão anterior (só o programa; os dados ficam
-  ;    em %LOCALAPPDATA%\Helestron e em Documentos\Helestron). Restos de uma
-  ;    atualização anterior que já não estão em uso saem antes.
-  RMDir /r "${PASTA_ANTIGOS}"
-  ${If} ${FileExists} "$INSTDIR\manifesto.json"
-  ${OrIf} ${FileExists} "$INSTDIR\${EXE}"
+  ; 2. remove o programa da versão anterior: só os arquivos que ela pôs aqui
+  ;    (os dados ficam em %LOCALAPPDATA%\Helestron e em Documentos\Helestron).
+  ;    Restos de uma atualização anterior que já não estão em uso saem antes.
+  ${If} $EraDoHelestron == 1
+    RMDir /r "${PASTA_ANTIGOS}"
     Call LiberarArquivos
     DetailPrint "Removendo a versão anterior do programa..."
     SetDetailsPrint listonly
-    !insertmacro RemoverPrograma
-    Call AfastarPresos
+    Call RemoverPrograma
     SetDetailsPrint both
   ${EndIf}
 
-  ; 3. copia o programa
+  ; 3. copia o programa - a lista dele antes de tudo: uma cópia interrompida
+  ;    ainda é reconhecida (e removida) pela próxima instalação
   DetailPrint "Copiando o Helestron..."
   SetDetailsPrint listonly
   SetOutPath "$INSTDIR"
+  !insertmacro ExtrairRegistro "$INSTDIR\${REGISTRO}"
   File /r "@ARVORE@/*"
   SetDetailsPrint both
 
@@ -459,7 +771,23 @@ Section "Helestron (programa)" SecPrograma
   WriteRegDWORD HKCU "${CHAVE_DESINSTALAR}" "NoModify" 1
   WriteRegDWORD HKCU "${CHAVE_DESINSTALAR}" "NoRepair" 1
 
-  Call AgendarLimpeza
+  ; 6. quem usava o Assessor Integrado (a versão anterior): o atalho dele sai
+  ;    da Área de Trabalho e do Menu Iniciar, e os conectores dele, do Claude
+  ;    Desktop e do Codex - num processo à parte, sem console e sem esperar:
+  ;    a limpeza nunca segura nem derruba a instalação
+  Push "$DESKTOP\Assessor Integrado.lnk"
+  Call ApagarAtalhoAntigo
+  Push "$SMPROGRAMS\Assessor Integrado.lnk"
+  Call ApagarAtalhoAntigo
+  ${If} ${FileExists} "$INSTDIR\pythonw.exe"
+    ClearErrors
+    Exec '"$INSTDIR\pythonw.exe" -I -c "from helestron.compartilhar import migracao; migracao.limpar_restos_antigos()"'
+    ClearErrors
+  ${EndIf}
+
+  ${If} $EraDoHelestron == 1
+    Call AgendarLimpeza
+  ${EndIf}
 SectionEnd
 
 Section "Atalho na Área de Trabalho" SecAtalho
@@ -542,8 +870,8 @@ Section "Uninstall"
   SetDetailsPrint listonly
   RMDir /r "${PASTA_ANTIGOS}"
   Call un.LiberarArquivos
-  !insertmacro RemoverPrograma
-  Call un.AfastarPresos
+  ; só o que a instalação pôs aqui (a lista dela): o resto fica
+  Call un.RemoverPrograma
   Delete "$INSTDIR\${DESINSTALADOR}"
   SetDetailsPrint both
   Call un.AgendarLimpeza

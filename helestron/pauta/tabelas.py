@@ -65,6 +65,12 @@ _NADA = re.compile(r"nenhum(a)?\s+(registro|audiencia|resultado|item)|"
                    r"nao (ha|foram encontrad|existem)|sem (registros|audiencias|resultados)", re.I)
 _VERDADE = {"sim", "s", "x", "true", "verdadeiro", "1", "segredo de justica", "sigiloso",
             "sigilosa"}
+# O nível puro ("Nível 1", "2") é sigilo SÓ na coluna Sigilo: em outra célula,
+# "Nível 1" é o andar do fórum ("Fórum Des. Fulano, Nível 1, Sala 3").
+_NIVEL_DE_SIGILO = re.compile(r"\bnivel\s*[1-9]\b|^\(?\s*[1-9]\s*\)?$")
+# As dicas de uma célula (o 'title' e o 'alt' de cada ícone) são guardadas juntas,
+# separadas por isto: cada uma é julgada por si ("Visualizar" | "Sigiloso").
+SEPARADOR_DICAS = " | "
 # Coluna de contagem: a tabela é um resumo ("Tipo | Quantidade"), não a pauta.
 COLUNAS_DE_CONTAGEM = {"quantidade", "qtd", "qtde", "total", "audiencias", "n de audiencias",
                        "numero de audiencias", "soma", "contagem"}
@@ -81,6 +87,11 @@ _ANOTACAO_DE_GRUPO = re.compile(
 # Texto que parece "Autor x Réu" (as partes fora da coluna Partes).
 _PARECE_PARTES = re.compile(r"\s[xX]\s|\bversus\b|\bvs\.?\s")
 _ROTULO_PARTES = re.compile(r"^\s*partes?\s*:\s*", re.I)
+
+
+def _dicas(celula: "Celula") -> list[str]:
+    """As dicas da célula, uma a uma (o 'title' e o 'alt' de cada ícone)."""
+    return [x for x in (celula.dicas or "").split(SEPARADOR_DICAS.strip()) if x.strip()]
 
 
 def tem_valores(linha) -> bool:
@@ -372,7 +383,7 @@ def tabelas_do_html(html: str, origem: str = "") -> list[Tabela]:
     saida = []
     for t in leitor.tabelas:
         dados = {"linhas": [[{"texto": unescape("".join(c["texto"])), "links": c["links"],
-                              "dicas": " ".join(c["dicas"]), "th": c["th"],
+                              "dicas": SEPARADOR_DICAS.join(c["dicas"]), "th": c["th"],
                               "colspan": c["colspan"], "rowspan": c["rowspan"],
                               "aninhada": c["aninhada"]}
                              for c in linha] for linha in t["linhas"]],
@@ -901,35 +912,45 @@ class Reconhecedor:
         return autor or reu
 
     def _tirar_mascara(self, partes: str) -> tuple[str, bool]:
-        """"(Segredo de Justiça)" no lugar das partes: é sigilo, não nome."""
-        if partes and self.regras.sigilo.search(normalizar_texto(partes)) and \
-                len(normalizar_texto(partes).strip("() ")) <= 40:
+        """"(Segredo de Justiça)" no lugar das partes: é sigilo, não nome.
+        "Segredo de justiça: não" (ou "Sem segredo de justiça") não é máscara."""
+        alvo = normalizar_texto(partes)
+        if partes and len(alvo.strip("() ")) <= 40 and self._diz_sigilo(alvo):
             return "", True
         return partes, False
 
     def _sigiloso(self, linha, mapa) -> bool:
         c = self._celula(linha, mapa, "sigilo")
         if c is not None:
-            valor = normalizar_texto(c.texto or c.dicas)
-            if valor in _VERDADE:
-                return True
-            if valor and self._diz_sigilo(valor):
-                return True
+            # A coluna Sigilo: "Sim", "X", "Segredo de Justiça", e também o nível
+            # puro ("Nível 1") - mas não "Não", "Nível 0", "Público", "Sem sigilo".
+            for valor in ([c.texto] if c.texto.strip() else _dicas(c)):
+                valor = normalizar_texto(valor)
+                if not valor or self.regras.sem_sigilo.search(valor):
+                    continue
+                if valor in _VERDADE or _NIVEL_DE_SIGILO.search(valor) or \
+                        self.regras.sigilo.search(valor):
+                    return True
         return any(self._celula_sigilosa(celula, 80) for celula in linha)
 
     def _celula_sigilosa(self, celula: Celula, limite: int | None = None) -> bool:
-        """O selo de sigilo numa célula: no 'title'/'alt' do ícone ou no texto.
+        """O selo de sigilo numa célula: no 'title'/'alt' de um ícone ou no texto.
 
         Cada um é julgado por si, e nunca a linha inteira junta: "Ministério
         Público x Fulano" ao lado do ícone "Segredo de Justiça" não desfaz o
-        sigilo (o rótulo "Público" do nível de sigilo só vale sozinho).
+        sigilo (o rótulo "Público" do nível de sigilo só vale sozinho), e a
+        negação de uma célula ("Segredo de justiça: não") não vale para outra.
+        O número do processo sai do texto antes ("0700101-... (Sigiloso)").
         'limite': texto mais longo que isto (observações) não é selo.
         """
         texto = celula.texto if limite is None or len(celula.texto) < limite else ""
-        return any(self._diz_sigilo(normalizar_texto(x)) for x in (celula.dicas, texto) if x)
+        if texto and self._diz_sigilo(normalizar_texto(cnj._PADRAO.sub(" ", texto))):
+            return True
+        return any(self._diz_sigilo(normalizar_texto(x)) for x in _dicas(celula))
 
     def _diz_sigilo(self, texto: str) -> bool:
-        """"Segredo de Justiça (Nível 1)" sim; "Sem Sigilo (Nível 0)" não."""
+        """"Segredo de Justiça (Nível 1)" sim; "Sem Sigilo (Nível 0)", "Segredo de
+        justiça: não" e o "Nível 1" do andar do fórum não (dados/pauta.json)."""
         return bool(self.regras.sigilo.search(texto)) and not self.regras.sem_sigilo.search(texto)
 
     def _link(self, linha, mapa) -> str:

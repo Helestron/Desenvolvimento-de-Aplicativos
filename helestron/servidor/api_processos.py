@@ -253,6 +253,19 @@ def iniciar_lote(app, numeros: list, nome_lote: str, opcoes_pedido: dict | None 
         for p in presos:
             if p not in app.sigilosos_presos:
                 app.sigilosos_presos.append(p)
+        # O resto do sigiloso que ficou no acervo (a transcrição aberta, a
+        # minuta): não trava o compartilhamento, mas fica avisado no Início.
+        avisos = getattr(resumo, "sigilosos_avisos", None) or []
+        if not isinstance(getattr(app, "sigilosos_avisos", None), list):
+            app.sigilosos_avisos = []
+        for p in (Path(x) for x in avisos):
+            if p not in app.sigilosos_avisos:
+                app.sigilosos_avisos.append(p)
+        motivos = getattr(resumo, "sigilosos_motivos", None)
+        if isinstance(motivos, dict):
+            if not isinstance(getattr(app, "sigilosos_motivos", None), dict):
+                app.sigilosos_motivos = {}
+            app.sigilosos_motivos.update({Path(k): str(v) for k, v in motivos.items()})
         for r in resumo.itens:
             dados = item_json(tw, r, destino)
             tw.itens[r.numero] = dados

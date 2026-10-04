@@ -20,7 +20,9 @@
 
   const TIPOS = ["Conciliação", "Instrução e julgamento", "Una", "Custódia", "Justificação", "Mediação", "Outra"];
   const PADRAO_FALANTES = ["Juiz(a)", "Promotor(a)", "Defensor(a)", "Advogado(a) do autor", "Advogado(a) do réu", "Testemunha", "Parte", "Outro"];
-  const CORES = ["#0A66E8", "#1B3560", "#1584C2", "#4352D6", "#B26B00", "#1F8A4C", "#6B7280", "#B03A62"];
+  // F1–F8: tons de azul, navy e cinza, todos com contraste AA para o nome
+  // (sobre o branco e o vidro) e para a letra branca do botão apertado.
+  const CORES = ["#0A66E8", "#1B3560", "#1074AC", "#2D48B5", "#3D6390", "#0D526B", "#48597A", "#5F6878"];
   const TIPOS_GRAVACAO = ["Áudio e vídeo|*.mp3;*.wav;*.m4a;*.ogg;*.flac;*.wma;*.aac;*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.webm", "Todos os arquivos|*.*"];
   const ACEITAR_GRAVACAO = "audio/*,video/*,.mp3,.wav,.m4a,.ogg,.flac,.wma,.aac,.mp4,.mkv,.avi,.mov,.wmv,.webm";
 
@@ -855,7 +857,7 @@
     const pasta = String(documento || "").replace(/[\\/][^\\/]*$/, "");
     const resultado = cartao({ classe: "documento-pronto-cartao" },
       el("div", { classe: "documento-pronto" },
-        blocoIcone("check", "verde"),
+        blocoIcone("check", "azul"),
         el("div", { classe: "linha-texto" },
           el("h2", { classe: "andamento-titulo", texto: "Transcrição salva" }),
           el("p", { classe: "andamento-status numero documento-nome", title: nome || "" }, nome ? nomeQuebravel(nome) : "Documento do Word"),
@@ -890,7 +892,7 @@
     });
     const revisar = cartao({ classe: "revisar-cartao" },
       el("div", { classe: "monitor-linha" },
-        blocoIcone("brilho", "indigo"),
+        blocoIcone("brilho", "cobalto"),
         el("div", { classe: "linha-texto" }, el("span", { classe: "acao-item-titulo", texto: "Revisar com o modelo preciso" }), estadoRevisao),
         anelRevisao, botaoRevisar));
 

@@ -633,8 +633,12 @@ class TestSigilo(unittest.TestCase):
         for n in (autos, lote, docx, diario, gravacao, incidente):
             self.assertTrue(sigilo.na_pasta(self.sigilosos, n), n)
             self.assertEqual(sigilo.motivo(self.cfg, n), sigilo.MOTIVO_PASTA)
-        # o incidente não torna sigiloso o principal (nem o contrário)
+        # o incidente não torna sigiloso o principal (o contrário, sim: o
+        # incidente herda o sigilo do principal)
         self.assertFalse(sigilo.na_pasta(self.sigilosos, _numero("0700106")))
+        self.assertTrue(sigilo.na_pasta(self.sigilosos, _numero("0700101", dependente="02")))
+        self.assertEqual(sigilo.motivo(self.cfg, _numero("0700101", dependente="02")),
+                         sigilo.MOTIVO_PASTA_PRINCIPAL)
         self.assertFalse(sigilo.na_pasta(self.sigilosos, fundo))
         self.assertFalse(sigilo.processo_sigiloso(self.cfg, fundo))
         # acervo (por engano) dentro da pasta de sigilosos: o que é dele não vira sigiloso

@@ -3,12 +3,14 @@
 Arquivos que o index.html carrega, nada de fora (funciona sem internet e
 passa pela Content-Security-Policy do servidor), a fonte Inter com a licença
 OFL, os tokens de cor da especificação, o contraste AA dos pares de cor que a
-interface usa, os ícones citados pelo código e o JavaScript dentro do ES2020
-(o WebView2 mais antigo que o Windows 10 traz).
+interface usa, a paleta em tons de azul, cinza e branco (verde, âmbar e
+vermelho só dizem estado), os ícones citados pelo código e o JavaScript dentro
+do ES2020 (o WebView2 mais antigo que o Windows 10 traz).
 """
 
 from __future__ import annotations
 
+import colorsys
 import re
 import unittest
 from html.parser import HTMLParser
@@ -341,6 +343,118 @@ class CoresEContraste(unittest.TestCase):
         self.assertIn("@media (prefers-reduced-motion: reduce)", css)
         self.assertIn(":focus-visible", css)
         self.assertIn("backdrop-filter", css)
+
+
+def _mistura(a, b, t: float):
+    """O ponto t (0 = topo, 1 = base) de um gradiente de a para b."""
+    return tuple(a[i] * (1 - t) + b[i] * t for i in range(3)) + (1.0,)
+
+
+def azul_ou_cinza(c) -> bool:
+    """Tom de azul (do ciano ao cobalto, matiz de 195° a 230°) ou cinza neutro.
+
+    É a paleta que o usuário pediu (seção 1, item 2: azul, cinza e branco;
+    navy e ardósia são azuis escuros ou acinzentados). Verde, âmbar,
+    vermelho, índigo e roxo ficam de fora.
+    """
+    matiz, _luz, saturacao = colorsys.rgb_to_hls(c[0] / 255, c[1] / 255, c[2] / 255)
+    return saturacao < 0.05 or 195 <= matiz * 360 <= 230
+
+
+def _blocos_do_css() -> dict[str, tuple]:
+    """.cor-NOME dos blocos de ícone (e o padrão do .bloco-icone) → (topo, base)."""
+    css = CSS.read_text(encoding="utf-8")
+    t = _tokens()
+    blocos = {}
+    for nome, topo, base in re.findall(
+            r"^\.cor-([\w-]+)\s*\{\s*background:\s*linear-gradient\(180deg,\s*([^,]+),\s*([^)]+?)\);", css, re.M):
+        blocos[nome] = (_rgb(topo, t), _rgb(base, t))
+    padrao = re.search(r"^\.bloco-icone\s*\{[^}]*?background:\s*linear-gradient\(180deg,\s*([^,]+),\s*(var\([^)]+\)|[^)]+?)\);",
+                       css, re.M | re.S)
+    blocos["(padrão)"] = (_rgb(padrao.group(1), t), _rgb(padrao.group(2), t))
+    return blocos
+
+
+def _js(nome: str) -> str:
+    return (WEB / "js" / nome).read_text(encoding="utf-8")
+
+
+class PaletaAzulCinzaBranco(unittest.TestCase):
+    """Ícones em tons de azul, navy e cinza; verde, âmbar e vermelho só dizem estado.
+
+    O usuário pediu tons de azul, cinza e branco. Os quadrados de ícone
+    (Ajustes, Início, Compartilhar, Ajuda…) variam o tom, como os Ajustes do
+    iOS em monocromia azul; as cores de estado (verde = pronto, âmbar =
+    atenção, vermelho = erro e gravar) ficam nos pontos, nas pílulas, nas
+    faixas e avisos, no anel e no botão de gravar.
+    """
+
+    def test_blocos_de_icone_em_azul_navy_e_cinza(self):
+        blocos = _blocos_do_css()
+        self.assertGreaterEqual(len(blocos), 8, sorted(blocos))
+        for nome, (topo, base) in blocos.items():
+            with self.subTest(bloco=nome):
+                self.assertTrue(azul_ou_cinza(topo) and azul_ou_cinza(base),
+                                f".cor-{nome} fora dos tons de azul e cinza")
+
+    def test_icone_branco_legivel_em_todo_bloco(self):
+        # WCAG 1.4.11 (contraste de elementos gráficos, 3:1): o traço branco
+        # do ícone ocupa do 20 % ao 80 % da altura do quadrado; o ponto mais
+        # claro que ele toca é o de 20 % do gradiente.
+        branco = (255, 255, 255, 1.0)
+        for nome, (topo, base) in _blocos_do_css().items():
+            with self.subTest(bloco=nome):
+                self.assertGreaterEqual(contraste(branco, _mistura(topo, base, 0.2)), 3.0)
+
+    def test_telas_usam_so_blocos_da_paleta(self):
+        # Download em verde, Transcrição em vermelho, Compartilhar em índigo,
+        # Pacote em âmbar: o nome de cor de um quadrado de ícone tem de ser um
+        # bloco azul ou cinza da paleta (um nome sem .cor-NOME cairia no azul
+        # padrão sem ninguém perceber).
+        definidos = {nome for nome, (topo, base) in _blocos_do_css().items()
+                     if nome != "(padrão)" and azul_ou_cinza(topo) and azul_ou_cinza(base)}
+        usados: dict[str, set[str]] = {}
+        for arquivo in sorted((WEB / "js").glob("*.js")):
+            texto = arquivo.read_text(encoding="utf-8")
+            nomes: set[str] = set()
+            for trecho in re.findall(r"\bcor:\s*([^,}\n]+)", texto):
+                nomes |= set(re.findall(r'"([\w-]+)"', trecho))
+            for argumentos in re.findall(r"\bblocoIcone\(([^()]*)\)", texto):
+                nomes |= set(re.findall(r'"([\w-]+)"', argumentos.split(",", 1)[1])) if "," in argumentos else set()
+            nomes |= set(re.findall(r"(?<![\w-])cor-([a-z]+)\b", texto))
+            if nomes:
+                usados[arquivo.name] = nomes
+        self.assertIn("secao-ajustes.js", usados)
+        for nome, cores in usados.items():
+            with self.subTest(arquivo=nome):
+                self.assertEqual(sorted(cores - definidos), [])
+
+    def test_pontos_do_tipo_de_audiencia_sem_cor_de_estado(self):
+        # Custódia em vermelho, Justificação em âmbar e Mediação em verde
+        # pareciam erro, aviso e "pronto" na lista da pauta.
+        bloco = re.search(r"const COR_TIPO = \{(.*?)\};", _js("componentes.js"), re.S).group(1)
+        cores = dict(re.findall(r'"([^"]+)":\s*"(#[0-9A-Fa-f]{6})"', bloco))
+        self.assertEqual(len(cores), 7, cores)
+        for tipo, cor in cores.items():
+            with self.subTest(tipo=tipo, cor=cor):
+                self.assertTrue(azul_ou_cinza(_rgb(cor, {})))
+        self.assertEqual(len(set(cores.values())), len(cores), "dois tipos com a mesma cor")
+
+    def test_cores_dos_falantes_em_azul_e_cinza_com_contraste_aa(self):
+        # O nome do falante (12,5 px, negrito) vai na cor dele sobre o
+        # branco e o vidro; o botão F1–F8 apertado põe letra branca sobre ela.
+        t = _tokens()
+        branco = (255, 255, 255, 1.0)
+        vidro = _sobre(_rgb(t["--vidro"], t), _rgb("#E8EFFA", t))
+        cores = re.findall(r"#[0-9A-Fa-f]{6}", re.search(r"const CORES = \[(.*?)\];", _js("secao-audiencias.js")).group(1))
+        self.assertEqual(len(cores), 8)
+        self.assertEqual(len(set(c.upper() for c in cores)), 8, "dois falantes com a mesma cor")
+        for i, cor in enumerate(cores, 1):
+            c = _rgb(cor, t)
+            with self.subTest(falante=f"F{i}", cor=cor):
+                self.assertTrue(azul_ou_cinza(c), "fora dos tons de azul e cinza")
+                self.assertGreaterEqual(contraste(c, branco), 4.5)
+                self.assertGreaterEqual(contraste(c, vidro), 4.5)
 
 
 if __name__ == "__main__":

@@ -297,7 +297,7 @@
         const a = acessos.find((x) => x.portal === portal);
         const ok = a && a.tem_senha;
         return H.ui.linha({
-          icone: ok ? "chave" : "pessoa", cor: ok ? "verde" : "cinza",
+          icone: ok ? "chave" : "pessoa", cor: ok ? "aco" : "cinza",
           titulo: `${nomeSistema(sistema)} · ${tribunal}`,
           sub: ok ? (a.so_agora ? "Senha só até fechar o Helestron" : "Senha guardada") + (a.usuario ? " · " + a.usuario : "")
             : "Sem senha guardada: o navegador abre para você entrar.",
