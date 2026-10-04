@@ -37,8 +37,11 @@
           el("div", { classe: "grupo-botoes" }, botao({ rotulo: "Copiar", icone: "copiar", tamanho: "pequeno", acao: () => H.ui.copiar(copia.texto, "Copiado") })));
       }
       if (pagina) {
+        // Se o navegador falhar de novo, o "Abrir a página" vira folha de erro
+        // com o endereço; "Copiar o endereço" funciona sem navegador nenhum.
         conteudo.push(el("div", { classe: "grupo-botoes" },
-          botao({ rotulo: "Abrir a página", icone: "externo", tipo: "tonal", tamanho: "pequeno", acao: () => api.abrir("url", pagina) })));
+          botao({ rotulo: "Abrir a página", icone: "externo", tipo: "tonal", tamanho: "pequeno", acao: () => api.abrir("url", pagina) }),
+          botao({ rotulo: "Copiar o endereço", icone: "copiar", tamanho: "pequeno", acao: () => H.ui.copiar(pagina, "Endereço copiado") })));
       }
       return folha.informar({ titulo, mensagem, icone: "brilho", conteudo });
     }

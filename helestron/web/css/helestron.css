@@ -833,6 +833,31 @@ select.campo {
   border-radius: 9px;
 }
 
+/* Ajustes › Transcrição: o nome do microfone costuma ser longo ("Microfone
+   de mesa USB (Jabra Speak 510)"); a caixa cresce até 420 px e, se ainda
+   cortar, o "Não encontrado:" vem no início do rótulo e o title traz tudo. */
+.linha select.campo-microfone {
+  width: auto;
+  max-width: min(420px, 100%);
+  min-width: 0;
+}
+
+/* Sem espaço para a frase e a lista lado a lado (1024, 1366 a 125 %), a
+   lista desce para baixo da frase, em vez de espremê-la numa coluna estreita. */
+.linha-microfone {
+  flex-wrap: wrap;
+}
+
+.linha-microfone > .linha-texto {
+  flex: 1 1 220px;
+}
+
+.linha-microfone > .grupo-botoes {
+  flex: 1 1 380px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
 .rotulo {
   display: block;
   font-size: 13px;
@@ -1882,16 +1907,28 @@ a.linha:active {
   border-top: 1px solid var(--separador);
 }
 
+/* A meta quebra linha em vez de ser cortada: em 1024 px, "Sigilosos nunca
+   vão para a IA" saía "Sigilosos nunca vão para" (num item flex o
+   text-overflow não desenha as reticências). */
 .cartao-funcao-meta {
   font-size: 13px;
   color: var(--texto-2);
   font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
+  line-height: 1.35;
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: normal;
+}
+
+.cartao-funcao-meta .icone {
+  display: inline-block;
+  vertical-align: -2px;
+  margin-right: 1px;
+}
+
+.cartao-funcao-rodape > .botao {
+  flex: none;
 }
 
 .cartao-funcao-meta strong {
@@ -2230,13 +2267,50 @@ button.item-simples:hover {
   padding-top: 4px;
 }
 
+/* O detalhe de cada processo do lote ("Segredo de justiça: salvo na pasta
+   dos sigilosos.", "Não achei o processo no e-SAJ do TJSP.") quebra linha e
+   aparece inteiro: cortado, mudava o sentido, e a tabela empurrava o botão
+   "Abrir o PDF" para fora da vista na janela mínima. */
 .mensagem-item {
+  display: block;
   color: var(--texto-2);
   font-size: 13px;
-  max-width: 360px;
+  line-height: 1.35;
+  min-width: 9em;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Abaixo de 1240 px, a frase vai para baixo da situação (a coluna Detalhe
+   sai), e a tabela cabe sem rolar. */
+.itens-lote .mensagem-sob {
+  display: none;
+}
+
+@media (max-width: 1240px) {
+  .itens-lote .coluna-detalhe {
+    display: none;
+  }
+
+  .itens-lote .mensagem-sob {
+    display: block;
+    margin-top: 4px;
+  }
+}
+
+/* A coluna do "Abrir o PDF" fica sempre à vista, mesmo se a tabela rolar;
+   com fundo só quando rola (senão, uma faixa clara à toa sobre o vidro). */
+.itens-lote .coluna-abrir {
+  position: sticky;
+  right: 0;
+  width: 1%;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  text-align: right;
+}
+
+.itens-lote .tabela-rolagem.rola .coluna-abrir {
+  background: rgba(250, 251, 253, 0.97);
+  box-shadow: -8px 0 8px -8px rgba(11, 26, 51, 0.18);
 }
 
 .andamento-topo {
@@ -2800,6 +2874,26 @@ button.item-simples:hover {
   display: flex;
   align-items: center;
   gap: 18px;
+  /* Cartão estreito (1024, 1366 a 125 %): os botões descem para uma linha
+     própria em vez de espremer o título e o nome do documento. */
+  flex-wrap: wrap;
+}
+
+.documento-pronto .linha-texto {
+  flex: 1 1 260px;
+  min-width: 220px;
+}
+
+.documento-pronto > .grupo-botoes {
+  flex: 0 1 auto;
+}
+
+/* O nome do documento é o número do processo: nunca cortado (o
+   .andamento-status do lote corta em duas linhas). */
+.documento-pronto .documento-nome {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
 }
 
 .documento-pronto .bloco-icone {

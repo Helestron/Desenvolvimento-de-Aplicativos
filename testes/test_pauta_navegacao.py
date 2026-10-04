@@ -345,6 +345,30 @@ class TestRowspanNoNavegador(ComNavegador):
         self.assertEqual([c.texto for c in t.linhas[2]], ["05/10/2026", "10:00", n2,
                                                           "Conciliação"])
 
+    def test_audiencia_em_duas_linhas_no_navegador(self):
+        """Data, Hora e Processo com rowspan e as partes na linha de baixo: lida no
+        Chromium, cada audiência sai uma vez só, com as partes."""
+        from helestron.pauta.navegacao import JS_TABELAS
+        from helestron.pauta.tabelas import Reconhecedor, Tabela
+
+        n1, n2 = ap.numero("0700953"), ap.numero("0700954")
+        corpo = "<table><tr><th>Data</th><th>Hora</th><th>Processo</th><th>Tipo</th>" \
+                "<th>Situação</th></tr>"
+        for n, hora, tipo, partes in ((n1, "09:00", "Conciliação", "Fulano x Banco XYZ"),
+                                      (n2, "10:00", "Instrução", "Cicrano x Empresa W")):
+            corpo += (f"<tr><td rowspan='2'>05/10/2026</td><td rowspan='2'>{hora}</td>"
+                      f"<td rowspan='2'>{n}</td><td>{tipo}</td><td>Designada</td></tr>"
+                      f"<tr><td colspan='2'>Partes: {partes}</td></tr>")
+        nav = ap.navegador_web(self.tmp)
+        with nav:
+            nav.pagina.set_content(ap.pagina(corpo + "</table>", "Pauta de Audiências"))
+            dados = nav.pagina.evaluate(JS_TABELAS)
+        r = Reconhecedor(regras.carregar(), "esaj", "TJAL").reconhecer(
+            [Tabela.de_js(t) for t in dados["tabelas"]], "Pauta de Audiências")
+        self.assertEqual([(a.hora, a.processo, a.tipo, a.partes) for a in r.audiencias], [
+            ("09:00", n1, "Conciliação", "Fulano x Banco XYZ"),
+            ("10:00", n2, "Instrução e julgamento", "Cicrano x Empresa W")])
+
 
 if __name__ == "__main__":
     unittest.main()

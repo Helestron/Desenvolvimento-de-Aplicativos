@@ -21,12 +21,20 @@ TI bloqueia as atualizações do Edge) a janela abriria vazia.
 Mesmo com o WebView2 aprovado, a inicialização dele pode falhar (runtime
 danificado, política da empresa): a pywebview só registra o erro e deixa a
 janela cinza e vazia. Por isso uma vigia espera a página dar sinal (o
-evento 'loaded' da pywebview ou um pedido à API) e, se ela não der em
-PRAZO_CARREGAR_S, fecha a janela vazia e passa para o Edge.
+evento 'loaded' da pywebview ou a página conectada ao canal de eventos) e,
+se ela não der em PRAZO_CARREGAR_S, fecha a janela vazia e passa para o Edge.
+
+O sinal da página é só dela: o canal de eventos (/api/eventos), que só a
+página abre (o EventSource de web/js/api.js e o da tela de erro). Um pedido
+qualquer à API não conta — a segunda abertura do programa (o duplo clique de
+novo no atalho diante da janela cinza: /api/ping e /api/janela/mostrar) e o
+instalador também falam com o servidor, e a janela vazia passaria por
+carregada.
 
 Nas reservas o programa não sabe quando a janela fecha pelo próprio
 navegador: encerra quando o processo do Edge sai e a página para de dar
-sinal (conexão de eventos ou /api/ping) por SEM_SINAL_S segundos.
+sinal (o canal de eventos, com o ping dele a cada INTERVALO_PING_S) por
+SEM_SINAL_S segundos.
 
 O tamanho inicial cabe na área útil do monitor (sem a barra de tarefas):
 num notebook Full HD a 150 % (1280×672 DIP úteis), a janela padrão de
@@ -329,6 +337,8 @@ class Janela:
 
     def __init__(self, app):
         self.app = app
+        # A página desta janela já se conectou ao canal de eventos (deu sinal).
+        self.pagina_conectou = False
 
     def abrir(self, url: str) -> bool:
         """Abre e BLOQUEIA até a janela fechar. False: não conseguiu abrir."""
@@ -344,6 +354,24 @@ class Janela:
         """(x, y, largura, altura) na tela, para a captura do autoteste."""
         return None
 
+    def _pagina_conectada(self) -> bool:
+        """Há uma página conectada ao canal de eventos agora? E guarda, em
+        'pagina_conectou', que ela se conectou — o sinal de que carregou.
+
+        Só a página abre /api/eventos. Os pedidos à API não servem de sinal:
+        a segunda abertura do programa (instancia.chamar_a_aberta) pede
+        /api/ping e /api/janela/mostrar justamente quando a janela está cinza
+        — quem não vê nada clica de novo no atalho —, e o instalador consulta
+        o programa aberto."""
+        hub = getattr(self.app, "hub", None)
+        try:
+            conectada = hub is not None and hub.conectados > 0
+        except Exception:                                   # pragma: no cover
+            conectada = False
+        if conectada:
+            self.pagina_conectou = True
+        return conectada
+
     # A espera das reservas: até o Edge fechar e a página parar de dar sinal.
     def _esperar_pagina(self, processo: subprocess.Popen | None = None) -> bool:
         """Devolve True se a página chegou a dar sinal (ou o programa foi
@@ -353,8 +381,8 @@ class Janela:
         hub = self.app.hub
         while not self.app.encerrado.wait(1.0):
             agora = time.monotonic()
-            conectado = hub.conectados > 0
-            deu_sinal = conectado or hub.ultimo_contato > self.app.iniciado_em
+            conectado = self._pagina_conectada()
+            deu_sinal = self.pagina_conectou
             if processo is not None and processo.poll() is not None and not conectado:
                 if agora - hub.ultimo_contato > 5:
                     log.info("o Edge fechou: encerrando")
@@ -441,7 +469,8 @@ class JanelaWebview(Janela):
             self.app.ao_encerrar.remove(self.fechar)
 
     def _deu_sinal(self) -> bool:
-        """A página carregou? (O 'loaded' da pywebview, ou um pedido dela à API.)"""
+        """A página carregou? (O 'loaded' da pywebview, ou a página conectada
+        ao canal de eventos — nunca um pedido qualquer à API: _pagina_conectada.)"""
         eventos = getattr(self.janela, "events", None)
         carregou = getattr(eventos, "loaded", None)
         try:
@@ -449,10 +478,8 @@ class JanelaWebview(Janela):
                 return True
         except Exception:                                   # pragma: no cover
             pass
-        hub = getattr(self.app, "hub", None)
-        if hub is None:
-            return False
-        return hub.conectados > 0 or hub.ultimo_contato > self.app.iniciado_em
+        self._pagina_conectada()
+        return self.pagina_conectou
 
     def _apareceu(self) -> bool:
         try:
@@ -466,7 +493,7 @@ class JanelaWebview(Janela):
         janela vazia, e abrir() passa para o Edge."""
         limite = time.monotonic() + PRAZO_APARECER_S
         while not self._apareceu():
-            if self._fim_start.wait(0.25) or self.app.fechando:
+            if self._fim_start.wait(0.25) or self.app.fechando or self._deu_sinal():
                 return
             if time.monotonic() > limite:
                 break

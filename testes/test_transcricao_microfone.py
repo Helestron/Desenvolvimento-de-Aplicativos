@@ -168,7 +168,7 @@ class TestListaDeMicrofones(unittest.TestCase):
             with self.assertRaises(microfone.MicrofoneNaoEncontrado) as ctx:
                 microfone.conferir("Fone Jabra Evolve")
             self.assertEqual(str(ctx.exception),
-                             "O microfone «Fone Jabra Evolve» não foi encontrado. Escolha outro "
+                             "O microfone “Fone Jabra Evolve” não foi encontrado. Escolha outro "
                              "em Audiências ou Ajustes › Transcrição.")
             self.assertIsInstance(ctx.exception, MicrofoneIndisponivel)
         # sem microfone nenhum: a frase de "nenhum microfone"
@@ -199,8 +199,8 @@ class TestListaDeMicrofones(unittest.TestCase):
             c._abrir()
             self.assertEqual(falso.abertos[0]["device"], 7)
             self.assertEqual(len(avisos), 1)
-            self.assertIn("«Microfone USB (Conferência Jabra 510)» não abriu", avisos[0])
-            self.assertIn("«Microfone (Realtek(R) Audio)»", avisos[0])
+            self.assertIn("“Microfone USB (Conferência Jabra 510)” não abriu", avisos[0])
+            self.assertIn("“Microfone (Realtek(R) Audio)”", avisos[0])
             # o mesmo aparelho aberto por outra API (o MME corta o nome) não é troca
             self.assertTrue(microfone._mesmo_aparelho("Microfone USB (Conferência Jabra 510)",
                                                       "Microfone USB (Conferência Jab"))

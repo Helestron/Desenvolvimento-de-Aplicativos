@@ -513,5 +513,214 @@ class TestPublicoNaoDesfazOSigilo(unittest.TestCase):
         self.assertEqual(R.dados["negativos"], regras.PADROES["negativos"])
 
 
+# ======================================================= segunda revisão
+class TestAudienciaEmDuasLinhas(unittest.TestCase):
+    """Data, Hora e Processo mesclados na vertical (rowspan) sobre a linha de baixo,
+    com as partes ou um detalhe: a linha de baixo completa a audiência de cima e
+    não vira uma "Outra" no mesmo horário (a pauta em dobro, e a "Nova audiência"
+    falsa na sincronização seguinte)."""
+
+    N = [ap.numero(f"070095{i}") for i in range(1, 5)]
+
+    def html(self, detalhe1="Autor: Fulano de Tal x Réu: Banco XYZ",
+             detalhe2="Autor: Cicrano x Réu: Empresa W", cabecalho=True) -> str:
+        n = self.N
+        cab = ("<tr><th>Data</th><th>Hora</th><th>Processo</th><th>Tipo</th><th>Situação</th>"
+               "</tr>") if cabecalho else ""
+        return (f"<table><caption>Pauta de audiências</caption>{cab}"
+                f"<tr><td rowspan=2>05/10/2026</td><td rowspan=2>09:00</td>"
+                f"<td rowspan=2>{n[0]}</td><td>Conciliação</td><td>Designada</td></tr>"
+                f"<tr><td colspan=2>{detalhe1}</td></tr>"
+                f"<tr><td rowspan=2>05/10/2026</td><td rowspan=2>10:00</td>"
+                f"<td rowspan=2>{n[1]}</td><td>Instrução</td><td>Designada</td></tr>"
+                f"<tr><td colspan=2>{detalhe2}</td></tr></table>")
+
+    def confere(self, r):
+        n = self.N
+        self.assertEqual([(a.data, a.hora, a.processo, a.tipo) for a in r.audiencias], [
+            (date(2026, 10, 5), "09:00", n[0], "Conciliação"),
+            (date(2026, 10, 5), "10:00", n[1], "Instrução e julgamento")])
+        self.assertEqual((r.ignoradas, r.avisos), (0, []))
+
+    def test_rowspan_no_html_e_no_portal(self):
+        for estrito in (True, False):
+            with self.subTest(estrito=estrito):
+                r = reconhecer_html(self.html(), "esaj", estrito=estrito)
+                self.confere(r)
+                self.assertEqual([a.partes for a in r.audiencias], [
+                    "Autor: Fulano de Tal x Réu: Banco XYZ", "Autor: Cicrano x Réu: Empresa W"])
+                self.assertFalse(any(a.tipo == "Outra" for a in r.audiencias))
+
+    def test_a_copia_da_mescla_vai_marcada_como_herdada(self):
+        t = tabelas_do_html(self.html())[0]
+        self.assertEqual([c.herdada for c in t.linhas[2]], [True, True, True, False, False])
+        self.assertEqual(t.linhas[2][2].texto, self.N[0], "a cópia vale na linha de baixo")
+        self.assertFalse(any(c.herdada for c in t.linhas[1]))
+
+    def test_sem_cabecalho(self):
+        r = reconhecer_html(self.html(cabecalho=False), "esaj")
+        self.assertEqual([(a.hora, a.processo) for a in r.audiencias],
+                         [("09:00", self.N[0]), ("10:00", self.N[1])])
+        self.assertEqual(r.audiencias[0].partes, "Autor: Fulano de Tal x Réu: Banco XYZ")
+
+    def test_sigilo_e_detalhe_na_linha_de_baixo(self):
+        icone = "<img src='data:,' title='Segredo de Justiça'>"
+        r = reconhecer_html(self.html(detalhe1="(Segredo de Justiça)",
+                                      detalhe2=f"Apensado ao processo {self.N[3]} {icone}"),
+                            "esaj")
+        self.confere(r)
+        primeira, segunda = r.audiencias
+        self.assertTrue(primeira.sigiloso)
+        self.assertEqual(primeira.partes, "", "a máscara não vira nome de parte")
+        self.assertTrue(segunda.sigiloso, "o selo da linha de baixo vale para a audiência")
+        self.assertIn(self.N[3], segunda.observacoes)
+        self.assertNotIn(self.N[3], {a.processo for a in r.audiencias},
+                         "o processo apensado não vira audiência")
+
+    def test_data_e_hora_mescladas_para_dois_processos(self):
+        """A pauta concentrada: Data e Hora mescladas, um processo em cada linha."""
+        n = self.N
+        html = ("<table><tr><th>Data</th><th>Hora</th><th>Processo</th><th>Tipo</th></tr>"
+                f"<tr><td rowspan=3>05/10/2026</td><td rowspan=2>09:00</td><td>{n[0]}</td>"
+                "<td>Conciliação</td></tr>"
+                f"<tr><td>{n[1]}</td><td>Conciliação</td></tr>"
+                f"<tr><td>10:00</td><td>{n[2]}</td><td>Una</td></tr></table>")
+        r = reconhecer_html(html, "esaj")
+        self.assertEqual([(a.data, a.hora, a.processo) for a in r.audiencias], [
+            (date(2026, 10, 5), "09:00", n[0]), (date(2026, 10, 5), "09:00", n[1]),
+            (date(2026, 10, 5), "10:00", n[2])])
+
+    def test_vindo_do_navegador(self):
+        n = self.N
+        dados = {"linhas": [
+            [{"texto": "Data"}, {"texto": "Hora"}, {"texto": "Processo"}, {"texto": "Tipo"},
+             {"texto": "Situação"}],
+            [{"texto": "05/10/2026", "rowspan": 2}, {"texto": "09:00", "rowspan": 2},
+             {"texto": n[0], "rowspan": 2}, {"texto": "Conciliação"}, {"texto": "Designada"}],
+            [{"texto": "Partes: Fulano x Banco", "colspan": 2}]]}
+        r = Reconhecedor(R, "esaj", "TJAL").reconhecer([Tabela.de_js(dados)])
+        self.assertEqual([(a.processo, a.tipo, a.partes) for a in r.audiencias],
+                         [(n[0], "Conciliação", "Fulano x Banco")])
+
+
+class TestDataDeCimaSoParaOutraAudiencia(unittest.TestCase):
+    """A célula de data vazia só repete a de cima se a linha tem hora própria (ou,
+    sem coluna de hora, o número na coluna Processo): a linha "Aguardando
+    designação" e a de detalhe "Apensado ao processo X" não viram audiência no
+    dia da linha de cima."""
+
+    N = [ap.numero(f"070096{i}") for i in range(1, 5)]
+
+    def test_aguardando_designacao_sem_data_nem_hora(self):
+        n = self.N
+        html = ("<table><caption>Pauta de audiências</caption>"
+                "<tr><th>Data</th><th>Hora</th><th>Processo</th><th>Tipo</th><th>Situação</th></tr>"
+                f"<tr><td>05/10/2026</td><td>09:00</td><td>{n[0]}</td><td>Conciliação</td>"
+                "<td>Designada</td></tr>"
+                f"<tr><td>06/10/2026</td><td>10:00</td><td>{n[1]}</td><td>Instrução</td>"
+                "<td>Designada</td></tr>"
+                f"<tr><td></td><td></td><td>{n[2]}</td><td>Conciliação</td>"
+                "<td>Aguardando designação</td></tr></table>")
+        for estrito in (True, False):
+            with self.subTest(estrito=estrito):
+                r = reconhecer_html(html, "esaj", estrito=estrito)
+                self.assertEqual([a.processo for a in r.audiencias], n[:2])
+                self.assertEqual(r.ignoradas, 1)
+                self.assertIn(n[2], r.avisos[0])
+                self.assertIn("sem data reconhecível", r.avisos[0])
+
+    def test_detalhe_com_o_numero_de_outro_processo(self):
+        n = self.N
+        html = ("<table><caption>Pauta de audiências</caption>"
+                "<tr><th>Data</th><th>Hora</th><th>Processo</th><th>Tipo</th><th>Situação</th></tr>"
+                f"<tr><td>05/10/2026</td><td>09:00</td><td>{n[0]}</td><td>Conciliação</td>"
+                "<td>Designada</td></tr>"
+                f"<tr><td></td><td colspan=4>Apensado ao processo {n[3]}</td></tr></table>")
+        r = reconhecer_html(html, "esaj")
+        self.assertEqual([a.processo for a in r.audiencias], [n[0]])
+        self.assertEqual(r.ignoradas, 1)
+        self.assertIn(n[3], r.avisos[0])
+
+    def test_data_hora_numa_coluna_so(self):
+        n = self.N
+        r = _relatorio(_tabela(["Data/Hora", "Processo", "Tipo"],
+                               ["05/10/2026 09:00", n[0], "Una"],
+                               ["10:00", n[1], "Una"],          # a hora sozinha: o dia de cima
+                               ["", n[2], "Una"]))              # nem dia nem hora
+        self.assertEqual([(a.data, a.hora, a.processo) for a in r.audiencias], [
+            (date(2026, 10, 5), "09:00", n[0]), (date(2026, 10, 5), "10:00", n[1])])
+        self.assertEqual(r.ignoradas, 1)
+
+    def test_sem_coluna_de_hora_o_numero_na_coluna_processo(self):
+        n = self.N
+        r = _relatorio(_tabela(["Data", "Processo", "Tipo"],
+                               ["05/10/2026", n[0], "Una"],
+                               ["", n[1], "Conciliação"]))
+        self.assertEqual([(a.data, a.processo) for a in r.audiencias], [
+            (date(2026, 10, 5), n[0]), (date(2026, 10, 5), n[1])])
+        # na coluna Processo vale; noutra coluna, não
+        r = _relatorio(_tabela(["Data", "Processo", "Tipo", "Observações"],
+                               ["05/10/2026", n[0], "Una", ""],
+                               ["", "", "", f"Apensado ao {n[3]}"]))
+        self.assertEqual([a.processo for a in r.audiencias], [n[0]])
+        self.assertEqual(r.ignoradas, 1)
+
+    def test_hora_mesclada_e_data_so_na_primeira(self):
+        n = self.N
+        html = ("<table><tr><th>Data</th><th>Hora</th><th>Processo</th><th>Tipo</th></tr>"
+                f"<tr><td>05/10/2026</td><td rowspan=2>09:00</td><td>{n[0]}</td>"
+                "<td>Conciliação</td></tr>"
+                f"<tr><td></td><td>{n[1]}</td><td>Conciliação</td></tr></table>")
+        r = reconhecer_html(html, "esaj")
+        self.assertEqual([(a.data, a.hora, a.processo) for a in r.audiencias], [
+            (date(2026, 10, 5), "09:00", n[0]), (date(2026, 10, 5), "09:00", n[1])])
+
+
+class TestColunaNegativaNaPautaComTipoESituacao(unittest.TestCase):
+    """Data/Hora, Processo, Tipo e Situação e, ao lado, uma coluna "Documento" (a
+    ata), "Intimação das partes", "Mandados"...: na página da pauta, é a pauta. O
+    painel de intimações e o de expedientes continuam de fora."""
+
+    N = [ap.numero(f"070097{i}") for i in range(1, 3)]
+    COLUNAS = ("Documento", "Intimação das partes", "Mandados", "Expediente",
+               "Último movimento", "Prazo")
+
+    def html(self, coluna, rotulo_data="Data/Hora", horas=(" 09:00", " 10:00")) -> str:
+        n = self.N
+        return ("<table class='resultTable'><thead><tr>"
+                f"<th>{rotulo_data}</th><th>Processo</th><th>Tipo</th><th>Situação</th>"
+                f"<th>{coluna}</th></tr></thead><tbody>"
+                f"<tr><td>05/10/2026{horas[0]}</td><td>{n[0]}</td><td>Conciliação</td>"
+                "<td>Designada</td><td>x</td></tr>"
+                f"<tr><td>05/10/2026{horas[1]}</td><td>{n[1]}</td><td>Instrução</td>"
+                "<td>Realizada</td><td>x</td></tr></tbody></table>")
+
+    def test_na_pagina_da_pauta(self):
+        for coluna in self.COLUNAS:
+            with self.subTest(coluna=coluna):
+                r = reconhecer_html(self.html(coluna), "esaj",
+                                    contexto="Pauta de Audiências | Pauta de Audiências")
+                self.assertTrue(r.reconhecida)
+                self.assertEqual([(a.hora, a.processo) for a in r.audiencias],
+                                 [("09:00", self.N[0]), ("10:00", self.N[1])])
+                # o rótulo "Data", com a hora nas células, também
+                r = reconhecer_html(self.html(coluna, "Data"), "esaj",
+                                    contexto="Pauta de Audiências")
+                self.assertEqual(len(r.audiencias), 2)
+
+    def test_fora_da_pagina_da_pauta_ou_sem_hora(self):
+        for coluna in self.COLUNAS:
+            with self.subTest(coluna=coluna):
+                self.assertFalse(reconhecer_html(self.html(coluna), "esaj",
+                                                 contexto="Painel do magistrado").reconhecida)
+                # "Data | Processo | Tipo | Situação | Prazo" sem hora: expedientes
+                self.assertFalse(reconhecer_html(self.html(coluna, "Data", ("", "")), "esaj",
+                                                 contexto="Pauta de Audiências").reconhecida)
+
+    def test_intimacoes_continuam_fora(self):
+        self.assertFalse(reconhecer_html(ap.html_intimacoes(), "esaj",
+                                         contexto="Pauta de Audiências").reconhecida)
+
+
 if __name__ == "__main__":
     unittest.main()

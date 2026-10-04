@@ -28,8 +28,8 @@ from xml.etree import ElementTree as ET
 
 from ..nucleo import cnj, listas
 from . import modelos
-from .tabelas import Celula, Reconhecedor, Reconhecimento, Tabela, mapear_cabecalho, \
-    tabelas_do_html, tem_valores
+from .tabelas import Celula, Reconhecedor, Reconhecimento, Tabela, celula_de_valor, \
+    mapear_cabecalho, tabelas_do_html, tem_valores
 
 log = logging.getLogger("pauta.importacao")
 
@@ -59,18 +59,22 @@ class RelatorioInvalido(ValueError):
 def _descer_mescladas(linhas: list[list], mescladas) -> None:
     """Célula mesclada na VERTICAL (a data escrita uma vez para as audiências do
     dia): o valor vale em todas as linhas que ela cobre, na primeira coluna da
-    mescla. Na horizontal (o título do dia na linha inteira), as outras colunas
-    ficam vazias - como o colspan do HTML. 'mescladas': (linha0, linha1,
-    coluna0), com a linha1 exclusiva, a partir de 0."""
+    mescla, como célula HERDADA (a linha só com Data, Hora e Processo herdados é
+    a continuação da audiência de cima, não outra). Na horizontal (o título do
+    dia na linha inteira), as outras colunas ficam vazias - como o colspan do
+    HTML. 'mescladas': (linha0, linha1, coluna0), com a linha1 exclusiva, a
+    partir de 0."""
     for l0, l1, c0 in mescladas:
         if l1 - l0 < 2 or l0 >= len(linhas) or c0 >= len(linhas[l0]):
             continue
         valor = linhas[l0][c0]
+        if valor in (None, ""):
+            continue
         for i in range(l0 + 1, min(l1, len(linhas))):
             while len(linhas[i]) <= c0:
                 linhas[i].append(None)
             if linhas[i][c0] in (None, ""):
-                linhas[i][c0] = valor
+                linhas[i][c0] = celula_de_valor(valor, herdada=True)
 
 
 def _de_xlsx(caminho: Path) -> list[Tabela]:
@@ -191,13 +195,18 @@ def _de_ods(caminho: Path) -> list[Tabela]:
                     continue
                 coluna = len(valores)
                 valor = _valor_ods(celula)
-                if celula.tag.endswith("covered-table-cell") and valor in (None, "") and \
-                        coluna in descendo:
-                    valor = descendo[coluna][0]
                 try:
                     repetir = int(celula.get(f"{{{t}}}number-columns-repeated") or 1)
                 except ValueError:
                     repetir = 1
+                if celula.tag.endswith("covered-table-cell"):
+                    # coberta pela mescla de cima: herda o valor dela, coluna a coluna (o
+                    # LibreOffice junta as cobertas vizinhas, de mesclas diferentes, numa só)
+                    for k in range(min(repetir, 50)):
+                        de_cima = descendo.get(coluna + k)
+                        valores.append(celula_de_valor(de_cima[0], herdada=True)
+                                       if valor in (None, "") and de_cima else valor)
+                    continue
                 try:
                     altura = int(celula.get(f"{{{t}}}number-rows-spanned") or 1)
                 except ValueError:

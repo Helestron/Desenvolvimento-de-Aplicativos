@@ -793,10 +793,10 @@
       return f.resultado.then((v) => v === true);
     },
 
-    /** Informação com um botão "OK". */
-    informar({ titulo, mensagem, icone: nomeIcone, conteudo }) {
+    /** Informação com um botão "OK" ('corIcone' "erro" ou "alerta" muda a cor do ícone). */
+    informar({ titulo, mensagem, icone: nomeIcone, corIcone, conteudo }) {
       return abrirFolha({
-        titulo, mensagem, conteudo, icone: nomeIcone || "info",
+        titulo, mensagem, conteudo, icone: nomeIcone || "info", corIcone,
         botoes: [{ rotulo: "OK", tipo: "primario", padrao: true }],
       }).resultado;
     },
@@ -864,6 +864,7 @@
     const c = erro && erro.codigo;
     if (c === "sem_conexao") return "Sem conexão com o Helestron";
     if (c === "ocupado" || c === "recurso_ocupado") return "Espere um pouco";
+    if (c === "navegador_nao_abriu") return "O navegador não abriu";
     return "Não deu certo";
   }
 

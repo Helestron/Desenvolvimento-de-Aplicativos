@@ -1,5 +1,6 @@
 """A janela: escolha do modo, pywebview simulada (fechar com trabalho, diálogos), reservas,
-a vigia do WebView2 que não carrega, o tamanho pela área útil e o chamar atenção."""
+a vigia do WebView2 que não carrega (e que a segunda abertura do programa não desarma), o
+tamanho pela área útil e o chamar atenção."""
 
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ import types
 import unittest
 from unittest import mock
 
-from helestron.aplicativo import janela
+from helestron.aplicativo import instancia, janela
 from helestron.download.modelos import Cancelado
 
 from testes.test_servidor_base import ServidorDeTeste
@@ -232,6 +233,69 @@ class TestJanelas(ServidorDeTeste):
             self.assertFalse(janela.JanelaWebview(self.app).abrir(self.app.url))
         self.assertNotIn(janela.JanelaWebview.fechar, self.app.ao_encerrar)
 
+    def clicar_de_novo_no_atalho(self) -> str:
+        """A segunda abertura do programa, de verdade: instancia.chamar_a_aberta()
+        pede /api/ping e /api/janela/mostrar à instância aberta — a reação
+        natural de quem só vê uma janela cinza, ou nada, por vários segundos."""
+        instancia.gravar_registro(self.app.porta, self.app.token)
+        return instancia.chamar_a_aberta(espera_s=5)
+
+    def test_segunda_abertura_nao_desarma_a_vigia(self):
+        """Os pedidos da segunda abertura não são sinal da página: antes, a
+        vigia os tomava por ela, a janela cinza ficava para sempre e o Edge
+        nunca era tentado."""
+        def roteiro(j):
+            resultados["segunda"] = self.clicar_de_novo_no_atalho()
+            resultados["destruida"] = j.destruida.wait(6)
+
+        resultados = {}
+        modulo = webview_falso(roteiro, carrega=False)
+        self.app.hub.ultimo_contato = self.app.iniciado_em - 1        # a página nunca falou
+        with mock.patch.dict(sys.modules, {"webview": modulo}), \
+                mock.patch.dict(os.environ, {"HELESTRON_JANELA": ""}), \
+                mock.patch.object(janela, "NO_WINDOWS", True), \
+                mock.patch.object(janela, "webview2_disponivel", return_value=True), \
+                mock.patch.object(janela, "_navegador_padrao", return_value=("ChromeHTML", None)), \
+                mock.patch.object(janela, "area_util_dip", return_value=None), \
+                mock.patch.object(janela, "PRAZO_CARREGAR_S", 1.5), \
+                mock.patch.object(janela.JanelaEdge, "abrir", return_value=True) as edge:
+            self.assertEqual(janela.abrir(self.app, self.app.url), "edge")
+        self.assertEqual(resultados["segunda"], "mostrou")
+        self.assertTrue(resultados["destruida"])
+        edge.assert_called_once()
+
+    def test_janela_cinza_fechada_depois_da_segunda_abertura_cai_no_edge(self):
+        """Antes, fechar a janela cinza depois do segundo clique fazia o
+        programa sair calado (abrir() devolvia True), sem tentar o Edge."""
+        def roteiro(j):
+            resultados["segunda"] = self.clicar_de_novo_no_atalho()
+            j.events.closing.set()                     # o usuário fecha a janela cinza
+
+        resultados = {}
+        modulo = webview_falso(roteiro, carrega=False)
+        self.app.hub.ultimo_contato = self.app.iniciado_em - 1
+        with mock.patch.dict(sys.modules, {"webview": modulo}):
+            self.assertFalse(janela.JanelaWebview(self.app).abrir(self.app.url))
+        self.assertEqual(resultados["segunda"], "mostrou")
+
+    def test_pagina_conectada_ao_canal_de_eventos_e_o_sinal(self):
+        """Sem o 'loaded' da pywebview, a página conectada ao canal de eventos
+        (o EventSource da interface) basta: a vigia não fecha a janela."""
+        def roteiro(j):
+            leitor = self.eventos()                     # a página carregou
+            resultados["destruida"] = j.destruida.wait(1.5)
+            leitor.fechar()                            # e a janela fechou
+
+        resultados = {}
+        modulo = webview_falso(roteiro, carrega=False)
+        self.app.hub.ultimo_contato = self.app.iniciado_em - 1
+        with mock.patch.dict(sys.modules, {"webview": modulo}), \
+                mock.patch.object(janela, "PRAZO_CARREGAR_S", 0.5):
+            janela_ = janela.JanelaWebview(self.app)
+            self.assertTrue(janela_.abrir(self.app.url))
+        self.assertFalse(resultados["destruida"])
+        self.assertTrue(janela_.pagina_conectou)
+
     def test_tamanho_pela_area_util_do_monitor(self):
         modulo = webview_falso(lambda j: None)
         with mock.patch.dict(sys.modules, {"webview": modulo}), \
@@ -243,11 +307,12 @@ class TestJanelas(ServidorDeTeste):
         self.assertLessEqual(kw["min_size"][1], kw["height"])
         processo = mock.Mock()
         processo.poll.return_value = 0
-        self.app.iniciado_em = time.monotonic() - 20       # a página já deu sinal
         self.app.hub.ultimo_contato = time.monotonic() - 10
+        edge = janela.JanelaEdge(self.app, executavel=janela.Path("/opt/msedge"))
+        edge.pagina_conectou = True                         # a página já deu sinal
         with mock.patch.object(janela.subprocess, "Popen", return_value=processo) as popen, \
                 mock.patch.object(janela, "area_util_dip", return_value=(1280, 672)):
-            janela.JanelaEdge(self.app, executavel=janela.Path("/opt/msedge")).abrir(self.app.url)
+            edge.abrir(self.app.url)
         self.assertIn("--start-maximized", popen.call_args[0][0])
 
     def test_pergunta_chama_atencao_da_janela(self):
@@ -374,10 +439,10 @@ class TestJanelas(ServidorDeTeste):
         with mock.patch.object(janela.subprocess, "Popen", return_value=processo) as popen, \
                 mock.patch.object(janela, "SEM_SINAL_S", 0.1), \
                 mock.patch.object(janela, "PRIMEIRO_SINAL_S", 0.1):
-            self.app.iniciado_em = time.monotonic() - 20       # a página deu sinal
             self.app.hub.ultimo_contato = time.monotonic() - 10
-            ok = janela.JanelaEdge(self.app, executavel=janela.Path("/opt/msedge")).abrir(
-                self.app.url)
+            edge = janela.JanelaEdge(self.app, executavel=janela.Path("/opt/msedge"))
+            edge.pagina_conectou = True                     # a página deu sinal
+            ok = edge.abrir(self.app.url)
         self.assertTrue(ok)
         argumentos = popen.call_args[0][0]
         self.assertEqual(argumentos[0], str(janela.Path("/opt/msedge")))
@@ -406,12 +471,33 @@ class TestJanelas(ServidorDeTeste):
             self.assertFalse(janela.JanelaNavegador(self.app).abrir(self.app.url))
         self.assertIn("não deu nenhum sinal", "\n".join(registro.output))
 
+    def test_segunda_abertura_nao_e_sinal_da_pagina_no_navegador(self):
+        """No Edge e no navegador, também: a página que nunca carregou não
+        passa por carregada com os pedidos da segunda abertura — o programa
+        explica (motivo_sem_janela) em vez de sair calado."""
+        def abrir_navegador(url, new=0):
+            if new == 1:                               # a abertura (mostrar() usa new=2)
+                threading.Thread(target=lambda: resultados.setdefault(
+                    "segunda", self.clicar_de_novo_no_atalho()), daemon=True).start()
+            return True
+
+        resultados = {}
+        with mock.patch.object(janela.webbrowser, "open", side_effect=abrir_navegador), \
+                mock.patch.object(janela, "SEM_SINAL_S", 1.5), \
+                mock.patch.object(janela, "PRIMEIRO_SINAL_S", 2.5), \
+                self.assertLogs("aplicativo.janela", "WARNING") as registro:
+            self.app.hub.ultimo_contato = self.app.iniciado_em - 1
+            self.assertFalse(janela.JanelaNavegador(self.app).abrir(self.app.url))
+        self.assertEqual(resultados["segunda"], "mostrou")
+        self.assertIn("não deu nenhum sinal", "\n".join(registro.output))
+
     def test_pagina_viva_segura_o_programa(self):
         janela_ = janela.JanelaNavegador(self.app)
         fim = threading.Event()
+        resultado = {}
 
         def esperar():
-            janela_._esperar_pagina()
+            resultado["deu_sinal"] = janela_._esperar_pagina()
             fim.set()
 
         # ping curto: o servidor percebe logo a conexão fechada
@@ -424,6 +510,7 @@ class TestJanelas(ServidorDeTeste):
             leitor.fechar()
             self.assertTrue(fim.wait(6))                # sem sinal: encerra
         self.assertEqual(self.app.hub.conectados, 0)
+        self.assertTrue(resultado["deu_sinal"])         # a página carregou (e fechou)
 
 
 if __name__ == "__main__":

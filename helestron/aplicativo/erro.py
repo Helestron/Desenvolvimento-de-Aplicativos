@@ -11,7 +11,10 @@ encontrar, explica como baixá-lo e reinstalar. O instalador não deixa cópia
 de si no computador.
 
 A tela grava o instancia.json, como a abertura normal: o --encerrar do
-instalador (que ela manda rodar) e a segunda abertura falam com ela.
+instalador (que ela manda rodar) e a segunda abertura falam com ela. E abre
+o canal de eventos (/api/eventos), como a interface: é por ele que a janela
+sabe que a página carregou e, no Edge e no navegador, quando ela fechou
+(janela.Janela._pagina_conectada).
 
 Roda no mesmo servidor local (modo de erro: poucas rotas) e na mesma
 janela; se nem isso for possível, quem chama mostra a caixa de mensagem
@@ -33,9 +36,9 @@ from pathlib import Path
 
 from .. import NOME, __version__
 from ..nucleo import caminhos, sistema
-from ..servidor.eventos import HubEventos
+from ..servidor.eventos import FIM, INTERVALO_PING_S, HubEventos, formatar_sse
 from ..servidor.perguntas import GerentePerguntas
-from ..servidor.rede import ErroApi, Pedido, Roteador, ServidorLocal
+from ..servidor.rede import ErroApi, Fluxo, Pedido, Roteador, ServidorLocal
 from . import integridade
 
 log = logging.getLogger("aplicativo.erro")
@@ -111,6 +114,11 @@ novo.</p>
 (function () {{
   var t = new URLSearchParams(location.search).get("t") || sessionStorage.getItem("helestron-token") || "";
   if (t) {{ sessionStorage.setItem("helestron-token", t); history.replaceState(null, "", "/"); }}
+  // O canal de eventos é o sinal de vida da página: por ele a janela sabe
+  // que a tela carregou (e, no Edge e no navegador, quando ela fechou).
+  if (t && window.EventSource) {{
+    try {{ new EventSource("/api/eventos?t=" + encodeURIComponent(t)); }} catch (e) {{}}
+  }}
   var recado = document.getElementById("recado");
   var abrirInstalador = document.getElementById("abrir-instalador");
   var achado = null;
@@ -172,6 +180,7 @@ class AplicacaoErro:
         roteador.adicionar("POST", "/api/abrir", self._abrir)
         roteador.adicionar("POST", "/api/encerrar", self._encerrar)
         roteador.adicionar("POST", "/api/janela/mostrar", self._mostrar)
+        roteador.adicionar("GET", "/api/eventos", self._eventos)
         self.servidor = ServidorLocal(self, roteador, self.token, 0, None,
                                       pagina_inicial=self._pagina)
 
@@ -249,6 +258,35 @@ class AplicacaoErro:
     def _mostrar(self, p: Pedido) -> dict:
         janela = self.janela
         return {"mostrou": bool(janela.mostrar()) if janela is not None else False}
+
+    def _eventos(self, p: Pedido) -> Fluxo:
+        """O canal de eventos da tela: só o ping (a tela não recebe eventos).
+        A conexão aberta é o sinal de que a página carregou; o ping faz o
+        servidor perceber logo a página fechada."""
+        hub = self.hub
+
+        def escrever(tratador) -> None:
+            assinatura = hub.assinar()
+            try:
+                tratador.iniciar_fluxo()
+                tratador.wfile.write(b"retry: 2000\n\n")
+                tratador.wfile.write(formatar_sse("estado", {}))
+                tratador.wfile.flush()
+                while True:
+                    item = assinatura.proximo(INTERVALO_PING_S)
+                    if item is FIM:
+                        break
+                    tipo, dados = ("ping", {}) if item is None else item
+                    tratador.wfile.write(formatar_sse(tipo, dados))
+                    tratador.wfile.flush()
+                    hub.tocar()
+            except (OSError, ValueError):            # a página fechou
+                pass
+            finally:
+                assinatura.cancelar()
+                hub.tocar()
+
+        return Fluxo(escrever)
 
     # ---------------------------------------------------------- execução
     def iniciar(self) -> "AplicacaoErro":

@@ -712,26 +712,35 @@ class ServicoPauta:
             raise ValueError(_frase(erro)) from erro
         audiencias = rec.audiencias
         # A mesma audiência já trazida do portal (processo, data e hora) não é
-        # duplicada: o relatório só completa o que faltava nela.
-        existentes: dict[tuple, modelos.Audiencia] = {}
+        # duplicada: o relatório só completa o que faltava nela. O par é um a um
+        # (pelo tipo, como na sincronização): duas audiências do processo no
+        # mesmo horário não trocam o local nem as partes entre si.
+        existentes: dict[tuple, list[modelos.Audiencia]] = {}
         if audiencias:
             de = min(a.data for a in audiencias)
             ate = max(a.data for a in audiencias)
             for a in self.armazem.listar(de, ate):
                 if a.sistema != "arquivo" and a.processo:
-                    existentes[(modelos.chave_processo(a.processo), a.data, a.hora)] = a
+                    existentes.setdefault(
+                        (modelos.chave_processo(a.processo), a.data, a.hora), []).append(a)
+        do_relatorio: dict[tuple, list[modelos.Audiencia]] = {}
         novas_lista, completar = [], []
         for a in audiencias:
             chave = (modelos.chave_processo(a.processo), a.data, a.hora) if a.processo else None
-            alvo = existentes.get(chave) if chave else None
-            if alvo is None:
+            if chave and chave in existentes:
+                do_relatorio.setdefault(chave, []).append(a)
+            else:
                 novas_lista.append(a)
-                continue
-            for campo in ("local", "link", "classe", "partes", "magistrado", "observacoes"):
-                if not getattr(alvo, campo) and getattr(a, campo):
-                    setattr(alvo, campo, getattr(a, campo))
-            alvo.sigiloso = alvo.sigiloso or a.sigiloso
-            completar.append(alvo)
+        for chave, lista in do_relatorio.items():
+            pares = modelos.parear_mesmo_horario(lista, existentes[chave])
+            pareadas = {id(a) for a, _alvo in pares}
+            novas_lista.extend(a for a in lista if id(a) not in pareadas)
+            for a, alvo in pares:
+                for campo in ("local", "link", "classe", "partes", "magistrado", "observacoes"):
+                    if not getattr(alvo, campo) and getattr(a, campo):
+                        setattr(alvo, campo, getattr(a, campo))
+                alvo.sigiloso = alvo.sigiloso or a.sigiloso
+                completar.append(alvo)
         balanco = self.armazem.gravar(novas_lista, "arquivo", None, registrar_novas=False,
                                       agora=self.relogio())
         atualizadas = balanco.atualizadas

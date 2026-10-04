@@ -68,8 +68,8 @@ class MicrofoneNaoEncontrado(MicrofoneIndisponivel):
 
 
 SEM_MICROFONE = ("Nenhum microfone foi encontrado. Ligue o microfone (ou o fone com "
-                 "microfone) e clique em Testar de novo. Se ele estiver ligado, confira "
-                 "em Configurações do Windows › Sistema › Som › Entrada.")
+                 "microfone) e tente de novo. Se ele estiver ligado, confira em "
+                 "Configurações do Windows › Sistema › Som › Entrada.")
 
 
 @dataclass(frozen=True)
@@ -208,7 +208,7 @@ def conferir(dispositivo: int | str | None) -> int | str | None:
         _sounddevice()           # sem o componente de áudio, a frase é a dele
         raise MicrofoneIndisponivel(SEM_MICROFONE)
     raise MicrofoneNaoEncontrado(
-        f"O microfone «{texto}» não foi encontrado. Escolha outro em Audiências ou "
+        f"O microfone “{texto}” não foi encontrado. Escolha outro em Audiências ou "
         "Ajustes › Transcrição.")
 
 
@@ -486,8 +486,8 @@ class Captura(_CapturaBase):
                 # Nunca o padrão em silêncio: o escolhido não abriu (ocupado,
                 # desligado), e a audiência segue gravando por outro aparelho.
                 self._avisou_troca = True
-                self._avisar(f"O microfone «{escolhido}» não abriu (desligado, ou em uso por "
-                             f"outro programa); a gravação segue pelo «{self.nome}». Confira o "
+                self._avisar(f"O microfone “{escolhido}” não abriu (desligado, ou em uso por "
+                             f"outro programa); a gravação segue pelo “{self.nome}”. Confira o "
                              "microfone em Audiências.")
             return
         log.warning("nenhuma configuração de microfone abriu: %s", "; ".join(erros[:6]))

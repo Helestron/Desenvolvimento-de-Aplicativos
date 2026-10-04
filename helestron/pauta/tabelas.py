@@ -14,20 +14,27 @@ Justiça"). Daí em diante a regra é uma só (seção 8.5 da especificação):
   também: o cabeçalho que fala de "prazo", "evento", "intimação"... sem
   nada que lembre audiência NA PRÓPRIA TABELA (hora, "audiência" no
   cabeçalho ou na legenda) NÃO é pauta - o título da página não basta: a
-  tela da pauta do portal costuma ter, ao lado, o painel de intimações.
-  No portal, a tabela só com data e processo (sem hora, tipo ou situação)
-  também precisa desse sinal: a fila de processos não é pauta. Ler a lista
-  de intimações como pauta encheria a tela de audiências que não existem;
+  tela da pauta do portal costuma ter, ao lado, o painel de intimações. A
+  exceção é a tabela com a cara da pauta (data com hora, processo, tipo e
+  situação) e uma coluna "Documento", "Intimação das partes", "Mandados"...
+  ao lado: na página da pauta, ela é a pauta. No portal, a tabela só com
+  data e processo (sem hora, tipo ou situação) também precisa de "audiência"
+  ou "pauta" por perto: a fila de processos não é pauta. Ler a lista de
+  intimações como pauta encheria a tela de audiências que não existem;
 * o cabeçalho é procurado nas primeiras linhas, passando por cima do
   preâmbulo do relatório ("Data: 03/10/2026 | Hora: 10:15" da emissão,
   título, vara, período) e juntando o cabeçalho em duas linhas
   ("Audiência" mesclada sobre "Data | Hora");
 * células mescladas na vertical (rowspan) valem para todas as linhas que
-  cobrem; data e hora na mesma célula são separadas; linhas de grupo
-  ("Segunda-feira, 05/10/2026", com ou sem a contagem ao lado) dão a data
-  às linhas de baixo, e a célula de data vazia repete a da linha de cima
-  (relatório com a data só na primeira audiência do dia); linha sem data é
-  ignorada (e contada), com aviso se trazia um processo.
+  cobrem, marcadas como herdadas: a linha cuja data, hora e processo são só
+  os herdados (a audiência em duas linhas, com as partes embaixo) completa a
+  de cima e não vira outra; data e hora na mesma célula são separadas;
+  linhas de grupo ("Segunda-feira, 05/10/2026", com ou sem a contagem ao
+  lado) dão a data às linhas de baixo, e a célula de data vazia repete a da
+  linha de cima (relatório com a data só na primeira audiência do dia) se a
+  linha tem hora própria ou, sem coluna de hora, o número na coluna
+  Processo; linha sem data é ignorada (e contada), com aviso se trazia um
+  processo.
 """
 
 from __future__ import annotations
@@ -67,6 +74,9 @@ _ANOTACAO_DE_GRUPO = re.compile(
     r"^\(?\s*(?:(?:total|quantidade|qtde?|n)\s*(?:de\s+(?:audiencias?|registros?))?\s*:?\s*)?"
     r"\d{1,4}\s*(?:audiencias?|registros?|processos?|itens?)?\s*\)?$"
     r"|^(?:segunda|terca|quarta|quinta|sexta)(?:[\s-]*feira)?$|^(?:sabado|domingo)$")
+# Texto que parece "Autor x Réu" (as partes fora da coluna Partes).
+_PARECE_PARTES = re.compile(r"\s[xX]\s|\bversus\b|\bvs\.?\s")
+_ROTULO_PARTES = re.compile(r"^\s*partes?\s*:\s*", re.I)
 
 
 def tem_valores(linha) -> bool:
@@ -102,11 +112,31 @@ class Celula:
     dicas: str = ""                  # title/alt dentro da célula
     th: bool = False
     aninhada: bool = False           # a célula tem outra tabela dentro (moldura de layout)
+    # cópia da célula mesclada na vertical que começa numa linha de cima (rowspan
+    # do HTML, mescla da planilha): vale nesta linha, mas não diz que ela é outra
+    # audiência - a linha só com Data, Hora e Processo herdados é a continuação
+    # da de cima (as partes ou um detalhe da mesma audiência)
+    herdada: bool = False
 
     @property
     def bruto(self):
         """O que a normalização lê: o valor tipado, se houver; senão o texto."""
         return self.valor if self.valor not in (None, "") else self.texto
+
+    @property
+    def cheia(self) -> bool:
+        return bool(self.texto) or self.valor not in (None, "")
+
+
+def celula_de_valor(v, herdada: bool = False) -> Celula:
+    """A célula de um valor de planilha (texto, data, número...) ou já pronta."""
+    if isinstance(v, Celula):
+        return replace(v, herdada=True) if herdada else v
+    if v is None:
+        return Celula(herdada=herdada)
+    if isinstance(v, str):
+        return Celula(texto=limpar(v), herdada=herdada)
+    return Celula(texto=_texto_de_valor(v), valor=v, herdada=herdada)
 
 
 @dataclass
@@ -119,19 +149,7 @@ class Tabela:
     @classmethod
     def de_textos(cls, linhas, **extra) -> "Tabela":
         """Tabela de linhas de valores (planilha, CSV, Word)."""
-        saida = []
-        for linha in linhas:
-            celulas = []
-            for v in linha:
-                if isinstance(v, Celula):
-                    celulas.append(v)
-                elif v is None:
-                    celulas.append(Celula())
-                elif isinstance(v, str):
-                    celulas.append(Celula(texto=limpar(v)))
-                else:
-                    celulas.append(Celula(texto=_texto_de_valor(v), valor=v))
-            saida.append(celulas)
+        saida = [[celula_de_valor(v) for v in linha] for linha in linhas]
         return cls(linhas=saida, **extra)
 
     @classmethod
@@ -141,7 +159,8 @@ class Tabela:
         colspan: a célula ocupa as colunas seguintes (vazias). rowspan: ela
         vale também nas linhas de baixo, na mesma coluna - a data (ou a
         hora) escrita uma vez para as audiências do dia não some nelas, e as
-        células seguintes não escorregam para a coluna errada.
+        células seguintes não escorregam para a coluna errada. A cópia vai
+        marcada como herdada (Celula.herdada).
         """
         linhas = []
         # coluna -> [célula que desce, quantas linhas ainda ocupa]
@@ -153,7 +172,7 @@ class Tabela:
 
             def cobrir() -> None:
                 while len(celulas) in de_cima:
-                    celulas.append(replace(de_cima[len(celulas)][0]))
+                    celulas.append(replace(de_cima[len(celulas)][0], herdada=True))
 
             for c in linha:
                 cobrir()
@@ -175,7 +194,7 @@ class Tabela:
             if de_cima:
                 while len(celulas) <= max(de_cima):
                     if len(celulas) in de_cima:
-                        celulas.append(replace(de_cima[len(celulas)][0]))
+                        celulas.append(replace(de_cima[len(celulas)][0], herdada=True))
                     else:
                         celulas.append(Celula())
             descendo = {col: [cel, n - 1] for col, (cel, n) in de_cima.items() if n > 1}
@@ -185,6 +204,15 @@ class Tabela:
         ident = " ".join(x for x in (dados.get("id") or "", dados.get("classes") or "") if x)
         return cls(linhas=linhas, legenda=legenda, origem=origem or dados.get("origem") or "",
                    identificador=ident)
+
+
+def _propria(c: Celula | None) -> bool:
+    """A célula é desta linha (não é a cópia da mescla de cima) e tem conteúdo."""
+    return c is not None and not c.herdada and c.cheia
+
+
+def _tem_hora(c: Celula) -> bool:
+    return bool(modelos.ler_hora(c.bruto) or modelos.ler_hora(c.texto))
 
 
 def _inteiro(valor, padrao: int) -> int:
@@ -424,16 +452,46 @@ def mapear_cabecalho(linha: list[Celula], regras) -> dict[str, int]:
     return mapa
 
 
+_RE_ROTULO_COM_HORA = re.compile(r"\bhora|\bhorario")
+
+
+def _data_com_hora(mapa: dict[str, int], linha: list[Celula],
+                   dados: list[list[Celula]] | None) -> bool:
+    """A coluna de data traz também a hora? Pelo rótulo ("Data/Hora") ou porque
+    ao menos metade das datas das linhas de baixo vem com o horário."""
+    i = mapa.get("data")
+    if i is None:
+        return False
+    if i < len(linha) and _RE_ROTULO_COM_HORA.search(normalizar_texto(linha[i].texto)):
+        return True
+    com_data = com_hora = 0
+    for d in (dados or [])[:60]:
+        if i >= len(d) or not d[i].cheia:
+            continue
+        data_, hora = modelos.ler_data_hora(d[i].bruto)
+        if data_ is None and d[i].texto:
+            data_, hora = modelos.ler_data_hora(d[i].texto)
+        if data_ is not None:
+            com_data += 1
+            com_hora += bool(hora)
+    return com_data > 0 and com_hora * 2 >= com_data
+
+
 def _eh_pauta(mapa: dict[str, int], linha: list[Celula], contexto: str, regras,
-              contexto_pagina: str = "", estrito: bool = False) -> bool:
+              contexto_pagina: str = "", estrito: bool = False,
+              dados: list[list[Celula]] | None = None) -> bool:
     """O cabeçalho é de pauta? 'contexto': a legenda e o nome da PRÓPRIA tabela.
 
-    O título da página ('contexto_pagina') nunca desfaz um cabeçalho de
+    O título da página ('contexto_pagina') não desfaz um cabeçalho de
     intimações ou prazos: a página da pauta tem, muitas vezes, o painel de
-    intimações ao lado. No portal ('estrito'), a tabela só com data e
-    processo (sem hora, tipo nem situação) precisa de "audiência" ou
-    "pauta" na própria tabela ou na página - uma fila de processos tem data
-    e número também.
+    intimações ao lado. A única exceção é a tabela que já tem a cara da
+    pauta - data com hora, processo, tipo e situação - e, ao lado, uma coluna
+    "Documento" (a ata), "Intimação das partes", "Mandados"...: na página da
+    pauta, ela é a pauta ('dados': as linhas de baixo, para ver se as datas
+    vêm com hora). No portal ('estrito'), a tabela só com data e processo
+    (sem hora, tipo nem situação) precisa de "audiência" ou "pauta" na
+    própria tabela ou na página - uma fila de processos tem data e número
+    também.
     """
     if "data" not in mapa or not ({"processo", "tipo"} & set(mapa)):
         return False
@@ -445,7 +503,11 @@ def _eh_pauta(mapa: dict[str, int], linha: list[Celula], contexto: str, regras,
             or regras.contexto_audiencia.search(contexto)):
         return True
     if any(n in rotulos for n in regras.negativos):
-        return False
+        # o painel de intimações ("Data | Processo | Evento | Prazo") e o de
+        # expedientes (sem hora) não passam por aqui
+        return ({"processo", "tipo", "situacao"} <= set(mapa)
+                and bool(regras.contexto_audiencia.search(contexto_pagina))
+                and _data_com_hora(mapa, linha, dados))
     if {"tipo", "situacao"} & set(mapa) or not estrito:
         return True
     return bool(regras.contexto_audiencia.search(contexto_pagina))
@@ -507,7 +569,8 @@ class Reconhecedor:
                 junta = _juntar_cabecalhos(anterior, linha)
                 candidatos.append((mapear_cabecalho(junta, self.regras), junta))
             for m, rotulos in candidatos:
-                if m and _eh_pauta(m, rotulos, ctx_tabela, self.regras, ctx_pagina, self.estrito):
+                if m and _eh_pauta(m, rotulos, ctx_tabela, self.regras, ctx_pagina, self.estrito,
+                                   linhas[i + 1:]):
                     r.tabelas = 1
                     r.total_informado = total_da_legenda(t.legenda, self.regras)
                     self._rotulos = {j: c.texto for j, c in enumerate(rotulos)}
@@ -547,39 +610,71 @@ class Reconhecedor:
     def _com_cabecalho(self, linhas, mapa: dict[str, int], t: Tabela, r: Reconhecimento) -> None:
         data_grupo: date | None = None       # a da última linha de grupo
         data_corrente: date | None = None    # a última data vista (grupo ou audiência)
+        ultima: Audiencia | None = None      # a audiência da linha de cima
+        # "Data/Hora" numa coluna só: a célula vazia não tem nem o dia nem a hora
+        data_tem_hora = bool(_RE_ROTULO_COM_HORA.search(normalizar_texto(
+            self._rotulos.get(mapa.get("data"), ""))))
         for numero, linha in enumerate(linhas, start=1):
             if any(c.aninhada for c in linha):
                 continue
             textos = [c.texto for c in linha]
-            cheias = [c for c in linha if c.texto or c.valor not in (None, "")]
+            cheias = [c for c in linha if c.cheia]
             if not cheias:
                 continue
             juntas = " ".join(textos)
             if self._parece_cabecalho(linha, juntas):
+                ultima = None
                 continue                         # cabeçalho repetido (nova página do PDF)
             d = self._data_do_grupo(cheias, juntas)
             if d is not None:
                 data_grupo = data_corrente = d   # linha de grupo: "Segunda-feira, 05/10/2026"
+                ultima = None
                 continue
             if len(cheias) == 1 and _NADA.search(normalizar_texto(juntas)):
                 continue                         # "Nenhum registro encontrado"
-            # a célula de data VAZIA repete a de cima (a data escrita só na primeira
-            # audiência do dia, ou a célula mesclada) - se a linha é mesmo outra
-            # audiência, com processo ou hora, e não a continuação da de cima; com
-            # outro texto ("a designar"), só a da linha de grupo vale
             c_data = self._celula(linha, mapa, "data")
-            vazia = c_data is None or (not c_data.texto and c_data.valor in (None, ""))
             c_hora = self._celula(linha, mapa, "hora")
-            outra = bool(cnj.extrair_todos(juntas)) or (
-                c_hora is not None and bool(modelos.ler_hora(c_hora.bruto)
-                                            or modelos.ler_hora(c_hora.texto)))
+            c_proc = self._celula(linha, mapa, "processo")
+            data_propria = _propria(c_data) and (modelos.ler_data(c_data.bruto) is not None
+                                                 or modelos.ler_data(c_data.texto) is not None)
+            hora_propria = _propria(c_hora) and _tem_hora(c_hora)
+            # a hora sozinha na coluna de data ("10:00" embaixo de "Data/Hora")
+            hora_na_data = _propria(c_data) and not data_propria and _tem_hora(c_data)
+            if "processo" in mapa:
+                processo_proprio = _propria(c_proc) and (
+                    bool(cnj.extrair_todos(c_proc.texto))
+                    or modelos.ler_processo(c_proc.bruto) != ("", True))
+            else:                                # o número numa coluna sem rótulo próprio
+                processo_proprio = bool(cnj.extrair_todos(
+                    " ".join(c.texto for c in linha if not c.herdada)))
+            herdou = any(c is not None and c.herdada and c.cheia for c in (c_data, c_hora, c_proc))
+            if herdou and not (data_propria or hora_propria or hora_na_data or processo_proprio):
+                # Data, Hora e Processo mesclados na vertical sobre a linha de baixo (as
+                # partes, um detalhe): é a MESMA audiência, que ela completa - não outra
+                if ultima is not None:
+                    self._continuar(ultima, linha, mapa)
+                continue
+            # a célula de data VAZIA repete a de cima (a data escrita só na primeira
+            # audiência do dia) - se a linha é mesmo outra audiência, com hora própria
+            # (ou a hora mesclada de cima) ou, sem coluna de hora, com o número na
+            # própria coluna Processo. O número em outra célula ("Apensado ao
+            # processo...") ou a linha sem hora numa tabela que tem a coluna Hora
+            # ("Aguardando designação") não herdam o dia de ninguém. Com outro texto
+            # ("a designar"), só a data da linha de grupo vale.
+            vazia = c_data is None or not c_data.cheia or hora_na_data
+            hora_herdada = c_hora is not None and c_hora.herdada and _tem_hora(c_hora)
+            outra = (hora_propria or hora_na_data or (processo_proprio and hora_herdada)
+                     or (processo_proprio and "processo" in mapa and "hora" not in mapa
+                         and not data_tem_hora))
             try:
                 a = self._linha(linha, mapa, data_corrente if vazia and outra else data_grupo, t)
             except _LinhaRecusada as recusa:
                 r.ignoradas += 1
                 r.avisar(f"Linha {numero}: {recusa}; a linha foi ignorada.")
+                ultima = None
                 continue
             if a is None:
+                ultima = None
                 if _NADA.search(normalizar_texto(juntas)):
                     continue
                 r.ignoradas += 1
@@ -589,7 +684,57 @@ class Reconhecedor:
                              f"{processo[0].formatado}); a linha foi ignorada.")
                 continue
             data_corrente = a.data
+            ultima = a
             r.audiencias.append(a)
+
+    def _continuar(self, a: Audiencia, linha, mapa) -> None:
+        """A linha de baixo da MESMA audiência (Data, Hora e Processo mesclados na
+        vertical sobre ela) completa a de cima: as partes, o local, o selo de
+        sigilo, uma observação. Ela não vira outra audiência - com o texto do
+        detalhe no lugar do tipo, ela seria uma "Outra" a mais na pauta."""
+        propria = [Celula() if c.herdada else c for c in linha]
+        if self._sigiloso(propria, mapa):
+            a.sigiloso = True
+        usadas: set[int] = set()
+        for campo in ("local", "classe", "magistrado"):
+            i = mapa.get(campo)
+            if i is not None and i < len(propria) and propria[i].texto:
+                usadas.add(i)
+                if not getattr(a, campo):
+                    setattr(a, campo, limpar(propria[i].texto))
+        if not a.link:
+            a.link = self._link(propria, mapa)
+        usadas |= {mapa[c] for c in ("link", "partes", "autor", "reu") if c in mapa}
+        partes = self._partes(propria, mapa)
+        da_coluna = bool(partes)
+        if not partes:
+            # "Autor: Fulano x Réu: Banco" numa célula larga, sob o Tipo e a Situação
+            for i, c in enumerate(propria):
+                if i not in usadas and c.texto and _PARECE_PARTES.search(c.texto):
+                    partes = c.texto
+                    usadas.add(i)
+                    break
+        partes, mascara = self._tirar_mascara(limpar(_ROTULO_PARTES.sub("", partes)))
+        if mascara:
+            a.sigiloso = True
+        notas = []
+        if partes:
+            if not a.partes:
+                a.partes = partes
+            elif da_coluna:
+                a.partes = f"{a.partes} {partes}"      # o nome que não coube na linha de cima
+            else:
+                notas.append(partes)
+        for i, c in enumerate(propria):
+            texto = limpar(c.texto)
+            if i in usadas or not texto or texto in notas or texto in a.observacoes \
+                    or (a.link and a.link in texto):
+                continue
+            if len(texto) <= 40 and self._diz_sigilo(normalizar_texto(texto)):
+                continue                         # o selo "Segredo de Justiça": já valeu acima
+            notas.append(texto)
+        if notas:
+            a.observacoes = "; ".join(x for x in (a.observacoes, *notas) if x)
 
     def _parece_cabecalho(self, linha, juntas: str) -> bool:
         if cnj.extrair_todos(juntas) or any(modelos.ler_data(c.bruto) for c in linha):
@@ -742,7 +887,9 @@ class Reconhecedor:
 
         As linhas antes do primeiro dado (título, vara, período, "emitido
         por") não contam. Moldura de layout (célula com tabela dentro, ou
-        com vários números) não conta: a tabela de dentro é lida por si.
+        com vários números) não conta: a tabela de dentro é lida por si. A
+        linha cuja data e cujo número são só os herdados da mescla de cima é
+        a continuação da audiência de cima (Reconhecedor._continuar).
         """
         ctx_tabela = ctx if ctx_tabela is None else ctx_tabela
         cheias = [linha for linha in linhas
@@ -750,18 +897,28 @@ class Reconhecedor:
         if not cheias:
             return
 
+        def continua(linha) -> bool:
+            if not any(c.herdada and (cnj.extrair_todos(c.texto) or modelos.ler_data(c.bruto))
+                       for c in linha):
+                return False
+            proprias = [c for c in linha if not c.herdada and c.cheia]
+            return not (cnj.extrair_todos(" ".join(c.texto for c in proprias))
+                        or any(modelos.ler_data(c.bruto) or _tem_hora(c) for c in proprias))
+
         def boa(linha) -> bool:
             juntas = " ".join(c.texto for c in linha)
             numeros = cnj.extrair_todos(juntas)
             d = next((modelos.ler_data(c.bruto) for c in linha if modelos.ler_data(c.bruto)), None)
-            return len(numeros) == 1 and d is not None and len(juntas) <= 600
+            return (len(numeros) == 1 and d is not None and len(juntas) <= 600
+                    and not continua(linha))
 
         primeira = next((i for i, linha in enumerate(cheias) if boa(linha)), None)
         if primeira is None:
             return
         cheias = cheias[primeira:]
-        boas = [linha for linha in cheias if boa(linha)]
-        if len(boas) * 2 < len(cheias):
+        contadas = [linha for linha in cheias if not continua(linha)]
+        boas = [linha for linha in contadas if boa(linha)]
+        if len(boas) * 2 < len(contadas):
             return
         if self.estrito:
             com_hora = sum(1 for linha in boas
@@ -775,8 +932,14 @@ class Reconhecedor:
                 return
         r.tabelas = 1
         r.total_informado = total_da_legenda(t.legenda, self.regras)
+        ultima: Audiencia | None = None
         for linha in cheias:
+            if continua(linha):
+                if ultima is not None:
+                    self._continuar(ultima, linha, {})
+                continue
             a = self.linha_livre(linha, t)
+            ultima = a
             if a is None:
                 r.ignoradas += 1
                 continue
@@ -818,7 +981,7 @@ class Reconhecedor:
                 if m:
                     tipo_original = juntas[m.start():m.end()]
                     break
-        partes = next((x for x in textos if re.search(r"\s[xX]\s|\bversus\b|\bvs\.?\s", x)), "")
+        partes = next((x for x in textos if _PARECE_PARTES.search(x)), "")
         partes, sigilo_partes = self._tirar_mascara(partes)
         # célula a célula: o "Ministério Público" das partes não desfaz o selo da outra
         sigiloso = sigilo_partes or any(self._celula_sigilosa(c) for c in linha)

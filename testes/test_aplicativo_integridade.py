@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import redirect_stdout
@@ -15,10 +16,10 @@ from pathlib import Path
 from unittest import mock
 
 from helestron import __main__ as principal
-from helestron.aplicativo import erro, inicio, integridade, verificacao
+from helestron.aplicativo import erro, inicio, integridade, janela, verificacao
 from helestron.nucleo import caminhos
 
-from testes.test_servidor_base import AmbienteTemporario, Cliente
+from testes.test_servidor_base import AmbienteTemporario, Cliente, LeitorEventos
 
 
 def instalacao_falsa(pasta: Path, arquivos: dict[str, bytes], formato: str = "dict") -> None:
@@ -386,6 +387,44 @@ class TestTelaDeErro(unittest.TestCase):
         csp = self.cliente.ultimos_cabecalhos["Content-Security-Policy"]
         self.assertIn("'nonce-", csp)
         self.assertNotIn("unsafe-inline", csp)
+
+    def test_a_tela_da_sinal_pelo_canal_de_eventos(self):
+        """Como a interface, a tela abre o canal de eventos — o único sinal da
+        página que a janela aceita (os pedidos da segunda abertura não contam).
+        Sem ele, no Edge e no navegador, a tela era fechada em 2 minutos como
+        “página que não carregou”, e o programa dizia que não pôde abrir."""
+        _, corpo = self.cliente.get("/", token=False)
+        self.assertIn('new EventSource("/api/eventos?t="', corpo.decode("utf-8"))
+        resultado = {}
+
+        def abrir_navegador(url, new=0):
+            if new == 1:                                # a tela carregou no navegador
+                resultado["pagina"] = LeitorEventos(self.app.porta, self.app.token)
+            return True
+
+        janela_ = janela.JanelaNavegador(self.app)
+        with mock.patch.object(janela.webbrowser, "open", side_effect=abrir_navegador), \
+                mock.patch.object(erro, "INTERVALO_PING_S", 0.1), \
+                mock.patch.object(janela, "SEM_SINAL_S", 0.3), \
+                mock.patch.object(janela, "PRIMEIRO_SINAL_S", 0.3):
+            espera = threading.Thread(
+                target=lambda: resultado.setdefault("abriu", janela_.abrir(self.app.url)),
+                daemon=True)
+            espera.start()
+            limite = time.monotonic() + 5
+            while "pagina" not in resultado and time.monotonic() < limite:
+                time.sleep(0.05)
+            pagina = resultado["pagina"]
+            self.addCleanup(pagina.fechar)
+            pagina.esperar("estado")
+            self.assertEqual(self.app.hub.conectados, 1)
+            time.sleep(1.5)
+            self.assertTrue(espera.is_alive())           # a tela aberta segura a janela
+            pagina.fechar()                               # o usuário fechou a aba
+            espera.join(6)
+        self.assertFalse(espera.is_alive())
+        self.assertTrue(resultado["abriu"])
+        self.assertTrue(janela_.pagina_conectou)
 
     def test_reparar_sem_instalador_explica(self):
         with mock.patch.object(integridade, "procurar_instalador", return_value=None):

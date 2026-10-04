@@ -27,7 +27,8 @@ Por que assim:
 * a audiência que o portal traz e que já estava na pauta por um relatório
   IMPORTADO (mesmo processo, data e hora) não fica em dobro: o registro do
   relatório é absorvido pelo do portal (o que só ele sabia completa o do
-  portal, e o sigilo de um vale para o outro);
+  portal, e o sigilo de um vale para o outro). O par é um a um, pelo tipo:
+  duas audiências do processo no mesmo horário não se misturam;
 * banco corrompido (disco cheio, cópia pela metade) é posto de lado com
   outro nome e um novo é criado: a pauta se refaz na próxima sincronização,
   e o programa não deixa de abrir por causa dela.
@@ -253,9 +254,10 @@ class Armazem:
             con = self._c()
             con.execute("BEGIN IMMEDIATE")
             try:
-                importadas = ({} if fonte == "arquivo"
-                              else self._absorver_importadas(con, unicas.values()))
                 existentes = self._por_ids(con, list(unicas))
+                importadas = ({} if fonte == "arquivo" else self._absorver_importadas(
+                    con, unicas.values(),
+                    {i for i, linha in existentes.items() if not linha["removida"]}))
                 novas_agora: list[Audiencia] = []
                 hist_novas: dict[str, int] = {}
                 for a in unicas.values():
@@ -321,22 +323,37 @@ class Armazem:
                 raise
         return balanco
 
-    def _absorver_importadas(self, con, audiencias) -> dict[str, Audiencia]:
+    def _absorver_importadas(self, con, audiencias, ja_no_banco: set[str] = frozenset()
+                             ) -> dict[str, Audiencia]:
         """Tira do banco o registro do relatório importado que é a mesma audiência
         que o portal trouxe agora (processo, data e hora - a regra de
-        ServicoPauta.importar, no sentido inverso). {id da do portal: a do relatório}."""
-        saida: dict[str, Audiencia] = {}
+        ServicoPauta.importar, no sentido inverso). {id da do portal: a do relatório}.
+
+        O par é um a um (modelos.parear_mesmo_horario): com duas audiências do
+        processo no mesmo horário, cada uma absorve o registro do seu tipo, e o
+        registro do relatório que não tem par fica onde está. A do portal que
+        já estava no banco ('ja_no_banco') só absorve o do mesmo tipo: na
+        importação, o relatório já foi pareado com ela.
+        """
+        grupos: dict[tuple, list[Audiencia]] = {}
+        ids = set()
         for a in audiencias:
+            ids.add(a.id)
             chave = modelos.chave_processo(a.processo) if a.processo else ""
-            if not chave or a.sistema == "arquivo":
+            if chave and a.sistema != "arquivo":
+                grupos.setdefault((chave, a.data.isoformat(), a.hora), []).append(a)
+        saida: dict[str, Audiencia] = {}
+        for (chave, data_, hora), do_portal in grupos.items():
+            do_relatorio = [self._linha_para_audiencia(linha) for linha in con.execute(
+                "SELECT * FROM audiencias WHERE sistema = 'arquivo' AND data = ? AND hora = ? "
+                "ORDER BY rowid", (data_, hora)).fetchall()
+                if linha["id"] not in ids and modelos.chave_processo(linha["processo"]) == chave]
+            if not do_relatorio:
                 continue
-            for linha in con.execute("SELECT * FROM audiencias WHERE sistema = 'arquivo' AND "
-                                     "data = ? AND hora = ?", (a.data.isoformat(), a.hora)
-                                     ).fetchall():
-                if linha["id"] == a.id or modelos.chave_processo(linha["processo"]) != chave:
-                    continue
-                con.execute("DELETE FROM audiencias WHERE id = ?", (linha["id"],))
-                saida.setdefault(a.id, self._linha_para_audiencia(linha))
+            reserva = [a for a in do_portal if a.id in ja_no_banco]
+            for a, velha in modelos.parear_mesmo_horario(do_portal, do_relatorio, reserva):
+                con.execute("DELETE FROM audiencias WHERE id = ?", (velha.id,))
+                saida[a.id] = velha
         return saida
 
     def _por_ids(self, con, ids: list[str]) -> dict[str, sqlite3.Row]:

@@ -49,6 +49,17 @@
     return m ? [m[1], el("wbr"), m[2]] : texto;
   }
 
+  /**
+   * O nome do documento ("<número>.docx", "<número> (2).docx") com os mesmos
+   * pontos de quebra: o número inteiro, o "(2)" que mostra que o anterior não
+   * foi sobrescrito e a extensão ficam sempre à vista.
+   */
+  function nomeQuebravel(nome) {
+    const texto = String(nome || "");
+    const m = /^(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})(.*)$/.exec(texto);
+    return m ? [numeroQuebravel(m[1]), m[2] ? [el("wbr"), m[2]] : null] : texto;
+  }
+
   const MOTIVO_PAUTA = "A pauta de audiências indica que este processo corre em segredo de justiça.";
 
   /**
@@ -115,6 +126,12 @@
     const ajudaProcesso = el("p", { classe: "ajuda-campo", id: "ajuda-processo", "aria-live": "polite" });
     campoProcesso.setAttribute("aria-describedby", "ajuda-processo");
 
+    // Gravar (e Ctrl+Enter) e Testar só depois de a lista de microfones
+    // chegar: antes dela, o seletor só tem "Carregando…" (""), e o "" é a
+    // escolha explícita do padrão do Windows (C2) - a audiência iria inteira
+    // pelo microfone errado, sem aviso.
+    let micsProntos = false;
+
     const validar = () => {
       const d = cnj.digitos(campoProcesso.value);
       ajudaProcesso.classList.remove("erro", "ok");
@@ -134,7 +151,7 @@
       }
       r.processo = campoProcesso.value;
       const ok = d.length === 20 && cnj.valido(d);
-      botaoGravar.disabled = !ok;
+      botaoGravar.disabled = !(ok && micsProntos);
       conferirSigilo(ok ? cnj.mascarar(d) : "");
     };
     campoProcesso.addEventListener("input", () => {
@@ -222,6 +239,7 @@
       if (testando) await pararTeste(); else await iniciarTeste();
     } });
     botaoTestar.id = "testar-microfone";
+    botaoTestar.disabled = true;
     async function iniciarTeste() {
       try {
         await api.transcricao.testarMicrofone(valorDispositivo());
@@ -241,49 +259,48 @@
       medidor.definir(0);
       try { await api.transcricao.pararMicrofone(); } catch (_e) { /* já parou */ }
     }
-    const valorDispositivo = () => String(campoMic.value || "");
+    // Sem a lista ainda, vale o guardado (nunca o "" do "Carregando…").
+    const valorDispositivo = () => (micsProntos ? String(campoMic.value || "") : microfoneSalvo());
     ctx.on("microfone_nivel", (d) => { if (testando) medidor.definir(d && d.nivel); });
     ctx.aoSair(() => { if (testando) api.transcricao.pararMicrofone().catch(() => {}); });
     campoMic.addEventListener("change", async () => {
+      campoMic.title = campoMic.selectedOptions.length ? campoMic.selectedOptions[0].textContent : "";
       guardarMicrofone(valorDispositivo());
       legendaMedidor.classList.remove("erro");
       legendaMedidor.textContent = "Clique em Testar e fale algo: as barras devem se mexer.";
       if (testando) { await pararTeste(); await iniciarTeste(); }
     });
+    /** A lista chegou (ou falhou de vez): Gravar e Testar passam a valer. */
+    const liberarMicrofones = () => {
+      micsProntos = true;
+      botaoTestar.disabled = false;
+      validar();
+    };
     const carregarMicrofones = async () => {
       let lista = [];
       try { lista = await api.transcricao.microfones(); } catch (erro) {
-        trocar(campoMic, el("option", { value: "", texto: "Microfone padrão do Windows" }));
+        if (!ctx.vivo) return;
+        // Sem a lista, o guardado continua escolhido (o servidor confere o
+        // nome ao começar); o padrão só quando nada foi guardado.
+        const guardado = microfoneSalvo();
+        trocar(campoMic, guardado ? el("option", { value: guardado, texto: /^\d+$/.test(guardado) ? "Microfone escolhido antes" : guardado }) : null,
+          el("option", { value: "", texto: "Microfone padrão do Windows" }));
+        campoMic.value = guardado;
+        legendaMedidor.classList.add("erro");
         legendaMedidor.textContent = erro.message;
+        liberarMicrofones();
         return;
       }
       if (!ctx.vivo) return;
-      const padrao = lista.find((m) => m.padrao);
-      const nomes = Array.from(new Set(lista.map((m) => String(m.nome || "")).filter(Boolean)));
-      let salvo = microfoneSalvo();
-      const opcoes = [el("option", { value: "", texto: "Padrão do Windows" + (padrao ? ` — ${padrao.nome}` : "") })]
-        .concat(nomes.map((n) => el("option", { value: n, texto: n })));
-      let problema = "";
-      if (salvo && !nomes.includes(salvo)) {
-        const pelo = /^\d+$/.test(salvo) ? lista.find((m) => String(m.indice) === salvo) : null;
-        if (pelo) {
-          // Configuração antiga, pelo número: passa a guardar o nome.
-          salvo = String(pelo.nome);
-          guardarMicrofone(salvo);
-        } else if (/^\d+$/.test(salvo)) {
-          salvo = "";
-          problema = "O microfone escolhido antes não está mais na lista. Confira a escolha.";
-        } else {
-          // Nunca troca em silêncio pelo padrão: mostra o que estava escolhido.
-          opcoes.push(el("option", { value: salvo, texto: `${salvo} (não encontrado)` }));
-          problema = `O microfone «${salvo}» não foi encontrado. Ligue-o ou escolha outro.`;
-        }
-      }
-      trocar(campoMic, opcoes);
-      campoMic.value = salvo;
-      if (!lista.length) problema = "Nenhum microfone encontrado. Confira se ele está conectado e se o Windows permite o acesso.";
-      legendaMedidor.classList.toggle("erro", !!problema);
-      legendaMedidor.textContent = problema || "Clique em Testar e fale algo: as barras devem se mexer.";
+      // A mesma regra de Ajustes › Transcrição (H.app.resolverMicrofone).
+      const escolha = H.app.resolverMicrofone(lista, microfoneSalvo());
+      if (escolha.regravar) guardarMicrofone(escolha.regravar);
+      trocar(campoMic, escolha.opcoes.map((o) => el("option", { value: o.valor, texto: o.rotulo })));
+      campoMic.value = escolha.valor;
+      campoMic.title = campoMic.selectedOptions.length ? campoMic.selectedOptions[0].textContent : "";
+      legendaMedidor.classList.toggle("erro", !!escolha.problema);
+      legendaMedidor.textContent = escolha.problema || "Clique em Testar e fale algo: as barras devem se mexer.";
+      liberarMicrofones();
     };
 
     // --- participantes
@@ -841,7 +858,7 @@
         blocoIcone("check", "verde"),
         el("div", { classe: "linha-texto" },
           el("h2", { classe: "andamento-titulo", texto: "Transcrição salva" }),
-          el("p", { classe: "andamento-status numero", texto: nome || "Documento do Word" }),
+          el("p", { classe: "andamento-status numero documento-nome", title: nome || "" }, nome ? nomeQuebravel(nome) : "Documento do Word"),
           r.sigiloso ? el("p", { classe: "ajuda-campo" }, icone("cadeado", { tamanho: 14 }), " Na pasta dos sigilosos, fora do acervo da IA.") : null),
         el("div", { classe: "grupo-botoes" },
           botao({ rotulo: "Abrir documento", icone: "documento", tipo: "primario", acao: () => api.abrir("arquivo", documento) }),
@@ -923,9 +940,10 @@
         cab.subtitulo.textContent = "Transcrição simultânea, no próprio computador. O áudio não sai da máquina.";
         preparo();
         const comeco = fase === "inicio" || !falas;
+        // O mesmo vermelho da folha de "Testar": é o mesmo erro do microfone.
         folha.informar({
           titulo: comeco ? "A gravação não começou" : "A audiência foi interrompida",
-          icone: "aviso",
+          icone: "aviso", corIcone: "erro",
           mensagem: motivo || "O microfone não respondeu.",
           conteudo: comeco ? null : el("p", { classe: "ajuda-campo", texto: "O áudio gravado até aqui foi guardado: clique em “Recuperar”, na faixa “Uma transcrição foi interrompida”, para gerar o documento." }),
         });

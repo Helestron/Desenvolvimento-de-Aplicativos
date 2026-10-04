@@ -295,6 +295,59 @@ class TestImportarNoServico(apoio.PastaTemporaria):
         r = self.servico.importar(self.tmp / "rel.csv")
         self.assertEqual((r["novas"], r["atualizadas"]), (0, 0))
 
+    def test_duas_do_mesmo_processo_no_mesmo_horario_cada_uma_com_a_sua(self):
+        """O portal tem uma Conciliação cancelada e uma Instrução designada do mesmo
+        processo, às 09:00; o relatório traz as duas, com a sala de cada uma: cada
+        registro do portal é completado pelo do seu tipo, e nada fica em dobro."""
+        from helestron.pauta import modelos
+
+        def do_portal(tipo, situacao):
+            return modelos.nova(sistema="esaj", tribunal="TJAL", data_=date(2026, 10, 5),
+                                processo=N1, hora="09:00", tipo_original=tipo,
+                                situacao_original=situacao, fonte="esaj-tjal")
+
+        for ordem, linhas in enumerate((
+                (f"05/10/2026;09:00;{N1};Conciliação;Cancelada;Sala 1",
+                 f"05/10/2026;09:00;{N1};Instrução;Designada;Sala 2"),
+                (f"05/10/2026;09:00;{N1};Instrução;Designada;Sala 2",
+                 f"05/10/2026;09:00;{N1};Conciliação;Cancelada;Sala 1"))):
+            with self.subTest(ordem=ordem):
+                servico = ServicoPauta(self.amb.cfg, self.tmp / f"ordem{ordem}.sqlite3")
+                self.addCleanup(servico.fechar)
+                servico.armazem.gravar([do_portal("Conciliação", "Cancelada"),
+                                        do_portal("Instrução", "Designada")],
+                                       "esaj-tjal", None, registrar_novas=False)
+                (self.tmp / "rel.csv").write_text("Data;Hora;Processo;Tipo;Situação;Local\n"
+                                                  + "\n".join(linhas) + "\n", encoding="utf-8")
+                r = servico.importar(self.tmp / "rel.csv")
+                self.assertEqual((r["novas"], r["atualizadas"]), (0, 2))
+                lista = servico.listar(date(2026, 10, 1), date(2026, 10, 31))["audiencias"]
+                self.assertEqual(sorted((a["sistema"], a["tipo"], a["local"]) for a in lista), [
+                    ("esaj", "Conciliação", "Sala 1"),
+                    ("esaj", "Instrução e julgamento", "Sala 2")])
+
+    def test_a_do_relatorio_sem_par_no_portal_fica_na_pauta(self):
+        """Pareada na importação com a do mesmo tipo, a outra audiência do relatório
+        no mesmo horário fica como está - também na sincronização seguinte."""
+        from helestron.pauta import modelos
+
+        conciliacao = modelos.nova(sistema="esaj", tribunal="TJAL", data_=date(2026, 10, 5),
+                                   processo=N1, hora="09:00", tipo_original="Conciliação",
+                                   fonte="esaj-tjal")
+        self.servico.armazem.gravar([conciliacao], "esaj-tjal", None, registrar_novas=False)
+        (self.tmp / "rel.csv").write_text(
+            "Data;Hora;Processo;Tipo;Local\n"
+            f"05/10/2026;09:00;{N1};Conciliação;Sala 1\n"
+            f"05/10/2026;09:00;{N1};Instrução;Sala 2\n", encoding="utf-8")
+        r = self.servico.importar(self.tmp / "rel.csv")
+        self.assertEqual((r["novas"], r["atualizadas"]), (1, 1))
+        b = self.servico.armazem.gravar([modelos.de_dict(modelos.como_dict(conciliacao))],
+                                        "esaj-tjal", (date(2026, 10, 1), date(2026, 10, 31)))
+        self.assertEqual((b.novas, b.removidas), (0, 0))
+        lista = self.servico.listar(date(2026, 10, 1), date(2026, 10, 31))["audiencias"]
+        self.assertEqual(sorted((a["sistema"], a["tipo"], a["local"]) for a in lista), [
+            ("arquivo", "Instrução e julgamento", "Sala 2"), ("esaj", "Conciliação", "Sala 1")])
+
     def test_relatorio_invalido_vira_valueerror(self):
         (self.tmp / "x.txt").write_text("nada", encoding="utf-8")
         with self.assertRaises(ValueError) as erro:
@@ -376,6 +429,113 @@ class TestRelatoriosDoMundoReal(apoio.PastaTemporaria):
         r = self.ler("mesclada.ods")
         self.assertEqual([(a.data, a.hora, a.processo, a.local) for a in r.audiencias],
                          self.esperado())
+
+    # cada audiência em duas linhas: Data, Hora e Processo mesclados na vertical e,
+    # embaixo, as partes (mescladas na horizontal sob o Tipo e a Situação)
+    def confere_duas_linhas(self, r):
+        self.assertEqual([(a.data, a.hora, a.processo, a.tipo, a.partes) for a in r.audiencias], [
+            (date(2026, 10, 5), "09:00", N1, "Conciliação", "Fulano de Tal x Banco XYZ S/A"),
+            (date(2026, 10, 5), "10:00", N2, "Instrução e julgamento", "Cicrano x Empresa W")])
+        self.assertEqual((r.ignoradas, r.avisos), (0, []))
+
+    def test_xlsx_com_a_audiencia_em_duas_linhas(self):
+        from openpyxl import Workbook
+
+        livro = Workbook()
+        aba = livro.active
+        aba.append(["Data", "Hora", "Processo", "Tipo de audiência", "Situação"])
+        aba.append([datetime(2026, 10, 5), "09:00", N1, "Conciliação", "Designada"])
+        aba.append([None, None, None, "Partes: Fulano de Tal x Banco XYZ S/A", None])
+        aba.append([datetime(2026, 10, 5), "10:00", N2, "Instrução", "Designada"])
+        aba.append([None, None, None, "Partes: Cicrano x Empresa W", None])
+        for linha in (2, 4):
+            for coluna in "ABC":
+                aba.merge_cells(f"{coluna}{linha}:{coluna}{linha + 1}")
+            aba.merge_cells(f"D{linha + 1}:E{linha + 1}")
+        livro.save(self.tmp / "duas.xlsx")
+        self.confere_duas_linhas(self.ler("duas.xlsx"))
+
+    def test_xls_com_a_audiencia_em_duas_linhas(self):
+        import xlrd
+
+        class Celula:
+            def __init__(self, ctype, value):
+                self.ctype, self.value = ctype, value
+
+        class Aba:
+            name, visibility = "Pauta", 0
+
+            def __init__(self, linhas, merged_cells):
+                self._linhas, self.nrows, self.merged_cells = linhas, len(linhas), merged_cells
+
+            def row(self, i):
+                return self._linhas[i]
+
+        def linha(*valores):
+            return [Celula(xlrd.XL_CELL_EMPTY, "") if v is None else Celula(xlrd.XL_CELL_TEXT, v)
+                    for v in valores]
+
+        aba = Aba([linha("Data", "Hora", "Processo", "Tipo", "Situação"),
+                   linha("05/10/2026", "09:00", N1, "Conciliação", "Designada"),
+                   linha(None, None, None, "Partes: Fulano de Tal x Banco XYZ S/A", None),
+                   linha("05/10/2026", "10:00", N2, "Instrução", "Designada"),
+                   linha(None, None, None, "Partes: Cicrano x Empresa W", None)],
+                  [(l0, l0 + 2, c, c + 1) for l0 in (1, 3) for c in range(3)]
+                  + [(l0 + 1, l0 + 2, 3, 5) for l0 in (1, 3)])
+        livro = mock.Mock(datemode=0)
+        livro.sheets.return_value = [aba]
+        (self.tmp / "duas.xls").write_bytes(b"\xd0\xcf\x11\xe0" + b"\x00" * 600)
+        with mock.patch.object(xlrd, "open_workbook", return_value=livro):
+            self.confere_duas_linhas(self.ler("duas.xls"))
+
+    def _ods(self, nome: str, linhas: list[str]) -> None:
+        ns = ('xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+              'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" '
+              'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"')
+        conteudo = (f'<?xml version="1.0" encoding="UTF-8"?><office:document-content {ns}>'
+                    '<office:body><office:spreadsheet><table:table table:name="Pauta">'
+                    + "".join(f"<table:table-row>{x}</table:table-row>" for x in linhas)
+                    + "</table:table></office:spreadsheet></office:body></office:document-content>")
+        with zipfile.ZipFile(self.tmp / nome, "w") as z:
+            z.writestr("mimetype", "application/vnd.oasis.opendocument.spreadsheet")
+            z.writestr("content.xml", conteudo)
+
+    @staticmethod
+    def _texto_ods(t, extra=""):
+        return (f'<table:table-cell office:value-type="string"{extra}><text:p>{t}</text:p>'
+                '</table:table-cell>')
+
+    def test_ods_com_a_audiencia_em_duas_linhas(self):
+        texto = self._texto_ods
+        mescla = ' table:number-rows-spanned="2"'
+        # o LibreOffice junta as cobertas vizinhas numa só, com number-columns-repeated
+        cobertas = '<table:covered-table-cell table:number-columns-repeated="3"/>'
+        largura = ' table:number-columns-spanned="2"'
+        linhas = ["".join(texto(t) for t in ("Data", "Hora", "Processo", "Tipo", "Situação"))]
+        for processo, hora, tipo, partes in ((N1, "09:00", "Conciliação",
+                                              "Partes: Fulano de Tal x Banco XYZ S/A"),
+                                             (N2, "10:00", "Instrução",
+                                              "Partes: Cicrano x Empresa W")):
+            linhas.append(texto("05/10/2026", mescla) + texto(hora, mescla)
+                          + texto(processo, mescla) + texto(tipo) + texto("Designada"))
+            linhas.append(cobertas + texto(partes, largura) + "<table:covered-table-cell/>")
+        self._ods("duas.ods", linhas)
+        self.confere_duas_linhas(self.ler("duas.ods"))
+
+    def test_ods_cobertas_de_mesclas_diferentes_numa_so(self):
+        """Data e Hora mescladas lado a lado: a coberta comprimida da linha de baixo
+        devolve a cada coluna o valor da sua mescla (a hora não vira a data)."""
+        texto = self._texto_ods
+        mescla = ' table:number-rows-spanned="2"'
+        linhas = ["".join(texto(t) for t in ("Data", "Hora", "Processo", "Tipo")),
+                  texto("05/10/2026", mescla) + texto("09:00", mescla) + texto(N1)
+                  + texto("Conciliação"),
+                  '<table:covered-table-cell table:number-columns-repeated="2"/>' + texto(N2)
+                  + texto("Conciliação")]
+        self._ods("concentrada.ods", linhas)
+        r = self.ler("concentrada.ods")
+        self.assertEqual([(a.data, a.hora, a.processo) for a in r.audiencias], [
+            (date(2026, 10, 5), "09:00", N1), (date(2026, 10, 5), "09:00", N2)])
 
     def test_csv_com_a_data_so_na_primeira_linha_do_dia(self):
         (self.tmp / "rel.csv").write_text(

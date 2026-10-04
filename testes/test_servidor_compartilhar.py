@@ -41,6 +41,8 @@ class TestCompartilhar(ServidorDeTeste):
 
     def test_ferramentas(self):
         with mock.patch("helestron.compartilhar.preparo.atualizar_contexto"), \
+                mock.patch("helestron.compartilhar.claude.claude_desktop_instalado",
+                           return_value=True), \
                 mock.patch("helestron.servicos.abrir_no_cowork", return_value="cowork"):
             dados = self.cliente.dados("POST", "/api/compartilhar/cowork")
         self.assertTrue(dados["abriu"])
@@ -58,9 +60,15 @@ class TestCompartilhar(ServidorDeTeste):
             dados = self.cliente.dados("POST", "/api/compartilhar/claude-desktop")
         self.assertIn("conectado", dados["mensagem"])
         with mock.patch("helestron.compartilhar.preparo.atualizar_contexto"), \
+                mock.patch("helestron.servidor.api_compartilhar._app_chatgpt", return_value=True), \
                 mock.patch("helestron.servicos.abrir_chatgpt_work", return_value="web"):
             dados = self.cliente.dados("POST", "/api/compartilhar/chatgpt-work")
         self.assertEqual(dados["resultado"], "web")
+        with mock.patch("helestron.compartilhar.preparo.atualizar_contexto"), \
+                mock.patch("helestron.servidor.api_compartilhar._app_chatgpt", return_value=True), \
+                mock.patch("helestron.servicos.abrir_chatgpt_work", return_value="app"):
+            dados = self.cliente.dados("POST", "/api/compartilhar/chatgpt-work")
+        self.assertEqual((dados["resultado"], dados["abriu"]), ("app", True))
         with mock.patch("helestron.compartilhar.preparo.atualizar_contexto"), \
                 mock.patch("helestron.servicos.registrar_mcp_codex", return_value=Path("c.toml")), \
                 mock.patch("helestron.compartilhar.chatgpt.abrir_codex"):
@@ -115,6 +123,79 @@ class TestCompartilhar(ServidorDeTeste):
         self.assertEqual((dados["abriu"], dados["instalado"], dados["pagina_aberta"]),
                          (False, False, True))
         self.assertIn("página de download", dados["mensagem"])
+
+    def test_cowork_sem_claude_desktop_diz_se_a_pagina_abriu(self):
+        """Antes, sem o Claude Desktop, o Cowork dizia "abri a página de
+        download" mesmo com o navegador falhando, e a resposta não trazia o
+        endereço (nem pagina_aberta, para a folha oferecer o botão)."""
+        from helestron.compartilhar import claude
+
+        for abriu in (True, False):
+            with self.subTest(navegador_abriu=abriu), \
+                    mock.patch("helestron.compartilhar.preparo.atualizar_contexto"), \
+                    mock.patch("helestron.compartilhar.claude.claude_desktop_instalado",
+                               return_value=False), \
+                    mock.patch("helestron.servicos.abrir_no_cowork") as servico, \
+                    mock.patch("helestron.nucleo.sistema.abrir_endereco",
+                               return_value=abriu) as abrir:
+                dados = self.cliente.dados("POST", "/api/compartilhar/cowork")
+                abrir.assert_called_once_with(claude.URL_DOWNLOAD_DESKTOP)
+                servico.assert_not_called()
+                self.assertEqual((dados["abriu"], dados["instalado"], dados["pagina_aberta"],
+                                  dados["url"], dados["resultado"]),
+                                 (False, False, abriu, claude.URL_DOWNLOAD_DESKTOP, "baixar"))
+                self.assertIn("Pasta do acervo", dados["copiar"])
+                if abriu:
+                    self.assertIn("abri no navegador a página de download", dados["mensagem"])
+                else:
+                    self.assertNotIn("abri", dados["mensagem"])
+                    self.assertIn(claude.URL_DOWNLOAD_DESKTOP, dados["mensagem"])
+
+    def test_chatgpt_work_sem_app_diz_se_o_navegador_abriu(self):
+        """Sem o app, "O ChatGPT abriu no navegador" (e abriu=True) saía mesmo
+        quando nenhum navegador abria."""
+        from helestron.compartilhar import chatgpt
+
+        for abriu in (True, False):
+            with self.subTest(navegador_abriu=abriu), \
+                    mock.patch("helestron.compartilhar.preparo.atualizar_contexto"), \
+                    mock.patch("helestron.servidor.api_compartilhar._app_chatgpt",
+                               return_value=False), \
+                    mock.patch("helestron.servicos.abrir_chatgpt_work") as servico, \
+                    mock.patch("helestron.nucleo.sistema.abrir_endereco",
+                               return_value=abriu) as abrir:
+                dados = self.cliente.dados("POST", "/api/compartilhar/chatgpt-work")
+                abrir.assert_called_once_with(chatgpt.URL_CHATGPT)
+                servico.assert_not_called()
+                self.assertEqual((dados["abriu"], dados["pagina_aberta"], dados["url"],
+                                  dados["resultado"]), (abriu, abriu, chatgpt.URL_CHATGPT, "web"))
+                self.assertEqual(dados["copiar"], str(self.amb.dados / "Acervo"))
+                # só cita botões que existem na tela (C6)
+                self.assertIn("“Gerar o pacote”", dados["mensagem"])
+                if abriu:
+                    self.assertIn("O ChatGPT abriu no navegador", dados["mensagem"])
+                else:
+                    self.assertNotIn("abriu no navegador", dados["mensagem"])
+                    self.assertIn(chatgpt.URL_CHATGPT, dados["mensagem"])
+
+    def test_abrir_a_pagina_que_o_navegador_nao_abre_e_erro_com_o_endereco(self):
+        """O "Abrir a página" da folha (C6) chamava /api/abrir, que ignorava o
+        False do navegador e respondia 200: a folha ficava igual, calada."""
+        url = "https://docs.claude.com/pt-BR/docs/claude-code/overview"
+        with mock.patch("helestron.nucleo.sistema.abrir_endereco", return_value=False):
+            status, env = self.cliente.post("/api/abrir", {"tipo": "url", "alvo": url})
+        self.assertEqual(status, 409)
+        self.assertEqual(env["erro"]["codigo"], "navegador_nao_abriu")
+        self.assertIn(url, env["erro"]["mensagem"])
+        self.assertIn("Copie o endereço", env["erro"]["mensagem"])
+        with mock.patch("helestron.nucleo.sistema.abrir_endereco",
+                        side_effect=OSError("sem navegador")):
+            status, env = self.cliente.post("/api/abrir", {"tipo": "url", "alvo": url})
+        self.assertEqual((status, env["erro"]["codigo"]), (409, "navegador_nao_abriu"))
+        with mock.patch("helestron.nucleo.sistema.abrir_endereco", return_value=True) as abrir:
+            self.assertEqual(self.cliente.dados("POST", "/api/abrir", {"tipo": "url", "alvo": url}),
+                             {"aberto": url})
+        abrir.assert_called_once_with(url)
 
     def test_pasta_da_nuvem_recusada_nao_fica_gravada(self):
         """Antes, espelhar gravava a pasta ANTES de conferi-la: o pedido voltava

@@ -179,6 +179,50 @@
     return valor === true || ["true", "1", "sim", "yes", "on"].includes(String(valor).toLowerCase());
   }
 
+  const MIC_SUMIU_NUMERO = "O microfone escolhido antes não está mais na lista. Confira a escolha.";
+
+  /**
+   * A regra do microfone (contrato C2), a mesma em Audiências e em Ajustes ›
+   * Transcrição, para as duas telas nunca mostrarem escolhas diferentes.
+   * 'lista' = GET /api/transcricao/microfones; 'salvo' = [transcricao]
+   * dispositivo (o NOME; "" = padrão do Windows). Devolve {opcoes: [{valor,
+   * rotulo}], valor, problema, regravar}:
+   * - configuração antiga, só com dígitos, de um aparelho ligado: vira o nome
+   *   dele ('regravar' = o nome, para guardar);
+   * - só com dígitos, sem aparelho com esse número: "Padrão do Windows", com
+   *   o aviso (o número não diz nada a quem lê);
+   * - nome que não está mais ligado: continua escolhido, marcado "Não
+   *   encontrado" no início do rótulo (no fim, a caixa estreita o cortava),
+   *   e nunca trocado em silêncio pelo padrão.
+   */
+  function resolverMicrofone(lista, salvo) {
+    const aparelhos = Array.isArray(lista) ? lista : [];
+    const padrao = aparelhos.find((m) => m.padrao);
+    const nomes = Array.from(new Set(aparelhos.map((m) => String(m.nome || "")).filter(Boolean)));
+    const opcoes = [{ valor: "", rotulo: "Padrão do Windows" + (padrao && padrao.nome ? ` — ${padrao.nome}` : "") }]
+      .concat(nomes.map((n) => ({ valor: n, rotulo: n })));
+    let valor = String(salvo || "");
+    let problema = "";
+    let regravar = null;
+    if (valor && !nomes.includes(valor)) {
+      if (/^\d+$/.test(valor)) {
+        const pelo = aparelhos.find((m) => String(m.indice) === valor && m.nome);
+        if (pelo) {
+          valor = String(pelo.nome);
+          regravar = valor;
+        } else {
+          valor = "";
+          problema = MIC_SUMIU_NUMERO;
+        }
+      } else {
+        opcoes.push({ valor, rotulo: `Não encontrado: ${valor}` });
+        problema = `O microfone “${valor}” não foi encontrado neste computador. Ligue-o ou escolha outro.`;
+      }
+    }
+    if (!aparelhos.length) problema = "Nenhum microfone encontrado. Confira se ele está conectado e se o Windows permite o acesso.";
+    return { opcoes, valor, problema, regravar };
+  }
+
   // ============================================================== eventos
   const ESTADOS_FINAIS = new Set(["concluida", "falhou", "parada"]);
 
@@ -748,7 +792,7 @@
   }
 
   H.app = {
-    ir, recarregarEstado, carregarConfig, valorConfig, flag, SECOES, lerRota,
+    ir, recarregarEstado, carregarConfig, valorConfig, flag, resolverMicrofone, SECOES, lerRota,
     secaoAtual: () => (atual ? atual.id : null),
   };
   H.secoes = H.secoes || {};

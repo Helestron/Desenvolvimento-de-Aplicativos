@@ -79,6 +79,7 @@ TEM_INSTALLER = importlib.util.find_spec("installer") is not None
 
 MINGW = all(shutil.which(f"x86_64-w64-mingw32-{f}") for f in ("gcc", "windres", "objdump"))
 MAKENSIS = shutil.which("makensis")
+PWSH = os.environ.get("HELESTRON_PWSH") or shutil.which("pwsh")
 WINE64 = shutil.which("wine64") or next(
     (c for c in ("/usr/lib/wine/wine64", "/usr/lib/x86_64-linux-gnu/wine/wine64")
      if Path(c).is_file()), None)
@@ -641,6 +642,43 @@ class TestScriptNsis(unittest.TestCase):
         for chave in ("^ClickNext", "^ClickInstall", "^Completed", "^FileError"):
             self.assertIn(f"LangString {chave} ${{LANG_PORTUGUESEBR}}", self.script)
 
+    # Os botões das caixas de mensagem vêm do Windows, no idioma dele. Em
+    # português do Brasil (user32), IDABORT é “Anular” — o Wine, o ReactOS e o
+    # PortugueseBR.nlf do NSIS dizem “Abortar”, e o teste no Wine não pegaria.
+    BOTOES_PT_BR = {
+        "MB_OK": {"OK"}, "MB_OKCANCEL": {"OK", "Cancelar"},
+        "MB_ABORTRETRYIGNORE": {"Anular", "Repetir", "Ignorar"},
+        "MB_YESNOCANCEL": {"Sim", "Não", "Cancelar"}, "MB_YESNO": {"Sim", "Não"},
+        "MB_RETRYCANCEL": {"Repetir", "Cancelar"},
+    }
+
+    def test_botoes_citados_com_os_nomes_do_windows_em_portugues(self):
+        visivel = "\n".join(linha for linha in self.script.splitlines()
+                             if not linha.lstrip().startswith(";"))
+        self.assertEqual(re.findall(r".{0,40}Abortar.{0,30}", visivel), [])
+        caixas = []
+        for m in re.finditer(r'^\s*MessageBox (\S+) "([^"]*)"', visivel, re.M):
+            tipo = next(f for f in m.group(1).split("|") if f in self.BOTOES_PT_BR)
+            caixas.append((tipo, m.group(2)))
+        # as falhas de gravação do NSIS: ^FileError numa caixa de Anular, Repetir
+        # e Ignorar; ^FileError_NoIgnore, numa de Repetir e Cancelar
+        for chave, tipo in (("^FileError", "MB_ABORTRETRYIGNORE"),
+                            ("^FileError_NoIgnore", "MB_RETRYCANCEL")):
+            m = re.search(rf'^LangString {re.escape(chave)} \S+ "(.*)"$', visivel, re.M)
+            caixas.append((tipo, m.group(1)))
+        self.assertGreaterEqual(len(caixas), 10)
+        citado = r"(?:[Cc]lique em|[Rr]esponda|botão) (Abortar|Anular|Repetir|Ignorar|Cancelar|Sim|Não|OK)\b"
+        no_inicio = r"(?:^|[.:!?] |\$\\n)(Abortar|Anular|Repetir|Ignorar|Cancelar) (?=[a-zà-ú])"
+        for tipo, texto in caixas:
+            citados = set(re.findall(citado, texto)) | set(re.findall(no_inicio, texto))
+            with self.subTest(tipo=tipo, texto=texto[:70]):
+                self.assertLessEqual(citados, self.BOTOES_PT_BR[tipo])
+        textos = dict((t, x) for t, x in caixas[-2:])
+        for botao in ("Anular", "Repetir", "Ignorar"):
+            self.assertIn(botao, textos["MB_ABORTRETRYIGNORE"])
+        for botao in ("Repetir", "Cancelar"):
+            self.assertIn(botao, textos["MB_RETRYCANCEL"])
+
     @unittest.skipUnless(MAKENSIS, "makensis ausente")
     def test_compila_com_o_makensis(self):
         script = self.tmp / "helestron.nsi"
@@ -1089,6 +1127,82 @@ class TestWorkflow(unittest.TestCase):
                 script = passo.get("run", "")
                 fora = sorted({c for c in script if ord(c) > 127})
                 self.assertEqual(fora, [], f"{nome} / {passo.get('name')}: {fora}")
+
+    def passo_reinstalar(self) -> str:
+        dados = yaml.safe_load(self.texto)
+        return next(p["run"] for p in dados["jobs"]["windows"]["steps"]
+                    if p.get("name", "").startswith("Instalar de novo por cima"))
+
+    @unittest.skipUnless(yaml, "PyYAML ausente")
+    def test_conector_aberto_responde_antes_e_depois_da_atualizacao(self):
+        """O ping ao MCP aberto ia com BOM (StandardInput do PowerShell 5.1 com
+        o console em UTF-8) e voltava -32700, sem que o passo reparasse; e nada
+        conferia que o conector antigo seguia respondendo depois da atualização."""
+        script = self.passo_reinstalar()
+        self.assertNotIn("StandardInput.WriteLine", script)
+        # a entrada do console fica sem preâmbulo ANTES do Start (o BOM sai no Start)
+        self.assertLess(script.index("[Console]::InputEncoding = $semBom"),
+                        script.index("[System.Diagnostics.Process]::Start($psi)"))
+        self.assertIn("""-notmatch '"result"'""", script)
+        instalador = script.index("$p.WaitForExit()")
+        fechar = script.index("$mcp.StandardInput.Close()")
+        depois = script[instalador:fechar]
+        self.assertIn('"method": "tools/list"', depois)
+        self.assertIn('"name": "ler_transcricao"', depois)
+        self.assertIn("""-notmatch '"isError": false'""", depois)
+
+    @unittest.skipUnless(yaml and PWSH, "PyYAML ou o PowerShell (pwsh) ausente")
+    def test_pedidos_ao_mcp_com_o_powershell_de_verdade(self):
+        """Os pedidos do passo, com o PowerShell e o servidor MCP de verdade:
+        sem BOM, e também com o BOM já na entrada (o console que não mudou)."""
+        from docx import Document
+
+        script = self.passo_reinstalar()
+        inicio = script.index("$semBom = New-Object")
+        ping = script.index("\n", script.index("""$null = Pedir-Mcp '{"jsonrpc": "2.0", "id": 1""")) + 1
+        apos = script.index("""$null = Pedir-Mcp '{"jsonrpc": "2.0", "id": 2""")
+        fim = script.index("\n", script.index("if ($leitura -notmatch")) + 1
+        antes, depois = script[inicio:ping], script[apos:fim]
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        numero = "0700123-83.2024.8.02.0001"
+        (tmp / "acervo" / "Transcricoes").mkdir(parents=True)
+        documento = Document()
+        documento.add_paragraph("Audiência de instrução e julgamento.")
+        documento.save(tmp / "acervo" / "Transcricoes" / f"{numero}.docx")
+        detectar = "$bomNaEntrada = $mcp.StandardInput.Encoding.GetPreamble().Length -gt 0"
+        self.assertIn(detectar, antes)
+        bom = "$mcp.StandardInput.BaseStream.Write([byte[]](0xEF,0xBB,0xBF), 0, 3)\n"
+        cenarios = {"sem BOM": (antes, 0),
+                    "com o BOM na entrada": (antes.replace(detectar, bom + "$bomNaEntrada = $true"), 0),
+                    "BOM sem tolerar": (antes.replace(detectar, bom + "$bomNaEntrada = $false"), 1)}
+        for nome, (corpo, esperado) in cenarios.items():
+            with self.subTest(cenario=nome):
+                ps1 = tmp / "passo.ps1"
+                ps1.write_text(f"""$ErrorActionPreference = 'Stop'
+$env:PROCESSO = '{numero}'
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = '{sys.executable}'
+$psi.Arguments = '-m helestron mcp --pasta "{tmp / "acervo"}"'
+$psi.UseShellExecute = $false
+$psi.RedirectStandardInput = $true
+$psi.RedirectStandardOutput = $true
+$psi.WorkingDirectory = '{REPOSITORIO}'
+{corpo}
+{depois}
+$mcp.StandardInput.Close()
+if (-not $mcp.WaitForExit(30000)) {{ $mcp.Kill(); throw 'o MCP nao saiu' }}
+""", encoding="utf-8")
+                r = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-File", str(ps1)],
+                                   capture_output=True, text=True, encoding="utf-8",
+                                   errors="replace", timeout=180)
+                saida = r.stdout + r.stderr
+                self.assertEqual(r.returncode, esperado, saida)
+                if esperado == 0:
+                    self.assertIn('"id": 3, "result"', saida)
+                    self.assertIn("Audiência de instrução", saida)
+                else:
+                    self.assertIn("-32700", saida)
 
     def test_texto_com_acento_entra_por_env(self):
         self.assertIn("PASTA: 'C:\\Teste Área\\Helestron'", self.texto)

@@ -155,7 +155,11 @@ Var NumAfastados
 
 !insertmacro MUI_LANGUAGE "PortugueseBR"
 
-; Textos do arquivo de idioma do NSIS que aparecem nestas páginas.
+; Textos do arquivo de idioma do NSIS que aparecem nestas páginas. Os botões
+; das caixas de mensagem vêm do Windows, no idioma dele: em português do Brasil,
+; MB_ABORTRETRYIGNORE mostra Anular, Repetir e Ignorar (o Wine, o ReactOS e o
+; PortugueseBR.nlf dizem “Abortar”, que não existe na tela), e MB_RETRYCANCEL
+; mostra Repetir e Cancelar.
 LangString ^Completed ${LANG_PORTUGUESEBR} "Concluído"
 LangString ^ClickNext ${LANG_PORTUGUESEBR} "Clique em Próximo para continuar."
 LangString ^ClickInstall ${LANG_PORTUGUESEBR} "Clique em Instalar para começar."
@@ -163,7 +167,7 @@ LangString ^ClickUninstall ${LANG_PORTUGUESEBR} "Clique em Desinstalar para come
 LangString ^SpaceRequired ${LANG_PORTUGUESEBR} "Espaço necessário: "
 LangString ^SpaceAvailable ${LANG_PORTUGUESEBR} "Espaço disponível: "
 LangString ^CopyDetails ${LANG_PORTUGUESEBR} "Copiar os detalhes para a Área de Transferência"
-LangString ^FileError ${LANG_PORTUGUESEBR} "Não foi possível gravar o arquivo:$\r$\n$\r$\n$0$\r$\n$\r$\nSe o Helestron (ou o Claude Desktop) estiver aberto, feche-o e clique em Repetir. Se a pasta escolhida exigir administrador, clique em Abortar e instale na pasta sugerida. Ignorar pula este arquivo."
+LangString ^FileError ${LANG_PORTUGUESEBR} "Não foi possível gravar o arquivo:$\r$\n$\r$\n$0$\r$\n$\r$\nSe o Helestron (ou o Claude Desktop) estiver aberto, feche-o e clique em Repetir. Se a pasta escolhida exigir administrador, clique em Anular e instale na pasta sugerida. Ignorar pula este arquivo."
 LangString ^FileError_NoIgnore ${LANG_PORTUGUESEBR} "Não foi possível gravar o arquivo:$\r$\n$\r$\n$0$\r$\n$\r$\nSe o Helestron (ou o Claude Desktop) estiver aberto, feche-o e clique em Repetir. Se a pasta escolhida exigir administrador, clique em Cancelar e instale na pasta sugerida."
 
 ; Propriedades > Detalhes do Helestron-Setup.exe

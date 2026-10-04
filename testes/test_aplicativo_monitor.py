@@ -109,6 +109,48 @@ class TestMonitor(ServidorDeTeste):
         pendencias = self.cliente.dados("GET", "/api/estado")["pendencias"]
         self.assertNotIn("pauta_login", [p["chave"] for p in pendencias])
 
+    def proxima_na_tela(self):
+        """A “Próxima: …” que a tela Pauta mostra (GET /api/pauta)."""
+        return self.cliente.dados("GET", "/api/pauta")["monitoramento"].get("proxima")
+
+    def test_so_fontes_que_exigem_a_pessoa_nao_anunciam_proxima(self):
+        """Ninguém entra sozinho (certificado, entrada manual, senha não
+        guardada): a tela Pauta não pode dizer “Próxima: hoje, 15:00” logo
+        acima do aviso de que o monitoramento não entra no portal."""
+        self.servico.configurar_monitoramento(True, 6)
+        self.servico.exige_presenca = lambda fonte: True
+        self.assertEqual(self.monitor.ciclo(), 6 * 3600)        # o monitor reavalia
+        self.assertIsNone(self.monitor.proxima)
+        self.assertIsNone(self.proxima_na_tela())
+        self.assertIsNotNone(self.app.pendencia_pauta)          # a pendência diz o que fazer
+
+    def test_sincronizou_a_mao_sem_fonte_automatica_nao_anuncia_proxima(self):
+        """Quem entra por certificado e sincronizou à mão há 2 h: nada de
+        “Próxima” daqui a 4 h — ela não vai acontecer sozinha."""
+        self.servico.configurar_monitoramento(True, 6)
+        self.servico.exige_presenca = lambda fonte: True
+        self.servico._ultima = datetime.now() - timedelta(hours=2)
+        self.assertAlmostEqual(self.monitor.ciclo(), 4 * 3600, delta=5)
+        self.assertIsNone(self.monitor.proxima)
+        self.assertIsNone(self.proxima_na_tela())
+        self.assertEqual(self.sincronizacoes(), [])
+
+    def test_sem_fonte_com_rota_nao_anuncia_proxima(self):
+        self.servico.configurar_monitoramento(True, 6)
+        self.servico._fontes[0]["url"] = ""
+        self.assertEqual(self.monitor.ciclo(), 6 * 3600)
+        self.assertIsNone(self.monitor.proxima)
+        self.assertIsNone(self.proxima_na_tela())
+        self.assertEqual(self.sincronizacoes(), [])
+
+    def test_com_fonte_automatica_anuncia_proxima(self):
+        self.servico.configurar_monitoramento(True, 6)
+        self.servico._ultima = datetime.now() - timedelta(hours=2)
+        self.monitor.ciclo()
+        self.assertEqual(self.monitor.proxima, self.servico._ultima + timedelta(hours=6))
+        self.assertEqual(self.proxima_na_tela()[:16],
+                         (self.servico._ultima + timedelta(hours=6)).isoformat()[:16])
+
     def test_presenca_descoberta_na_sincronizacao(self):
         """A regra não pôde ser vista antes (ServicoPauta._acesso marca
         pediu_login sem pergunta nenhuma): também não é "pediu o código"."""
@@ -127,37 +169,37 @@ class TestMonitor(ServidorDeTeste):
         self.assertIn("não entra sozinho", pendencia["mensagem"])
         self.assertNotIn("pediu o código", pendencia["mensagem"])
 
-    def test_regra_da_presenca_com_o_servico_de_verdade(self):
-        from helestron.download.modelos import OpcoesDownload
+    def test_regra_da_presenca_so_pela_api_publica(self):
+        """O monitor não entra nos internos da pauta (_tribunal, _opcoes,
+        _credenciais): vale o 'exige_presenca' de ServicoPauta.fontes() ou,
+        sem ele, ServicoPauta.exige_presenca(fonte)."""
+        class SoInternos:
+            def _tribunal(self, *a):
+                raise AssertionError("o monitor usou um interno da pauta")
 
-        class Tribunal:
-            sistema, portal = "esaj", "esaj:TJAL"
+            _opcoes = _credenciais = _tribunal
 
-        class Servico:
-            cofre_tem = False
+        class Publica:
+            def __init__(self, resposta):
+                self.resposta = resposta
 
-            def _tribunal(self, sigla, sistema):
-                return Tribunal()
+            def exige_presenca(self, fonte):
+                if isinstance(self.resposta, Exception):
+                    raise self.resposta
+                return self.resposta
 
-            def _opcoes(self, tribunal):
-                return OpcoesDownload.de_config(cfg)
-
-            def _credenciais(self, tribunal, opcoes, sessao=True):
-                # a senha digitada só nesta sessão não vale para o monitor
-                if sessao:
-                    return ("usuario", "senha")
-                return ("usuario", "senha") if self.cofre_tem else None
-
-        cfg = self.cfg
         fonte = {"id": "f1", "tribunal": "TJAL", "sistema": "esaj"}
-        servico = Servico()
-        for modo, cofre, exige in (("certificado", True, True), ("manual", True, True),
-                                   ("senha", False, True), ("senha", True, False)):
-            with self.subTest(modo=modo, cofre=cofre):
-                cfg.definir("esaj", "login", modo)
-                servico.cofre_tem = cofre
-                self.assertEqual(MonitorPauta.exige_presenca(servico, fonte), exige)
-        self.assertFalse(MonitorPauta.exige_presenca(object(), fonte))     # na dúvida, tenta
+        exige = MonitorPauta.exige_presenca
+        # o que fontes() já disse vale, sem perguntar de novo
+        self.assertTrue(exige(Publica(False), dict(fonte, exige_presenca=True)))
+        self.assertFalse(exige(Publica(True), dict(fonte, exige_presenca=False)))
+        # sem a marca, a função pública
+        self.assertTrue(exige(Publica(True), fonte))
+        self.assertFalse(exige(Publica(False), fonte))
+        # na dúvida, tenta: a sincronização decide
+        self.assertFalse(exige(Publica(RuntimeError("cofre")), fonte))
+        self.assertFalse(exige(SoInternos(), fonte))
+        self.assertFalse(exige(object(), fonte))
 
     def test_navegador_ocupado_adia(self):
         self.servico.configurar_monitoramento(True, 6)
@@ -199,6 +241,36 @@ class TestMonitor(ServidorDeTeste):
             self.cliente.dados("POST", "/api/config", {"secao": "pauta", "chave": "monitorar",
                                                        "valor": True})
         acordar.assert_called_once()
+
+
+class TestProximaComOServicoReal(ServidorDeTeste):
+    """A “Próxima: …” da tela Pauta com o ServicoPauta e o MonitorPauta de
+    verdade, como no programa aberto: a fonte do e-SAJ com a rota, mas sem a
+    senha guardada (ou com o certificado)."""
+
+    def setUp(self):
+        super().setUp()
+        self.monitor = MonitorPauta(self.app)
+        self.app.monitor = self.monitor
+        self.cliente.dados("POST", "/api/pauta/fontes", {
+            "tribunal": "TJAL", "sistema": "esaj",
+            "url": "https://www2.tjal.jus.br/sajcas/agendaAudiencias"})
+        self.cliente.dados("POST", "/api/pauta/monitoramento", {"ativo": True, "intervalo_horas": 6})
+
+    def test_sem_fonte_monitorada_nao_ha_proxima(self):
+        for modo in ("senha", "certificado"):
+            with self.subTest(modo=modo):
+                self.cfg.definir("esaj", "login", modo)
+                fonte = self.cliente.dados("GET", "/api/pauta/fontes")[0]
+                self.assertTrue(fonte["exige_presenca"])
+                self.assertFalse(fonte["monitorada"])
+                self.monitor.ciclo()
+                self.assertIsNone(self.monitor.proxima)
+                estado = self.cliente.dados("GET", "/api/pauta")["monitoramento"]
+                self.assertEqual(estado["fontes_monitoradas"], 0)
+                self.assertIsNone(estado["proxima"])
+        self.assertEqual([t for t in self.cliente.dados("GET", "/api/tarefas")
+                          if t.get("tipo") == "pauta_sincronizar"], [])
 
 
 class TestPresencaComOServicoReal(unittest.TestCase):

@@ -196,7 +196,7 @@ class TestAoVivo(ServidorDeTeste):
             self.assertEqual(status, 409)
             self.assertEqual(env["erro"]["codigo"], "microfone_indisponivel")
             self.assertEqual(env["erro"]["mensagem"],
-                             "O microfone «Fone Jabra Evolve» não foi encontrado. Escolha outro "
+                             "O microfone “Fone Jabra Evolve” não foi encontrado. Escolha outro "
                              "em Audiências ou Ajustes › Transcrição.")
             self.assertEqual(len(SessaoFalsa.criadas), 1)
             self.assertIsNone(self.app.recursos.quem_tem("microfone"))
@@ -208,7 +208,7 @@ class TestAoVivo(ServidorDeTeste):
             self.cfg.definir("transcricao", "dispositivo", "Fone que sumiu")
             status, env = self.cliente.post("/api/transcricao/iniciar", {"processo": NUMERO})
             self.assertEqual((status, env["erro"]["codigo"]), (409, "microfone_indisponivel"))
-            self.assertIn("«Fone que sumiu»", env["erro"]["mensagem"])
+            self.assertIn("“Fone que sumiu”", env["erro"]["mensagem"])
 
     def test_padrao_do_windows_escolhido_na_tela_nao_herda_a_configuracao(self):
         """A tela mostra "Padrão do Windows" e manda "": a sessão recebe "" - e
@@ -509,7 +509,7 @@ class TestMicrofoneEModelos(ServidorDeTeste):
         """Sem microfone, ou preso pelo Teams: a frase que diz o que fazer - e
         não "Algo deu errado no Helestron" (500)."""
         for frase in ("Nenhum microfone foi encontrado. Ligue o microfone (ou o fone com "
-                      "microfone) e clique em Testar de novo.",
+                      "microfone) e tente de novo.",
                       "Não consegui abrir o microfone. Outro programa (Teams, Zoom, gravador "
                       "da sala) pode estar usando-o com exclusividade."):
             with self.subTest(frase=frase[:30]):
@@ -545,7 +545,7 @@ class TestMicrofoneEModelos(ServidorDeTeste):
                                             {"dispositivo": "Microfone que sumiu"})
         self.assertEqual(recebidos, ["Microfone de mesa (USB)", 7])
         self.assertEqual((status, env["erro"]["codigo"]), (409, "microfone_indisponivel"))
-        self.assertIn("«Microfone que sumiu» não foi encontrado", env["erro"]["mensagem"])
+        self.assertIn("“Microfone que sumiu” não foi encontrado", env["erro"]["mensagem"])
         self.assertIsNone(self.app.recursos.quem_tem("microfone"))
 
     def test_modelos(self):

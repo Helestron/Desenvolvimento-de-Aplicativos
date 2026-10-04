@@ -118,7 +118,9 @@
           texto: "Sincronize com o e-SAJ e o eProc para ver aqui as audiências do dia.",
           acoes: [botao({ rotulo: "Configurar a pauta", tipo: "tonal", tamanho: "pequeno", acao: () => H.app.ir("pauta") })],
         }));
-      } else if (nuncaSincronizou) {
+      } else if (nuncaSincronizou && Number(pauta.fontes) > 0) {
+        // Só com fonte cadastrada: configurada também vale por um relatório
+        // importado (C5), e aí não há fonte nenhuma para sincronizar.
         caixa.appendChild(vazio({
           compacto: true, icone: "calendario", titulo: "A pauta ainda não foi sincronizada",
           texto: "A fonte está cadastrada: sincronize na tela Pauta para ver aqui as audiências do dia.",

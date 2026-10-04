@@ -355,14 +355,23 @@
 
     const corpo = el("tbody");
     const linhas = new Map();
-    const tabela = cartao({ classe: "itens-lote" },
-      cabecalhoCartao("Processos do lote", "lista"),
-      el("div", { classe: "tabela-rolagem", estilo: { maxHeight: "none" } },
-        el("table", { classe: "tabela" },
-          el("thead", {}, el("tr", {},
-            el("th", { texto: "#" }), el("th", { texto: "Processo" }), el("th", { texto: "Tribunal" }),
-            el("th", { texto: "Situação" }), el("th", { texto: "Detalhe" }), el("th", {}, el("span", { classe: "oculto-visual", texto: "Abrir" })))),
-          corpo)));
+    // Abaixo de 1240 px a coluna Detalhe sai, e a frase vai para baixo da
+    // situação (CSS): a tabela cabe sem rolar e o "Abrir o PDF" fica à vista.
+    // Se ainda assim rolar, a coluna do botão fica presa à direita, com fundo
+    // ('rola'), para não passar por cima do texto sem cobri-lo.
+    const rolagem = el("div", { classe: "tabela-rolagem", estilo: { maxHeight: "none" } },
+      el("table", { classe: "tabela" },
+        el("thead", {}, el("tr", {},
+          el("th", { texto: "#" }), el("th", { texto: "Processo" }), el("th", { texto: "Tribunal" }),
+          el("th", { texto: "Situação" }), el("th", { classe: "coluna-detalhe", texto: "Detalhe" }), el("th", { classe: "coluna-abrir" }, el("span", { classe: "oculto-visual", texto: "Abrir" })))),
+        corpo));
+    const marcarRolagem = () => rolagem.classList.toggle("rola", rolagem.scrollWidth > rolagem.clientWidth + 1);
+    if (window.ResizeObserver) {
+      const observador = new ResizeObserver(marcarRolagem);
+      observador.observe(rolagem);
+      ctx.aoSair(() => observador.disconnect());
+    }
+    const tabela = cartao({ classe: "itens-lote" }, cabecalhoCartao("Processos do lote", "lista"), rolagem);
 
     function desenharItem(item, i) {
       let tr = linhas.get(item.numero);
@@ -379,9 +388,9 @@
         el("td", { classe: "tabular", estilo: { color: "var(--texto-2)", width: "36px" }, texto: String(i + 1) }),
         el("td", { classe: "numero" }, item.numero, item.sigiloso ? [" ", icone("cadeado", { tamanho: 14, rotulo: "Segredo de justiça" })] : null),
         el("td", {}, el("span", { classe: "selo selo-contorno", texto: H.cnj.tribunal(item.numero) || "—" })),
-        el("td", {}, sit),
-        el("td", {}, el("span", { classe: "mensagem-item", title: item.mensagem || "", texto: item.mensagem || "" })),
-        el("td", { estilo: { textAlign: "right" } }, item.arquivo
+        el("td", {}, sit, item.mensagem ? el("span", { classe: "mensagem-item mensagem-sob", texto: item.mensagem }) : null),
+        el("td", { classe: "coluna-detalhe" }, el("span", { classe: "mensagem-item", texto: item.mensagem || "" })),
+        el("td", { classe: "coluna-abrir" }, item.arquivo
           ? botao({ icone: "externo", titulo: "Abrir o PDF", tamanho: "pequeno", tipo: "texto", acao: () => api.abrir("arquivo", item.arquivo) }) : null));
     }
 
@@ -401,6 +410,7 @@
       const t = tarefa();
       const lista = itens();
       lista.forEach(desenharItem);
+      marcarRolagem();
       const p = t.progresso || {};
       const total = p.total || lista.length;
       const feitos = p.feitos || 0;

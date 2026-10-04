@@ -156,58 +156,57 @@
   /**
    * O microfone das audiências: uma lista com os microfones deste
    * computador, guardado pelo NOME (o número muda quando se liga ou desliga
-   * um aparelho USB). Um nome guardado que não está mais ligado aparece como
-   * "não encontrado" - nunca troca em silêncio pelo padrão do Windows.
+   * um aparelho USB). A regra é a mesma da tela Audiências
+   * (H.app.resolverMicrofone): um nome guardado que não está mais ligado
+   * aparece como "Não encontrado" - nunca troca em silêncio pelo padrão do
+   * Windows -, e o número antigo que sumiu não aparece como se fosse um nome.
    */
   function campoMicrofone(c) {
     const id = `cfg-${c.secao}-${c.chave}`;
     const salvo = el("span");
-    const sel = el("select", { classe: "campo campo-pequeno", id, aria: { label: "Microfone" }, estilo: { width: "auto", maxWidth: "300px" } },
+    const sel = el("select", { classe: "campo campo-pequeno campo-microfone", id, aria: { label: "Microfone" } },
       el("option", { value: "", texto: "Carregando os microfones…" }));
-    const nota = el("span", { id: "nota-microfone", texto: "Guardado pelo nome: trocar a porta USB não muda a escolha." });
+    const NOTA = "Guardado pelo nome: trocar a porta USB não muda a escolha.";
+    const nota = el("span", { id: "nota-microfone", texto: NOTA });
+    const titulo = () => { sel.title = sel.selectedOptions.length ? sel.selectedOptions[0].textContent : ""; };
     let antes = String(valorDe(c) || "");
     (async () => {
       let lista = [];
       try {
         lista = await api.transcricao.microfones();
       } catch (erro) {
-        trocar(sel, el("option", { value: "", texto: "Padrão do Windows" }));
+        // Sem a lista, o guardado continua escolhido; o padrão só sem nada guardado.
+        trocar(sel, antes ? el("option", { value: antes, texto: /^\d+$/.test(antes) ? "Microfone escolhido antes" : antes }) : null,
+          el("option", { value: "", texto: "Padrão do Windows" }));
+        sel.value = antes;
+        titulo();
         nota.textContent = erro.message;
+        nota.classList.add("erro");
         return;
       }
-      const padrao = lista.find((m) => m.padrao);
-      const nomes = Array.from(new Set(lista.map((m) => String(m.nome || "")).filter(Boolean)));
-      const opcoes = [el("option", { value: "", texto: "Padrão do Windows" + (padrao ? ` — ${padrao.nome}` : "") })]
-        .concat(nomes.map((n) => el("option", { value: n, texto: n })));
-      let atual = String(valorDe(c) || "");
-      if (atual && !nomes.includes(atual)) {
-        const pelo = /^\d+$/.test(atual) ? lista.find((m) => String(m.indice) === atual) : null;
-        if (pelo) {
-          // Configuração antiga, pelo número: passa a guardar o nome.
-          atual = String(pelo.nome);
-          gravar(c, atual).catch(() => {});
-        } else {
-          opcoes.push(el("option", { value: atual, texto: `${atual} (não encontrado)` }));
-          nota.textContent = `O microfone «${atual}» não foi encontrado neste computador. Ligue-o ou escolha outro.`;
-          nota.classList.add("erro");
-        }
-      }
-      trocar(sel, opcoes);
-      sel.value = atual;
-      antes = atual;
+      const escolha = H.app.resolverMicrofone(lista, valorDe(c));
+      if (escolha.regravar) gravar(c, escolha.regravar).catch(() => {});
+      trocar(sel, escolha.opcoes.map((o) => el("option", { value: o.valor, texto: o.rotulo })));
+      sel.value = escolha.valor;
+      titulo();
+      nota.classList.toggle("erro", !!escolha.problema);
+      nota.textContent = escolha.problema || NOTA;
+      antes = escolha.valor;
     })();
     sel.addEventListener("change", async () => {
+      titulo();
       try {
         antes = String(await gravar(c, sel.value));
         nota.classList.remove("erro");
-        nota.textContent = "Guardado pelo nome: trocar a porta USB não muda a escolha.";
+        nota.textContent = NOTA;
         marcaSalvo(salvo);
       } catch (erro) {
         sel.value = antes;
+        titulo();
         folha.erro(erro);
       }
     });
-    return linha({ titulo: "Microfone", sub: nota, acessorio: el("span", { classe: "grupo-botoes", estilo: { flexWrap: "nowrap" } }, salvo, sel) });
+    return linha({ titulo: "Microfone", sub: nota, classe: "linha-microfone", acessorio: el("span", { classe: "grupo-botoes", estilo: { flexWrap: "nowrap" } }, salvo, sel) });
   }
 
   /** Uma linha de ajuste, conforme o tipo do campo. */
@@ -609,7 +608,7 @@
               : "Fica fora do monitoramento até a primeira sincronização bem-sucedida (ou uma captura)." }),
           f.ultimo_erro ? el("span", { estilo: { display: "block", color: "var(--ambar-texto, var(--ambar))" }, texto: "Último erro: " + f.ultimo_erro }) : null),
         acessorio: el("span", { classe: "grupo-botoes", estilo: { flexWrap: "nowrap" } },
-          f.monitorada ? pilula("Monitorada", "verde", "sino") : f.exige_presenca ? pilula("Só com você", "ambar", "pessoa") : pilula("Sem rota", "cinza"),
+          f.monitorada ? pilula("Monitorada", "verde", "sino") : f.exige_presenca ? pilula("Só com você", "ambar", "pessoa") : pilula("Sem endereço salvo", "cinza"),
           botao({ icone: "lixeira", titulo: "Remover esta fonte", tamanho: "pequeno", tipo: "texto", acao: async () => {
           const ok = await folha.confirmar({ titulo: "Remover esta fonte?", mensagem: "As audiências já trazidas continuam na pauta; só deixam de ser conferidas no portal.", confirmar: "Remover", perigo: true });
           if (!ok) return;

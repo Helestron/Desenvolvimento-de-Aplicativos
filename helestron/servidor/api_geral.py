@@ -500,7 +500,17 @@ def abrir(p: Pedido) -> dict:
     if tipo == "url":
         if not alvo.lower().startswith("https://") or any(c in alvo for c in "\r\n\x00 "):
             raise ErroApi(403, "endereco_recusado", "Só abro endereços https://.")
-        sistema.abrir_endereco(alvo)
+        # O "Abrir a página" da folha só aparece quando o navegador já falhou
+        # uma vez: repetir a falha calado deixava a folha igual, sem resposta.
+        try:
+            aberto = sistema.abrir_endereco(alvo) is not False
+        except Exception as erro:
+            log.warning("não consegui abrir %s no navegador: %s", alvo, erro)
+            aberto = False
+        if not aberto:
+            raise ErroApi(409, "navegador_nao_abriu",
+                          "Não consegui abrir o navegador. Copie o endereço e cole-o no "
+                          f"navegador: {alvo}")
         return {"aberto": alvo}
     if tipo not in ("pasta", "arquivo"):
         raise erro_400("Tipo inválido (use pasta, arquivo ou url).", "valor_invalido")

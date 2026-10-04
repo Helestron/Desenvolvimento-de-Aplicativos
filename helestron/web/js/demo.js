@@ -605,6 +605,8 @@
   const atraso = () => pausa(70 + Math.floor(Math.random() * 120));
   const erro = (codigo, mensagem, detalhe) => new H.api.ErroApi(codigo, mensagem, detalhe, 400);
 
+  let codexConectado = false;     // o conector do Codex (config.toml), registrado no clique
+
   const MICROFONES = [
     { indice: 1, nome: "Microfone (Realtek(R) Audio)", padrao: true },
     { indice: 3, nome: "Microfone de mesa USB (Jabra Speak 510)", padrao: false },
@@ -620,7 +622,7 @@
     if (!texto || /^\d+$/.test(texto)) return;
     if (MICROFONES.some((m) => m.nome === texto)) return;
     throw new H.api.ErroApi("microfone_indisponivel",
-      `O microfone «${texto}» não foi encontrado. Escolha outro em Audiências ou Ajustes › Transcrição.`, "", 409);
+      `O microfone “${texto}” não foi encontrado. Escolha outro em Audiências ou Ajustes › Transcrição.`, "", 409);
   }
 
   function filtrarPauta(c) {
@@ -1099,7 +1101,7 @@
     // --------------------------------------------------------- compartilhar
     "GET /api/compartilhar/estado": () => ({
       claude: { claude_code: USUARIO + "\\.local\\bin\\claude.exe", desktop: true, mcp: true, chave_no_ambiente: false },
-      chatgpt: { codex: "", app: true, mcp: false },
+      chatgpt: { codex: "", app: true, mcp: codexConectado },
       chatgpt_desktop: true,
       tem_registrar_codex: true,
       nuvens: { "OneDrive (instituição)": USUARIO + "\\OneDrive - Tribunal de Justiça de Alagoas", "Google Drive": "G:\\Meu Drive" },
@@ -1130,7 +1132,16 @@
       abriu: true, resultado: "app", copiar: PASTAS.acervo,
       mensagem: "No app do ChatGPT, escolha Work, tecle Ctrl+O e cole o caminho do acervo (Ctrl+V). O ChatGPT lê o AGENTS.md da pasta.",
     }),
-    "POST /api/compartilhar/codex": () => { throw erro("nao_instalado", "O Codex não está instalado neste computador. Instale-o pelo site da OpenAI e tente de novo."); },
+    // Como o servidor (api_compartilhar.codex): sem o Codex, o conector fica
+    // registrado e a resposta é {abriu: false, mensagem} - nunca um erro -, com
+    // os botões que existem na tela (C6).
+    "POST /api/compartilhar/codex": () => {
+      codexConectado = true;
+      return {
+        abriu: false,
+        mensagem: `Conector de leitura do acervo registrado em ${USUARIO}\\.codex\\config.toml. O Codex (agente da OpenAI) não está instalado neste computador. Use “Abrir no ChatGPT Work” ou, no cartão “Pacote para o ChatGPT”, “Gerar o pacote”.`,
+      };
+    },
     "POST /api/compartilhar/pacote": () => {
       const t = novaTarefa("pacote", "Gerar o pacote para o ChatGPT", 0);
       (async () => {

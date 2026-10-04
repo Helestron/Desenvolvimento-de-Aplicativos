@@ -184,18 +184,37 @@ def claude_desktop(p: Pedido) -> dict:
 
 
 def cowork(p: Pedido) -> dict:
+    from ..compartilhar import claude
+
     app = p.app
     exigir_sem_sigiloso(app)
     acervo = app.cfg.pasta_acervo
     _preparo_rapido(app.cfg)
-    resultado = servicos.abrir_no_cowork(acervo)
     pedido = f"Pasta do acervo: {acervo}\n\n{servicos.prompt_inicial()}"
+    if not claude.claude_desktop_instalado():
+        # Como o Claude Desktop ausente (C6): a página de download abre aqui,
+        # para saber se abriu - e, sem navegador, a mensagem traz o endereço
+        # em vez de dizer que abriu (servicos.abrir_no_cowork não conta).
+        url = claude.URL_DOWNLOAD_DESKTOP
+        aberta = abrir_pagina(url)
+        if aberta:
+            mensagem = ("O Claude Desktop não está instalado: abri no navegador a página de "
+                        "download. Instale o app, entre com a sua conta (o Cowork exige plano "
+                        "pago) e tente de novo.")
+        else:
+            mensagem = (f"O Claude Desktop não está instalado. Baixe-o em {url}, instale-o, "
+                        "entre com a sua conta (o Cowork exige plano pago) e tente de novo.")
+        return {"abriu": False, "resultado": "baixar", "instalado": False,
+                "pagina_aberta": aberta, "url": url, "mensagem": mensagem, "copiar": pedido}
+    resultado = servicos.abrir_no_cowork(acervo)
     if resultado == "cowork":
         mensagem = ("Abrindo o Cowork. O Claude vai pedir para confirmar o acesso à pasta do "
                     "acervo; depois, cole o pedido inicial (Ctrl+V).")
     elif resultado == "baixar":
-        mensagem = ("O Claude Desktop não está instalado: abri a página de download. Instale, "
-                    "entre com a sua conta (o Cowork exige plano pago) e tente de novo.")
+        # O app sumiu entre a conferência e a abertura: a página foi pedida.
+        mensagem = ("O Claude Desktop não está instalado. Baixe-o em "
+                    f"{claude.URL_DOWNLOAD_DESKTOP}, instale-o, entre com a sua conta (o "
+                    "Cowork exige plano pago) e tente de novo.")
     else:
         mensagem = ("Abrindo o Claude. No Cowork, escolha a pasta do acervo (o caminho e o "
                     "pedido inicial estão no texto para copiar).")
@@ -238,17 +257,42 @@ def claude_code(p: Pedido) -> dict:
                                        "do acervo. No primeiro uso, entre com a sua conta."}
 
 
+def _app_chatgpt() -> bool:
+    """O app do ChatGPT abre aqui? A mesma conferência de
+    chatgpt.abrir_chatgpt_work: só no Windows, com o app instalado."""
+    from ..compartilhar import chatgpt
+
+    try:
+        return bool(sistema.NO_WINDOWS and chatgpt.chatgpt_desktop_instalado())
+    except Exception:
+        return False
+
+
 def chatgpt_work(p: Pedido) -> dict:
+    from ..compartilhar import chatgpt
+
     app = p.app
     exigir_sem_sigiloso(app)
     acervo = app.cfg.pasta_acervo
     _preparo_rapido(app.cfg)
-    resultado = servicos.abrir_chatgpt_work(acervo)
+    if _app_chatgpt():
+        resultado = servicos.abrir_chatgpt_work(acervo)
+        aberta = True       # sem o app no fim das contas, a web foi pedida por lá
+    else:
+        # Sem o app, a web abre aqui, para saber se abriu (C6): a mensagem não
+        # diz "abriu no navegador" quando nenhum navegador abriu.
+        resultado = "web"
+        aberta = abrir_pagina(chatgpt.URL_CHATGPT)
     if resultado == "web":
-        return {"abriu": True, "resultado": "web", "copiar": str(acervo),
-                "mensagem": "O ChatGPT abriu no navegador, que não lê pastas do computador. "
-                            "Instale o app do ChatGPT para Windows para usar o modo Work com o "
-                            "acervo — ou gere o pacote para o ChatGPT."}
+        sem_app = ("Instale o app do ChatGPT para Windows para usar o modo Work com o acervo — "
+                   "ou, no cartão “Pacote para o ChatGPT”, “Gerar o pacote”.")
+        if aberta:
+            mensagem = "O ChatGPT abriu no navegador, que não lê pastas do computador. " + sem_app
+        else:
+            mensagem = (f"Não consegui abrir o ChatGPT no navegador ({chatgpt.URL_CHATGPT}). "
+                        "Pelo navegador, ele não lê pastas do computador. " + sem_app)
+        return {"abriu": aberta, "resultado": "web", "pagina_aberta": aberta,
+                "url": chatgpt.URL_CHATGPT, "copiar": str(acervo), "mensagem": mensagem}
     return {"abriu": True, "resultado": "app", "copiar": str(acervo),
             "mensagem": "No app do ChatGPT, escolha Work, tecle Ctrl+O e cole o caminho do "
                         "acervo (Ctrl+V). O ChatGPT lê o AGENTS.md da pasta."}

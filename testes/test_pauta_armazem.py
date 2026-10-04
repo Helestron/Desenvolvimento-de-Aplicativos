@@ -240,6 +240,58 @@ class TestRelatorioImportadoEPortal(apoio.PastaTemporaria):
                           self.banco.listar(*PERIODO, incluir_removidas=True)], [("esaj", "10:00")])
         self.assertEqual([x["tipo"] for x in self.banco.alteracoes()], ["alterada"])
 
+    def test_duas_no_mesmo_horario_cada_uma_absorve_a_sua(self):
+        """Uma Conciliação cancelada e uma Instrução designada do mesmo processo, no
+        mesmo horário, no relatório e depois no portal: o par é pelo tipo - nada de
+        "nova" nem de "cancelada" falsa, e cada uma fica com a sua sala."""
+        for ordem in (0, 1):
+            with self.subTest(ordem=ordem):
+                banco = Armazem(self.tmp / f"ordem{ordem}" / "pauta.sqlite3")
+                self.addCleanup(banco.fechar)
+                do_relatorio = [
+                    modelos.nova(sistema="arquivo", tribunal="TJAL", data_=D1,
+                                 processo=ap.numero("0700101"), hora="09:00",
+                                 tipo_original="Conciliação", situacao_original="Cancelada",
+                                 local="Sala 1", fonte="arquivo"),
+                    modelos.nova(sistema="arquivo", tribunal="TJAL", data_=D1,
+                                 processo=ap.numero("0700101"), hora="09:00",
+                                 tipo_original="Instrução", situacao_original="Designada",
+                                 local="Sala 2 (relatório)", partes="Fulano x Beltrano",
+                                 fonte="arquivo")]
+                if ordem:
+                    do_relatorio.reverse()
+                banco.gravar(do_relatorio, "arquivo", None, registrar_novas=False, agora=T0)
+                b = banco.gravar([aud("0700101", tipo="Conciliação", situacao="Cancelada"),
+                                  aud("0700101", tipo="Instrução", situacao="Designada")],
+                                 "esaj-tjal", PERIODO, agora=T1)
+                self.assertEqual((b.novas, b.atualizadas, b.canceladas, b.inalteradas,
+                                  b.alteracoes), (0, 0, 0, 2, 0))
+                self.assertEqual(banco.alteracoes(), [])
+                self.assertEqual(sorted(
+                    (a.sistema, a.tipo, a.situacao, a.local, a.partes)
+                    for a in banco.listar(*PERIODO, incluir_removidas=True)), [
+                    ("esaj", "Conciliação", "Cancelada", "Sala 1", ""),
+                    ("esaj", "Instrução e julgamento", "Designada", "Sala 2 (relatório)",
+                     "Fulano x Beltrano")])
+
+    def test_a_do_relatorio_sem_par_fica(self):
+        self.importada("0700101", tipo="Conciliação", local="Sala 1")
+        self.importada("0700101", tipo="Instrução", local="Sala 2")
+        b = self.banco.gravar([aud("0700101", tipo="Conciliação")], "esaj-tjal", PERIODO,
+                              agora=T1)
+        self.assertEqual((b.novas, b.inalteradas), (0, 1))
+        self.assertEqual(sorted((a.sistema, a.tipo, a.local) for a in
+                                self.banco.listar(*PERIODO, incluir_removidas=True)), [
+            ("arquivo", "Instrução e julgamento", "Sala 2"), ("esaj", "Conciliação", "Sala 1")])
+
+    def test_um_de_cada_lado_com_tipos_diferentes_ainda_e_a_mesma(self):
+        self.importada("0700101", tipo="Audiência", local="Sala 9")
+        b = self.banco.gravar([aud("0700101", tipo="Una")], "esaj-tjal", PERIODO, agora=T1)
+        self.assertEqual((b.novas, b.inalteradas), (0, 1))
+        self.assertEqual([(a.sistema, a.tipo, a.local) for a in
+                          self.banco.listar(*PERIODO, incluir_removidas=True)],
+                         [("esaj", "Una", "Sala 9")])
+
     def test_contar_com_as_removidas(self):
         self.banco.gravar([aud("0700101")], "esaj-tjal", PERIODO, registrar_novas=False)
         self.banco.gravar([], "esaj-tjal", PERIODO)

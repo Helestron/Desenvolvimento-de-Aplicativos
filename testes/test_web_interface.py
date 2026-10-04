@@ -836,7 +836,7 @@ class InterfaceNoNavegador(unittest.TestCase):
         pagina.click("#botao-gravar")
         folha = pagina.locator(".folha:has-text('A gravação não começou')")
         folha.wait_for()
-        self.assertIn("O microfone «Fone que foi desligado» não foi encontrado. Escolha outro em Audiências "
+        self.assertIn("O microfone “Fone que foi desligado” não foi encontrado. Escolha outro em Audiências "
                       "ou Ajustes › Transcrição.", folha.inner_text())
         self.assertNotIn("Algo deu errado", folha.inner_text())
         self.sem_problemas(pagina)
@@ -1080,6 +1080,306 @@ class InterfaceNoNavegador(unittest.TestCase):
         cartao = pagina.locator("text=nos próximos 7 dias").first.locator("xpath=..").inner_text()
         self.assertIn(f"{chip} nos próximos 7 dias", cartao.replace("\n", " "))
         self.sem_problemas(pagina)
+
+    # ------------------------------------------------ revisão 2 da interface
+    TAMANHOS_PEQUENOS = (("1024x768", 1024, 768, 1), ("1100x720", 1100, 720, 1),
+                         ("1366x768-zoom125", 1093, 614, 1.25))
+
+    def segurar_rota(self, pagina, rota):
+        """A rota da demonstração só responde quando window.__liberar() for chamada."""
+        pagina.evaluate("""r => { const pronto = new Promise(ok => { window.__liberar = ok; });
+            const responder = Helestron.demo.responder;
+            Helestron.demo.responder = (rota, pedido) => rota === r
+              ? pronto.then(() => responder(rota, pedido)) : responder(rota, pedido); }""", rota)
+
+    def responder_com(self, pagina, rota, valor):
+        pagina.evaluate("""([r, v]) => { const responder = Helestron.demo.responder;
+            Helestron.demo.responder = (rota, pedido) => rota === r
+              ? Promise.resolve(JSON.parse(JSON.stringify(v))) : responder(rota, pedido); }""", [rota, valor])
+
+    def test_gravar_espera_a_lista_de_microfones(self):
+        """Com o número já preenchido (botão “Transcrever” da Pauta ou do
+        Início), Gravar e Ctrl+Enter ficavam ativos antes de a lista de
+        microfones chegar: o seletor tinha só “Carregando…” (""), e o "" é a
+        escolha explícita do padrão do Windows (C2) - a audiência ia inteira
+        pelo microfone errado, sem aviso."""
+        nome = "Microfone de mesa USB (Jabra Speak 510)"
+        pagina = self.abrir(extra="&microfone=" + quote(nome), secao="ajuda")
+        self.segurar_rota(pagina, "GET /api/transcricao/microfones")
+        pagina.evaluate("location.hash = '#/audiencias?processo=0700231-15.2024.8.02.0001&tipo=Una'")
+        pagina.wait_for_selector("#botao-gravar")
+        pagina.wait_for_function("() => document.querySelector('#ajuda-processo').textContent.includes('Número válido')")
+        self.assertIn("Carregando", pagina.locator("#microfone").inner_text())
+        self.assertTrue(pagina.locator("#botao-gravar").is_disabled())
+        self.assertTrue(pagina.locator("#testar-microfone").is_disabled())
+        pagina.keyboard.press("Control+Enter")
+        pagina.wait_for_timeout(400)
+        self.assertEqual(self.chamadas(pagina, "POST /api/transcricao/iniciar"), [])
+        self.assertEqual(self.chamadas(pagina, "POST /api/transcricao/microfone/teste"), [])
+        pagina.evaluate("window.__liberar()")
+        pagina.wait_for_function("() => !document.querySelector('#botao-gravar').disabled")
+        self.assertFalse(pagina.locator("#testar-microfone").is_disabled())
+        self.assertEqual(pagina.locator("#microfone").input_value(), nome)
+        pagina.keyboard.press("Control+Enter")
+        pagina.wait_for_selector(".ao-vivo")
+        self.assertEqual(self.chamadas(pagina, "POST /api/transcricao/iniciar")[0]["dispositivo"], nome)
+        self.sem_problemas(pagina)
+
+    def test_microfone_com_a_mesma_regra_em_audiencias_e_ajustes(self):
+        """Configuração antiga com um número que não existe mais: Audiências
+        mostrava “Padrão do Windows” com o aviso, e Ajustes “7 (não
+        encontrado)”, como se o número fosse o nome. E o nome que sumiu vinha
+        com a marca no fim, cortada pela caixa (“… (não en”)."""
+        pagina = self.abrir(extra="&microfone=7", secao="audiencias")
+        pagina.wait_for_function("() => document.querySelector('#microfone').options.length > 1")
+        frase = "O microfone escolhido antes não está mais na lista. Confira a escolha."
+        self.assertEqual(pagina.locator("#microfone").input_value(), "")
+        self.assertIn(frase, pagina.locator(".medidor-caixa").inner_text())
+        self.ir(pagina, "ajustes")
+        pagina.click(".ajustes-indice a[data-grupo='transcricao']")
+        pagina.wait_for_function("() => (document.querySelector('#cfg-transcricao-dispositivo') || {options: []}).options.length > 1")
+        campo = pagina.locator("#cfg-transcricao-dispositivo")
+        self.assertEqual(campo.input_value(), "")
+        self.assertNotIn("7", campo.evaluate("e => e.selectedOptions[0].text"))
+        self.assertEqual(pagina.locator("#nota-microfone").inner_text(), frase)
+        self.sem_problemas(pagina)
+        # O nome que sumiu: a marca no início, a mesma nas duas telas, e cabe.
+        nome = "Headset USB (Logitech H390)"
+        pagina = self.abrir(extra="&microfone=" + quote(nome), secao="audiencias")
+        pagina.wait_for_function("() => document.querySelector('#microfone').options.length > 1")
+        rotulo = f"Não encontrado: {nome}"
+        self.assertEqual(pagina.locator("#microfone").evaluate("e => e.selectedOptions[0].text"), rotulo)
+        self.assertEqual(pagina.locator("#microfone").get_attribute("title"), rotulo)
+        self.assertIn(f"O microfone “{nome}” não foi encontrado", pagina.locator(".medidor-caixa").inner_text())
+        self.ir(pagina, "ajustes")
+        pagina.click(".ajustes-indice a[data-grupo='transcricao']")
+        pagina.wait_for_function("() => (document.querySelector('#cfg-transcricao-dispositivo') || {options: []}).options.length > 1")
+        campo = pagina.locator("#cfg-transcricao-dispositivo")
+        self.assertEqual(campo.input_value(), nome)
+        self.assertEqual(campo.evaluate("e => e.selectedOptions[0].text"), rotulo)
+        self.assertIn(f"O microfone “{nome}” não foi encontrado", pagina.locator("#nota-microfone").inner_text())
+        sobra = campo.evaluate("""e => { const c = document.createElement('canvas').getContext('2d'); const s = getComputedStyle(e);
+            c.font = `${s.fontStyle} ${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+            return e.clientWidth - parseFloat(s.paddingLeft) - parseFloat(s.paddingRight) - c.measureText(e.selectedOptions[0].text).width; }""")
+        self.assertGreaterEqual(sobra, 0, "o rótulo do microfone não encontrado cortado em Ajustes")
+        self.sem_problemas(pagina)
+
+    def test_falha_ao_comecar_tem_o_vermelho_do_testar(self):
+        """O mesmo erro de microfone aparecia vermelho no “Testar” e com o
+        ícone azul de informação no “Gravar” (a falha chega pelo evento de
+        estado “erro”, fase “inicio”)."""
+        pagina = self.abrir(extra="&microfone=" + quote("Fone que foi desligado"), secao="audiencias")
+        pagina.click("#testar-microfone")
+        testar = pagina.locator(".folha:has-text('O microfone não respondeu') .folha-icone")
+        testar.wait_for()
+        self.assertIn("erro", testar.get_attribute("class").split())
+        pagina.click(".folha button:has-text('OK')")
+        pagina.wait_for_selector(".folha-fundo", state="detached")
+        pagina.select_option("#microfone", "")
+        pagina.fill("#processo-audiencia", "07002311520248020001")
+        pagina.click("#botao-gravar")
+        pagina.wait_for_selector(".ao-vivo")
+        pagina.evaluate("""() => Helestron.api.emitir('transcricao', { tipo: 'estado', dados: { estado: 'erro', fase: 'inicio',
+            texto: 'Nenhum microfone foi encontrado. Ligue o microfone (ou o fone com microfone) e tente de novo.' } })""")
+        gravar = pagina.locator(".folha:has-text('A gravação não começou') .folha-icone")
+        gravar.wait_for()
+        self.assertIn("erro", gravar.get_attribute("class").split())
+        self.capturar(pagina, "gravar-falhou-vermelho")
+        self.sem_problemas(pagina)
+
+    def test_documento_salvo_mostra_o_nome_inteiro(self):
+        """No cartão “Transcrição salva”, o nome do documento (o número do
+        processo) saía cortado pelo limite de duas linhas em 1024 e em 1366 a
+        125 % (“0700231- / 15.2024.8.0…”), e o “(2)” da segunda transcrição
+        sumia; o título quebrava em “Transcrição / salva”."""
+        for nome, largura, altura, escala in self.TAMANHOS_PEQUENOS:
+            for arquivo in ("0700231-15.2024.8.02.0001.docx", "0700231-15.2024.8.02.0001 (2).docx"):
+                with self.subTest(tamanho=nome, arquivo=arquivo):
+                    pagina = self.abrir(largura, altura, escala, secao="ajuda")
+                    self.responder_com(pagina, "GET /api/transcricao/estado", {
+                        "sessao": None, "estado": "encerrada", "processo": "0700231-15.2024.8.02.0001",
+                        "documento": "C:\\Users\\camila.albuquerque\\Documents\\Helestron\\Acervo\\Transcricoes\\" + arquivo,
+                        "falas": []})
+                    self.ir(pagina, "audiencias")
+                    nome_doc = pagina.locator(".documento-pronto .documento-nome")
+                    self.assertEqual(nome_doc.inner_text().replace("\n", ""), arquivo)
+                    self.assertEqual(nome_doc.get_attribute("title"), arquivo)
+                    cabe = nome_doc.evaluate("e => e.scrollHeight <= e.clientHeight + 1 && e.scrollWidth <= e.clientWidth + 1")
+                    self.assertTrue(cabe, "o nome do documento cortado")
+                    titulo = pagina.locator(".documento-pronto .andamento-titulo")
+                    linhas = titulo.evaluate("e => Math.round(e.getBoundingClientRect().height / parseFloat(getComputedStyle(e).lineHeight || 26))")
+                    self.assertLessEqual(linhas, 1, "“Transcrição salva” quebrado em duas linhas")
+                    self.numeros_inteiros(pagina, "documento")
+                    self.sem_problemas(pagina)
+
+    def test_lote_mostra_o_detalhe_inteiro_e_o_abrir_o_pdf(self):
+        """A tabela “Processos do lote” precisava de 922 px (Detalhe sem
+        quebra de linha): na janela mínima, o “Abrir o PDF” de cada processo
+        ficava fora da vista e o Detalhe era cortado no meio
+        (“Segredo de justiça: salvo na pasta d”)."""
+        pagina = self.abrir(secao="processos")
+        pagina.click("#area-soltar button:has-text('Escolher arquivo')")
+        pagina.wait_for_selector(".revisao")
+        pagina.click("#botao-baixar")
+        pagina.wait_for_selector(".folha-pergunta", timeout=15000)
+        pagina.fill("#campo-codigo", "482193")
+        pagina.wait_for_selector(".lote-concluido", timeout=60000)
+        # As frases do programa de verdade são mais longas que as da demonstração.
+        pagina.evaluate("""() => { const t = [...Helestron.loja.tarefas.values()].find(x => x.tipo === 'download');
+            const n = [...document.querySelectorAll('.itens-lote tbody tr')].map(tr => tr.dataset.numero);
+            Helestron.api.emitir('item', { tarefa: t.id, numero: n[0], situacao: 'OK', sigiloso: true, arquivo: 'C:\\\\Sigilosos\\\\x.pdf',
+              mensagem: 'sigiloso (na pasta dos sigilosos); guardado na pasta de sigilosos' });
+            Helestron.api.emitir('item', { tarefa: t.id, numero: n[1], situacao: 'NAO_ENCONTRADO', arquivo: '',
+              mensagem: 'não encontrado no e-SAJ nem no eProc do TJAL; confira o número' }); }""")
+        pagina.wait_for_function("() => document.querySelector('.itens-lote').textContent.includes('confira o número')")
+        medir = """() => { const t = document.querySelector('.itens-lote .tabela-rolagem'); const r = t.getBoundingClientRect();
+            const fora = [...t.querySelectorAll('td.coluna-abrir button')].filter(b => b.getBoundingClientRect().right > r.right + 1).length;
+            const cortadas = [...t.querySelectorAll('.mensagem-item')].filter(m => m.getClientRects().length)
+              .filter(m => m.scrollWidth > m.clientWidth + 1 || m.getBoundingClientRect().right > r.right + 1
+                || [...t.querySelectorAll('td.coluna-abrir')].some(c => { const a = c.getBoundingClientRect(), b = m.getBoundingClientRect();
+                     return Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1; }))
+              .map(m => m.textContent);
+            const visiveis = [...t.querySelectorAll('.mensagem-item')].filter(m => m.getClientRects().length).map(m => m.textContent);
+            return { rola: t.scrollWidth > t.clientWidth + 1, fora, botoes: t.querySelectorAll('td.coluna-abrir button').length, cortadas, visiveis }; }"""
+        for nome, largura, altura in (("1280x820", 1280, 820), ("1100x720", 1100, 720),
+                                      ("1024x768", 1024, 768), ("1366x768-zoom125", 1093, 614)):
+            with self.subTest(tamanho=nome):
+                pagina.set_viewport_size({"width": largura, "height": altura})
+                pagina.wait_for_timeout(250)
+                m = pagina.evaluate(medir)
+                self.assertGreater(m["botoes"], 0)
+                self.assertEqual((m["rola"], m["fora"], m["cortadas"]), (False, 0, []), m)
+                for frase in ("Segredo de justiça: salvo na pasta dos sigilosos.",
+                              "não encontrado no e-SAJ nem no eProc do TJAL; confira o número"):
+                    self.assertIn(frase, m["visiveis"])
+                self.numeros_inteiros(pagina, "lote")
+        pagina.locator(".itens-lote").scroll_into_view_if_needed()
+        self.capturar(pagina, "lote-detalhe-inteiro-1366x768-zoom125")
+        self.sem_problemas(pagina)
+
+    def test_resultado_de_mais_acoes_da_pauta_fica_a_vista(self):
+        """“Importar relatório” e “Capturar no portal” ficam no pé da página
+        (cartão “Mais ações”) e o resultado vai para a faixa do topo: sem
+        rolar até ela, nada mudava onde a pessoa olhava - e, com a Pauta
+        aberta, o aviso do canto não se repete."""
+        for nome, largura, altura, escala in (("1100x720", 1100, 720, 1), ("1280x820", 1280, 820, 1)):
+            for acao in ("importar", "capturar"):
+                with self.subTest(tamanho=nome, acao=acao):
+                    pagina = self.abrir(largura, altura, escala, secao="pauta")
+                    # Rolagem instantânea até o pé (a da tela, ao trazer a faixa, continua suave).
+                    pagina.evaluate("document.getElementById('conteudo').style.scrollBehavior = 'auto'")
+                    pagina.locator("#acao-" + acao).scroll_into_view_if_needed()
+                    faixa = pagina.evaluate("document.querySelector('#resultado-pauta').getBoundingClientRect().top")
+                    self.assertLess(faixa, 0, "o botão já estava perto da faixa: o teste não prova nada")
+                    pagina.click("#acao-" + acao)
+                    if acao == "capturar":
+                        pagina.click(".folha button:has-text('Abrir o portal')")
+                    pagina.wait_for_function("() => document.querySelector('#resultado-pauta').textContent.trim().length > 0",
+                                             timeout=40000)
+                    pagina.wait_for_function("""() => { const r = document.querySelector('#resultado-pauta .faixa').getBoundingClientRect();
+                        return r.top >= 0 && r.bottom <= innerHeight; }""", timeout=5000)
+                    self.sem_problemas(pagina)
+
+    def test_hoje_na_pauta_sem_fonte_nao_fala_de_fonte(self):
+        """Pauta configurada só por um relatório importado (C5), sem audiência
+        futura: o Início dizia “A fonte está cadastrada” sem fonte nenhuma."""
+        pagina = self.abrir(extra="&pauta=vazia", secao="ajuda")
+        pagina.evaluate("""async () => { const responder = Helestron.demo.responder;
+            Helestron.demo.responder = async (r, p) => { const v = await responder(r, p);
+              if (r === 'GET /api/estado') v.resumo.pauta = Object.assign({}, v.resumo.pauta,
+                { hoje: 0, semana: 0, proxima: null, ultima_sincronizacao: null, fontes: 0, configurada: true });
+              if (r === 'GET /api/pauta') { v.audiencias = []; v.resumo = Object.assign({}, v.resumo, { total: 0 }); }
+              return v; };
+            // Uma releitura já em curso (ou que acabou de terminar) devolve o
+            // resumo de antes: relê até chegar o novo.
+            for (let i = 0; i < 30; i++) {
+              const e = await Helestron.app.recarregarEstado();
+              if (e && e.resumo && e.resumo.pauta && e.resumo.pauta.configurada === true) break;
+              await new Promise((ok) => setTimeout(ok, 100));
+            } }""")
+        self.assertIs(pagina.evaluate("Helestron.loja.estado.resumo.pauta.configurada"), True)
+        self.ir(pagina, "inicio")
+        cartao = pagina.locator("section[aria-label='Hoje na pauta']").inner_text()
+        self.assertNotIn("fonte", cartao.lower())
+        self.assertNotIn("não foi sincronizada", cartao)
+        self.assertIn("Nenhuma audiência hoje", cartao)
+        self.assertIn("Nenhuma audiência designada nos próximos dias.", cartao)
+        self.sem_problemas(pagina)
+
+    def test_codex_ausente_na_demonstracao_como_no_programa(self):
+        """A demonstração lançava um erro “nao_instalado” (folha “Não deu
+        certo”, “Instale-o pelo site da OpenAI”) que o programa nunca dá: ele
+        responde {abriu: false, mensagem} com os botões que existem (C6)."""
+        pagina = self.abrir(secao="compartilhar")
+        pagina.click("#destino-codex button:has-text('Abrir no Codex')")
+        folha = pagina.locator(".folha")
+        folha.wait_for()
+        texto = folha.inner_text()
+        self.assertEqual(folha.locator(".folha-titulo").inner_text(), "Codex")
+        self.assertNotIn("Não deu certo", texto)
+        self.assertNotIn("site da OpenAI", texto)
+        for trecho in ("Conector de leitura do acervo registrado em", "“Abrir no ChatGPT Work”", "“Gerar o pacote”"):
+            self.assertIn(trecho, texto)
+        self.sem_problemas(pagina)
+
+    def test_abrir_a_pagina_que_falha_de_novo_diz_o_endereco(self):
+        """Sem navegador, a folha oferece “Abrir a página” e também “Copiar o
+        endereço”; se abrir falhar de novo, aparece a folha de erro com o
+        endereço, em vez de nada."""
+        url = "https://docs.claude.com/pt-BR/docs/claude-code/overview"
+        pagina = self.abrir(secao="compartilhar", permissoes=["clipboard-read", "clipboard-write"])
+        pagina.evaluate("""u => { const responder = Helestron.demo.responder;
+            Helestron.demo.responder = (rota, pedido) => rota === 'POST /api/compartilhar/claude-code'
+              ? Promise.resolve({ abriu: false, instalado: false, pagina_aberta: false, url: u,
+                  mensagem: 'O Claude Code não está instalado neste computador. A página oficial explica como instalá-lo (sem administrador): ' + u })
+              : rota === 'POST /api/abrir'
+                ? Promise.reject(new Helestron.api.ErroApi('navegador_nao_abriu',
+                    'Não consegui abrir o navegador. Copie o endereço e cole-o no navegador: ' + pedido.corpo.alvo, '', 409))
+                : responder(rota, pedido); }""", url)
+        pagina.click("#destino-claude-code button:has-text('Abrir no Claude Code')")
+        pagina.click(".folha button:has-text('Copiar o endereço')")
+        pagina.wait_for_selector(".aviso:has-text('Endereço copiado')")
+        self.assertEqual(pagina.evaluate("navigator.clipboard.readText()"), url)
+        pagina.click(".folha button:has-text('Abrir a página')")
+        erro = pagina.locator(".folha:has-text('Não consegui abrir o navegador')")
+        erro.wait_for()
+        self.assertIn(url, erro.inner_text())
+        self.sem_problemas(pagina)
+
+    def test_fonte_sem_endereco_salvo_sem_jargao(self):
+        """“Sem rota” é o nome interno (a URL guardada da pauta): a tela diz
+        o que isso quer dizer para quem usa."""
+        pagina = self.abrir(secao="ajuda")
+        pagina.evaluate("""() => { const responder = Helestron.demo.responder;
+            Helestron.demo.responder = async (r, p) => { const v = await responder(r, p);
+              if (r === 'GET /api/pauta/fontes') v.push({ id: 'f-esaj-tjsp', tribunal: 'TJSP', sistema: 'esaj', rotulo: 'e-SAJ · TJSP',
+                modo: 'automatico', url: '', menu: '', monitorada: false, exige_presenca: false, motivo_presenca: '',
+                ultima_sincronizacao: null, ultimo_erro: '' });
+              return v; }; }""")
+        self.ir(pagina, "ajustes")
+        pagina.click(".ajustes-indice a[data-grupo='pauta']")
+        pagina.wait_for_selector(".grupo[aria-label='Fontes da pauta'] .linha:has-text('TJSP')")
+        lista = pagina.locator(".grupo[aria-label='Fontes da pauta']").inner_text()
+        self.assertIn("Sem endereço salvo", lista)
+        self.assertNotIn("rota", lista.lower())
+        self.ir(pagina, "pauta")
+        cartao = pagina.locator(".cartao:has-text('Conferir sozinho')").inner_text()
+        self.assertIn("e-SAJ TJSP (sem endereço salvo)", cartao)
+        self.assertNotIn("rota", cartao.lower())
+        self.sem_problemas(pagina)
+
+    def test_textos_que_cortados_mudam_o_sentido(self):
+        """Em 1024 px (janela maximizada numa tela pequena), o rodapé do cartão
+        “Compartilhar com IA” mostrava só “Sigilosos nunca vão para”."""
+        for nome, largura, altura, escala in self.TAMANHOS_PEQUENOS:
+            with self.subTest(tamanho=nome):
+                pagina = self.abrir(largura, altura, escala)
+                cortadas = pagina.evaluate("""() => [...document.querySelectorAll('.cartao-funcao-meta')]
+                    .filter(e => e.scrollWidth > e.clientWidth + 1 || e.scrollHeight > e.clientHeight + 1).map(e => e.textContent.trim())""")
+                self.assertEqual(cortadas, [])
+                self.assertIn("Sigilosos nunca vão para a IA",
+                              pagina.locator(".cartao-funcao[data-funcao='compartilhar'] .cartao-funcao-meta").inner_text())
+                self.sem_problemas(pagina)
 
 if __name__ == "__main__":
     unittest.main()

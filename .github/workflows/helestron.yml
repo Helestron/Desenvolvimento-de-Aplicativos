@@ -464,10 +464,39 @@ jobs:
           $psi.RedirectStandardInput = $true
           $psi.RedirectStandardOutput = $true
           $psi.WorkingDirectory = $env:RUNNER_TEMP
+          # Sem BOM na entrada do MCP. No PowerShell 5.1 (.NET Framework), o
+          # StandardInput usa a codificacao de entrada do console e, com ela em
+          # UTF-8 (CP 65001), grava o preambulo EF BB BF logo no Start (AutoFlush):
+          # o servidor respondia -32700 (JSON invalido) ao primeiro pedido. Por
+          # isso a entrada do console passa a UTF-8 sem preambulo antes do Start.
+          $semBom = New-Object System.Text.UTF8Encoding($false)
+          try { [Console]::InputEncoding = $semBom } catch { Write-Host "A entrada do console nao mudou: $_" }
           $mcp = [System.Diagnostics.Process]::Start($psi)
-          $mcp.StandardInput.WriteLine('{"jsonrpc": "2.0", "id": 1, "method": "ping"}')
-          $mcp.StandardInput.Flush()
-          Write-Host ("MCP aberto: " + $mcp.StandardOutput.ReadLine())
+          function Ler-Mcp([string]$pedido) {
+            $leitura = $mcp.StandardOutput.ReadLineAsync()
+            if (-not $leitura.Wait(120000)) { throw "O servidor MCP nao respondeu em 2 min a: $pedido" }
+            $resposta = [string]$leitura.Result
+            if ($resposta.Length -gt 600) { Write-Host ('MCP: ' + $resposta.Substring(0, 600) + ' ...') } else { Write-Host ('MCP: ' + $resposta) }
+            return $resposta
+          }
+          # Cada pedido vai numa linha em UTF-8 sem BOM e exige "result" na resposta.
+          # ToleraBom: se a entrada do console nao mudou, o BOM ja esta na entrada;
+          # uma quebra de linha antes do pedido o deixa numa linha so dele, e a
+          # resposta a ela (-32700) e descartada.
+          function Pedir-Mcp([string]$json, [switch]$ToleraBom) {
+            $texto = $json + "`n"
+            if ($ToleraBom) { $texto = "`n" + $texto }
+            $bytes = $semBom.GetBytes($texto)
+            $mcp.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+            $mcp.StandardInput.BaseStream.Flush()
+            $resposta = Ler-Mcp $json
+            if ($ToleraBom -and $resposta -match '"code": -32700') { $resposta = Ler-Mcp $json }
+            if ($resposta -notmatch '"result"') { throw "O servidor MCP nao respondeu a $json com result: $resposta" }
+            return $resposta
+          }
+          $bomNaEntrada = $mcp.StandardInput.Encoding.GetPreamble().Length -gt 0
+          Write-Host "Entrada do MCP com BOM: $bomNaEntrada"
+          $null = Pedir-Mcp '{"jsonrpc": "2.0", "id": 1, "method": "ping"}' -ToleraBom:$bomNaEntrada
           $preso = $false
           try { $f = [IO.File]::Open((Join-Path $env:PASTA 'python312.dll'), 'Open', 'ReadWrite', 'None'); $f.Close() } catch { $preso = $true }
           Write-Host "python312.dll preso pelo MCP: $preso"
@@ -481,6 +510,13 @@ jobs:
           $antigos = Join-Path $env:PASTA '.antigos'
           if ($preso -and -not (Test-Path -LiteralPath $antigos)) { throw 'O python312.dll preso nao foi para .antigos' }
           Get-ChildItem -LiteralPath $antigos -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  .antigos: $($_.FullName)" }
+          # O conector aberto continua funcionando (MANUAL), com os arquivos dele
+          # em .antigos e os novos no lugar: a lista das ferramentas e a leitura
+          # da transcricao, que importa agora o python-docx (e o lxml) do Lib.
+          $null = Pedir-Mcp '{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}'
+          $pedido = '{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "ler_transcricao", "arguments": {"numero": "' + $env:PROCESSO + '"}}}'
+          $leitura = Pedir-Mcp $pedido
+          if ($leitura -notmatch '"isError": false') { throw "O conector aberto nao leu a transcricao depois da atualizacao: $leitura" }
           $limpeza = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -ErrorAction SilentlyContinue).HelestronLimpeza
           Write-Host "RunOnce: $limpeza"
           if ($preso -and -not $limpeza) { throw 'A limpeza de .antigos nao ficou agendada' }

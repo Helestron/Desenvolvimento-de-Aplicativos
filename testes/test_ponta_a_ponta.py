@@ -496,6 +496,10 @@ class PontaAPonta(unittest.TestCase):
         aviso = pg.locator(".folha:has-text('A gravação não começou')")
         aviso.wait_for(timeout=30000)
         self.assertIn("microfone", aviso.inner_text().lower())
+        # O mesmo erro do "Testar", com o mesmo ícone vermelho (não o azul de
+        # informação), e a frase não manda clicar em "Testar" quem clicou em Gravar.
+        self.assertIn("erro", aviso.locator(".folha-icone").get_attribute("class").split())
+        self.assertNotIn("Testar de novo", aviso.inner_text())
         self.capturar("07-audiencias-sem-microfone")
         aviso.locator("button:has-text('OK')").click()
         pg.wait_for_selector(".folha", state="detached")

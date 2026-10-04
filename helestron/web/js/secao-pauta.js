@@ -222,7 +222,8 @@
 
       // ---------------------------------------------- resumo, lista, lateral
       const faixaTarefa = el("div");
-      const faixaResultado = el("div", { id: "resultado-pauta", aria: { live: "polite" } });
+      // scroll-margin: trazida à vista (trazerAVista), a faixa não cola no topo da janela.
+      const faixaResultado = el("div", { id: "resultado-pauta", aria: { live: "polite" }, estilo: { scrollMarginTop: "18px" } });
       const chips = el("div", { classe: "chips", id: "chips-pauta" });
       const lista = el("div", { classe: "pauta-lista", id: "lista-pauta", role: "list", aria: { label: "Audiências" } }, H.ui.esqueleto(5));
       const monitor = cartao({ classe: "monitoramento" });
@@ -364,6 +365,25 @@
         const fechar = botao({ icone: "x", titulo: "Fechar este aviso", tamanho: "pequeno", tipo: "texto", acao: () => trocar(faixaResultado) });
         trocar(faixaResultado, el("div", { estilo: { marginBottom: "14px" } },
           faixa({ tipo, icone: nomeIcone, titulo, texto: corpo, acoes: (acoes || []).concat([fechar]) })));
+        trazerAVista(faixaResultado);
+      }
+
+      /**
+       * A faixa fica no topo da página, e "Importar relatório" e "Capturar no
+       * portal" (cartão "Mais ações") ficam no pé: sem rolar até ela, o
+       * resultado aparecia mil pixels acima de onde a pessoa olhava - e, com a
+       * Pauta aberta, o aviso do canto não se repete.
+       */
+      function trazerAVista(no) {
+        if (!no.isConnected || !no.firstChild) return;
+        const caixa = no.getBoundingClientRect();
+        const area = (document.getElementById("conteudo") || document.documentElement).getBoundingClientRect();
+        const topo = Math.max(0, area.top);
+        const fundo = Math.min(window.innerHeight, area.bottom || window.innerHeight);
+        if (caixa.top >= topo && caixa.bottom <= fundo) return;
+        let suave = true;
+        try { suave = !window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (_e) { /* sem matchMedia */ }
+        no.scrollIntoView({ block: "start", behavior: suave ? "smooth" : "auto" });
       }
 
       const acoesDeSaida = () => [
@@ -394,11 +414,18 @@
             fechada: "O navegador foi fechado antes de “Concluir”.",
             prazo: "O tempo da captura acabou antes de “Concluir”.",
           }[r.motivo] || "";
-          const lembrou = r.url ? " O endereço ficou lembrado: a fonte entra no monitoramento automático." : "";
+          // O status do programa ("Captura concluída: 12 audiências. O endereço
+          // ficou lembrado…") repetia o título e a frase do endereço: fica só
+          // o que o título não diz. Fonte que só entra com a pessoa à frente
+          // (certificado) não vai para o monitoramento automático.
+          const fonte = fontes.find((x) => x.id === r.fonte);
+          const lembrou = !r.url ? ""
+            : fonte && fonte.exige_presenca ? "O endereço ficou lembrado. O monitoramento não entra sozinho neste portal: sincronize aqui quando quiser."
+              : "O endereço ficou lembrado: a fonte entra no monitoramento automático.";
           mostrarResultado({
             tipo: n ? "ok" : "aviso", icone: "capturar",
             titulo: n ? `Captura concluída: ${fmt.plural(n, "audiência", "audiências")}${telas}` : "Nenhuma audiência capturada",
-            texto: [motivo, n ? (t.status || "") + lembrou : "Na barra do Helestron, no topo do portal, clique em “Capturar esta tela” com a pauta à vista e, no fim, em “Concluir”."].filter(Boolean).join(" "),
+            texto: [motivo, n ? lembrou : "Na barra do Helestron, no topo do portal, clique em “Capturar esta tela” com a pauta à vista e, no fim, em “Concluir”."].filter(Boolean).join(" "),
           });
           return;
         }
@@ -562,7 +589,7 @@
             el("span", { classe: "ajuda-campo", estilo: { margin: "0" } }, "Última sincronização: ", el("strong", { texto: ultima ? fmt.quando(ultima) : "nunca" })),
             m.ativo && m.proxima ? el("span", { classe: "ajuda-campo", estilo: { margin: "0" } }, "Próxima: ", el("strong", { texto: fmt.quando(m.proxima) })) : null,
             el("span", { classe: "ajuda-campo", estilo: { margin: "0" } },
-              fontes.length ? fmt.plural(fontes.length, "fonte", "fontes") + ": " + fontes.map((x) => `${nomeSistema(x.sistema)} ${x.tribunal}${x.monitorada ? "" : x.exige_presenca ? " (só com você)" : " (sem rota)"}`).join(", ") + " · " : "Nenhuma fonte ainda · ",
+              fontes.length ? fmt.plural(fontes.length, "fonte", "fontes") + ": " + fontes.map((x) => `${nomeSistema(x.sistema)} ${x.tribunal}${x.monitorada ? "" : x.exige_presenca ? " (só com você)" : " (sem endereço salvo)"}`).join(", ") + " · " : "Nenhuma fonte ainda · ",
               el("a", { href: "#/ajustes/pauta", texto: "gerenciar" })),
             m.ativo && fontes.length && !fontes.some((x) => x.monitorada) ? avisoSemMonitoradas(fontes) : null));
       }

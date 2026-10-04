@@ -16,7 +16,11 @@ guardada nunca entra sozinho: o portal só abre com a pessoa à frente, e
 nenhum código chega a ser pedido. Essas fontes ficam de fora da
 sincronização automática (nada de tarefa que falha e de aviso "não deu
 certo" a cada ciclo); a pendência diz o que de fato acontece e o que fazer
-(MENSAGEM_PRESENCA), uma vez por execução do programa.
+(MENSAGEM_PRESENCA), uma vez por execução do programa. Sem nenhuma fonte que
+entre sozinha, o monitor também não anuncia a "Próxima" sincronização
+(proxima = None, como ServicoPauta.monitoramento()): a tela Pauta mostraria
+uma conferência que não vai acontecer. O que cada fonte faz vem da API
+pública da pauta: ServicoPauta.fontes() ('exige_presenca', 'monitorada').
 
 Se o navegador dos portais estiver ocupado (um download em andamento), o
 monitor tenta de novo em ADIAR_S - não disputa o perfil do navegador.
@@ -156,21 +160,19 @@ class MonitorPauta:
         intervalo = timedelta(hours=horas)
         ultima = servico.ultima_sincronizacao()
         agora = agora or datetime.now(ultima.tzinfo if ultima is not None else None)
+        automaticas, presenciais = self.separar_fontes(servico)
         if ultima is not None and agora - ultima < intervalo:
-            self.proxima = ultima + intervalo
-            return max(1.0, (self.proxima - agora).total_seconds())
-        fontes = [f for f in (servico.fontes() or [])
-                  if f.get("url") or f.get("rota") or f.get("url_lembrada")]
-        if not fontes:
-            self.proxima = agora + intervalo
-            return intervalo.total_seconds()
-        automaticas, presenciais = [], []
-        for f in fontes:
-            (presenciais if self.exige_presenca(servico, f) else automaticas).append(f)
+            devida = ultima + intervalo
+            # Sem fonte que entre sozinha, não há "próxima" a anunciar (quem
+            # entra por certificado e sincronizou à mão, por exemplo).
+            self.proxima = devida if automaticas else None
+            return max(1.0, (devida - agora).total_seconds())
         if not automaticas:
-            # Nada entra sozinho: sem tarefa (que só falharia), só a pendência.
-            self._avisar_presenca(presenciais)
-            self.proxima = agora + intervalo
+            # Nada entra sozinho: sem tarefa (que só falharia) e sem "próxima"
+            # sincronização; só a pendência. O monitor reavalia no intervalo.
+            self.proxima = None
+            if presenciais:
+                self._avisar_presenca(presenciais)
             return intervalo.total_seconds()
         if not self.sincronizar(servico, [str(f.get("id")) for f in automaticas if f.get("id")],
                                 presenciais):
@@ -179,26 +181,34 @@ class MonitorPauta:
         self.proxima = datetime.now(agora.tzinfo) + intervalo
         return intervalo.total_seconds()
 
+    def separar_fontes(self, servico) -> tuple[list[dict], list[dict]]:
+        """(automáticas, presenciais): das fontes com a rota da pauta, as que
+        o monitor sincroniza sozinho ('monitorada', quando ServicoPauta.fontes()
+        a informa) e as que só entram com a pessoa à frente."""
+        automaticas, presenciais = [], []
+        for fonte in servico.fontes() or []:
+            if not (fonte.get("url") or fonte.get("rota") or fonte.get("url_lembrada")):
+                continue
+            if self.exige_presenca(servico, fonte):
+                presenciais.append(fonte)
+            elif fonte.get("monitorada", True):
+                automaticas.append(fonte)
+        return automaticas, presenciais
+
     @staticmethod
     def exige_presenca(servico, fonte: dict) -> bool:
         """O login desta fonte só entra com a pessoa à frente? (Certificado,
-        entrada manual ou senha não guardada: a regra de ServicoPauta._acesso.)
-        Na dúvida, False - a sincronização decide."""
+        entrada manual ou senha não guardada.) Só pela API pública da pauta:
+        o 'exige_presenca' que ServicoPauta.fontes() põe em cada fonte ou, sem
+        ele, ServicoPauta.exige_presenca(fonte). Na dúvida, False — a
+        sincronização decide."""
+        if "exige_presenca" in fonte:
+            return bool(fonte.get("exige_presenca"))
         publica = getattr(servico, "exige_presenca", None)
+        if not callable(publica):
+            return False
         try:
-            if callable(publica):
-                return bool(publica(fonte))
-            tribunal = servico._tribunal(str(fonte.get("tribunal") or ""),
-                                         str(fonte.get("sistema") or ""))
-            opcoes = servico._opcoes(tribunal)
-            if opcoes.modo_login(tribunal.sistema) in ("manual", "certificado"):
-                return True
-            try:
-                # sem ninguém à frente, só vale a senha GUARDADA (não a da sessão)
-                credenciais = servico._credenciais(tribunal, opcoes, sessao=False)
-            except TypeError:
-                credenciais = servico._credenciais(tribunal, opcoes)
-            return credenciais is None
+            return bool(publica(fonte))
         except Exception as erro:
             log.debug("não sei se a fonte %s entra sozinha: %s", fonte.get("id"), erro)
             return False

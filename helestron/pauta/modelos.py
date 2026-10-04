@@ -367,6 +367,37 @@ def chave_processo(processo: str) -> str:
         return ""
 
 
+def parear_mesmo_horario(uns: list[Audiencia], outros: list[Audiencia],
+                         reserva: list[Audiencia] | None = None
+                         ) -> list[tuple[Audiencia, Audiencia]]:
+    """Os pares (de 'uns', de 'outros') que são a mesma audiência, entre registros
+    do MESMO processo, data e hora vindos de dois lugares (o portal e o
+    relatório importado).
+
+    Um a um: primeiro o do mesmo tipo (havendo mais de um, o da mesma situação);
+    o que sobrar só se pareia se sobrar um de cada lado - com duas audiências do
+    processo no mesmo horário (uma Conciliação cancelada e uma Instrução
+    designada), cada uma fica com a sua. 'reserva': os de 'uns' que só valem
+    para o mesmo tipo (já pareados antes, numa outra importação ou
+    sincronização), e não para a sobra.
+    """
+    livres = list(outros)
+    pares: list[tuple[Audiencia, Audiencia]] = []
+    sobra: list[Audiencia] = []
+    for um in uns:
+        mesmo_tipo = [o for o in livres if o.tipo == um.tipo]
+        if not mesmo_tipo:
+            if not any(um is x for x in (reserva or ())):
+                sobra.append(um)
+            continue
+        par = next((o for o in mesmo_tipo if o.situacao == um.situacao), mesmo_tipo[0])
+        livres = [o for o in livres if o is not par]
+        pares.append((um, par))
+    if len(sobra) == 1 and len(livres) == 1:
+        pares.append((sobra[0], livres[0]))
+    return pares
+
+
 # ================================================================== montagem
 def nova(*, sistema: str, tribunal: str, data_: date, processo: str = "", hora: str = "",
          tipo_original: str = "", situacao_original: str = "", regras=None,
