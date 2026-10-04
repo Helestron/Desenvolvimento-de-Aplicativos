@@ -1,12 +1,36 @@
-# Restos do Python
-__pycache__/
-*.pyc
-*.pyo
+# ============================================================================
+#  O que não entra no controle de versão
+#
+#  Caminhos de dados começam com "/": sem a barra, o padrão vale em qualquer
+#  nível ("Logs/" pegaria também uma pasta de código), e o Windows ainda
+#  ignora maiúsculas, o que piora.
+# ============================================================================
 
-# Dados e runtime do Assessor Integrado (nunca vão para o repositório)
-/AssessorIntegrado/runtime/
-/AssessorIntegrado/Acervo/
-/AssessorIntegrado/Sigilosos/
-/AssessorIntegrado/Logs/
-/AssessorIntegrado/config.ini
-/AssessorIntegrado/enderecos-locais.json
+# Construção do instalador (construir/construir.py): o instalador gerado, a
+# pasta de trabalho (o Python do Windows montado) e os downloads reaproveitados
+/dist/
+/construir/obra/
+/construir/cache/
+
+# Dados de uso (processos, sigilosos, transcrições, registros, configuração):
+# moram em Documentos\Helestron e %LOCALAPPDATA%\Helestron, nunca aqui; se um
+# teste ou uma execução do repositório deixar algum, ele não sobe
+/Acervo/
+/Sigilosos/
+/Pauta/
+/Logs/
+/config.ini
+/credenciais.json
+/pauta.sqlite3
+/capturas-interface/
+
+# Restos do Python e das gravações atômicas
+__pycache__/
+*.py[cod]
+*.parcial
+*.part
+*.tmp
+~$*
+/.pytest_cache/
+/.venv/
+/venv/

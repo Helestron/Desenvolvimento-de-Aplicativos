@@ -15,6 +15,12 @@ NO_WINDOWS = sys.platform == "win32"
 SEM_JANELA = 0x08000000 if NO_WINDOWS else 0          # CREATE_NO_WINDOW
 NOVO_CONSOLE = 0x00000010 if NO_WINDOWS else 0        # CREATE_NEW_CONSOLE
 
+# O que fazer quando falta uma parte do programa (biblioteca, módulo): a
+# mesma frase em todo o motor. O instalador conserta a instalação por cima,
+# sem apagar configuração, senhas nem documentos.
+REINSTALAR = ("Instale o Helestron de novo com o Helestron-Setup: ele conserta a instalação "
+              "sem apagar os seus dados.")
+
 _PROIBIDOS = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 
 
@@ -85,7 +91,7 @@ def ambiente_sem_chaves() -> dict[str, str]:
     return env
 
 
-def id_do_aplicativo(nome: str = "AssessorIntegrado.App") -> None:
+def id_do_aplicativo(nome: str = "Helestron.App") -> None:
     """Ícone próprio na barra de tarefas (sem isso, aparece o do Python)."""
     if not NO_WINDOWS:
         return

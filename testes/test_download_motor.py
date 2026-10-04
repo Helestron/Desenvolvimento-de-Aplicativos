@@ -1156,15 +1156,48 @@ class TestCatalogoDeTribunais(apoio.PastaTemporaria):
 
 
 class TestRotulosCitados(unittest.TestCase):
-    """As mensagens dos portais citam rótulos que existem na tela."""
+    """As mensagens do motor citam rótulos que existem na interface: na tela
+    (helestron/web) ou nos campos de Ajustes que o servidor descreve
+    (helestron/servidor/esquema.py). Um rótulo que mude lá e não aqui faz o
+    usuário procurar uma opção que não existe."""
+
+    def _textos_da_interface(self) -> str:
+        pacote = Path(motor.__file__).resolve().parents[1]
+        web = pacote / "web"
+        arquivos = (sorted(web.rglob("*.js")) + sorted(web.rglob("*.html"))) if web.is_dir() else []
+        if not arquivos:
+            self.skipTest("a interface (helestron/web) ainda não existe")
+        textos = [a.read_text(encoding="utf-8") for a in arquivos]
+        esquema = pacote / "servidor" / "esquema.py"
+        if esquema.is_file():
+            textos.append(esquema.read_text(encoding="utf-8"))
+        return "\n".join(textos)
 
     def test_rotulos(self):
-        from pathlib import Path as P
-        raiz = P(motor.__file__).resolve().parents[1] / "interface"
-        baixar = (raiz / "pagina_baixar.py").read_text(encoding="utf-8")
-        config = (raiz / "pagina_config.py").read_text(encoding="utf-8")
-        self.assertIn(f'"{modelos.MOSTRAR_NAVEGADOR}"', baixar)
-        self.assertIn('"Tentar de novo', baixar)
-        self.assertIn('"Esperar o login até (min)"', config)
-        self.assertIn("'Esperar o login até (min)'", modelos.CAMPO_PRAZO_LOGIN)
-        self.assertIn('("Acessos", self._aba_acessos)', config)
+        texto = self._textos_da_interface()
+        for rotulo in modelos.ROTULOS_CITADOS:
+            with self.subTest(rotulo=rotulo):
+                self.assertIn(rotulo, texto)
+
+    def test_mensagens_montadas_com_os_rotulos(self):
+        self.assertIn(f"“{modelos.PRAZO_LOGIN}”", modelos.CAMPO_PRAZO_LOGIN)
+        self.assertTrue(modelos.CAMPO_PRAZO_LOGIN.startswith(modelos.AJUSTES_ACESSOS))
+        self.assertIn(modelos.AJUSTES_ACESSOS, modelos.ONDE_CADASTRAR_ACESSO)
+        self.assertEqual(modelos.AJUSTES_ACESSOS, "Ajustes › Acessos aos portais")
+        self.assertIn("enderecos-locais.json", modelos.ONDE_CORRIGIR_ENDERECO)
+
+    def test_nenhuma_mensagem_cita_a_tela_ou_o_instalador_antigos(self):
+        # A versão anterior tinha a tela "Configurações" (Tk), a aba "Acesso"
+        # da tela "Baixar processos" e o INSTALAR.bat: nada disso existe mais.
+        pacote = Path(motor.__file__).resolve().parents[1]
+        antigos = ("Configurações >", "INSTALAR.bat", "'Baixar processos'", "C:\\AssessorIntegrado",
+                   "Preparar arquivos para IA", "Instalar o componente")
+        for pasta in ("download", "transcricao", "compartilhar", "nucleo"):
+            for arquivo in sorted((pacote / pasta).glob("*.py")):
+                texto = arquivo.read_text(encoding="utf-8")
+                for antigo in antigos:
+                    with self.subTest(arquivo=arquivo.name, antigo=antigo):
+                        self.assertFalse(antigo in texto, f"{pasta}/{arquivo.name} cita “{antigo}”")
+        texto = (pacote / "verificar.py").read_text(encoding="utf-8")
+        for antigo in antigos:
+            self.assertFalse(antigo in texto, f"verificar.py cita “{antigo}”")

@@ -4,9 +4,12 @@ Porte do navegador do Assessor SAJ (app/esaj/navegador.py), sem nada que
 seja do e-SAJ: o login de cada portal mora no módulo do portal. O que fica
 aqui é o que vale para qualquer tribunal:
 
-* abrir o navegador certo. "auto" usa o Chrome instalado; sem ele, o Edge
-  (presente em todo Windows 10/11 - dispensa baixar os ~150 MB do Chromium
-  na instalação); só na falta dos dois, o Chromium do próprio programa;
+* abrir o navegador certo. "auto" usa o Chrome instalado; sem ele, o Edge,
+  presente em todo Windows 10/11. O programa NÃO baixa navegador nenhum (a
+  versão anterior baixava ~150 MB de Chromium na instalação, e a rede do
+  tribunal costumava barrar); o Chromium do Playwright só entra como
+  reserva, se já estiver neste computador (PLAYWRIGHT_BROWSERS_PATH ou a
+  pasta padrão ms-playwright);
 * abrir invisível e, se o modo invisível falhar, com a janela fora da tela
   (mesmo efeito para quem usa) - técnica herdada que resolveu máquinas em
   que o headless não sobe;
@@ -40,8 +43,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from ..nucleo import caminhos
-from .modelos import PortalIndisponivel
+from ..nucleo import caminhos, sistema
+from .modelos import AJUSTES_ACESSOS, ENTRAR_MANUALMENTE, PortalIndisponivel
 
 log = logging.getLogger("download.navegador")
 
@@ -165,15 +168,54 @@ def edge_instalado() -> str:
     return shutil.which("microsoft-edge") or shutil.which("microsoft-edge-stable") or ""
 
 
+def _pastas_do_playwright() -> list[Path]:
+    """Onde o Playwright procura os navegadores dele, nesta ordem."""
+    pastas = []
+    proprio = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
+    if proprio and proprio != "0":
+        pastas.append(Path(proprio))
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            pastas.append(Path(local) / "ms-playwright")
+    elif sys.platform == "darwin":  # pragma: no cover
+        pastas.append(Path.home() / "Library" / "Caches" / "ms-playwright")
+    else:
+        pastas.append(Path.home() / ".cache" / "ms-playwright")
+    return pastas
+
+
+def chromium_reserva() -> str:
+    """A pasta do Chromium do Playwright, se já houver um neste computador
+    (o programa não o baixa); '' se não houver."""
+    for pasta in _pastas_do_playwright():
+        try:
+            achados = sorted(p for p in pasta.glob("chromium-*") if p.is_dir())
+        except OSError:
+            achados = []
+        if achados:
+            return str(achados[-1])
+    return ""
+
+
+SEM_NAVEGADOR = ("nem o Google Chrome nem o Microsoft Edge foram encontrados neste "
+                 "computador. O Edge vem com o Windows 10 e 11: se ele foi removido, "
+                 "instale-o de novo (ou instale o Chrome) e tente outra vez.")
+
+
 def escolher_canais(preferencia: str = "auto", certificado: bool = False,
-                    chrome: str | None = None, edge: str | None = None) -> list[str | None]:
-    """A ordem em que os navegadores serão tentados. None = Chromium do programa.
+                    chrome: str | None = None, edge: str | None = None,
+                    chromium: str | None = None) -> list[str | None]:
+    """A ordem em que os navegadores serão tentados. None = o Chromium do
+    Playwright, que só entra (por último) se já estiver neste computador.
 
     Uma preferência que não está instalada não derruba nada: o programa
-    segue para o próximo da fila e registra o porquê.
+    segue para o próximo da fila e registra o porquê. Sem navegador nenhum,
+    PortalIndisponivel com o que fazer.
     """
     tem_chrome = bool(chrome if chrome is not None else chrome_instalado())
     tem_edge = bool(edge if edge is not None else edge_instalado())
+    tem_chromium = bool(chromium if chromium is not None else chromium_reserva())
     if certificado:
         # O Web Signer mora no perfil do Chrome do usuário: é de lá que se copia.
         if not tem_chrome:
@@ -181,28 +223,33 @@ def escolher_canais(preferencia: str = "auto", certificado: bool = False,
                 "o login por certificado digital precisa do Google Chrome com a "
                 "extensão Web Signer, e o Chrome não foi encontrado neste "
                 "computador. Instale o Chrome (e o Web Signer), ou escolha "
-                "'Entrar manualmente' na forma de login.")
+                f"“{ENTRAR_MANUALMENTE}” em {AJUSTES_ACESSOS}.")
         return ["chrome"]
     pref = (preferencia or "auto").lower()
+    if pref not in ("auto", "chrome", "msedge", "chromium"):
+        pref = "auto"
     ordem: list[str | None] = []
-    if pref == "chromium":
-        return [None]
+    if pref == "chromium" and tem_chromium:
+        ordem.append(None)
     if pref == "msedge" and tem_edge:
         ordem.append("msedge")
-    if pref in ("auto", "chrome", "msedge") and tem_chrome:
+    if tem_chrome:
         ordem.append("chrome")
-    if pref in ("auto", "chrome", "msedge") and tem_edge and "msedge" not in ordem:
+    if tem_edge and "msedge" not in ordem:
         ordem.append("msedge")
-    if pref in ("chrome", "msedge") and pref not in ordem:
+    if pref != "auto" and (None if pref == "chromium" else pref) not in ordem:
         log.warning("o navegador escolhido (%s) não foi encontrado; uso o próximo disponível.", pref)
-    ordem.append(None)
+    if tem_chromium and None not in ordem:
+        ordem.append(None)
+    if not ordem:
+        raise PortalIndisponivel(SEM_NAVEGADOR)
     return ordem
 
 
 def nome_do_canal(canal: str | None) -> str:
     """Nome do navegador para mensagens ao usuário."""
     return {"chrome": "Google Chrome", "msedge": "Microsoft Edge"}.get(
-        canal or "", "Chromium (navegador do programa)")
+        canal or "", "Chromium (reserva do Playwright)")
 
 
 # ------------------------------------------------------------- certificado
@@ -348,7 +395,7 @@ class Navegador:
         self.certificado = certificado
         self.salvar_diagnostico = salvar_diagnostico
         # Caminho de um navegador Chromium qualquer (Chrome portátil, por
-        # exemplo): usado no lugar do Chromium do programa.
+        # exemplo): usado no lugar do Chrome e do Edge.
         self.executavel = Path(executavel) if executavel else None
         self.canal: str | None = None
         self._pw = None
@@ -404,17 +451,16 @@ class Navegador:
 
     # ---------------------------------------------------------------- ciclo
     def abrir(self) -> "Navegador":
-        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(caminhos.NAVEGADORES))
-        if self.executavel is not None and not self.certificado:
-            canais: list[str | None] = [None]
-        else:
-            canais = escolher_canais(self.preferencia, self.certificado)
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as erro:
             raise PortalIndisponivel(
                 "o componente de navegação automática (Playwright) não está "
-                "instalado. Rode o INSTALAR.bat de novo.") from erro
+                f"instalado. {sistema.REINSTALAR}") from erro
+        if self.executavel is not None and not self.certificado:
+            canais: list[str | None] = [None]
+        else:
+            canais = escolher_canais(self.preferencia, self.certificado)
 
         try:
             user_data = preparar_perfil_certificado(self.perfil) if self.certificado else None
@@ -433,7 +479,7 @@ class Navegador:
         except Exception as erro:
             raise PortalIndisponivel(
                 f"não consegui iniciar o navegador automático ({explicar_erro(str(erro))}). "
-                "Rode o INSTALAR.bat de novo.") from erro
+                f"{sistema.REINSTALAR}") from erro
 
         falhas: list[str] = []
         for canal in canais:
@@ -444,9 +490,9 @@ class Navegador:
             self.fechar()
             detalhe = "; ".join(falhas[-3:])
             raise PortalIndisponivel(
-                "não consegui abrir nenhum navegador (Chrome, Edge ou o do programa). "
-                "Rode o INSTALAR.bat de novo; se persistir, reinicie o computador. "
-                f"Detalhe técnico: {detalhe}")
+                "não consegui abrir nenhum navegador (nem o Chrome nem o Edge). Feche as "
+                "janelas do navegador que tenham travado e tente de novo; se persistir, "
+                f"reinicie o computador. Detalhe técnico: {detalhe}")
 
         if len(canais) > 1 and self.canal != canais[0]:
             log.info("  usando o %s.", self.nome_navegador)
@@ -515,8 +561,8 @@ class Navegador:
                 resumo = msg.strip().splitlines()[0][:160] if msg.strip() else type(erro).__name__
                 falhas.append(f"{nome_do_canal(canal)} ({modo}): {resumo}")
                 if canal is None and "executable doesn't exist" in msg.lower():
-                    falhas[-1] = (f"{nome_do_canal(canal)}: não instalado "
-                                  "(o INSTALAR.bat instala quando não há Chrome nem Edge)")
+                    # A reserva de outra versão do Playwright: não serve.
+                    falhas[-1] = f"{nome_do_canal(canal)}: versão incompatível"
                     return False
                 log.warning("  o %s não abriu (%s): %s", nome_do_canal(canal), modo, resumo)
         return False

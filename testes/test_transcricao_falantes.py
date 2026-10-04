@@ -83,11 +83,16 @@ class TestAtribuir(unittest.TestCase):
 class TestInstalar(unittest.TestCase):
     def setUp(self):
         self.tmp = PastaTemporaria()
-        self.patch = mock.patch.object(falantes, "PASTA", self.tmp.raiz / "falantes")
-        self.patch.start()
+        self.patches = [
+            mock.patch.object(falantes, "PASTA", self.tmp.raiz / "falantes"),
+            mock.patch.object(falantes, "PASTA_EMBUTIDA", self.tmp.raiz / "programa" / "falantes"),
+        ]
+        for p in self.patches:
+            p.start()
 
     def tearDown(self):
-        self.patch.stop()
+        for p in self.patches:
+            p.stop()
         self.tmp.apagar()
 
     def test_sem_modelos_nao_esta_disponivel(self):
@@ -96,14 +101,46 @@ class TestInstalar(unittest.TestCase):
         if falantes.biblioteca_presente():
             self.assertIn("faltam os modelos", falantes.situacao())
         else:
-            self.assertIn("não instalada", falantes.situacao())
+            self.assertIn("indisponível", falantes.situacao())
+
+    def test_modelos_embutidos_valem_primeiro_e_nada_e_baixado(self):
+        # Os modelos que vieram no instalador (pasta do programa) bastam: o
+        # componente está completo sem rede, e "instalar" não baixa nada.
+        embutida = falantes.PASTA_EMBUTIDA
+        (embutida / falantes.SUBPASTA_SEGMENTACAO).mkdir(parents=True)
+        (embutida / falantes.SUBPASTA_SEGMENTACAO / falantes.ARQUIVO_SEGMENTACAO).write_bytes(b"m")
+        (embutida / falantes.ARQUIVO_EMBEDDING).write_bytes(b"e")
+        self.assertEqual(falantes.modelo_embedding(), embutida / falantes.ARQUIVO_EMBEDDING)
+        self.assertTrue(falantes.modelo_segmentacao().is_relative_to(embutida))
+        self.assertTrue(falantes.modelos_presentes())
+        with mock.patch.object(falantes, "biblioteca_presente", return_value=True), \
+                mock.patch.object(falantes, "_baixar") as baixar:
+            falantes.instalar()
+        baixar.assert_not_called()
+        self.assertFalse(falantes.PASTA.exists())
+        # remover a instalação apaga só o que foi baixado, nunca o do programa
+        falantes.remover_instalacao()
+        self.assertTrue(falantes.modelos_presentes())
+
+    def test_instalar_nunca_usa_pip(self):
+        # A biblioteca vem no instalador; sem ela, a saída é reinstalar.
+        with mock.patch.object(falantes, "biblioteca_presente", return_value=False), \
+                mock.patch.object(falantes, "_baixar") as baixar:
+            with self.assertRaises(falantes.ComponenteAusente) as ctx:
+                falantes.instalar()
+        baixar.assert_not_called()
+        self.assertIn("Helestron-Setup", str(ctx.exception))
+        self.assertFalse(hasattr(falantes, "_instalar_biblioteca"))
+        codigo = Path(falantes.__file__).read_text(encoding="utf-8").split('"""', 2)[2]
+        self.assertNotRegex(codigo, r"\bpip\b")       # fora da explicação do módulo
 
     @unittest.skipUnless(PACOTE.exists() and EMBEDDING.exists(), "modelos de validação ausentes")
     def test_instalar_baixa_confere_e_extrai(self):
         progresso = []
         with mock.patch.object(falantes, "URL_SEGMENTACAO", PACOTE.as_uri()), \
-                mock.patch.object(falantes, "URL_EMBEDDING", EMBEDDING.as_uri()):
-            falantes.instalar(lambda f, t: progresso.append((f, t)), pip=False)
+                mock.patch.object(falantes, "URL_EMBEDDING", EMBEDDING.as_uri()), \
+                mock.patch.object(falantes, "biblioteca_presente", return_value=True):
+            falantes.instalar(lambda f, t: progresso.append((f, t)))
             self.assertTrue(falantes.modelos_presentes())
             self.assertEqual(progresso[-1][0], 1.0)
             pasta = falantes.PASTA
@@ -115,7 +152,7 @@ class TestInstalar(unittest.TestCase):
             self.assertFalse((pasta / PACOTE.name).exists())
             # idempotente: de novo, nada é baixado
             with mock.patch.object(falantes, "_baixar") as baixar:
-                falantes.instalar(pip=False)
+                falantes.instalar()
             baixar.assert_not_called()
 
     def test_download_que_nao_confere_e_descartado(self):
@@ -148,7 +185,8 @@ class TestInstalar(unittest.TestCase):
 
         with self.assertRaises(falantes.ComponenteAusente) as ctx:
             falantes.diarizar(np.zeros(16000, dtype=np.float32))
-        self.assertIn("Instalar o componente", str(ctx.exception))
+        self.assertIn("sem a separação automática das vozes", str(ctx.exception))
+        self.assertIn("Helestron-Setup", str(ctx.exception))
 
 
 @unittest.skipUnless(PACOTE.exists() and EMBEDDING.exists() and QUATRO_VOZES.exists()
@@ -159,12 +197,16 @@ class TestDiarizacaoReal(unittest.TestCase):
         cls.tmp = PastaTemporaria()
         cls.patch = mock.patch.object(falantes, "PASTA", cls.tmp.raiz / "falantes")
         cls.patch.start()
+        cls.patch_embutida = mock.patch.object(falantes, "PASTA_EMBUTIDA",
+                                               cls.tmp.raiz / "programa" / "falantes")
+        cls.patch_embutida.start()
         falantes.PASTA.mkdir(parents=True)
         falantes._extrair_segmentacao(PACOTE, falantes.PASTA)
         shutil.copy(EMBEDDING, falantes.modelo_embedding())
 
     @classmethod
     def tearDownClass(cls):
+        cls.patch_embutida.stop()
         cls.patch.stop()
         cls.tmp.apagar()
 

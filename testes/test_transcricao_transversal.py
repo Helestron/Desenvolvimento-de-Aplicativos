@@ -1,11 +1,12 @@
 """Regressões da revisão transversal da transcrição.
 
 Cada teste prende um defeito que só aparecia cruzando módulos: o aviso do
-documento que afirmava uma marcação de falantes inexistente, o pip do
-componente de falantes herdando PYTHONHOME e pip.ini do usuário, a
-transcrição de processo em segredo de justiça gravada no acervo
-compartilhado com a IA e a nuvem, e uma segunda janela do programa
-oferecendo "recuperar" a audiência que a primeira está gravando.
+documento que afirmava uma marcação de falantes inexistente, o componente
+de falantes chamando o pip em tempo de execução (que herdava PYTHONHOME e
+pip.ini do usuário), a transcrição de processo em segredo de justiça
+gravada no acervo compartilhado com a IA e a nuvem, e uma segunda janela
+do programa oferecendo "recuperar" a audiência que a primeira está
+gravando.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -83,43 +85,43 @@ class TestAvisoDoDocumento(unittest.TestCase):
 
 # ================================================================= falantes
 class TestComponenteDeFalantes(unittest.TestCase):
-    def test_mensagens_citam_o_botao_como_ele_se_chama(self):
-        with mock.patch.object(falantes, "PASTA", Path("/caminho/que/nao/existe")):
+    def test_mensagens_dizem_o_que_fazer(self):
+        # Não há botão de "instalar o componente" na interface: a biblioteca e
+        # os modelos de voz vêm no instalador, e a mensagem diz isso.
+        with mock.patch.object(falantes, "PASTA", Path("/caminho/que/nao/existe")), \
+                mock.patch.object(falantes, "PASTA_EMBUTIDA", Path("/outro/que/nao/existe")):
             with self.assertRaises(falantes.ComponenteAusente) as ctx:
                 falantes.diarizar(np.zeros(16000, dtype=np.float32))
-        self.assertIn("Configurações > Transcrição > Instalar o componente", str(ctx.exception))
+        self.assertIn("Instale o Helestron de novo com o Helestron-Setup", str(ctx.exception))
+        self.assertNotIn("Configurações", str(ctx.exception))
 
     def test_ajuda_da_cli_usa_o_tamanho_unico(self):
         saida = io.StringIO()
         with contextlib.redirect_stdout(saida), contextlib.redirect_stderr(io.StringIO()):
             cli.main(["falantes", "--help"])
         self.assertIn(f"cerca de {falantes.TAMANHO_MB} MB", saida.getvalue())
-        self.assertNotIn("47 MB", saida.getvalue())
+        self.assertNotIn("60 MB", saida.getvalue())     # o número antigo (com a biblioteca)
 
-    def test_pip_nao_herda_pythonhome_nem_pip_ini_do_usuario(self):
-        chamadas = []
-
-        def rodar(cmd, **kw):
-            chamadas.append((cmd, kw["env"]))
-            return mock.Mock(returncode=0, stdout="", stderr="")
-
+    def test_componente_nunca_chama_o_pip(self):
+        # Regressão da versão anterior: o pip rodava em tempo de execução e
+        # herdava PYTHONHOME e pip.ini do usuário. Agora a biblioteca vem no
+        # instalador e completar o componente só baixa os modelos de voz.
         sujo = {"PYTHONHOME": r"C:\ArcGIS\Pro\bin\Python", "PYTHONPATH": r"C:\outro",
-                "PIP_USER": "1", "PIP_TARGET": r"C:\alvo", "PIP_PREFIX": r"C:\prefixo",
-                "PIP_CONFIG_FILE": r"C:\Users\x\pip.ini", "VIRTUAL_ENV": r"C:\venv"}
-        with mock.patch.dict(os.environ, sujo), \
-                mock.patch.object(falantes.subprocess, "run", side_effect=rodar):
-            falantes._instalar_biblioteca(lambda f, t: None)
-            # o ambiente do próprio programa não muda
+                "PIP_USER": "1", "PIP_CONFIG_FILE": r"C:\Users\x\pip.ini"}
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.dict(os.environ, sujo), \
+                mock.patch.object(falantes, "PASTA", Path(tmp) / "falantes"), \
+                mock.patch.object(falantes, "PASTA_EMBUTIDA", Path(tmp) / "programa"), \
+                mock.patch.object(falantes, "biblioteca_presente", return_value=True), \
+                mock.patch.object(falantes, "_baixar") as baixar, \
+                mock.patch.object(falantes, "_extrair_segmentacao"), \
+                mock.patch("subprocess.run") as rodar, mock.patch("subprocess.Popen") as abrir:
+            falantes.instalar()
             self.assertEqual(os.environ.get("PYTHONHOME"), sujo["PYTHONHOME"])
-        (cmd, env), = chamadas
-        for variavel in ("PYTHONHOME", "PYTHONPATH", "PIP_USER", "PIP_TARGET", "PIP_PREFIX",
-                         "VIRTUAL_ENV"):
-            self.assertNotIn(variavel, env)
-        self.assertEqual(env["PIP_CONFIG_FILE"], os.devnull)
-        self.assertEqual(env["PYTHONNOUSERSITE"], "1")
-        self.assertEqual(env["PYTHONIOENCODING"], "utf-8")
-        self.assertEqual(cmd[1:4], ["-s", "-m", "pip"])
-        self.assertIn("--require-hashes", cmd)
+        rodar.assert_not_called()
+        abrir.assert_not_called()
+        self.assertEqual([Path(c.args[0]).name for c in baixar.call_args_list],
+                         [Path(falantes.URL_SEGMENTACAO).name, Path(falantes.URL_EMBEDDING).name])
 
 
 # ================================================================== sigilo

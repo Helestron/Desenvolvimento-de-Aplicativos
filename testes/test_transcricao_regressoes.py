@@ -201,6 +201,8 @@ class TestModelosConcorrencia(unittest.TestCase):
         self.tmp = PastaTemporaria()
         self.patch = mock.patch.object(modelos, "PASTA", self.tmp.raiz / "modelos")
         self.patch.start()
+        self.patch_embutida = mock.patch.object(modelos, "PASTA_EMBUTIDA", self.tmp.raiz / "programa")
+        self.patch_embutida.start()
         modelos.descarregar()
         self.liberar = threading.Event()
         self.chamadas = []
@@ -229,6 +231,7 @@ class TestModelosConcorrencia(unittest.TestCase):
         self.ambiente.stop()
         self.modulos.stop()
         modelos.descarregar()
+        self.patch_embutida.stop()
         self.patch.stop()
         self.tmp.apagar()
 
@@ -276,17 +279,16 @@ class TestCaminhoNativo(unittest.TestCase):
                          str(Path("/opt/modelos/whisper-small")))
         with mock.patch.object(modelos, "NO_WINDOWS", True), \
                 mock.patch.object(modelos, "_nome_curto_windows") as curto:
-            self.assertEqual(modelos.caminho_nativo(r"C:\AssessorIntegrado\runtime"),
-                             r"C:\AssessorIntegrado\runtime")
+            self.assertEqual(modelos.caminho_nativo(r"C:\Helestron\modelos"),
+                             r"C:\Helestron\modelos")
         curto.assert_not_called()
 
     def test_pasta_com_acento_usa_o_nome_curto(self):
-        longo = r"C:\Users\joão\Downloads\AssessorIntegrado\runtime\modelos\whisper-small"
+        longo = r"C:\Users\joão\AppData\Local\Programs\Helestron\modelos\faster-whisper-small"
+        curto = r"C:\Users\JOO~1\AppData\Local\Programs\HELEST~1\modelos\FASTER~1"
         with mock.patch.object(modelos, "NO_WINDOWS", True), \
-                mock.patch.object(modelos, "_nome_curto_windows",
-                                  return_value=r"C:\Users\JOO~1\DOWNLO~1\ASSESS~1\runtime\modelos\WHISPE~1"):
-            self.assertEqual(modelos.caminho_nativo(longo),
-                             r"C:\Users\JOO~1\DOWNLO~1\ASSESS~1\runtime\modelos\WHISPE~1")
+                mock.patch.object(modelos, "_nome_curto_windows", return_value=curto):
+            self.assertEqual(modelos.caminho_nativo(longo), curto)
         # sem nome curto (8.3 desligado no disco): avisa e tenta o original
         with mock.patch.object(modelos, "NO_WINDOWS", True), \
                 mock.patch.object(modelos, "_nome_curto_windows", return_value=None), \
@@ -305,6 +307,7 @@ class TestCaminhoNativo(unittest.TestCase):
         fw.WhisperModel = WhisperFalso
         try:
             with mock.patch.object(modelos, "PASTA", tmp.raiz / "modelos"), \
+                    mock.patch.object(modelos, "PASTA_EMBUTIDA", tmp.raiz / "programa"), \
                     mock.patch.dict(sys.modules, {"faster_whisper": fw}), \
                     mock.patch.dict(os.environ), \
                     mock.patch.object(modelos, "NO_WINDOWS", True), \

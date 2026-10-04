@@ -48,8 +48,9 @@ from ..nucleo import caminhos, sistema
 from ..nucleo.cnj import Numero
 from . import pdf
 from .contexto import Contexto
-from .modelos import (CAMPO_PRAZO_LOGIN, MOSTRAR_NAVEGADOR, OK, Cancelado, LoginFalhou,
-                      NAO_ENCONTRADO, PortalIndisponivel, ProcessoNaoEncontrado,
+from .modelos import (AJUSTES_ACESSOS, CAMPO_PRAZO_LOGIN, ENTRAR_MANUALMENTE,
+                      MOSTRAR_NAVEGADOR, OK, ONDE_CADASTRAR_ACESSO, TENTAR_DE_NOVO, Cancelado,
+                      LoginFalhou, NAO_ENCONTRADO, PortalIndisponivel, ProcessoNaoEncontrado,
                       ResultadoProcesso, SEM_ACESSO, SemAcesso, SessaoPerdida,
                       SIGILOSO_SEM_SENHA, SigilosoSemSenha)
 from .navegador import (explicar_erro, primeiro_visivel, recusou_credenciais, sem_acento,
@@ -708,8 +709,8 @@ class PortalESAJ:
         self.nav.diagnosticar("esaj-login-recusado")
         self.nav.esquecer_sessao()
         return LoginFalhou(
-            f"o {self.nome} recusou o usuário ou a senha. Confira-os na tela "
-            "'Baixar processos' (Acesso) ou em Configurações > Acessos e tente de novo.")
+            f"o {self.nome} recusou o usuário ou a senha. Confira-os {ONDE_CADASTRAR_ACESSO} "
+            "e tente de novo.")
 
     def _tela_do_codigo(self, espera_s: int = 45):
         """Espera o portal abrir a tela do código e diz em que aba ela abriu.
@@ -729,7 +730,7 @@ class PortalESAJ:
                 self.nav.diagnosticar("esaj-senha-expirada")
                 raise LoginFalhou(
                     f"o {self.nome} diz que a sua senha expirou ({expirada}). Troque a "
-                    "senha no próprio portal e atualize-a em Configurações > Acessos.")
+                    f"senha no próprio portal e atualize-a em {AJUSTES_ACESSOS}.")
             for aba in self.nav.abas():
                 campo = primeiro_visivel(aba, self.sel["login_token"], espera_ms=700)
                 if campo is not None:
@@ -842,7 +843,7 @@ class PortalESAJ:
                 self.nav.diagnosticar("esaj-codigo-nao-informado")
                 raise LoginFalhou(
                     "o código de verificação enviado por e-mail não foi informado. "
-                    "Clique em 'Tentar de novo' quando estiver com ele em mãos.")
+                    f"Clique em “{TENTAR_DE_NOVO}” quando estiver com ele em mãos.")
             codigo = re.sub(r"\s+", "", codigo)
             if not codigo:
                 recado = ("Pedi um código novo ao portal; confira o e-mail. "
@@ -919,8 +920,8 @@ class PortalESAJ:
             self.nav.diagnosticar("esaj-login-erro")
             raise PortalIndisponivel(
                 f"o login no {self.nome} não pôde ser concluído "
-                f"({explicar_erro(str(erro))}). Tente de novo; se persistir, marque "
-                f"'{MOSTRAR_NAVEGADOR}' para acompanhar.") from erro
+                f"({explicar_erro(str(erro))}). Tente de novo; se persistir, ligue "
+                f"“{MOSTRAR_NAVEGADOR}” para acompanhar.") from erro
 
     def _entrar_com_senha(self) -> None:
         self.ctx.status(f"Abrindo o {self.nome}...")
@@ -931,8 +932,8 @@ class PortalESAJ:
         if not (self.usuario and self.senha):
             raise LoginFalhou(
                 f"não há usuário e senha do {self.nome} guardados neste computador. "
-                "Informe-os na tela 'Baixar processos' (Acesso) ou em Configurações > "
-                "Acessos - ou escolha 'Entrar manualmente'.")
+                f"Cadastre-os {ONDE_CADASTRAR_ACESSO} - ou escolha “{ENTRAR_MANUALMENTE}” "
+                f"em {AJUSTES_ACESSOS}.")
         log.info("Fazendo login no %s como %s...", self.nome, mascarar(self.usuario))
         self.ctx.status(f"Entrando no {self.nome}...")
         if "sajcas/login" not in (self.pg.url or ""):
@@ -992,12 +993,12 @@ class PortalESAJ:
             if not pediu_codigo:
                 raise LoginFalhou(
                     "o portal aceitou o formulário, mas não abriu a tela do código de "
-                    f"verificação nem a sessão. Marque '{MOSTRAR_NAVEGADOR}' para "
-                    "acompanhar, ou escolha 'Entrar manualmente'.")
+                    f"verificação nem a sessão. Ligue “{MOSTRAR_NAVEGADOR}” para "
+                    f"acompanhar, ou escolha “{ENTRAR_MANUALMENTE}” em {AJUSTES_ACESSOS}.")
             raise LoginFalhou(
                 "o login não foi concluído (pode haver aviso, troca de senha obrigatória "
-                f"ou instabilidade). Marque '{MOSTRAR_NAVEGADOR}' para ver a tela, ou "
-                "escolha 'Entrar manualmente'.")
+                f"ou instabilidade). Ligue “{MOSTRAR_NAVEGADOR}” para ver a tela, ou "
+                f"escolha “{ENTRAR_MANUALMENTE}” em {AJUSTES_ACESSOS}.")
         log.info("Login concluído.")
 
     def _esperar_login_na_janela(self, titulo: str, mensagem: str, rotulo: str) -> None:

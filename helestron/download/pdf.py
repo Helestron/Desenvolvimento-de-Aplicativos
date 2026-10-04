@@ -28,6 +28,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..nucleo.sistema import REINSTALAR
+
 log = logging.getLogger("download.pdf")
 
 A4 = (595.0, 842.0)          # pontos (1/72 pol.)
@@ -44,8 +46,7 @@ def _pymupdf():
             import fitz as pymupdf  # type: ignore[no-redef]
         except ImportError as erro:
             raise RuntimeError(
-                "o componente de PDF (PyMuPDF) não está instalado. "
-                "Rode o INSTALAR.bat de novo.") from erro
+                f"o componente de PDF (PyMuPDF) não está instalado. {REINSTALAR}") from erro
     return pymupdf
 
 

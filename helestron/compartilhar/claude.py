@@ -8,10 +8,11 @@ Duas portas de entrada, que se completam:
 
 * CLAUDE DESKTOP (chat e Cowork) recebe o acervo como um conector MCP
   local: o programa registra no claude_desktop_config.json o servidor
-  'assessor-integrado' (app/compartilhar/mcp_servidor.py), que dá ao
-  Claude as ferramentas listar_acervo, ler_processo, buscar e
-  ler_transcricao - só de leitura. No Cowork, além disso, o usuário pode
-  conceder a pasta do acervo diretamente.
+  'helestron' (compartilhar/mcp_servidor.py, rodado pelo python.exe da
+  instalação com "python -I -m helestron mcp"), que dá ao Claude as
+  ferramentas listar_acervo, ler_processo, buscar e ler_transcricao - só
+  de leitura. No Cowork, além disso, o usuário pode conceder a pasta do
+  acervo diretamente.
 
 Armadilha herdada da base: com ANTHROPIC_API_KEY no ambiente, o Claude Code
 usa a chave em vez da conta logada, e o usuário passa a pagar por uso sem
@@ -34,7 +35,11 @@ from ..nucleo import caminhos, sistema
 
 log = logging.getLogger("compartilhar.claude")
 
-NOME_MCP = "assessor-integrado"
+NOME_MCP = "helestron"
+# Nomes do conector na versão anterior (Assessor Integrado): saem do arquivo
+# ao registrar o novo, para não ficar um conector apontando para um Python
+# que não existe mais.
+NOMES_ANTIGOS = ("assessor-integrado",)
 URL_DOWNLOAD_DESKTOP = "https://claude.ai/download"
 # Instalador do Claude Desktop para Windows (pacote MSIX, por usuário).
 URL_INSTALADOR_DESKTOP = "https://claude.ai/api/desktop/win32/x64/setup/latest/redirect"
@@ -134,7 +139,7 @@ def instalar_claude_code() -> None:
         raise OSError("a instalação automática só existe no Windows")
     comando = (f"Write-Host 'Instalando o Claude Code (instalador oficial da Anthropic)...';"
                f" {COMANDO_INSTALAR_CODE};"
-               " Write-Host ''; Write-Host 'Pronto. Feche esta janela e volte ao Assessor Integrado.'")
+               " Write-Host ''; Write-Host 'Pronto. Feche esta janela e volte ao Helestron.'")
     subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
                       "-NoExit", "-Command", comando], creationflags=sistema.NOVO_CONSOLE)
 
@@ -171,16 +176,23 @@ def claude_desktop_instalado() -> bool:
 
 
 def entrada_mcp(pasta_acervo: Path) -> dict:
-    """A entrada do servidor no formato do claude_desktop_config.json."""
-    return {
-        "command": str(caminhos.python_exe(janela=False)),
-        # -s e PYTHONNOUSERSITE: pacote instalado pelo usuário em outro
-        # Python (pasta "site" do perfil) não pode se misturar com o nosso.
-        "args": ["-s", "-m", "helestron.compartilhar.mcp_servidor", "--pasta",
-                 str(Path(pasta_acervo).resolve())],
-        "env": {"PYTHONPATH": str(caminhos.RAIZ), "PYTHONIOENCODING": "utf-8",
-                "PYTHONUTF8": "1", "PYTHONNOUSERSITE": "1"},
-    }
+    """A entrada do servidor no formato do claude_desktop_config.json.
+
+    O python.exe da instalação com -I (modo isolado): PYTHONPATH,
+    PYTHONHOME, a pasta "site" do usuário e a pasta atual não entram - o
+    pacote vem do Lib\\site-packages do próprio programa, e nenhuma variável
+    deixada por outro programa (o ArcGIS, por exemplo) o atrapalha. O
+    protocolo é lido e escrito em bytes UTF-8, sem depender de
+    PYTHONIOENCODING (que o -I também ignora).
+
+    Fora da instalação (desenvolvimento), o pacote não está no site-packages
+    do Python: vai sem -I, pelo PYTHONPATH do repositório.
+    """
+    args = ["-m", "helestron", "mcp", "--pasta", str(Path(pasta_acervo).resolve())]
+    if caminhos.INSTALADO:
+        return {"command": str(caminhos.python_exe(janela=False)), "args": ["-I", *args]}
+    return {"command": str(caminhos.python_exe(janela=False)), "args": args,
+            "env": {"PYTHONPATH": str(caminhos.PACOTE.parent)}}
 
 
 def _ler_json(arquivo: Path) -> dict:
@@ -199,7 +211,7 @@ def _ler_json(arquivo: Path) -> dict:
 def _gravar_json(arquivo: Path, dados: dict) -> None:
     arquivo.parent.mkdir(parents=True, exist_ok=True)
     if arquivo.exists():
-        copia = arquivo.with_name(f"{arquivo.stem}.antes-do-assessor-{datetime.now():%Y%m%d-%H%M%S}.json")
+        copia = arquivo.with_name(f"{arquivo.stem}.antes-do-helestron-{datetime.now():%Y%m%d-%H%M%S}.json")
         shutil.copy2(arquivo, copia)
     tmp = arquivo.with_name(arquivo.name + ".tmp")
     tmp.write_text(json.dumps(dados, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -230,8 +242,11 @@ def registrar_mcp(pasta_acervo: Path, arquivos: list[Path] | None = None) -> lis
         if not isinstance(servidores, dict):
             raise ValueError(f"'mcpServers' em {arq} não é um objeto")
         nova = entrada_mcp(pasta_acervo)
-        if servidores.get(NOME_MCP) == nova:
+        antigos = [n for n in NOMES_ANTIGOS if n in servidores]
+        if servidores.get(NOME_MCP) == nova and not antigos:
             continue
+        for nome in antigos:
+            del servidores[nome]
         servidores[NOME_MCP] = nova
         _gravar_json(arq, dados)
         alterados.append(arq)
@@ -326,10 +341,10 @@ def gerar_plugin_cowork(destino: Path) -> Path:
     manifesto = {
         "name": "acervo-judicial",
         "version": __version__,
-        "description": "Método de trabalho com o acervo judicial do Assessor Integrado: "
+        "description": "Método de trabalho com o acervo judicial do Helestron: "
                        "autos em PDF nomeados pelo número CNJ, texto com a página marcada "
                        "e transcrições de audiência.",
-        "author": {"name": "Assessor Integrado"},
+        "author": {"name": "Helestron"},
     }
     tmp = arquivo.with_name(arquivo.name + ".tmp")
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:

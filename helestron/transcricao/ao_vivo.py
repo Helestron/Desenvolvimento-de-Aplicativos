@@ -271,7 +271,7 @@ class SessaoAoVivo:
             except OSError as erro:
                 raise RuntimeError(f"Não consegui criar a pasta das transcrições ({pasta}): "
                                    f"{erro}. Confira {self._qual_pasta} em "
-                                   "Configurações.") from erro
+                                   "Ajustes › Pastas.") from erro
             agora = datetime.now().replace(microsecond=0)
             self.meta.inicio = agora
             self.meta.data = agora
@@ -352,13 +352,13 @@ class SessaoAoVivo:
             import soundfile as sf
         except ImportError as erro:
             raise RuntimeError("O componente de gravação de áudio (soundfile) não está "
-                               "instalado. Rode o INSTALAR.bat de novo.") from erro
+                               f"instalado. {sistema.REINSTALAR}") from erro
         try:
             self._flac = sf.SoundFile(str(self.caminho_audio), "w", TAXA, 1,
                                       format="FLAC", subtype="PCM_16")
         except Exception as erro:
             raise RuntimeError(f"Não consegui criar o arquivo da gravação ({erro}). Confira o "
-                               f"espaço em disco e {self._qual_pasta} em Configurações.") from erro
+                               f"espaço em disco e {self._qual_pasta} em Ajustes › Pastas.") from erro
 
     def _abrir_diario(self) -> None:
         from .. import __version__
@@ -367,7 +367,7 @@ class SessaoAoVivo:
             self._diario = open(self.caminho_diario, "a", encoding="utf-8", newline="\n")
         except OSError as erro:
             raise RuntimeError(f"Não consegui criar o diário da audiência ({erro}). Confira o "
-                               f"espaço em disco e {self._qual_pasta} em Configurações.") from erro
+                               f"espaço em disco e {self._qual_pasta} em Ajustes › Pastas.") from erro
         cabecalho = {"tipo": "inicio", "versao": VERSAO_DIARIO, "programa": __version__,
                      "meta": self.meta.como_dict(), "docx": self.caminho_docx.name,
                      "audio": self.caminho_audio.name, "marcar_tempo": self.marcar_tempo}
@@ -574,7 +574,7 @@ class SessaoAoVivo:
             if self.modelo != "base":
                 dica = ("Nada se perde (o áudio está sendo gravado e a fila será transcrita), "
                         "mas, na próxima audiência, escolha o modelo \"base\" em "
-                        "Configurações > Transcrição.")
+                        "Ajustes › Transcrição.")
             else:
                 dica = ("Nada se perde (o áudio está sendo gravado e a fila será transcrita). "
                         "Feche outros programas pesados para o computador acompanhar.")
@@ -657,7 +657,7 @@ class SessaoAoVivo:
                     + ("; o áudio correspondente consta da gravação." if guardar_audio
                        else "."))
             if not guardar_audio:
-                meta.gravacao = "não guardada (opção desligada em Configurações)"
+                meta.gravacao = "não guardada (opção desligada nos Ajustes)"
             meta.observacao = " ".join(observacoes)
             self.meta = meta
             try:

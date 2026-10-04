@@ -384,7 +384,7 @@ class TestRecuperacao(BaseSessao):
         """Um processo grava a audiência e morre sem encerrar (os._exit)."""
         script = textwrap.dedent(f"""
             import os, sys, time
-            sys.path.insert(0, {str(caminhos.RAIZ)!r})
+            sys.path.insert(0, {str(caminhos.PACOTE.parent)!r})
             from pathlib import Path
             from helestron.nucleo.config import Config
             from helestron.transcricao import ao_vivo, microfone
@@ -404,7 +404,7 @@ class TestRecuperacao(BaseSessao):
             os._exit(0)
         """)
         r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
-                           timeout=120, cwd=str(caminhos.RAIZ))
+                           timeout=120, cwd=str(caminhos.PACOTE.parent))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), "5")
         (diario,) = recuperaveis(self.cfg)

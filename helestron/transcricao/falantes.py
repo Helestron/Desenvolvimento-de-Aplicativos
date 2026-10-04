@@ -12,17 +12,22 @@ instalação no Windows: "DLL load failed"/fbgemm.dll sem o Visual C++). Aqui
 Os rótulos saem como FALANTE 1, FALANTE 2..., na ordem em que cada voz
 aparece. Na revisão de uma audiência gravada ao vivo, quem chama troca
 esses rótulos pelos marcados durante a audiência (votação por sobreposição).
+
+A biblioteca sherpa-onnx vem DENTRO do instalador, e os dois modelos de voz
+também (pasta do programa, caminhos.MODELOS_EMBUTIDOS\\falantes), quando a
+construção os obteve. Nada de pip em tempo de execução: a versão anterior
+instalava a biblioteca pelo pip na hora, e a rede do tribunal, o proxy ou
+um pip.ini do usuário a derrubavam. Completar o componente (instalar())
+agora só baixa os modelos que faltarem (do GitHub), para a pasta de dados.
 """
 
 from __future__ import annotations
 
 import hashlib
-import importlib
 import importlib.util
 import logging
 import os
 import shutil
-import subprocess
 import tarfile
 import tempfile
 import time
@@ -53,10 +58,13 @@ SUBPASTA_SEGMENTACAO = "sherpa-onnx-pyannote-segmentation-3-0"
 ARQUIVO_SEGMENTACAO = "model.int8.onnx"
 ARQUIVO_EMBEDDING = "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
 
-PASTA: Path = caminhos.MODELOS / "falantes"   # trocável nos testes
-# Download do componente inteiro (a biblioteca sherpa-onnx e os dois modelos),
-# arredondado: um número só para a tela, a verificação, o instalador e a CLI.
-TAMANHO_MB = 60
+# Para onde os modelos são baixados (pasta de dados) e onde estão os que vêm
+# no instalador (pasta do programa, só leitura). Trocáveis nos testes.
+PASTA: Path = caminhos.MODELOS / "falantes"
+PASTA_EMBUTIDA: Path = caminhos.MODELOS_EMBUTIDOS / "falantes"
+# Download dos dois modelos (7 + 40 MB), arredondado: um número só para a
+# tela, a verificação e a CLI.
+TAMANHO_MB = 47
 LIMIAR = 0.85
 SUAVIZAR_S = 1.5
 
@@ -70,12 +78,25 @@ class Cancelado(Exception):
 
 
 # ------------------------------------------------------------ consultas
+def _relativo_segmentacao() -> Path:
+    return Path(SUBPASTA_SEGMENTACAO) / ARQUIVO_SEGMENTACAO
+
+
+def _onde(relativo: Path) -> Path:
+    """O arquivo no embutido, se estiver lá; senão, na pasta de dados (onde
+    está, ou para onde seria baixado)."""
+    embutido = Path(PASTA_EMBUTIDA) / relativo
+    if embutido.is_file():
+        return embutido
+    return Path(PASTA) / relativo
+
+
 def modelo_segmentacao() -> Path:
-    return Path(PASTA) / SUBPASTA_SEGMENTACAO / ARQUIVO_SEGMENTACAO
+    return _onde(_relativo_segmentacao())
 
 
 def modelo_embedding() -> Path:
-    return Path(PASTA) / ARQUIVO_EMBEDDING
+    return _onde(Path(ARQUIVO_EMBEDDING))
 
 
 def biblioteca_presente() -> bool:
@@ -98,7 +119,7 @@ def situacao() -> str:
     if disponivel():
         return "instalada"
     if not biblioteca_presente():
-        return "não instalada (falta o componente sherpa-onnx)"
+        return "indisponível (o componente sherpa-onnx não está nesta instalação)"
     return "incompleta (faltam os modelos de voz)"
 
 
@@ -112,7 +133,7 @@ def _sha256(caminho: Path) -> str:
 
 
 def _abrir_url(url: str, inicio: int):
-    pedido = urllib.request.Request(url, headers={"User-Agent": "AssessorIntegrado"})
+    pedido = urllib.request.Request(url, headers={"User-Agent": "Helestron"})
     if inicio and url.lower().startswith("http"):
         pedido.add_header("Range", f"bytes={inicio}-")
     return urllib.request.urlopen(pedido, timeout=60)
@@ -181,51 +202,6 @@ def _baixar(url: str, destino: Path, sha256: str | None,
         "e tente de novo; o download continua de onde parou.")
 
 
-def _ambiente_do_pip() -> dict[str, str]:
-    """O ambiente do pip, limpo como o instalador o deixa (Preparar-Ambiente).
-
-    O -E do atalho vale só para o processo da janela: os.environ continua
-    com o PYTHONHOME global (deixado pelo ArcGIS, por exemplo), e o Python
-    filho morria na partida ("No module named encodings"). Um pip.ini do
-    usuário com "user = true" mandava o pacote para %APPDATA%\\Python, que o
-    programa (rodando com -s) não enxerga: reabrir não resolvia.
-    """
-    env = dict(os.environ)
-    for variavel in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PIP_USER", "PIP_TARGET",
-                     "PIP_PREFIX", "PIP_REQUIRE_VIRTUALENV", "VIRTUAL_ENV", "PIP_INDEX_URL"):
-        env.pop(variavel, None)
-    env["PYTHONNOUSERSITE"] = "1"
-    env["PIP_CONFIG_FILE"] = os.devnull      # "nul" no Windows: nenhum pip.ini é lido
-    env["PIP_NO_INPUT"] = "1"
-    env.setdefault("PIP_CACHE_DIR", str(caminhos.RUNTIME / "pip-cache"))
-    # Saída do pip em UTF-8: no Windows, por cano, ela sai em cp1252 e a
-    # mensagem de erro mostrada ao usuário vinha com os acentos trocados.
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONUTF8"] = "1"
-    return env
-
-
-def _instalar_biblioteca(progresso: Callable[[float, str], None]) -> None:
-    requisitos = caminhos.RAIZ / "instalador" / "requisitos-falantes.txt"
-    if not requisitos.exists():
-        raise ComponenteAusente(f"Arquivo de requisitos não encontrado: {requisitos}")
-    progresso(0.02, "Instalando o componente sherpa-onnx (alguns minutos)...")
-    env = _ambiente_do_pip()
-    # -s: o pacote "do usuário" de outro Python 3.12 não entra (o programa
-    # roda com -s e não o enxergaria).
-    cmd = [str(caminhos.python_exe(False)), "-s", "-m", "pip", "install", "--require-hashes",
-           "--only-binary=:all:", "--prefer-binary", "--no-warn-script-location",
-           "--disable-pip-version-check", "--retries", "10", "--timeout", "60",
-           "-r", str(requisitos)]
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", env=env, creationflags=sistema.SEM_JANELA)
-    if r.returncode != 0:
-        ultimas = "\n".join((r.stdout + r.stderr).strip().splitlines()[-8:])
-        raise ComponenteAusente("A instalação do componente sherpa-onnx falhou. Confira a "
-                                f"internet e tente de novo.\n{ultimas}")
-    importlib.invalidate_caches()
-
-
 def _extrair_segmentacao(pacote: Path, pasta: Path) -> None:
     """Extrai só o necessário do .tar.bz2, numa pasta temporária, e troca."""
     alvo = pasta / SUBPASTA_SEGMENTACAO
@@ -247,12 +223,14 @@ def _extrair_segmentacao(pacote: Path, pasta: Path) -> None:
             os.replace(arq, alvo / arq.name)
 
 
-def instalar(progresso: Callable[[float, str], None] | None = None, *, pip: bool = True,
+def instalar(progresso: Callable[[float, str], None] | None = None, *,
              cancelado: Callable[[], bool] | None = None) -> None:
-    """Instala o componente: a biblioteca (pip, se faltar) e os 2 modelos (~47 MB).
+    """Completa o componente: baixa (do GitHub) os modelos de voz que faltarem
+    - nem o embutido nem o da pasta de dados - para a pasta de dados.
 
-    Idempotente: o que já está no lugar e confere não é baixado de novo.
-    `progresso(fração 0..1, texto)`.
+    A biblioteca não é instalada aqui: ela vem no instalador, e sem ela a
+    saída é reinstalar o programa. Idempotente: o que já está no lugar não
+    é baixado de novo. `progresso(fração 0..1, texto)`.
     """
     def avisar(fracao: float, texto: str) -> None:
         if progresso:
@@ -261,14 +239,15 @@ def instalar(progresso: Callable[[float, str], None] | None = None, *, pip: bool
             except Exception:  # pragma: no cover
                 pass
 
+    if not biblioteca_presente():
+        raise ComponenteAusente("O componente da separação de falantes (sherpa-onnx) não "
+                                f"está nesta instalação. {sistema.REINSTALAR}")
+    if modelos_presentes():
+        avisar(1.0, "Separação de falantes instalada.")
+        return
     from .modelos import preparar_rede
 
     preparar_rede()  # certificados e proxy do Windows também para o GitHub
-    if pip and not biblioteca_presente():
-        _instalar_biblioteca(avisar)
-        if not biblioteca_presente():
-            raise ComponenteAusente("O componente sherpa-onnx foi instalado, mas não pôde "
-                                    "ser carregado. Feche e abra o programa de novo.")
     pasta = Path(PASTA)
     pasta.mkdir(parents=True, exist_ok=True)
 
@@ -284,7 +263,7 @@ def instalar(progresso: Callable[[float, str], None] | None = None, *, pip: bool
 
     if not modelo_embedding().is_file():
         avisar(0.3, "Baixando o modelo de impressão de voz (40 MB)...")
-        _baixar(URL_EMBEDDING, modelo_embedding(), SHA256.get(ARQUIVO_EMBEDDING),
+        _baixar(URL_EMBEDDING, pasta / ARQUIVO_EMBEDDING, SHA256.get(ARQUIVO_EMBEDDING),
                 lambda f, t: avisar(0.3 + 0.65 * (f / t if t else 0),
                                     f"Baixando o modelo de voz: {f // 1_000_000} de 40 MB"),
                 cancelado)
@@ -303,13 +282,14 @@ def diarizar(audio16k: np.ndarray, num_falantes: int = 0, *, limiar: float = LIM
     MUITO o resultado); 0 = descobre sozinho pelo limiar.
     """
     if not modelos_presentes():
-        raise ComponenteAusente("Os modelos da separação de falantes não estão instalados "
-                                "(Configurações > Transcrição > Instalar o componente).")
+        raise ComponenteAusente(
+            "Os modelos da separação de falantes não estão neste computador: a transcrição "
+            f"sai sem a separação automática das vozes. {sistema.REINSTALAR}")
     try:
         import sherpa_onnx
     except ImportError as erro:
-        raise ComponenteAusente("O componente sherpa-onnx não está instalado "
-                                "(Configurações > Transcrição > Instalar o componente).") from erro
+        raise ComponenteAusente("O componente da separação de falantes (sherpa-onnx) não "
+                                f"está nesta instalação. {sistema.REINSTALAR}") from erro
 
     audio = np.ascontiguousarray(audio16k, dtype=np.float32).reshape(-1)
     duracao = audio.size / TAXA
@@ -333,7 +313,7 @@ def diarizar(audio16k: np.ndarray, num_falantes: int = 0, *, limiar: float = LIM
     )
     if not config.validate():
         raise ComponenteAusente("A configuração da separação de falantes não é válida "
-                                "(modelos corrompidos?). Reinstale o componente.")
+                                f"(modelos de voz corrompidos?). {sistema.REINSTALAR}")
     motor = sherpa_onnx.OfflineSpeakerDiarization(config)
 
     def callback(feitos: int, total: int) -> int:
@@ -465,5 +445,6 @@ def rotular_por_sobreposicao(falas: list[Fala], manuais: list[Fala]) -> list[Fal
 
 
 def remover_instalacao() -> None:
-    """Apaga os modelos (a tela de Configurações oferece)."""
+    """Apaga os modelos baixados (os que vieram no instalador ficam: são da
+    pasta do programa, e a desinstalação cuida deles)."""
     shutil.rmtree(Path(PASTA), ignore_errors=True)

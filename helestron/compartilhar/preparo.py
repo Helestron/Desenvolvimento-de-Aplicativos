@@ -134,7 +134,7 @@ Processo dependente (incidente) tem o sufixo no nome: `0000000-00.0000.0.00.0000
 
 ## Ferramentas
 
-- No **Claude Desktop/Cowork**, o conector "assessor-integrado" (MCP) oferece
+- No **Claude Desktop/Cowork**, o conector "helestron" (MCP) oferece
   `listar_acervo`, `ler_processo` (por faixa de páginas), `buscar` e
   `ler_transcricao`.
 - No **Claude Code**, use a habilidade `acervo-judicial`
@@ -142,7 +142,8 @@ Processo dependente (incidente) tem o sufixo no nome: `0000000-00.0000.0.00.0000
 
 _Arquivo gerado pelo {nome} {versao} em {quando}. O programa não o altera
 depois de criado: para mudar estas regras, edite-o; para voltar ao texto
-padrão, apague-o e clique em “Preparar arquivos para IA”._
+padrão, apague-o e clique em “Preparar acervo para a IA”, na tela
+Compartilhar do {nome}._
 """
 
 # Regra 5 do CONTEXTO. A frase "não estão nesta pasta" só é verdadeira com a

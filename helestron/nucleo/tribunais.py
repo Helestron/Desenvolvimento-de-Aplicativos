@@ -23,9 +23,10 @@ from .cnj import Numero
 log = logging.getLogger(__name__)
 
 ARQUIVO = caminhos.DADOS / "tribunais.json"
-# Endereços corrigidos pelo usuário (tela de Configurações). Ficam fora do
-# catálogo para uma atualização do programa não apagá-los.
-ARQUIVO_LOCAL = caminhos.RAIZ / "enderecos-locais.json"
+# Endereços corrigidos pelo usuário (ou pelo suporte). Ficam fora do
+# catálogo - na pasta de dados, e não na do programa - para uma atualização
+# do Helestron não apagá-los.
+ARQUIVO_LOCAL = caminhos.LOCAL / "enderecos-locais.json"
 SUPORTADOS = ("esaj", "eproc")
 NOMES_SISTEMA = {"esaj": "e-SAJ", "eproc": "eProc", "outro": "não suportado"}
 
@@ -193,6 +194,7 @@ def definir_endereco(portal: str, grau: str, url: str) -> None:
         entrada.pop(grau, None)
         if not entrada:
             locais.pop(portal, None)
+    ARQUIVO_LOCAL.parent.mkdir(parents=True, exist_ok=True)
     tmp = ARQUIVO_LOCAL.with_suffix(".tmp")
     tmp.write_text(json.dumps(locais, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     import os

@@ -4,23 +4,31 @@
     python -m helestron verificar --completo    também carrega o modelo e transcreve
                                           1 s de silêncio, e abre o navegador
                                           em modo invisível
-    python -m helestron verificar --json ARQ    grava o resultado em JSON (é daí que
-                                          o instalador tira o resumo final)
+    python -m helestron verificar --json ARQ    grava o resultado em JSON
 
 Cada item sai como "ok", "aviso" ou "falha". Falha em item obrigatório
 reprova a instalação (código de saída 1). Aviso nunca reprova: é o que
-funciona com limitação (sem microfone, modelo ainda não baixado) ou o que não
-se aplica fora do Windows (DPAPI, privacidade do microfone).
+funciona com limitação (sem microfone, conector ainda não ligado) ou o que
+não se aplica fora do Windows (DPAPI, WebView2, privacidade do microfone).
+
+O que se confere, no modelo do Helestron (instalador próprio, Python e
+bibliotecas embutidos, dados em %LOCALAPPDATA%\\Helestron, documentos em
+Documentos\\Helestron): Windows 10/11 de 64 bits; as bibliotecas e os
+componentes nativos; o modelo de transcrição embutido (presente e, na
+conferência completa, carregado de verdade); o navegador dos portais
+(Chrome ou Edge); o WebView2 da janela; o microfone e a permissão do
+Windows; as pastas (graváveis e separadas como o sigilo exige); o cofre de
+senhas; o catálogo de tribunais; a separação de falantes; o conector MCP do
+acervo (que responde de verdade, como o Claude Desktop o chamaria).
 
 Por que tantos testes rodam num processo separado: importar onnxruntime ou
 ctranslate2 num processador sem as instruções esperadas, ou com DLL do
 Visual C++ faltando, pode DERRUBAR o processo sem exceção nenhuma - e a
 verificação morreria junto, calada. No processo-filho, a queda vira um
-diagnóstico ("o processo caiu ao carregar onnxruntime"). Também não mexe na
-janela, que pode estar aberta chamando esta mesma verificação: o PortAudio,
+diagnóstico ("o processo caiu ao carregar onnxruntime"). Também não mexe no
+programa aberto, que pode estar chamando esta mesma verificação: o PortAudio,
 por exemplo, guarda a lista de microfones do momento em que foi iniciado (o
-filho enxerga a lista atual), e o Tk não gosta de ser criado fora da thread
-principal.
+filho enxerga a lista atual).
 """
 
 from __future__ import annotations
@@ -46,6 +54,7 @@ from typing import Callable
 
 from . import NOME, __version__
 from .nucleo import caminhos
+from .nucleo.sistema import REINSTALAR
 
 log = logging.getLogger("verificar")
 
@@ -53,11 +62,14 @@ OK, AVISO, FALHA = "ok", "aviso", "falha"
 SITUACOES = (OK, AVISO, FALHA)
 NO_WINDOWS = sys.platform == "win32"
 NAO_SE_APLICA = "Não se aplica fora do Windows"
-RODE_O_INSTALADOR = "Rode o INSTALAR.bat de novo: ele completa a instalação sem apagar os seus arquivos."
+RODE_O_INSTALADOR = REINSTALAR
 LIMITE_CAMINHO = 100
+# Onde a tela de Ajustes mostra cada assunto (as ações citam o caminho).
+AJUSTES_PASTAS = "Ajustes › Pastas"
+AJUSTES_TRANSCRICAO = "Ajustes › Transcrição"
 
-# (módulo, distribuição no PyPI, para que serve)
-BIBLIOTECAS: tuple[tuple[str, str, str], ...] = (
+# (módulo, distribuição no PyPI, para que serve, só no Windows)
+BIBLIOTECAS: tuple[tuple[str, ...], ...] = (
     ("faster_whisper", "faster-whisper", "transcrição"),
     ("ctranslate2", "ctranslate2", "transcrição"),
     ("onnxruntime", "onnxruntime", "detector de voz"),
@@ -65,21 +77,38 @@ BIBLIOTECAS: tuple[tuple[str, str, str], ...] = (
     ("numpy", "numpy", "processamento do áudio"),
     ("sounddevice", "sounddevice", "microfone"),
     ("soundfile", "soundfile", "gravação em FLAC"),
-    ("huggingface_hub", "huggingface-hub", "download dos modelos"),
+    ("huggingface_hub", "huggingface-hub", "download de outros modelos"),
     ("docx", "python-docx", "documentos do Word"),
     ("pymupdf", "pymupdf", "PDF"),
     ("pypdf", "pypdf", "PDF"),
     ("openpyxl", "openpyxl", "planilhas do Excel"),
     ("xlrd", "xlrd", "planilhas antigas do Excel (.xls)"),
-    ("playwright", "playwright", "download nos portais"),
-    ("PIL", "pillow", "imagens e ícones"),
+    ("playwright", "playwright", "acesso aos portais"),
+    ("PIL", "pillow", "imagens"),
+    ("webview", "pywebview", "janela do programa", "windows"),
+    ("clr", "pythonnet", "janela do programa", "windows"),
+    ("bottle", "bottle", "janela do programa", "windows"),
+    ("proxy_tools", "proxy_tools", "janela do programa", "windows"),
 )
+# O sherpa-onnx (separação de falantes) fica de fora de propósito: é opcional,
+# e o item "Separação de falantes" o confere sem reprovar a instalação.
 # Os que trazem DLL própria: importados de verdade, num processo à parte.
 NATIVOS = ("numpy", "ctranslate2", "onnxruntime", "av", "sounddevice", "soundfile",
            "pymupdf", "faster_whisper", "playwright.sync_api")
 NOMES_AMIGAVEIS = {"av": "PyAV", "pymupdf": "PyMuPDF", "playwright.sync_api": "Playwright",
                    "faster_whisper": "faster-whisper", "sounddevice": "PortAudio",
                    "soundfile": "libsndfile", "sherpa_onnx": "sherpa-onnx"}
+
+# O WebView2 Runtime (a janela do programa) se registra no EdgeUpdate com
+# este identificador: em HKLM (instalação para o computador, 64 ou 32 bits)
+# ou em HKCU (instalação só para o usuário).
+GUID_WEBVIEW2 = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+CHAVES_WEBVIEW2 = (
+    ("HKLM", rf"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{GUID_WEBVIEW2}"),
+    ("HKLM", rf"SOFTWARE\Microsoft\EdgeUpdate\Clients\{GUID_WEBVIEW2}"),
+    ("HKCU", rf"Software\Microsoft\EdgeUpdate\Clients\{GUID_WEBVIEW2}"),
+)
+URL_WEBVIEW2 = "https://developer.microsoft.com/microsoft-edge/webview2/"
 
 # Códigos de saída de processo que caiu (Windows: NTSTATUS; POSIX: -sinal).
 QUEDAS = {
@@ -99,7 +128,7 @@ class Item:
     situacao: str               # "ok" | "aviso" | "falha"
     detalhe: str = ""
     obrigatorio: bool = True
-    codigo: str = ""            # identificador estável (a tela usa no botão "Corrigir")
+    codigo: str = ""            # identificador estável (a tela pode usá-lo num botão "Corrigir")
     acao: str = ""              # o que fazer, numa frase
 
     @property
@@ -114,17 +143,27 @@ def _python() -> str:
     return str(caminhos.python_exe(janela=False))
 
 
+def _pasta_de_trabalho() -> str:
+    pasta = Path(caminhos.INSTALACAO)
+    return str(pasta if pasta.is_dir() else Path.cwd())
+
+
 def _ambiente_filho(extra_pythonpath: list[str] | None = None) -> dict[str, str]:
     env = dict(os.environ)
-    # PYTHONHOME global (deixado por outro programa) quebra o Python portátil
+    # PYTHONHOME global (deixado por outro programa) quebra o Python embutido
     # logo na partida; o pacote "do usuário" de outro Python misturaria versões.
     env.pop("PYTHONHOME", None)
     env["PYTHONNOUSERSITE"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
-    caminho = [str(caminhos.RAIZ)] + list(extra_pythonpath or [])
-    env["PYTHONPATH"] = os.pathsep.join(caminho)
-    env.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(caminhos.NAVEGADORES))
+    # Instalado, o pacote está no Lib\site-packages do próprio Python; no
+    # repositório, entra pelo PYTHONPATH.
+    caminho = ([] if caminhos.INSTALADO else [str(caminhos.PACOTE.parent)])
+    caminho += list(extra_pythonpath or [])
+    if caminho:
+        env["PYTHONPATH"] = os.pathsep.join(caminho)
+    else:
+        env.pop("PYTHONPATH", None)
     env.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     env.setdefault("HF_HUB_OFFLINE", "1")   # o teste do modelo nunca vai à rede
     return env
@@ -143,7 +182,7 @@ def rodar(argumentos: list[str], limite_s: float, extra_pythonpath: list[str] | 
     """(código de saída, stdout, stderr, estourou o tempo). Nunca levanta."""
     try:
         r = subprocess.run(
-            argumentos, capture_output=True, timeout=limite_s, cwd=str(caminhos.RAIZ),
+            argumentos, capture_output=True, timeout=limite_s, cwd=_pasta_de_trabalho(),
             env=_ambiente_filho(extra_pythonpath), stdin=subprocess.DEVNULL,
             creationflags=0x08000000 if NO_WINDOWS else 0)   # CREATE_NO_WINDOW
         return r.returncode, _texto(r.stdout), _texto(r.stderr), False
@@ -230,11 +269,14 @@ def sondar_importacoes(modulos: list[str] | tuple[str, ...], limite_s: float = 1
 # ============================================================ os itens
 
 def _relativo(p: Path | str) -> str:
-    """Caminho dentro da pasta do programa sem o começo comprido."""
-    try:
-        return str(Path(p).resolve().relative_to(caminhos.RAIZ.resolve()))
-    except (ValueError, OSError):
-        return str(p)
+    """Caminho dentro da pasta do programa ou da de dados, sem o começo comprido."""
+    for base, rotulo in ((caminhos.INSTALACAO, "pasta do programa"), (caminhos.LOCAL, "dados")):
+        try:
+            resto = Path(p).resolve().relative_to(Path(base).resolve())
+            return f"{resto} ({rotulo})"
+        except (ValueError, OSError, RuntimeError):
+            continue
+    return str(p)
 
 
 def _versao(distribuicao: str) -> str:
@@ -251,65 +293,55 @@ def _presente(modulo: str) -> bool:
         return False
 
 
-_SONDA_TK = r"""
-import tkinter
-print("tk", tkinter.Tcl().eval("info patchlevel"), flush=True)
-try:
-    raiz = tkinter.Tk()
-    raiz.withdraw()
-    raiz.update_idletasks()
-    raiz.destroy()
-    print("janela ok", flush=True)
-except tkinter.TclError as erro:
-    print("sem tela", str(erro).replace("\n", " ")[:200], flush=True)
-"""
+# ------------------------------------------------------------ sistema
+def avaliar_sistema(sistema: str, build: int, maquina: str, python_64: bool) -> Item:
+    """Decide o item do sistema operacional a partir dos fatos (puro, testável).
+
+    'sistema' é o platform.system(); 'build', o número de compilação do
+    Windows (0 fora dele); 'maquina', o platform.machine().
+    """
+    nome = "Windows 64 bits"
+    py = f"Python {platform.python_version()}"
+    if sistema != "Windows":
+        return Item(nome, AVISO, f"{NAO_SE_APLICA} ({sistema or 'outro sistema'}; {py}).",
+                    obrigatorio=False, codigo="sistema")
+    maquina = (maquina or "").upper()
+    if maquina not in ("AMD64", "X86_64", "ARM64") or not python_64:
+        return Item(nome, FALHA, "Este Windows (ou o Python do programa) é de 32 bits.",
+                    codigo="sistema",
+                    acao=("O Helestron precisa do Windows 10 ou 11 de 64 bits. Se o Windows é de "
+                          f"64 bits, {REINSTALAR[0].lower()}{REINSTALAR[1:]}"))
+    if build and build < 10240:
+        return Item(nome, FALHA, f"Versão do Windows antiga demais (compilação {build}).",
+                    codigo="sistema", acao="O Helestron precisa do Windows 10 ou 11 de 64 bits.")
+    versao = "Windows 11" if build >= 22000 else "Windows 10"
+    arq = "ARM 64 bits" if maquina == "ARM64" else "64 bits"
+    return Item(nome, OK, f"{versao} (compilação {build}), {arq}; {py}.", codigo="sistema")
 
 
-def checar_python() -> Item:
-    versao = platform.python_version()
-    no_runtime = str(Path(sys.executable).resolve()).lower().startswith(
-        str(caminhos.PYTHON_DIR.resolve()).lower())
-    onde = "runtime\\python" if no_runtime else sys.executable
-    situacao, acao = OK, ""
-    if sys.version_info[:2] != (3, 12):
-        if sys.version_info >= (3, 10):
-            situacao, acao = AVISO, "O programa é testado com o Python 3.12, que o INSTALAR.bat instala."
-        else:
-            return Item("Python e janela (Tk)", FALHA, f"Python {versao} é antigo demais.",
-                        codigo="python", acao=RODE_O_INSTALADOR)
-    codigo, saida, erro, _ = rodar([_python(), "-c", _SONDA_TK], 60)
-    tk = ""
-    for linha in saida.splitlines():
-        if linha.startswith("tk "):
-            tk = linha[3:].strip()
-    if codigo != 0 or not tk:
-        ultima = (erro.strip().splitlines() or [explicar_queda(codigo)])[-1]
-        return Item("Python e janela (Tk)", FALHA,
-                    f"Python {versao}, mas o Tk (a biblioteca da janela) não carregou: {ultima}",
-                    codigo="python", acao=RODE_O_INSTALADOR)
-    detalhe = f"Python {versao} e Tk {tk} ({onde})."
-    if "janela ok" not in saida:
-        if NO_WINDOWS:
-            return Item("Python e janela (Tk)", FALHA,
-                        f"{detalhe[:-1]}, mas a janela não abriu.", codigo="python",
-                        acao=RODE_O_INSTALADOR)
-        return Item("Python e janela (Tk)", AVISO,
-                    f"{detalhe} Sem tela neste ambiente: a janela não foi testada.",
-                    codigo="python")
-    return Item("Python e janela (Tk)", situacao, detalhe, codigo="python", acao=acao)
+def checar_sistema() -> Item:
+    build = 0
+    if NO_WINDOWS:
+        try:
+            build = int(sys.getwindowsversion().build)  # type: ignore[attr-defined]
+        except Exception:  # pragma: no cover - defesa
+            build = 0
+    return avaliar_sistema(platform.system(), build, platform.machine(), sys.maxsize > 2 ** 32)
 
 
 def checar_bibliotecas() -> Item:
-    faltam = [f"{dist} ({uso})" for mod, dist, uso in BIBLIOTECAS if not _presente(mod)]
+    faltam = [f"{b[1]} ({b[2]})" for b in BIBLIOTECAS
+              if (len(b) < 4 or NO_WINDOWS) and not _presente(b[0])]
     if faltam:
         return Item("Bibliotecas", FALHA, "Faltam: " + ", ".join(faltam) + ".",
                     codigo="bibliotecas", acao=RODE_O_INSTALADOR)
     principais = []
-    for dist in ("faster-whisper", "playwright", "pymupdf", "python-docx"):
+    for dist in ("faster-whisper", "playwright", "pymupdf", "pywebview"):
         v = _versao(dist)
         if v:
             principais.append(f"{dist} {v}")
-    detalhe = f"As {len(BIBLIOTECAS)} bibliotecas estão presentes"
+    conferidas = sum(1 for b in BIBLIOTECAS if len(b) < 4 or NO_WINDOWS)
+    detalhe = f"As {conferidas} bibliotecas estão presentes"
     if principais:
         detalhe += " (" + ", ".join(principais) + ")"
     return Item("Bibliotecas", OK, detalhe + ".", codigo="bibliotecas")
@@ -318,7 +350,8 @@ def checar_bibliotecas() -> Item:
 def checar_nativos() -> Item:
     modulos = [m for m in NATIVOS if _presente(m.split(".")[0])]
     if not modulos:
-        return Item("Componentes nativos (DLLs)", FALHA, "Nenhuma das bibliotecas nativas está instalada.",
+        return Item("Componentes nativos (DLLs)", FALHA,
+                    "Nenhuma das bibliotecas nativas está instalada.",
                     codigo="dlls", acao=RODE_O_INSTALADOR)
     res = sondar_importacoes(modulos)
     falhas = {m: r for m, r in res.items() if not r.get("ok")}
@@ -342,6 +375,7 @@ def checar_nativos() -> Item:
     return Item("Componentes nativos (DLLs)", FALHA, "; ".join(partes), codigo="dlls", acao=acao)
 
 
+# ------------------------------------------------------------- modelo
 def _modelos():
     """O módulo de modelos da transcrição (ponto único de integração)."""
     from .transcricao import modelos
@@ -349,16 +383,20 @@ def _modelos():
     return modelos
 
 
-def _modelo_instalado(nome: str) -> tuple[bool, Path]:
+def _modelo_instalado(nome: str) -> tuple[bool, Path, bool]:
+    """(instalado, pasta, veio no instalador)."""
     try:
         m = _modelos()
-        return m.instalado(nome), m.pasta_do_modelo(nome)
+        embutido = getattr(m, "embutido", lambda _n: False)
+        return m.instalado(nome), m.pasta_do_modelo(nome), bool(embutido(nome))
     except (ImportError, ValueError):
-        pasta = caminhos.MODELOS / f"whisper-{nome}"
-        bin_ = pasta / "model.bin"
-        ok = (all((pasta / a).is_file() for a in ("config.json", "tokenizer.json"))
-              and bin_.is_file() and bin_.stat().st_size > 1_000_000)
-        return ok, pasta
+        for base, veio in ((caminhos.MODELOS_EMBUTIDOS, True), (caminhos.MODELOS, False)):
+            pasta = Path(base) / f"faster-whisper-{nome}"
+            bin_ = pasta / "model.bin"
+            if (all((pasta / a).is_file() for a in ("config.json", "tokenizer.json"))
+                    and bin_.is_file() and bin_.stat().st_size > 1_000_000):
+                return True, pasta, veio
+        return False, Path(caminhos.MODELOS) / f"faster-whisper-{nome}", False
 
 
 def _caminho_nativo(pasta: Path) -> str:
@@ -396,8 +434,8 @@ def _nomes_dos_modelos(cfg) -> tuple[str, str]:
 
 def checar_modelo(cfg) -> Item:
     ao_vivo, revisao = _nomes_dos_modelos(cfg)
-    instalado, pasta = _modelo_instalado(ao_vivo)
-    rev_ok, _ = _modelo_instalado(revisao)
+    instalado, pasta, embutido = _modelo_instalado(ao_vivo)
+    rev_ok, _, _ = _modelo_instalado(revisao)
     if revisao == ao_vivo:
         sobre_revisao = ""
     elif rev_ok:
@@ -406,14 +444,15 @@ def checar_modelo(cfg) -> Item:
         sobre_revisao = (f" O da revisão final ({revisao}) será baixado no primeiro uso "
                          f"(cerca de {_tamanho_mb(revisao)} MB).")
     if instalado:
+        origem = "embutido no programa" if embutido else "baixado"
         return Item("Modelo de transcrição", OK,
-                    f"Ao vivo: {ao_vivo}, instalado em {_relativo(pasta)}.{sobre_revisao}",
+                    f"Ao vivo: {ao_vivo}, {origem} ({_relativo(pasta)}).{sobre_revisao}",
                     obrigatorio=False, codigo="modelo")
     return Item("Modelo de transcrição", AVISO,
-                f"O modelo da transcrição ao vivo ({ao_vivo}) ainda não foi baixado.",
+                f"O modelo da transcrição ao vivo ({ao_vivo}) não está neste computador.",
                 obrigatorio=False, codigo="modelo",
                 acao=(f"Ele é baixado no primeiro uso (cerca de {_tamanho_mb(ao_vivo)} MB). "
-                      "Para baixar agora: Configurações > Transcrição, ou rode o INSTALAR.bat de novo."))
+                      f"Para baixar agora: {AJUSTES_TRANSCRICAO}, botão \u201cBaixar\u201d."))
 
 
 _SONDA_WHISPER = r"""
@@ -431,11 +470,12 @@ print("ok %.1f %.1f" % (carregou, time.time() - inicio), flush=True)
 
 
 def checar_teste_transcricao(cfg) -> Item:
+    """Carrega o modelo da audiência de verdade e transcreve 1 s de silêncio."""
     ao_vivo, _ = _nomes_dos_modelos(cfg)
-    instalado, pasta = _modelo_instalado(ao_vivo)
+    instalado, pasta, embutido = _modelo_instalado(ao_vivo)
     nome = "Teste de transcrição"
     if not instalado:
-        return Item(nome, AVISO, f"Pulado: o modelo {ao_vivo} ainda não foi baixado.",
+        return Item(nome, AVISO, f"Pulado: o modelo {ao_vivo} ainda não está neste computador.",
                     obrigatorio=False, codigo="teste_transcricao")
     nativo = _caminho_nativo(pasta)
     codigo, saida, erro, estourou = rodar([_python(), "-c", _SONDA_WHISPER, nativo], 300)
@@ -448,17 +488,21 @@ def checar_teste_transcricao(cfg) -> Item:
                         codigo="teste_transcricao")
     ultima = (erro.strip().splitlines() or [""])[-1]
     motivo = explicar_queda(None if estourou else codigo) if not ultima else ultima
-    acao = ("Apague a pasta " + _relativo(pasta) + " e rode o INSTALAR.bat de novo "
-            "(o modelo será baixado outra vez).")
+    if embutido:
+        acao = f"O modelo que veio com o programa não abriu. {REINSTALAR}"
+    else:
+        acao = (f"Apague a pasta {pasta} e baixe o modelo de novo em {AJUSTES_TRANSCRICAO}, "
+                "botão \u201cBaixar\u201d.")
     if not nativo.isascii():
         # Acento no caminho e nenhum nome curto 8.3 neste disco: se a causa
-        # for essa, baixar de novo não resolve.
-        acao += (" Se persistir, instale o programa numa pasta sem acento no caminho, "
-                 "como C:\\AssessorIntegrado.")
+        # for essa, instalar ou baixar de novo no mesmo lugar não resolve.
+        acao += (" Se persistir, instale o Helestron numa pasta sem acento no caminho, como "
+                 "C:\\Helestron (o instalador deixa escolher a pasta).")
     return Item(nome, FALHA, f"O modelo {ao_vivo} não funcionou: {motivo}",
                 codigo="teste_transcricao", acao=acao)
 
 
+# ---------------------------------------------------------- navegador
 def _navegadores_instalados() -> tuple[str, str]:
     """(Chrome, Edge) - caminhos ou ''. Ponto único de integração com o download."""
     try:
@@ -480,19 +524,15 @@ def _navegadores_instalados() -> tuple[str, str]:
         return chrome, edge
 
 
-def _chromium_proprio() -> str:
-    """A pasta do Chromium do Playwright (o do programa ou o configurado), ou ''."""
-    pastas = [caminhos.NAVEGADORES]
-    if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
-        pastas.insert(0, Path(os.environ["PLAYWRIGHT_BROWSERS_PATH"]))
-    for pasta in pastas:
-        try:
-            achados = sorted(p for p in Path(pasta).glob("chromium-*") if p.is_dir())
-        except OSError:
-            achados = []
-        if achados:
-            return str(achados[-1])
-    return ""
+def _chromium_reserva() -> str:
+    """O Chromium do Playwright que já estiver neste computador (o programa não
+    o baixa: é só reserva), ou ''."""
+    try:
+        from .download import navegador
+
+        return navegador.chromium_reserva()
+    except Exception:
+        return ""
 
 
 def _canais(cfg) -> list[str]:
@@ -502,33 +542,42 @@ def _canais(cfg) -> list[str]:
         from .download import navegador
 
         ordem = navegador.escolher_canais(cfg.texto("download", "navegador") or "auto",
-                                          chrome=chrome, edge=edge)
+                                          chrome=chrome, edge=edge,
+                                          chromium=_chromium_reserva())
         return [c or "chromium" for c in ordem]
     except Exception:
         ordem = (["chrome"] if chrome else []) + (["msedge"] if edge else [])
-        return ordem + ["chromium"]
+        return ordem + (["chromium"] if _chromium_reserva() else [])
 
 
 def checar_navegador(cfg) -> Item:
+    nome = "Navegador dos portais"
     chrome, edge = _navegadores_instalados()
-    proprio = _chromium_proprio()
     achados = []
     if chrome:
         achados.append("Google Chrome")
     if edge:
         achados.append("Microsoft Edge")
-    if proprio:
-        achados.append("Chromium do programa")
     if achados:
-        return Item("Navegador", OK, "Disponível: " + ", ".join(achados) + ".", codigo="navegador")
+        return Item(nome, OK, "Disponível: " + ", ".join(achados) + ".", codigo="navegador")
+    reserva = _chromium_reserva()
+    if reserva:
+        return Item(nome, AVISO,
+                    "Nem o Google Chrome nem o Microsoft Edge foram encontrados; o download usará "
+                    "o Chromium do Playwright que já está neste computador.",
+                    obrigatorio=False, codigo="navegador",
+                    acao="Instale o Microsoft Edge ou o Google Chrome: é com eles que o Helestron é testado.")
     if NO_WINDOWS:
-        return Item("Navegador", FALHA, "Nem o Google Chrome nem o Microsoft Edge foram encontrados.",
-                    codigo="navegador",
-                    acao=("Instale o Google Chrome ou o Microsoft Edge e rode o INSTALAR.bat de "
-                          "novo (sem eles, o instalador baixa um navegador próprio)."))
-    return Item("Navegador", AVISO, "Nenhum navegador compatível encontrado neste ambiente.",
+        # Falha, mas não obrigatória: a instalação está boa e a transcrição
+        # funciona; só o acesso aos portais (download e pauta) depende disto.
+        return Item(nome, FALHA, "Nem o Google Chrome nem o Microsoft Edge foram encontrados.",
+                    obrigatorio=False, codigo="navegador",
+                    acao=("O Microsoft Edge vem com o Windows 10 e 11: se ele foi removido, "
+                          "instale-o de novo (ou instale o Google Chrome). Sem um dos dois, o "
+                          "download de processos e a pauta não funcionam."))
+    return Item(nome, AVISO, "Nenhum navegador compatível encontrado neste ambiente.",
                 obrigatorio=False, codigo="navegador",
-                acao="Instale o Chromium do Playwright: python -m playwright install chromium.")
+                acao="Instale o Google Chrome ou o Microsoft Edge.")
 
 
 _SONDA_NAVEGADOR = r"""
@@ -552,7 +601,8 @@ with sync_playwright() as p:
             print("erro", canal, texto, flush=True)
 sys.exit(1)
 """
-_NOMES_CANAL = {"chrome": "Google Chrome", "msedge": "Microsoft Edge", "chromium": "Chromium do programa"}
+_NOMES_CANAL = {"chrome": "Google Chrome", "msedge": "Microsoft Edge",
+                "chromium": "Chromium (reserva do Playwright)"}
 
 
 def checar_teste_navegador(cfg) -> Item:
@@ -561,6 +611,9 @@ def checar_teste_navegador(cfg) -> Item:
         return Item(nome, FALHA, "Pulado: a biblioteca playwright não está instalada.",
                     codigo="teste_navegador", acao=RODE_O_INSTALADOR)
     canais = _canais(cfg)
+    if not canais:
+        return Item(nome, AVISO, "Pulado: não há navegador para testar.", obrigatorio=False,
+                    codigo="teste_navegador")
     codigo, saida, erro, estourou = rodar([_python(), "-c", _SONDA_NAVEGADOR, *canais], 240)
     erros = []
     for linha in saida.splitlines():
@@ -574,15 +627,61 @@ def checar_teste_navegador(cfg) -> Item:
     if not erros:
         ultima = (erro.strip().splitlines() or [explicar_queda(None if estourou else codigo)])[-1]
         erros.append(ultima)
-    # Aviso, e não falha: sem navegador, só o download fica de fora - a
-    # transcrição e o compartilhamento funcionam, e a instalação não pode
-    # sair "em vermelho" por uma regra da TI que bloqueie o modo invisível.
+    # Aviso, e não falha: sem navegador, só o acesso aos portais fica de
+    # fora - a transcrição e o compartilhamento funcionam, e a instalação
+    # não pode sair "em vermelho" por uma regra da TI que bloqueie o modo
+    # invisível.
     return Item(nome, AVISO, "Nenhum navegador abriu. " + "; ".join(erros),
                 obrigatorio=False, codigo="teste_navegador",
                 acao=("Feche janelas do navegador que tenham travado, reinicie o computador e "
-                      "tente de novo; se persistir, rode o INSTALAR.bat de novo."))
+                      "tente de novo; se persistir, fale com a informática do tribunal (alguma "
+                      "regra pode estar bloqueando o navegador automático)."))
 
 
+# ------------------------------------------------------------ WebView2
+def avaliar_webview2(versoes: list[str | None]) -> Item:
+    """Decide o item a partir das versões ("pv") lidas do registro (puro, testável)."""
+    nome = "WebView2 (janela do programa)"
+    validas = [v.strip() for v in versoes if v and v.strip() and v.strip() != "0.0.0.0"]
+    if validas:
+        return Item(nome, OK, f"Microsoft Edge WebView2 Runtime {validas[0]} instalado.",
+                    obrigatorio=False, codigo="webview2")
+    return Item(nome, AVISO, "O Microsoft Edge WebView2 Runtime não foi encontrado.",
+                obrigatorio=False, codigo="webview2",
+                acao=("O Helestron funciona assim mesmo: abre no Microsoft Edge, em modo "
+                      "aplicativo. Para a janela própria, instale o \u201cMicrosoft Edge "
+                      "WebView2 Runtime\u201d (gratuito, da Microsoft, sem administrador): "
+                      f"{URL_WEBVIEW2}."))
+
+
+def _ler_valor(raiz, chave: str, valor: str) -> str | None:
+    import winreg  # só existe no Windows
+
+    try:
+        with winreg.OpenKey(raiz, chave) as k:
+            return str(winreg.QueryValueEx(k, valor)[0])
+    except OSError:
+        return None
+
+
+def versoes_webview2() -> list[str | None]:
+    """As versões ("pv") do WebView2 Runtime no registro, nas três chaves."""
+    if not NO_WINDOWS:
+        return []
+    import winreg
+
+    raizes = {"HKLM": winreg.HKEY_LOCAL_MACHINE, "HKCU": winreg.HKEY_CURRENT_USER}
+    return [_ler_valor(raizes[raiz], chave, "pv") for raiz, chave in CHAVES_WEBVIEW2]
+
+
+def checar_webview2() -> Item:
+    if not NO_WINDOWS:
+        return Item("WebView2 (janela do programa)", AVISO, f"{NAO_SE_APLICA}.",
+                    obrigatorio=False, codigo="webview2")
+    return avaliar_webview2(versoes_webview2())
+
+
+# ----------------------------------------------------------- microfone
 _SONDA_MICROFONE = r"""
 import json
 import sounddevice as sd
@@ -651,13 +750,7 @@ def avaliar_privacidade(geral: str | None, desktop: str | None, maquina: str | N
 
 
 def _ler_registro(raiz, chave: str) -> str | None:
-    import winreg  # só existe no Windows
-
-    try:
-        with winreg.OpenKey(raiz, chave) as k:
-            return str(winreg.QueryValueEx(k, "Value")[0])
-    except OSError:
-        return None
+    return _ler_valor(raiz, chave, "Value")
 
 
 def checar_privacidade_microfone() -> Item:
@@ -672,6 +765,7 @@ def checar_privacidade_microfone() -> Item:
         _ler_registro(winreg.HKEY_LOCAL_MACHINE, _CHAVE_MICROFONE))
 
 
+# --------------------------------------------------------------- pastas
 def _contem(pai: Path, filho: Path) -> bool:
     """'filho' é 'pai' ou fica dentro dele (caminhos reais)?"""
     try:
@@ -680,8 +774,15 @@ def _contem(pai: Path, filho: Path) -> bool:
         return False
 
 
-_ACAO_PASTAS = ("Corrija antes de compartilhar o acervo: em Configurações > Geral, use "
+_ACAO_PASTAS = ("Corrija antes de compartilhar o acervo: em " + AJUSTES_PASTAS + ", use "
                 "\u201cAlterar\u2026\u201d para escolher {}.")
+
+
+def _pasta_pauta(cfg) -> Path:
+    propria = getattr(cfg, "pasta_pauta", None)
+    if isinstance(propria, Path):
+        return propria
+    return caminhos.resolver(cfg.texto("pauta", "pasta"), "Pauta")
 
 
 def _problema_nas_pastas(cfg) -> tuple[str, str] | None:
@@ -689,33 +790,34 @@ def _problema_nas_pastas(cfg) -> tuple[str, str] | None:
     pode ir; None se está tudo separado.
 
     Tudo o que está no acervo é lido pela IA (Claude Code, Cowork, ChatGPT
-    Work) e copiado para a nuvem. A regra acervo x sigilosos é a do núcleo
-    (config.conflito_de_pastas), a mesma da tela de Configurações.
+    Work) e copiado para a nuvem. A regra acervo x sigilosos x pauta é a do
+    núcleo (config.conflito_de_pastas), a mesma da tela de Ajustes.
     """
     from .nucleo import config
 
     acervo = cfg.pasta_acervo
-    frase = config.conflito_de_pastas(acervo, cfg.pasta_sigilosos)
+    frase = config.conflito_de_pastas(acervo, cfg.pasta_sigilosos, _pasta_pauta(cfg))
     if frase:
-        return (frase + " Do jeito que está, os processos em segredo de justiça iriam para a "
-                "IA junto com o acervo.",
-                _ACAO_PASTAS.format("pastas separadas para o acervo e para os sigilosos (uma "
-                                    "não pode ficar dentro da outra)"))
-    if _contem(acervo, caminhos.RAIZ):
-        return (f"A pasta do acervo ({acervo}) contém a pasta do programa ({caminhos.RAIZ}): os "
-                "registros (com imagens das telas dos portais) e a configuração ficariam ao "
-                "alcance da IA.",
+        return (frase + " Do jeito que está, o que é de segredo de justiça iria para a IA "
+                "junto com o acervo.",
+                _ACAO_PASTAS.format("pastas separadas para o acervo, os sigilosos e a pauta "
+                                    "(nenhuma dentro da outra)"))
+    if caminhos.INSTALADO and _contem(acervo, caminhos.INSTALACAO):
+        return (f"A pasta do acervo ({acervo}) contém a pasta do programa "
+                f"({caminhos.INSTALACAO}), que o instalador substitui a cada atualização.",
                 _ACAO_PASTAS.format("uma pasta só para o acervo, fora da pasta do programa"))
     if _contem(acervo, caminhos.LOCAL):
-        return (f"A pasta do acervo ({acervo}) contém a pasta em que o programa guarda as senhas "
-                f"e os perfis do navegador ({caminhos.LOCAL}), que ficariam ao alcance da IA.",
+        return (f"A pasta do acervo ({acervo}) contém a pasta em que o programa guarda as senhas, "
+                f"os registros e os perfis do navegador ({caminhos.LOCAL}), que ficariam ao "
+                "alcance da IA.",
                 _ACAO_PASTAS.format("uma pasta só para o acervo, que não contenha essa pasta"))
     return None
 
 
 def checar_pastas(cfg) -> Item:
     pastas = [cfg.pasta_acervo, cfg.pasta_processos, cfg.pasta_transcricoes,
-              cfg.pasta_sigilosos, caminhos.LOGS]
+              cfg.pasta_sigilosos, _pasta_pauta(cfg), caminhos.LOCAL, caminhos.LOGS,
+              caminhos.TEMP]
     for pasta in pastas:
         try:
             pasta.mkdir(parents=True, exist_ok=True)
@@ -725,20 +827,22 @@ def checar_pastas(cfg) -> Item:
         except PermissionError:
             return Item("Pastas de trabalho", FALHA, f"Sem permissão para gravar em {pasta}.",
                         codigo="pastas",
-                        acao=("Se o \u201cAcesso controlado a pastas\u201d do Windows Defender estiver "
-                              "ligado, permita o Python do programa (runtime\\python\\python.exe), ou "
-                              "escolha outra pasta para o acervo em Configurações."))
+                        acao=("Se o \u201cAcesso controlado a pastas\u201d do Windows Defender "
+                              "estiver ligado, permita o Helestron (Helestron.exe e python.exe da "
+                              f"pasta do programa), ou escolha outra pasta em {AJUSTES_PASTAS}."))
         except OSError as erro:
             return Item("Pastas de trabalho", FALHA, f"Não foi possível gravar em {pasta}: {erro}",
-                        codigo="pastas", acao="Confira se a pasta existe, se o disco tem espaço e se não está protegido contra gravação.")
+                        codigo="pastas",
+                        acao=("Confira se a pasta existe, se o disco tem espaço e se não está "
+                              "protegida contra gravação."))
     # Aviso, e não falha: a instalação está boa, e a troca é feita na tela
     # (nada se perde). Mas o texto diz o que está em jogo.
     problema = _problema_nas_pastas(cfg)
     if problema:
         return Item("Pastas de trabalho", AVISO, problema[0], codigo="pastas", acao=problema[1])
     return Item("Pastas de trabalho", OK,
-                f"As pastas do acervo ({_relativo(cfg.pasta_acervo)}), dos processos sigilosos e dos "
-                "registros aceitam gravação.",
+                f"O acervo ({cfg.pasta_acervo}), os sigilosos, a pauta e os dados do programa "
+                "aceitam gravação e estão separados.",
                 codigo="pastas")
 
 
@@ -755,25 +859,33 @@ def _caminhos_longos() -> bool:
 
 
 def checar_local(cfg) -> Item:
-    nome = "Local da pasta"
+    """Onde ficam as pastas: fora do OneDrive, da rede e de caminho curto."""
+    nome = "Local das pastas"
     problemas, acoes = [], []
-    raiz = str(caminhos.RAIZ)
-    if caminhos.dentro_do_onedrive(caminhos.RAIZ) or caminhos.dentro_do_onedrive(cfg.pasta_acervo):
-        problemas.append("está dentro do OneDrive, cuja sincronização trava arquivos em uso")
-        acoes.append("instale em C:\\AssessorIntegrado (o INSTALAR.bat oferece a mudança)")
-    if len(raiz) > LIMITE_CAMINHO and not _caminhos_longos():
-        problemas.append(f"tem caminho longo ({len(raiz)} caracteres; acima de {LIMITE_CAMINHO}, "
-                         "algumas bibliotecas passam do limite do Windows)")
-        if not acoes:
-            acoes.append("instale numa pasta de caminho curto, como C:\\AssessorIntegrado")
-    if raiz.startswith("\\\\"):
-        problemas.append("fica numa pasta de rede")
-        if not acoes:
-            acoes.append("instale no próprio computador, como em C:\\AssessorIntegrado")
+    if caminhos.dentro_do_onedrive(cfg.pasta_acervo):
+        problemas.append(f"a pasta do acervo ({cfg.pasta_acervo}) está dentro do OneDrive, cuja "
+                         "sincronização trava arquivos em uso")
+        acoes.append(f"em {AJUSTES_PASTAS}, escolha uma pasta fora do OneDrive (para ter o "
+                     "acervo na nuvem, use o espelho da tela Compartilhar)")
+    if caminhos.dentro_do_onedrive(caminhos.LOCAL):
+        problemas.append(f"a pasta de dados do programa ({caminhos.LOCAL}) está dentro do OneDrive")
+        acoes.append("peça ao suporte que tire do OneDrive a pasta AppData\\Local do seu perfil")
+    programa = str(caminhos.INSTALACAO)
+    if caminhos.INSTALADO and len(programa) > LIMITE_CAMINHO and not _caminhos_longos():
+        problemas.append(f"a pasta do programa tem caminho longo ({len(programa)} caracteres; "
+                         f"acima de {LIMITE_CAMINHO}, algumas bibliotecas passam do limite do "
+                         "Windows)")
+        acoes.append("instale o Helestron numa pasta de caminho curto, como C:\\Helestron")
+    for rotulo, pasta in (("do programa", programa), ("de dados", str(caminhos.LOCAL))):
+        if pasta.startswith("\\\\"):
+            problemas.append(f"a pasta {rotulo} fica numa pasta de rede")
+            acoes.append("instale e use o Helestron no próprio computador")
     if problemas:
-        return Item(nome, AVISO, f"A pasta {raiz} " + " e ".join(problemas) + ".",
-                    obrigatorio=False, codigo="local", acao="Recomendado: " + "; ".join(acoes) + ".")
-    return Item(nome, OK, f"{raiz} (fora do OneDrive, caminho curto).", obrigatorio=False, codigo="local")
+        return Item(nome, AVISO, "Atenção: " + "; ".join(problemas) + ".",
+                    obrigatorio=False, codigo="local",
+                    acao="Recomendado: " + "; ".join(acoes) + ".")
+    return Item(nome, OK, f"Programa em {programa}; dados em {caminhos.LOCAL}; acervo fora do "
+                "OneDrive.", obrigatorio=False, codigo="local")
 
 
 def _formatar_gb(bytes_: float) -> str:
@@ -781,7 +893,8 @@ def _formatar_gb(bytes_: float) -> str:
 
 
 def checar_espaco(cfg) -> Item:
-    alvo = cfg.pasta_acervo if cfg.pasta_acervo.exists() else caminhos.RAIZ
+    alvo = next((p for p in (cfg.pasta_acervo, caminhos.LOCAL, caminhos.INSTALACAO)
+                 if Path(p).exists()), Path.cwd())
     try:
         livre = shutil.disk_usage(alvo).free
     except OSError as erro:
@@ -795,12 +908,13 @@ def checar_espaco(cfg) -> Item:
     return Item("Espaço em disco", OK, f"{_formatar_gb(livre)} livres.", obrigatorio=False, codigo="espaco")
 
 
+# ----------------------------------------------------------------- cofre
 def checar_cofre() -> Item:
     from .nucleo.cofre_senhas import CofreSenhas
 
     nome = "Cofre de senhas"
     senha = "s3nh@ de teste \u00e7\u00e3o"
-    with tempfile.TemporaryDirectory(prefix="assessor-verificacao-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="helestron-verificacao-") as tmp:
         arquivo = Path(tmp) / "credenciais-teste.json"
         try:
             cofre = CofreSenhas(arquivo)
@@ -832,17 +946,19 @@ def checar_tribunais() -> Item:
         lista = tribunais.carregar()
     except Exception as erro:  # noqa: BLE001 - JSON editado à mão pode estar quebrado
         return Item("Catálogo de tribunais", FALHA,
-                    f"O arquivo dados\\tribunais.json não pôde ser lido: {erro}", codigo="tribunais",
-                    acao=("Desfaça a última edição do tribunais.json, ou extraia de novo o ZIP do "
-                          "programa por cima desta pasta."))
+                    f"O catálogo de tribunais (dados\\tribunais.json) não pôde ser lido: {erro}",
+                    codigo="tribunais",
+                    acao=("Desfaça a última edição do tribunais.json (ou do enderecos-locais.json, "
+                          f"na pasta de dados). Se não houve edição: {REINSTALAR}"))
     if not lista:
-        return Item("Catálogo de tribunais", FALHA, "O catálogo de tribunais está vazio.", codigo="tribunais",
-                    acao="Extraia de novo o ZIP do programa por cima desta pasta.")
+        return Item("Catálogo de tribunais", FALHA, "O catálogo de tribunais está vazio.",
+                    codigo="tribunais", acao=RODE_O_INSTALADOR)
     suportados = sum(1 for t in lista if t.suportado)
     return Item("Catálogo de tribunais", OK,
                 f"{len(lista)} tribunais no catálogo; {suportados} com e-SAJ ou eProc.", codigo="tribunais")
 
 
+# -------------------------------------------------------------- falantes
 def _falantes_situacao() -> tuple[bool, str]:
     """(disponível, descrição). Ponto único de integração com a transcrição."""
     try:
@@ -851,47 +967,168 @@ def _falantes_situacao() -> tuple[bool, str]:
         return bool(falantes.disponivel()), str(falantes.situacao())
     except Exception:
         presente = _presente("sherpa_onnx")
-        return False, "instalada só em parte" if presente else "não instalada"
+        return False, "incompleta (faltam os modelos de voz)" if presente else "indisponível"
 
 
 def checar_falantes(completo: bool = False) -> Item:
     nome = "Separação de falantes (opcional)"
     disponivel, situacao = _falantes_situacao()
-    acao = "Para instalar: Configurações > Transcrição > Instalar o componente (cerca de 60 MB)."
     if not disponivel:
-        return Item(nome, AVISO, f"{situacao[:1].upper()}{situacao[1:]}: a revisão final não separa as vozes sozinha.",
-                    obrigatorio=False, codigo="falantes", acao=acao)
+        return Item(nome, AVISO,
+                    f"{situacao[:1].upper()}{situacao[1:]}: a revisão final não separa as vozes "
+                    "sozinha (os falantes marcados durante a audiência continuam valendo).",
+                    obrigatorio=False, codigo="falantes",
+                    acao=f"A biblioteca e os modelos de voz vêm no instalador. {REINSTALAR}")
     if completo:
         r = sondar_importacoes(["sherpa_onnx"], 120).get("sherpa_onnx", {})
         if not r.get("ok"):
             return Item(nome, AVISO, f"O componente está instalado, mas não carregou: {r.get('erro', '?')}",
-                        obrigatorio=False, codigo="falantes", acao=acao)
+                        obrigatorio=False, codigo="falantes", acao=RODE_O_INSTALADOR)
     return Item(nome, OK, "Instalada.", obrigatorio=False, codigo="falantes")
+
+
+# ------------------------------------------------------- conector MCP
+def _pedidos_mcp() -> bytes:
+    pedidos = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                    "clientInfo": {"name": "helestron-verificacao", "version": __version__}}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+    ]
+    return "".join(json.dumps(p) + "\n" for p in pedidos).encode("utf-8")
+
+
+def conversar_mcp(entrada: dict, limite_s: float = 90.0) -> tuple[list[str], str]:
+    """Roda o conector EXATAMENTE como o Claude Desktop o rodaria (o comando,
+    os argumentos e as variáveis da entrada registrada) e faz o aperto de
+    mão: initialize e tools/list. Devolve (nomes das ferramentas, erro)."""
+    env = dict(os.environ)
+    env.update({k: str(v) for k, v in (entrada.get("env") or {}).items()})
+    comando = [str(entrada["command"]), *[str(a) for a in entrada.get("args", [])]]
+    try:
+        r = subprocess.run(comando, input=_pedidos_mcp(), capture_output=True, timeout=limite_s,
+                           env=env, cwd=_pasta_de_trabalho(),
+                           creationflags=0x08000000 if NO_WINDOWS else 0)
+    except subprocess.TimeoutExpired:
+        return [], "o conector não respondeu no tempo esperado"
+    except OSError as erro:
+        return [], f"o conector não pôde ser iniciado ({erro})"
+    respostas = {}
+    for linha in _texto(r.stdout).splitlines():
+        try:
+            d = json.loads(linha)
+        except ValueError:
+            continue
+        if isinstance(d, dict) and "id" in d:
+            respostas[d["id"]] = d
+    inicio = (respostas.get(1) or {}).get("result") or {}
+    if (inicio.get("serverInfo") or {}).get("name") != "helestron":
+        ultima = (_texto(r.stderr).strip().splitlines() or [explicar_queda(r.returncode)])[-1]
+        return [], f"o conector não se apresentou ({ultima[:300]})"
+    ferramentas = ((respostas.get(2) or {}).get("result") or {}).get("tools") or []
+    return [str(f.get("name", "")) for f in ferramentas if isinstance(f, dict)], ""
+
+
+def _registros_mcp(acervo: Path) -> tuple[list[str], list[str]]:
+    """(onde o conector está registrado e certo, problemas encontrados)."""
+    from .compartilhar import chatgpt, claude
+
+    certos, problemas = [], []
+    esperada = claude.entrada_mcp(acervo)
+    for arq in claude.arquivos_config_desktop():
+        try:
+            servidores = claude._ler_json(arq).get("mcpServers") or {}
+        except (OSError, ValueError):
+            continue
+        if not isinstance(servidores, dict):
+            continue
+        if any(n in servidores for n in claude.NOMES_ANTIGOS):
+            problemas.append("o Claude Desktop ainda tem o conector da versão anterior "
+                             "(Assessor Integrado)")
+        atual = servidores.get(claude.NOME_MCP)
+        if atual is None:
+            continue
+        if atual.get("command") != esperada["command"] or atual.get("args") != esperada["args"]:
+            problemas.append("o conector do Claude Desktop aponta para outro acervo ou para "
+                             "outra instalação")
+        elif "Claude Desktop" not in certos:
+            certos.append("Claude Desktop")
+    try:
+        import tomllib
+
+        dados = tomllib.loads(chatgpt.arquivo_config_codex().read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        dados = {}
+    servidores = dados.get("mcp_servers") or {}
+    if isinstance(servidores, dict):
+        if any(n in servidores for n in chatgpt.NOMES_ANTIGOS):
+            problemas.append("o ChatGPT/Codex ainda tem o conector da versão anterior")
+        atual = servidores.get(chatgpt.NOME_MCP)
+        if isinstance(atual, dict):
+            if atual.get("command") != esperada["command"] or atual.get("args") != esperada["args"]:
+                problemas.append("o conector do ChatGPT/Codex aponta para outro acervo ou para "
+                                 "outra instalação")
+            else:
+                certos.append("ChatGPT/Codex")
+    return certos, list(dict.fromkeys(problemas))
+
+
+def checar_conector(cfg) -> Item:
+    """O conector MCP do acervo responde, e o registrado nas IAs é o certo."""
+    nome = "Conector do acervo (MCP)"
+    from .compartilhar import claude
+
+    acervo = cfg.pasta_acervo
+    ferramentas, erro = conversar_mcp(claude.entrada_mcp(acervo))
+    if erro:
+        return Item(nome, FALHA, f"O conector não funcionou: {erro}.", obrigatorio=False,
+                    codigo="conector", acao=RODE_O_INSTALADOR)
+    try:
+        certos, problemas = _registros_mcp(acervo)
+    except Exception as falha:  # noqa: BLE001 - arquivo de outro programa, ilegível
+        log.debug("registros do conector: %s", falha)
+        certos, problemas = [], []
+    qtd = f"{len(ferramentas)} ferramenta{'s' if len(ferramentas) != 1 else ''}"
+    if problemas:
+        return Item(nome, AVISO, f"O conector responde ({qtd}), mas " + "; ".join(problemas) + ".",
+                    obrigatorio=False, codigo="conector",
+                    acao=("Na tela Compartilhar, conecte o acervo de novo (Claude Desktop: "
+                          "\u201cReconectar o acervo\u201d; ChatGPT: \u201cAbrir no ChatGPT "
+                          "Work\u201d)."))
+    if certos:
+        return Item(nome, OK, f"O conector responde ({qtd}); ligado a: {', '.join(certos)}.",
+                    obrigatorio=False, codigo="conector")
+    return Item(nome, OK, f"O conector responde ({qtd}); ainda não foi ligado ao Claude Desktop "
+                "nem ao ChatGPT (opcional: tela Compartilhar).", obrigatorio=False,
+                codigo="conector")
 
 
 # ============================================================ conjunto
 
 def _etapas(cfg, completo: bool) -> list[tuple[str, Callable[[], Item]]]:
     etapas: list[tuple[str, Callable[[], Item]]] = [
-        ("Python e janela (Tk)", checar_python),
+        ("Windows 64 bits", checar_sistema),
         ("Bibliotecas", checar_bibliotecas),
         ("Componentes nativos (DLLs)", checar_nativos),
         ("Modelo de transcrição", lambda: checar_modelo(cfg)),
     ]
     if completo:
         etapas.append(("Teste de transcrição", lambda: checar_teste_transcricao(cfg)))
-    etapas.append(("Navegador", lambda: checar_navegador(cfg)))
+    etapas.append(("Navegador dos portais", lambda: checar_navegador(cfg)))
     if completo:
         etapas.append(("Teste do navegador", lambda: checar_teste_navegador(cfg)))
     etapas += [
+        ("WebView2 (janela do programa)", checar_webview2),
         ("Microfone", checar_microfone),
         ("Permissão do microfone", checar_privacidade_microfone),
         ("Pastas de trabalho", lambda: checar_pastas(cfg)),
-        ("Local da pasta", lambda: checar_local(cfg)),
+        ("Local das pastas", lambda: checar_local(cfg)),
         ("Espaço em disco", lambda: checar_espaco(cfg)),
         ("Cofre de senhas", checar_cofre),
         ("Catálogo de tribunais", checar_tribunais),
         ("Separação de falantes (opcional)", lambda: checar_falantes(completo)),
+        ("Conector do acervo (MCP)", lambda: checar_conector(cfg)),
     ]
     return etapas
 
@@ -913,8 +1150,8 @@ def verificar(completo: bool = False, cfg=None,
               ao_item: Callable[[Item], None] | None = None) -> list[Item]:
     """Roda todas as checagens; devolve os itens na ordem de exibição.
 
-    Pode ser chamada de uma thread de trabalho da janela (não toca no Tk do
-    processo). `ao_item` recebe cada item assim que fica pronto, na ordem.
+    Pode ser chamada de uma thread de trabalho do servidor (não toca na
+    janela). `ao_item` recebe cada item assim que fica pronto, na ordem.
     As checagens que rodam em processo à parte andam em paralelo.
     """
     if cfg is None:
@@ -964,8 +1201,8 @@ def frase_final(resumo: dict) -> str:
         return f"Resultado: {contagem}. Tudo certo: a instalação está pronta."
     if resumo["resultado"] == AVISO:
         return f"Resultado: {contagem}. A instalação está pronta, com avisos (veja acima o que fazer)."
-    return (f"Resultado: {contagem}. A instalação tem problemas: veja acima o que fazer e rode o "
-            "INSTALAR.bat de novo.")
+    return (f"Resultado: {contagem}. A instalação tem problemas: veja acima o que fazer. Se for "
+            "preciso, instale o Helestron de novo com o Helestron-Setup (os seus dados ficam).")
 
 
 ROTULOS = {OK: "OK", AVISO: "AVISO", FALHA: "FALHA"}
@@ -988,7 +1225,8 @@ def formatar_item(item: Item, largura: int = 100) -> str:
 def cabecalho(completo: bool) -> str:
     tipo = "completa" if completo else "rápida"
     return (f"{NOME} {__version__} \u2014 verificação {tipo} da instalação\n"
-            f"Pasta: {caminhos.RAIZ}\n")
+            f"Programa: {caminhos.INSTALACAO}\n"
+            f"Dados: {caminhos.LOCAL}\n")
 
 
 def relatorio_texto(itens: list[Item], completo: bool = False) -> str:
@@ -1009,7 +1247,8 @@ def para_json(itens: list[Item], completo: bool) -> dict:
         "completo": completo,
         "plataforma": platform.platform(),
         "python": platform.python_version(),
-        "pasta": str(caminhos.RAIZ),
+        "pasta": str(caminhos.INSTALACAO),
+        "dados": str(caminhos.LOCAL),
         "resultado": resumo["resultado"],
         "resumo": {OK: resumo[OK], AVISO: resumo[AVISO], FALHA: resumo[FALHA]},
         "itens": [asdict(i) for i in itens],

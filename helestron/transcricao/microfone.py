@@ -33,6 +33,8 @@ from typing import Callable
 
 import numpy as np
 
+from ..nucleo import sistema
+
 log = logging.getLogger("transcricao.microfone")
 
 TAXA = 16000
@@ -44,7 +46,7 @@ REABRIR_S = 3.0
 
 AVISO_PRIVACIDADE = (
     "O microfone está entregando silêncio absoluto. No Windows, a causa mais "
-    "comum é a privacidade: abra Configurações > Privacidade e segurança > "
+    "comum é a privacidade: abra as Configurações do Windows > Privacidade e segurança > "
     "Microfone e ligue \"Acesso ao microfone\" e \"Permitir que aplicativos da "
     "área de trabalho acessem o microfone\". Confira também se o microfone não "
     "está no mudo (tecla ou botão do próprio aparelho) e se é o microfone certo."
@@ -80,7 +82,7 @@ def _sounddevice():
     except ImportError as erro:
         raise MicrofoneIndisponivel(
             "O componente de captura de som (sounddevice) não está instalado. "
-            "Rode o INSTALAR.bat de novo.") from erro
+            f"{sistema.REINSTALAR}") from erro
     return sd
 
 

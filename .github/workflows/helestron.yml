@@ -1,0 +1,530 @@
+# ============================================================================
+#  Helestron - testes, construção do instalador, instalação real no Windows
+#  e publicação (docs/ESPECIFICACAO.md, seção 11)
+#
+#  testes     (Linux) a suíte inteira, com a interface no Chromium em modo
+#             demonstração; as capturas de tela viram artefato.
+#  construir  (Linux) baixa o modelo de transcrição do Hugging Face e gera o
+#             Helestron-Setup-<versão>.exe com construir/construir.py.
+#  windows    (Windows limpo) faz o que o usuário faz: roda o Setup.exe (em
+#             silêncio, numa pasta COM ESPAÇO E ACENTO), confere arquivos,
+#             atalhos e registro, roda a verificação da instalação, abre a
+#             janela de verdade (autoteste com capturas), transcreve uma fala
+#             sintetizada pela linha de comando, conversa com o servidor MCP,
+#             exporta a pauta em Excel, usa o cofre de senhas (DPAPI),
+#             instala de novo por cima (atualização) e desinstala - os
+#             documentos do usuário têm de ficar.
+#  publicar   (tags v*) cria a versão no GitHub com o instalador testado.
+#
+#  Regra deste arquivo: os scripts dos passos ("run:") só têm ASCII - o
+#  runner os grava em arquivo temporário, e acento ali sai trocado no cmd e
+#  no PowerShell 5.1. Texto com acento entra por "env:".
+# ============================================================================
+name: Helestron
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # false: o run em andamento termina (construir e instalar no Windows leva
+  # dezenas de minutos); só o pendente mais antigo é substituído pelo novo.
+  cancel-in-progress: false
+
+env:
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  # --------------------------------------------------------------------------
+  testes:
+    name: Testes (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      HELESTRON_CAPTURAS: ${{ github.workspace }}/capturas-interface
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: construir/requisitos-teste.txt
+
+      - name: Bibliotecas do sistema (PortAudio, libsndfile e tela virtual)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libportaudio2 libsndfile1 xvfb
+
+      - name: Bibliotecas Python (travadas com hash)
+        run: python -m pip install --disable-pip-version-check --require-hashes -r construir/requisitos-teste.txt
+
+      - name: Chromium do Playwright (interface em modo demonstração)
+        run: python -m playwright install --with-deps chromium
+
+      - name: Testes de unidade
+        run: xvfb-run -a python -m unittest discover -s testes -t . -v
+
+      - name: Publicar as capturas da interface
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capturas-interface
+          path: capturas-interface
+          if-no-files-found: warn
+
+  # --------------------------------------------------------------------------
+  construir:
+    name: Construir o instalador
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Ferramentas (NSIS e MinGW-w64)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nsis mingw-w64
+          makensis -VERSION
+          x86_64-w64-mingw32-gcc --version | head -n 1
+
+      - name: Bibliotecas da construção
+        run: python -m pip install --disable-pip-version-check installer pillow huggingface_hub
+
+      - name: Downloads reaproveitados (Python para Windows e rodas)
+        uses: actions/cache@v4
+        with:
+          path: construir/cache
+          key: construir-${{ hashFiles('construir/requisitos-windows.txt', 'construir/construir.py') }}
+          restore-keys: construir-
+
+      - name: Modelo de transcrição (faster-whisper-small, Hugging Face)
+        run: |
+          python - <<'FIM'
+          import os
+          from huggingface_hub import snapshot_download
+          destino = os.path.join(os.environ["RUNNER_TEMP"], "faster-whisper-small")
+          snapshot_download("Systran/faster-whisper-small", local_dir=destino,
+                            allow_patterns=["config.json", "preprocessor_config.json", "model.bin",
+                                            "tokenizer.json", "vocabulary.*"])
+          for nome in sorted(os.listdir(destino)):
+              caminho = os.path.join(destino, nome)
+              if os.path.isfile(caminho):
+                  print(nome, os.path.getsize(caminho))
+          FIM
+
+      - name: Construir (construir/construir.py)
+        run: python construir/construir.py --modelo "$RUNNER_TEMP/faster-whisper-small" --saida dist
+
+      - name: Publicar o instalador
+        uses: actions/upload-artifact@v4
+        with:
+          name: Helestron-Setup
+          path: |
+            dist/Helestron-Setup-*.exe
+            dist/Helestron-Setup-*.exe.sha256
+          if-no-files-found: error
+          compression-level: 0
+
+  # --------------------------------------------------------------------------
+  windows:
+    name: Instalação real no Windows
+    needs: construir
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      PASTA: 'C:\Teste Área\Helestron'
+      PROCESSO: '0700123-45.2024.8.02.0001'
+      FALA: >-
+        Bom dia a todos. Está aberta a audiência de instrução e julgamento.
+        Presentes o autor, o réu e os advogados das partes.
+        Passo a palavra à testemunha, que foi devidamente compromissada.
+        A testemunha declarou que viu o acidente na esquina da rua principal,
+        por volta das dez horas da manhã, e que o carro vinha em alta velocidade.
+      # palavras da fala que têm de aparecer no DOCX (ao menos 3: a voz do
+      # runner é em inglês, e o reconhecimento erra algumas)
+      PALAVRAS: 'audiência;julgamento;testemunha;advogados;partes;acidente;velocidade;principal'
+      PYTHONIOENCODING: utf-8
+    steps:
+      - name: Baixar o instalador construído
+        uses: actions/download-artifact@v4
+        with:
+          name: Helestron-Setup
+          path: setup
+
+      - name: Conferir o SHA-256 do instalador
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Get-ChildItem -LiteralPath setup -Filter 'Helestron-Setup-*.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'O artefato veio sem o Helestron-Setup.exe' }
+          $esperado = ((Get-Content -LiteralPath ($exe.FullName + '.sha256') -Raw) -split '\s+')[0].ToLower()
+          $obtido = (Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          if ($obtido -ne $esperado) { throw "SHA-256 diferente: $obtido (esperado $esperado)" }
+          Write-Host ("{0}: {1:N0} MB, SHA-256 conferido" -f $exe.Name, ($exe.Length / 1MB))
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "SETUP=$($exe.FullName)`n")
+
+      - name: Instalar em silencio (/S, pasta com espaco e acento)
+        shell: powershell
+        timeout-minutes: 20
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # /D= tem de ser o ultimo argumento e sem aspas (regra do NSIS)
+          $p = Start-Process -FilePath $env:SETUP -ArgumentList ('/S /D=' + $env:PASTA) -PassThru
+          $null = $p.Handle
+          $p.WaitForExit()
+          Write-Host "Instalador terminou com o codigo $($p.ExitCode)"
+          $relatorio = Join-Path $env:LOCALAPPDATA 'Helestron\Logs\verificacao-instalacao.txt'
+          if (Test-Path -LiteralPath $relatorio) { Get-Content -LiteralPath $relatorio -Encoding UTF8 }
+          if ($p.ExitCode -ne 0) { throw "O instalador terminou com o codigo $($p.ExitCode)" }
+
+      - name: Conferir arquivos, atalhos e registro
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $itens = @('Helestron.exe', 'Desinstalar.exe', 'python.exe', 'pythonw.exe', 'python312.dll',
+                     'vcruntime140.dll', 'msvcp140.dll', 'manifesto.json', 'helestron.ico',
+                     'Lib\site-packages\helestron\__main__.py',
+                     'Lib\site-packages\helestron\__pycache__\__main__.cpython-312.pyc',
+                     'Lib\site-packages\helestron\web\index.html',
+                     'Lib\site-packages\webview\__init__.py', 'Lib\site-packages\pythonnet\__init__.py',
+                     'Lib\site-packages\faster_whisper\__init__.py', 'Lib\site-packages\pymupdf\__init__.py',
+                     'Lib\site-packages\playwright\__init__.py',
+                     'modelos\faster-whisper-small\model.bin')
+          foreach ($item in $itens) {
+            if (-not (Test-Path -LiteralPath (Join-Path $env:PASTA $item))) { throw "Faltou $item" }
+          }
+          $manifesto = Get-Content -LiteralPath (Join-Path $env:PASTA 'manifesto.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+          $quantos = @($manifesto.arquivos.PSObject.Properties).Count
+          Write-Host "Manifesto: versao $($manifesto.versao), $quantos arquivos"
+          $shell = New-Object -ComObject WScript.Shell
+          $exe = Join-Path $env:PASTA 'Helestron.exe'
+          foreach ($pasta in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+            $lnk = Join-Path $pasta 'Helestron.lnk'
+            if (-not (Test-Path -LiteralPath $lnk)) { throw "Faltou o atalho $lnk" }
+            $atalho = $shell.CreateShortcut($lnk)
+            Write-Host "$lnk -> $($atalho.TargetPath) ($($atalho.IconLocation))"
+            if ($atalho.TargetPath -ne $exe) { throw "Atalho com alvo errado: $($atalho.TargetPath)" }
+          }
+          $chave = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Helestron'
+          $reg = Get-ItemProperty -LiteralPath $chave
+          $reg | Format-List DisplayName, DisplayVersion, Publisher, InstallLocation, DisplayIcon, UninstallString, QuietUninstallString, EstimatedSize
+          if ($reg.DisplayName -ne 'Helestron') { throw 'DisplayName errado no registro' }
+          if ($reg.DisplayVersion -ne $manifesto.versao) { throw 'DisplayVersion diferente da versao do manifesto' }
+          if ($reg.InstallLocation -ne $env:PASTA) { throw "InstallLocation errado: $($reg.InstallLocation)" }
+          if ($reg.UninstallString -notlike '*Desinstalar.exe*') { throw 'UninstallString errado' }
+
+      - name: Verificar a instalacao (Helestron.exe --verificar-instalacao)
+        shell: powershell
+        timeout-minutes: 15
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $relatorio = Join-Path $env:RUNNER_TEMP 'verificacao-instalacao.txt'
+          $p = Start-Process -FilePath (Join-Path $env:PASTA 'Helestron.exe') -ArgumentList ('--verificar-instalacao --relatorio "' + $relatorio + '"') -PassThru
+          $null = $p.Handle
+          $p.WaitForExit()
+          if (Test-Path -LiteralPath $relatorio) { Get-Content -LiteralPath $relatorio -Encoding UTF8 }
+          else { Write-Host 'O relatorio nao foi gravado.' }
+          if ($p.ExitCode -ne 0) { throw "A verificacao terminou com o codigo $($p.ExitCode)" }
+
+      - name: Autoteste da interface (janela real, capturas)
+        shell: powershell
+        timeout-minutes: 12
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pasta = Join-Path $env:RUNNER_TEMP 'autoteste'
+          $p = Start-Process -FilePath (Join-Path $env:PASTA 'Helestron.exe') -ArgumentList ('--autoteste "' + $pasta + '"') -PassThru
+          $null = $p.Handle
+          if (-not $p.WaitForExit(600000)) { $p.Kill(); throw 'O autoteste nao terminou em 10 minutos' }
+          $json = Join-Path $pasta 'autoteste.json'
+          if (Test-Path -LiteralPath $json) { Get-Content -LiteralPath $json -Encoding UTF8 }
+          Get-ChildItem -LiteralPath $pasta -Filter 'captura-*.png' -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.Name }
+          if ($p.ExitCode -ne 0) { throw "O autoteste terminou com o codigo $($p.ExitCode)" }
+
+      - name: Gerar fala sintetizada (System.Speech, WAV 16 kHz mono)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Speech
+          $voz = New-Object System.Speech.Synthesis.SpeechSynthesizer
+          $vozes = @($voz.GetInstalledVoices() | Where-Object { $_.Enabled } | ForEach-Object { $_.VoiceInfo })
+          foreach ($v in $vozes) { Write-Host ("Voz: {0} ({1})" -f $v.Name, $v.Culture) }
+          if ($vozes.Count -eq 0) { throw 'Nenhuma voz do System.Speech neste runner.' }
+          $pt = $vozes | Where-Object { $_.Culture.Name -like 'pt*' } | Select-Object -First 1
+          if ($pt) { $voz.SelectVoice($pt.Name) }
+          $formato = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo -ArgumentList 16000, ([System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen), ([System.Speech.AudioFormat.AudioChannel]::Mono)
+          $wav = Join-Path $env:RUNNER_TEMP 'fala.wav'
+          $voz.SetOutputToWaveFile($wav, $formato)
+          $voz.Rate = -1
+          $voz.Speak($env:FALA)
+          $voz.SetOutputToNull()
+          $voz.Dispose()
+          $tamanho = (Get-Item -LiteralPath $wav).Length
+          Write-Host ("fala.wav: {0:N0} bytes (~{1:N1} s)" -f $tamanho, ($tamanho / 32000))
+          if ($tamanho -lt 64000) { throw 'A fala sintetizada ficou curta demais.' }
+
+      - name: Transcricao de ponta a ponta (python -I -m helestron transcrever)
+        shell: powershell
+        timeout-minutes: 15
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $python = Join-Path $env:PASTA 'python.exe'
+          & $python -I -m helestron transcrever --ao-vivo --processo $env:PROCESSO --wav (Join-Path $env:RUNNER_TEMP 'fala.wav')
+          if ($LASTEXITCODE -ne 0) { throw "A transcricao terminou com o codigo $LASTEXITCODE" }
+          $script = Join-Path $env:RUNNER_TEMP 'conferir_docx.py'
+          Set-Content -LiteralPath $script -Encoding Ascii -Value @'
+          import os, re, sys
+          import docx
+          from helestron.nucleo import config
+          cfg = config.carregar()
+          processo = os.environ["PROCESSO"]
+          arquivo = cfg.pasta_transcricoes / (processo + ".docx")
+          print("DOCX:", arquivo)
+          assert arquivo.is_file(), "faltou o DOCX da transcricao"
+          texto = "\n".join(p.text for p in docx.Document(str(arquivo)).paragraphs)
+          print(texto)
+          assert processo in texto, "o numero do processo nao esta no DOCX"
+          assert re.search(r"\[\d\d:\d\d:\d\d\]", texto), "o DOCX esta sem as marcas de tempo"
+          minusculo = texto.lower()
+          achadas = [p for p in os.environ["PALAVRAS"].split(";") if p.lower() in minusculo]
+          print("Palavras reconhecidas:", achadas)
+          assert len(achadas) >= 3, "a transcricao reconheceu poucas palavras da fala"
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "docx.txt"), "w", encoding="utf-8") as f:
+              f.write(str(arquivo))
+          print("DOCX OK")
+          '@
+          & $python -I $script
+          if ($LASTEXITCODE -ne 0) { throw 'O DOCX da transcricao nao passou na conferencia' }
+
+      - name: Servidor MCP (JSON-RPC pela entrada padrao) e registro no Claude Desktop
+        shell: powershell
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $script = Join-Path $env:RUNNER_TEMP 'teste_mcp.py'
+          Set-Content -LiteralPath $script -Encoding Ascii -Value @'
+          import json, os, subprocess, sys
+          from helestron.compartilhar import claude
+          from helestron.nucleo import config
+          acervo = str(config.carregar().pasta_acervo)
+          python = os.path.join(os.environ["PASTA"], "python.exe")
+          mensagens = [
+              {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+               "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                          "clientInfo": {"name": "ci", "version": "1"}}},
+              {"jsonrpc": "2.0", "method": "notifications/initialized"},
+              {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+              {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+               "params": {"name": "listar_acervo", "arguments": {}}},
+              {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+               "params": {"name": "ler_transcricao", "arguments": {"numero": os.environ["PROCESSO"]}}},
+              {"jsonrpc": "2.0", "id": 5, "method": "ping"},
+          ]
+          entrada = "".join(json.dumps(m) + "\n" for m in mensagens).encode("utf-8")
+          # Como o Claude Desktop faz: o comando registrado, de outra pasta de trabalho.
+          entrada_mcp = claude.entrada_mcp(acervo)
+          print("Comando registrado:", entrada_mcp)
+          r = subprocess.run([entrada_mcp["command"], *entrada_mcp["args"]], input=entrada,
+                             capture_output=True, cwd=os.environ["RUNNER_TEMP"], timeout=300)
+          sys.stderr.write(r.stderr.decode("utf-8", "replace"))
+          respostas = {}
+          for linha in r.stdout.decode("utf-8").splitlines():
+              if linha.strip():
+                  d = json.loads(linha)
+                  respostas[d["id"]] = d
+          assert sorted(respostas) == [1, 2, 3, 4, 5], respostas
+          assert respostas[1]["result"]["serverInfo"]["name"] == "helestron", respostas[1]
+          nomes = {t["name"] for t in respostas[2]["result"]["tools"]}
+          assert {"listar_acervo", "ler_processo", "buscar", "ler_transcricao"} <= nomes, nomes
+          assert not respostas[3]["result"]["isError"], respostas[3]
+          assert not respostas[4]["result"]["isError"], respostas[4]
+          print(respostas[4]["result"]["content"][0]["text"][:2000])
+          alterados = claude.registrar_mcp(acervo)
+          assert claude.mcp_registrado(), "o conector ficou sem registro"
+          print("Registrado em:", [str(a) for a in alterados])
+          print("MCP OK")
+          '@
+          & (Join-Path $env:PASTA 'python.exe') -I $script
+          if ($LASTEXITCODE -ne 0) { throw 'O teste do servidor MCP falhou' }
+
+      - name: Pauta de audiencias (importar relatorio e exportar Excel pela linha de comando)
+        shell: powershell
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $python = Join-Path $env:PASTA 'python.exe'
+          $csv = Join-Path $env:RUNNER_TEMP 'pauta.csv'
+          $linhas = @('Data;Hora;Processo;Tipo de audiencia;Situacao;Local',
+                      '05/10/2026;14:30;0700123-45.2024.8.02.0001;Conciliacao;Designada;Sala 1',
+                      '06/10/2026;09:00;0700456-78.2024.8.02.0001;Instrucao e julgamento;Designada;Virtual',
+                      '07/10/2026;10:15;0700789-01.2024.8.02.0001;Una;Cancelada;Sala 2')
+          Set-Content -LiteralPath $csv -Encoding Ascii -Value $linhas
+          & $python -I -m helestron pauta importar $csv
+          if ($LASTEXITCODE -ne 0) { throw "pauta importar terminou com o codigo $LASTEXITCODE" }
+          $destino = Join-Path $env:RUNNER_TEMP 'pauta-exportada'
+          & $python -I -m helestron pauta exportar --de 2026-10-01 --ate 2026-10-31 --pasta $destino
+          if ($LASTEXITCODE -ne 0) { throw "pauta exportar terminou com o codigo $LASTEXITCODE" }
+          $script = Join-Path $env:RUNNER_TEMP 'conferir_pauta.py'
+          Set-Content -LiteralPath $script -Encoding Ascii -Value @'
+          import glob, os, sys
+          import openpyxl
+          arquivos = glob.glob(os.path.join(os.environ["RUNNER_TEMP"], "pauta-exportada", "*.xlsx"))
+          assert arquivos, "a exportacao nao gravou a planilha"
+          livro = openpyxl.load_workbook(arquivos[0])
+          print(arquivos[0], livro.sheetnames)
+          assert "Pauta" in livro.sheetnames, livro.sheetnames
+          valores = [str(c.value) for linha in livro["Pauta"].iter_rows() for c in linha if c.value is not None]
+          for numero in ("0700123-45.2024.8.02.0001", "0700456-78.2024.8.02.0001"):
+              assert any(numero in v for v in valores), numero + " nao esta na planilha"
+          print("Pauta OK")
+          '@
+          & $python -I $script
+          if ($LASTEXITCODE -ne 0) { throw 'A planilha da pauta nao passou na conferencia' }
+
+      - name: Cofre de senhas (DPAPI)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $script = Join-Path $env:RUNNER_TEMP 'teste_dpapi.py'
+          Set-Content -LiteralPath $script -Encoding Ascii -Value @'
+          import os, tempfile
+          from helestron.nucleo.cofre_senhas import CofreSenhas
+          arquivo = os.path.join(tempfile.mkdtemp(), "credenciais.json")
+          cofre = CofreSenhas(arquivo)
+          senha = "s3nh@ de teste \u00e7\u00e3o"
+          cofre.guardar("esaj:TJAL", "usuario.teste", senha)
+          bruto = open(arquivo, encoding="utf-8").read()
+          assert "s3nh@" not in bruto, bruto
+          assert cofre.obter("esaj:TJAL") == ("usuario.teste", senha)
+          assert cofre.portais() == ["esaj:TJAL"]
+          cofre.apagar("esaj:TJAL")
+          assert cofre.obter("esaj:TJAL") == ("", "")
+          print("DPAPI OK")
+          '@
+          & (Join-Path $env:PASTA 'python.exe') -I $script
+          if ($LASTEXITCODE -ne 0) { throw 'O cofre de senhas falhou' }
+
+      - name: Instalar de novo por cima (atualizacao mantem os dados)
+        shell: powershell
+        timeout-minutes: 20
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # sem /D=: a pasta vem do registro da instalacao anterior
+          $p = Start-Process -FilePath $env:SETUP -ArgumentList '/S' -PassThru
+          $null = $p.Handle
+          $p.WaitForExit()
+          Write-Host "Instalador terminou com o codigo $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "A reinstalacao terminou com o codigo $($p.ExitCode)" }
+          if (-not (Test-Path -LiteralPath (Join-Path $env:PASTA 'Helestron.exe'))) { throw 'A reinstalacao nao foi para a mesma pasta' }
+          $docx = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'docx.txt') -Raw -Encoding UTF8
+          if (-not (Test-Path -LiteralPath $docx.Trim())) { throw 'A reinstalacao apagou a transcricao' }
+          if (-not (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'Helestron\config.ini'))) { throw 'A reinstalacao apagou a configuracao' }
+          Write-Host 'Reinstalacao OK: dados mantidos.'
+
+      - name: Desinstalar em silencio (documentos do usuario ficam)
+        shell: powershell
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $desinstalar = Join-Path $env:PASTA 'Desinstalar.exe'
+          $p = Start-Process -FilePath $desinstalar -ArgumentList '/S' -PassThru
+          $null = $p.Handle
+          $p.WaitForExit()
+          # o desinstalador do NSIS se copia para a pasta temporaria e continua de la
+          $chave = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Helestron'
+          $limite = (Get-Date).AddMinutes(5)
+          while (((Test-Path -LiteralPath (Join-Path $env:PASTA 'python312.dll')) -or (Test-Path -LiteralPath $chave)) -and ((Get-Date) -lt $limite)) {
+            Start-Sleep -Seconds 2
+          }
+          foreach ($item in @('Helestron.exe', 'python312.dll', 'Lib', 'manifesto.json', 'modelos')) {
+            if (Test-Path -LiteralPath (Join-Path $env:PASTA $item)) { throw "O programa ficou: $item" }
+          }
+          if (Test-Path -LiteralPath $chave) { throw 'A chave de desinstalacao ficou no registro' }
+          foreach ($pasta in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+            if (Test-Path -LiteralPath (Join-Path $pasta 'Helestron.lnk')) { throw "O atalho ficou em $pasta" }
+          }
+          $docx = (Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'docx.txt') -Raw -Encoding UTF8).Trim()
+          if (-not (Test-Path -LiteralPath $docx)) { throw 'A desinstalacao apagou a transcricao (Documentos\Helestron)' }
+          if (-not (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'Helestron\config.ini'))) { throw 'O modo silencioso apagou a configuracao' }
+          $cfg = Join-Path $env:APPDATA 'Claude\claude_desktop_config.json'
+          if ((Test-Path -LiteralPath $cfg) -and ((Get-Content -LiteralPath $cfg -Raw) -match '"helestron"')) {
+            throw 'O conector continuou registrado no Claude Desktop'
+          }
+          Write-Host 'Desinstalacao OK: programa removido, documentos e configuracao mantidos.'
+
+      - name: Juntar registros e capturas
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $destino = Join-Path $env:RUNNER_TEMP 'registros'
+          New-Item -ItemType Directory -Force -Path $destino | Out-Null
+          Copy-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'Helestron\Logs') -Destination $destino -Recurse -Force -ErrorAction SilentlyContinue
+          foreach ($arq in @('verificacao-instalacao.txt', 'fala.wav', 'pauta.csv')) {
+            Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP $arq) -Destination $destino -ErrorAction SilentlyContinue
+          }
+          Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'pauta-exportada') -Destination $destino -Recurse -Force -ErrorAction SilentlyContinue
+          Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'autoteste\autoteste.json') -Destination $destino -ErrorAction SilentlyContinue
+          if (Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'docx.txt')) {
+            $docx = (Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'docx.txt') -Raw -Encoding UTF8).Trim()
+            Copy-Item -LiteralPath $docx -Destination $destino -ErrorAction SilentlyContinue
+          }
+          exit 0
+
+      - name: Publicar registros
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: registros-windows
+          path: ${{ runner.temp }}/registros
+          if-no-files-found: warn
+
+      - name: Publicar capturas da janela real
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capturas-windows
+          path: ${{ runner.temp }}/autoteste
+          if-no-files-found: warn
+
+  # --------------------------------------------------------------------------
+  publicar:
+    name: Publicar a versão (tags v*)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [testes, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Baixar o instalador testado
+        uses: actions/download-artifact@v4
+        with:
+          name: Helestron-Setup
+          path: dist
+
+      - name: Criar a versão no GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITULO: Helestron ${{ github.ref_name }}
+          NOTAS: >-
+            Baixe o Helestron-Setup e dê dois cliques: o assistente instala o Helestron
+            só para o seu usuário, sem pedir administrador e sem precisar de internet
+            (o programa, as bibliotecas e o modelo de transcrição vão dentro). Ao
+            atualizar, os seus dados são mantidos. O arquivo .sha256 traz o código
+            de conferência do instalador.
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$TITULO" --notes "$NOTAS"

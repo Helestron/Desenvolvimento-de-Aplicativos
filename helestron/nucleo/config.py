@@ -1,7 +1,9 @@
 """Configuração do programa: o config.ini, comentado, editável no Bloco de Notas.
 
-Quase tudo se ajusta pela tela de Configurações; o ini existe para quem quer
-mexer direto e para guardar as escolhas entre uma abertura e outra.
+Quase tudo se ajusta pela tela de Ajustes; o ini existe para quem quer mexer
+direto e para guardar as escolhas entre uma abertura e outra. Mora em
+%LOCALAPPDATA%\\Helestron (caminhos.ARQUIVO_CONFIG), fora da pasta do
+programa: atualizar ou reinstalar o Helestron não o apaga.
 
 Duas armadilhas do Assessor SAJ ficam resolvidas aqui:
   * o ConfigParser com interpolação quebrava valor com '%' (uma senha, um
@@ -32,7 +34,7 @@ ESQUEMA: list[tuple[str, str, str, str]] = [
     ("geral", "pasta_acervo", "Acervo",
      "Pasta com tudo o que o programa produz e compartilha com a IA:\n"
      "Processos (os PDFs), Transcricoes (os DOCX) e os arquivos de contexto.\n"
-     "Caminho relativo a esta pasta, ou absoluto (ex.: D:\\Gabinete\\Acervo).\n"
+     "Caminho relativo a Documentos\\Helestron, ou absoluto (ex.: D:\\Gabinete\\Acervo).\n"
      "Evite pasta dentro do OneDrive: a sincronização atrapalha arquivo em uso."),
     ("geral", "pasta_sigilosos", "Sigilosos",
      "Processos em segredo de justiça vão para cá, FORA do acervo\n"
@@ -56,8 +58,9 @@ ESQUEMA: list[tuple[str, str, str, str]] = [
      "Mostrar a janela do navegador durante o download. O login por\n"
      "certificado e o login manual sempre mostram."),
     ("download", "navegador", "auto",
-     "auto (Chrome, senão Edge, senão o Chromium do programa), chrome,\n"
-     "msedge ou chromium."),
+     "auto (o Google Chrome; sem ele, o Microsoft Edge, que todo Windows 10/11\n"
+     "tem), chrome ou msedge. chromium = o Chromium do Playwright, só se já\n"
+     "estiver neste computador (o programa não o baixa)."),
     ("download", "pausa_entre_processos", "3",
      "Segundos entre um processo e outro. Não zere em listas grandes: rajada\n"
      "de acessos pode ser lida pelo portal como abuso."),
@@ -66,7 +69,8 @@ ESQUEMA: list[tuple[str, str, str, str]] = [
     ("download", "espera_login_minutos", "10",
      "Quanto esperar você concluir o login (código por e-mail, certificado)."),
     ("download", "salvar_diagnostico", "true",
-     "Guardar print e HTML da tela quando algo der errado (Logs\\diagnostico)."),
+     "Guardar print e HTML da tela quando algo der errado (Logs\\diagnostico,\n"
+     "na pasta de dados do programa)."),
 
     ("esaj", "login", "senha", "Como entrar no e-SAJ: senha, certificado ou manual."),
     ("eproc", "login", "senha", "Como entrar no eProc: senha ou manual."),
@@ -90,8 +94,8 @@ ESQUEMA: list[tuple[str, str, str, str]] = [
      "Ao encerrar a audiência, refazer a transcrição inteira com o modelo de\n"
      "revisão (mais precisa; leva alguns minutos)."),
     ("transcricao", "separar_falantes", "true",
-     "Na revisão final, separar as vozes automaticamente (se o componente\n"
-     "estiver instalado)."),
+     "Na revisão final, separar as vozes automaticamente (os modelos de voz\n"
+     "vêm no instalador; se faltarem, são baixados uma vez, do GitHub)."),
     ("transcricao", "dispositivo", "", "Microfone. Em branco = o padrão do Windows."),
     ("transcricao", "salvar_audio", "true",
      "Guardar a gravação (FLAC) ao lado da transcrição, em _audio."),
@@ -126,12 +130,53 @@ ESQUEMA: list[tuple[str, str, str, str]] = [
     ("compartilhar", "incluir_texto", "true",
      "Gerar a versão em texto dos autos (com a página e o documento marcados),\n"
      "que a IA lê muito melhor e mais barato que o PDF."),
+
+    ("pauta", "monitorar", "true",
+     "Conferir sozinho a pauta de audiências no e-SAJ e no eProc, enquanto o\n"
+     "programa está aberto, e avisar o que mudou."),
+    ("pauta", "intervalo_horas", "6", "De quantas em quantas horas conferir a pauta."),
+    ("pauta", "dias_atras", "7", "Quantos dias antes de hoje entram na conferência."),
+    ("pauta", "dias_a_frente", "60", "Quantos dias depois de hoje entram na conferência."),
+    ("pauta", "incluir_partes_sigilosos", "false",
+     "Na planilha exportada, mostrar as partes dos processos em segredo de\n"
+     "justiça. Desligado (padrão), a coluna sai como \"(segredo de justiça)\"."),
+    ("pauta", "pasta", "Pauta",
+     "Onde ficam as planilhas da pauta exportada. Mesma regra de caminho da\n"
+     "pasta_acervo, mas FORA dela: a planilha traz as partes dos processos\n"
+     "sigilosos, e tudo o que está no acervo vai para a IA."),
 ]
+
+# Rótulo, tipo e ajuda das chaves que a tela de Ajustes mostra a partir
+# daqui (o servidor descreve as demais em servidor/esquema.py). O tipo é o
+# do esquema da API: texto, flag, inteiro, pasta ou escolha.
+ROTULOS: dict[tuple[str, str], tuple[str, str, str]] = {
+    ("pauta", "monitorar"): (
+        "Monitorar a pauta", "flag",
+        "Confere sozinho a pauta no e-SAJ e no eProc e avisa as audiências novas, "
+        "alteradas ou canceladas."),
+    ("pauta", "intervalo_horas"): (
+        "Intervalo do monitoramento (horas)", "inteiro",
+        "De quantas em quantas horas a pauta é conferida, enquanto o Helestron está aberto."),
+    ("pauta", "dias_atras"): (
+        "Dias para trás", "inteiro",
+        "Quantos dias antes de hoje entram na sincronização."),
+    ("pauta", "dias_a_frente"): (
+        "Dias à frente", "inteiro",
+        "Quantos dias depois de hoje entram na sincronização."),
+    ("pauta", "incluir_partes_sigilosos"): (
+        "Mostrar as partes dos processos sigilosos na planilha", "flag",
+        "Desligado (recomendado), a coluna Partes dos processos em segredo de justiça "
+        "sai como “(segredo de justiça)”."),
+    ("pauta", "pasta"): (
+        "Pasta da pauta exportada", "pasta",
+        "Onde ficam as planilhas da pauta. Fica fora do acervo: elas trazem as partes "
+        "dos processos sigilosos."),
+}
 
 CABECALHO = """\
 ; ============================================================
-;  Assessor Integrado - configuração
-;  Quase tudo aqui também se ajusta pela tela de Configurações.
+;  Helestron - configuração
+;  Quase tudo aqui também se ajusta pela tela de Ajustes.
 ;  Edite com o Bloco de Notas e salve. Comentário: linha com ';'.
 ; ============================================================
 """
@@ -284,12 +329,17 @@ class Config:
     def pasta_sigilosos(self) -> Path:
         return caminhos.resolver(self.texto("geral", "pasta_sigilosos"), "Sigilosos")
 
+    @property
+    def pasta_pauta(self) -> Path:
+        """Onde vão as planilhas da pauta exportada: FORA do acervo."""
+        return caminhos.resolver(self.texto("pauta", "pasta"), "Pauta")
+
     def conflito_de_pastas(self) -> str:
-        return conflito_de_pastas(self.pasta_acervo, self.pasta_sigilosos)
+        return conflito_de_pastas(self.pasta_acervo, self.pasta_sigilosos, self.pasta_pauta)
 
     def criar_pastas(self) -> None:
         for p in (self.pasta_processos, self.pasta_transcricoes,
-                  self.pasta_sigilosos, caminhos.LOGS):
+                  self.pasta_sigilosos, self.pasta_pauta, caminhos.LOGS):
             p.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------ gravação
@@ -303,16 +353,19 @@ class Config:
             self.recarregar()
 
 
-def conflito_de_pastas(acervo: Path, sigilosos: Path) -> str:
+def conflito_de_pastas(acervo: Path, sigilosos: Path, pauta: Path | None = None) -> str:
     """Por que essas pastas não servem juntas; texto vazio se estão separadas.
 
     Tudo o que está dentro do acervo é compartilhado com a IA (e espelhado
     na nuvem). Se uma pasta ficar dentro da outra, os processos em segredo
-    de justiça passam a estar ao alcance da IA.
+    de justiça passam a estar ao alcance da IA. O mesmo vale para a pasta
+    da pauta exportada ('pauta', opcional): a planilha traz as partes dos
+    processos sigilosos.
     """
     try:
         a = Path(acervo).expanduser().resolve()
         s = Path(sigilosos).expanduser().resolve()
+        p = Path(pauta).expanduser().resolve() if pauta is not None and str(pauta).strip() else None
     except (OSError, RuntimeError):
         return ""
     if a == s:
@@ -325,6 +378,10 @@ def conflito_de_pastas(acervo: Path, sigilosos: Path) -> str:
         return ("A pasta do acervo não pode ficar dentro da pasta dos sigilosos: os processos "
                 "em segredo de justiça ficariam junto do que é compartilhado com a IA. "
                 "Escolha pastas separadas.")
+    if p is not None and p.is_relative_to(a):
+        return ("A pasta da pauta exportada não pode ficar dentro da pasta do acervo (nem ser "
+                "a mesma): a planilha traz as partes dos processos em segredo de justiça, e "
+                "tudo o que está no acervo é compartilhado com a IA. Escolha uma pasta fora dele.")
     return ""
 
 

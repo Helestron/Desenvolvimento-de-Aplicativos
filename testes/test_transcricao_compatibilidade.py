@@ -54,7 +54,7 @@ class TestFasterWhisper(unittest.TestCase):
         from faster_whisper import WhisperModel
 
         inspect.signature(WhisperModel.__init__).bind(
-            object(), "C:/AssessorIntegrado/runtime/modelos/whisper-small", device="cpu",
+            object(), "C:/Users/Public/Helestron/modelos/faster-whisper-small", device="cpu",
             compute_type="int8", cpu_threads=2)
 
     def test_campos_dos_segmentos(self):

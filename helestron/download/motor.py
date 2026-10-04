@@ -47,11 +47,12 @@ from pathlib import Path
 
 from ..nucleo import caminhos, cnj, tribunais
 from ..nucleo.cnj import Numero
+from ..nucleo.sistema import REINSTALAR
 from .contexto import Contexto
 from .modelos import (CANCELADO, ERRO, JA_BAIXADO, NAO_ENCONTRADO, NAO_SUPORTADO, OK,
-                      SEM_ACESSO, SIGILOSO_SEM_SENHA, Cancelado, LoginFalhou, OpcoesDownload,
-                      PortalIndisponivel, ProcessoNaoEncontrado, ResultadoProcesso, ResumoLote,
-                      SemAcesso, SessaoPerdida, SigilosoSemSenha)
+                      SEM_ACESSO, SIGILOSO_SEM_SENHA, TENTAR_DE_NOVO, Cancelado, LoginFalhou,
+                      OpcoesDownload, PortalIndisponivel, ProcessoNaoEncontrado,
+                      ResultadoProcesso, ResumoLote, SemAcesso, SessaoPerdida, SigilosoSemSenha)
 
 log = logging.getLogger("download.motor")
 
@@ -75,15 +76,13 @@ def fabrica_portal_padrao(nav, tribunal, opcoes: OpcoesDownload, ctx: Contexto,
         except ModuleNotFoundError as erro:
             if erro.name in ("helestron.download.eproc", __package__ + ".eproc"):
                 raise PortalIndisponivel(
-                    "o módulo do eProc não está presente nesta instalação. Atualize o "
-                    "programa (ou rode o INSTALAR.bat de novo).") from erro
+                    f"o módulo do eProc não está presente nesta instalação. {REINSTALAR}"
+                ) from erro
             raise PortalIndisponivel(
-                f"falta um componente para o eProc ({erro.name}). Rode o INSTALAR.bat de novo."
-            ) from erro
+                f"falta um componente para o eProc ({erro.name}). {REINSTALAR}") from erro
         except ImportError as erro:
             raise PortalIndisponivel(
-                f"o módulo do eProc não pôde ser carregado ({erro}). Rode o INSTALAR.bat "
-                "de novo.") from erro
+                f"o módulo do eProc não pôde ser carregado ({erro}). {REINSTALAR}") from erro
         return PortalEProc(nav, tribunal, opcoes, ctx, credenciais)
     raise PortalIndisponivel(f"o {tribunal.sigla} usa um sistema que o programa ainda não "
                              "suporta.")
@@ -96,7 +95,7 @@ def fabrica_navegador_padrao(tribunal, opcoes: OpcoesDownload):
     escolha = opcoes.navegador or "auto"
     executavel = None
     if escolha.lower() not in ("auto", "chrome", "msedge", "chromium"):
-        # caminho de um navegador (ex.: Chrome portátil) informado nas Configurações
+        # caminho de um navegador (ex.: Chrome portátil) escrito no config.ini
         executavel, escolha = (escolha if Path(escolha).is_file() else None), "auto"
     return Navegador(
         caminhos.PERFIS / f"{sistema}-{tribunal.sigla}",
@@ -567,7 +566,7 @@ class _Lote:
                 r.detalhe = _juntar(
                     r.detalhe, f"processo em segredo de justiça: não consegui guardá-lo na pasta "
                     f"de sigilosos ({motivo}). Por segurança, ele não foi posto no acervo. "
-                    "Confira a pasta de sigilosos em Configurações e baixe de novo")
+                    "Confira a pasta dos sigilosos em Ajustes › Pastas e baixe de novo")
             elif isinstance(erro, PermissionError):
                 r.detalhe = (f"não consegui gravar {nome}: o arquivo está aberto em outro "
                              "programa (leitor de PDF?). Feche-o e baixe de novo.")
@@ -656,7 +655,7 @@ class _Lote:
             return self.cfg
         if self._cfg_lida is None:
             from ..nucleo import config
-            self._cfg_lida = config.carregar()
+            self._cfg_lida = config.carregar(criar=False)
         return self._cfg_lida
 
     def _levar_transcricoes(self, r: ResultadoProcesso, n: Numero) -> None:
@@ -729,8 +728,9 @@ class _Lote:
         if gravando:
             r.detalhe = _juntar(
                 r.detalhe, "ATENÇÃO: processo sigiloso com audiência sendo gravada agora; a "
-                "transcrição fica no acervo até a gravação terminar. Depois, clique em 'Tentar "
-                "de novo' para levá-la à pasta de sigilosos antes de compartilhar o acervo")
+                "transcrição fica no acervo até a gravação terminar. Depois, clique em "
+                f"“{TENTAR_DE_NOVO}” para levá-la à pasta de sigilosos antes de compartilhar o "
+                "acervo")
         else:
             r.detalhe = _juntar(
                 r.detalhe, "ATENÇÃO: processo sigiloso com "
@@ -888,7 +888,7 @@ class _Lote:
                     + "; ".join(self._sigilo_no_acervo)
                     + (". Feche o programa que o mantém aberto e mova-o" if um
                        else ". Feche o programa que os mantém abertos e mova-os")
-                    + " à mão (ou clique em 'Tentar de novo') antes de compartilhar o acervo.")
+                    + f" à mão (ou clique em “{TENTAR_DE_NOVO}”) antes de compartilhar o acervo.")
             except Exception:
                 pass
             return resumo
@@ -965,12 +965,12 @@ class _Lote:
             cfg = self.cfg
             if cfg is None:
                 from ..nucleo import config
-                cfg = config.carregar()
+                cfg = config.carregar(criar=False)
             preparo.atualizar_contexto(cfg, progresso=self._progresso_preparo,
                                        cancelado=self._cancelado)
         except Exception as erro:
             log.warning("não consegui preparar os arquivos para a IA (%s); use o botão "
-                        "'Preparar arquivos para IA' na tela Compartilhar.", str(erro)[:160])
+                        "“Preparar acervo para a IA” na tela Compartilhar.", str(erro)[:160])
 
     def _progresso_preparo(self, feitos: int, total: int, _descricao: str = "") -> None:
         # No máximo um recado a cada 2 s: no terminal, cada um vira uma linha.

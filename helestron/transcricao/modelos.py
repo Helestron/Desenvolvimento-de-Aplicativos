@@ -1,11 +1,17 @@
 """Modelos Whisper (faster-whisper / CTranslate2): baixar, carregar e filtrar.
 
 Diferenças em relação ao Assessor SAJ, todas por problemas reais:
-  * o modelo fica numa pasta simples (runtime\\modelos\\whisper-small), não no
+  * o modelo fica numa pasta simples (modelos\\faster-whisper-small), não no
     cache do Hugging Face. Na base, CADA abertura tentava a rede primeiro e só
     depois usava o arquivo local - em rede de tribunal com proxy, ou offline,
     era espera de timeout toda vez. Aqui, instalado = carregado do disco, sem
     rede nenhuma;
+  * o modelo da transcrição ao vivo (small) vem DENTRO do instalador, na pasta
+    do programa (caminhos.MODELOS_EMBUTIDOS): a audiência funciona no primeiro
+    uso, sem internet - a rede do tribunal costuma barrar o Hugging Face. Os
+    outros modelos são baixados para a pasta de dados (caminhos.MODELOS), que
+    sobrevive às atualizações. Procura-se primeiro no embutido, depois no
+    baixado;
   * no máximo 2 modelos na memória (o ao vivo e o da revisão); a base nunca
     descarregava, e trocar o modelo deixava dois na RAM;
   * metade dos núcleos por padrão: com todos, a captura do microfone e o
@@ -32,9 +38,12 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Callable
 
-from ..nucleo import caminhos
+from ..nucleo import caminhos, sistema
 
 log = logging.getLogger("transcricao.modelos")
+
+# A tela onde se baixam os modelos (e se escolhe o da audiência).
+AJUSTES_TRANSCRICAO = "Ajustes › Transcrição"
 
 # nome -> (repositório no Hugging Face, tamanho aproximado em MB)
 CATALOGO: dict[str, tuple[str, int]] = {
@@ -57,7 +66,15 @@ NECESSARIOS = ("model.bin", "config.json", "tokenizer.json")
 PADROES_DOWNLOAD = ["config.json", "preprocessor_config.json", "model.bin",
                     "tokenizer.json", "vocabulary.*"]
 
-PASTA: Path = caminhos.MODELOS     # trocável nos testes
+# Onde os modelos baixados vão (pasta de dados) e onde estão os que vêm no
+# instalador (pasta do programa, só leitura). Trocáveis nos testes.
+PASTA: Path = caminhos.MODELOS
+PASTA_EMBUTIDA: Path = caminhos.MODELOS_EMBUTIDOS
+# Nome da pasta de cada modelo: o do repositório no Hugging Face (é o que a
+# construção do instalador grava). "whisper-<nome>" é o da versão anterior,
+# aceito para quem copiar uma pasta de outro computador.
+PREFIXO = "faster-whisper-"
+PREFIXOS_ACEITOS = (PREFIXO, "whisper-")
 MAXIMO_NA_MEMORIA = 2
 
 _cache: "OrderedDict[tuple, object]" = OrderedDict()
@@ -83,15 +100,8 @@ def nome_canonico(nome: str) -> str:
     return n
 
 
-def pasta_do_modelo(nome: str) -> Path:
-    return Path(PASTA) / f"whisper-{nome_canonico(nome)}"
-
-
-def instalado(nome: str) -> bool:
-    try:
-        pasta = pasta_do_modelo(nome)
-    except ValueError:
-        return False
+def _completa(pasta: Path) -> bool:
+    """A pasta tem um modelo inteiro (e não uma cópia interrompida)?"""
     try:
         if not all((pasta / arq).is_file() for arq in NECESSARIOS):
             return False
@@ -99,6 +109,44 @@ def instalado(nome: str) -> bool:
         return (pasta / "model.bin").stat().st_size > 1_000_000
     except OSError:
         return False
+
+
+def _candidatas(nome: str) -> list[Path]:
+    """Onde o modelo pode estar, na ordem de preferência: o embutido no
+    instalador, depois o baixado."""
+    n = nome_canonico(nome)
+    return [Path(base) / f"{prefixo}{n}"
+            for base in (PASTA_EMBUTIDA, PASTA) for prefixo in PREFIXOS_ACEITOS]
+
+
+def pasta_de_download(nome: str) -> Path:
+    """Para onde o modelo é baixado (sempre a pasta de dados)."""
+    return Path(PASTA) / f"{PREFIXO}{nome_canonico(nome)}"
+
+
+def pasta_do_modelo(nome: str) -> Path:
+    """A pasta do modelo instalado (embutido ou baixado); se não houver, a
+    pasta para onde ele seria baixado."""
+    for pasta in _candidatas(nome):
+        if _completa(pasta):
+            return pasta
+    return pasta_de_download(nome)
+
+
+def instalado(nome: str) -> bool:
+    try:
+        return any(_completa(p) for p in _candidatas(nome))
+    except ValueError:
+        return False
+
+
+def embutido(nome: str) -> bool:
+    """O modelo veio no instalador (pasta do programa)?"""
+    try:
+        n = nome_canonico(nome)
+    except ValueError:
+        return False
+    return any(_completa(Path(PASTA_EMBUTIDA) / f"{prefixo}{n}") for prefixo in PREFIXOS_ACEITOS)
 
 
 def instalados() -> list[str]:
@@ -114,8 +162,8 @@ def listar() -> list[dict]:
     linhas = []
     for nome, (repo, mb) in CATALOGO.items():
         linhas.append({"nome": nome, "repositorio": repo, "mb": mb,
-                       "instalado": instalado(nome), "pasta": pasta_do_modelo(nome),
-                       "descricao": DESCRICAO.get(nome, "")})
+                       "instalado": instalado(nome), "embutido": embutido(nome),
+                       "pasta": pasta_do_modelo(nome), "descricao": DESCRICAO.get(nome, "")})
     return linhas
 
 
@@ -156,7 +204,8 @@ def caminho_nativo(caminho: Path | str) -> str:
     if curto and curto.isascii():
         return curto
     log.warning("o caminho %s tem acento e o Windows não deu um nome curto sem acento; "
-                "se o modelo não abrir, instale o programa em C:\\AssessorIntegrado.", texto)
+                "se o modelo não abrir, instale o Helestron numa pasta sem acento no "
+                "caminho, como C:\\Helestron.", texto)
     return texto
 
 
@@ -214,7 +263,7 @@ def preparar_rede() -> None:
 def _mensagem_de_falha(erro: BaseException, nome: str) -> str:
     texto = f"{type(erro).__name__}: {erro}"
     baixo = texto.lower()
-    pasta = pasta_do_modelo(nome)
+    pasta = pasta_de_download(nome)
     if isinstance(erro, OSError) and getattr(erro, "errno", None) == 28 or "no space" in baixo:
         return (f"Disco cheio ao baixar o modelo '{nome}' (~{tamanho_mb(nome)} MB). "
                 "Libere espaço e tente de novo; o download continua de onde parou.")
@@ -249,7 +298,9 @@ def _bytes_na_pasta(pasta: Path) -> int:
 
 def baixar(nome: str, progresso: Callable[[float, str], None] | None = None,
            tentativas: int = 3) -> Path:
-    """Baixa o modelo para runtime\\modelos\\whisper-<nome> e devolve a pasta.
+    """Baixa o modelo para a pasta de dados (modelos\\faster-whisper-<nome>)
+    e devolve a pasta. Se ele já estiver instalado (embutido ou baixado),
+    devolve a pasta dele sem ir à rede.
 
     `progresso(fração 0..1, texto)`. Retomável: o que já veio fica em disco.
     Levanta ModeloAusente com mensagem para o usuário se não conseguir.
@@ -263,7 +314,7 @@ def baixar(nome: str, progresso: Callable[[float, str], None] | None = None,
             except Exception:  # pragma: no cover
                 pass
 
-    # Um download por modelo de cada vez: a tela de Configurações e a
+    # Um download por modelo de cada vez: a tela de Ajustes e a
     # transcrição podem pedir o mesmo modelo juntas; quem chega depois
     # espera e encontra o modelo pronto.
     with _trava:
@@ -279,17 +330,17 @@ def baixar(nome: str, progresso: Callable[[float, str], None] | None = None,
 
 def _baixar(nome: str, avisar: Callable[[float, str], None], tentativas: int) -> Path:
     repo, mb = CATALOGO[nome]
-    pasta = pasta_do_modelo(nome)
     if instalado(nome):
         avisar(1.0, f"Modelo {nome} já instalado.")
-        return pasta
+        return pasta_do_modelo(nome)
+    pasta = pasta_de_download(nome)
 
     preparar_rede()
     try:
         from huggingface_hub import snapshot_download
     except ImportError as erro:
         raise ModeloAusente("O componente de download de modelos (huggingface_hub) não "
-                            "está instalado. Rode o INSTALAR.bat de novo.") from erro
+                            f"está instalado. {sistema.REINSTALAR}") from erro
     try:
         pasta.mkdir(parents=True, exist_ok=True)
     except OSError as erro:
@@ -352,8 +403,8 @@ def carregar(nome: str, threads: int = 0,
     if not instalado(nome):
         if not baixar_se_faltar:
             raise ModeloAusente(
-                f"O modelo '{nome}' não está instalado. Baixe-o em Configurações > "
-                "Transcrição (ou rode: python -m helestron modelos baixar " + nome + ").")
+                f"O modelo '{nome}' não está instalado. Baixe-o em {AJUSTES_TRANSCRICAO} "
+                "(botão “Baixar”).")
         # FORA da trava geral: baixar o medium leva minutos, e com a trava a
         # audiência ao vivo que começasse nesse meio-tempo ficava sem
         # transcrição (o "small", já instalado, esperava o download do outro).
@@ -368,7 +419,7 @@ def carregar(nome: str, threads: int = 0,
         except ImportError as erro:
             raise ErroDoModelo(
                 "O motor de transcrição (faster-whisper) não pôde ser carregado: "
-                f"{erro}. Rode o INSTALAR.bat de novo.") from erro
+                f"{erro}. {sistema.REINSTALAR}") from erro
         pasta = pasta_do_modelo(nome)
         if progresso:
             try:
@@ -380,10 +431,14 @@ def carregar(nome: str, threads: int = 0,
             modelo = WhisperModel(caminho_nativo(pasta), device="cpu", compute_type="int8",
                                   cpu_threads=n_threads)
         except Exception as erro:
+            if Path(pasta).parent == Path(PASTA_EMBUTIDA):
+                # O que veio no instalador não se apaga à mão: reinstala-se.
+                conserto = f"o modelo que veio com o programa está corrompido. {sistema.REINSTALAR}"
+            else:
+                conserto = (f"a pasta pode estar corrompida: apague {pasta} e baixe o modelo "
+                            f"de novo em {AJUSTES_TRANSCRICAO}.")
             raise ErroDoModelo(
-                f"Não consegui abrir o modelo '{nome}' ({erro}). A pasta pode estar "
-                f"corrompida: apague {pasta} e baixe o modelo de novo em "
-                "Configurações > Transcrição.") from erro
+                f"Não consegui abrir o modelo '{nome}' ({erro}): {conserto}") from erro
         _cache[chave] = modelo
         while len(_cache) > MAXIMO_NA_MEMORIA:
             antigo, _ = _cache.popitem(last=False)

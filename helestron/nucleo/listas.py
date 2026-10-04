@@ -47,7 +47,7 @@ from io import BytesIO
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from . import cnj
+from . import cnj, sistema
 
 log = logging.getLogger("listas")
 
@@ -499,7 +499,7 @@ def ler_arquivo(caminho: Path | str) -> Leitura:
         except ImportError as erro:  # pragma: no cover - instalação incompleta
             erro_leitor = ListaInvalida(
                 f"falta uma biblioteca para ler {_NOMES.get(tipo, tipo)} "
-                f"({erro.name}). Rode o INSTALAR.bat de novo.")
+                f"({erro.name}). {sistema.REINSTALAR}")
 
     # Última tentativa: texto com outra cara. Custa pouco e salva o arquivo
     # com extensão trocada.
@@ -568,7 +568,7 @@ def baixar_link(url: str, pasta: Path) -> Path:
     """Baixa a relação de um link público e devolve o arquivo salvo."""
     destino_url = url_de_download(url)
     pedido = urllib.request.Request(destino_url, headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AssessorIntegrado"})
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Helestron"})
     try:
         with urllib.request.urlopen(pedido, timeout=60) as resp:
             dados = resp.read(50 * 1024 * 1024)

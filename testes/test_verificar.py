@@ -1,9 +1,12 @@
-"""Testes da verificação da instalação (app/verificar.py).
+"""Testes da verificação da instalação (helestron/verificar.py).
 
-Rodam em qualquer sistema: o que só existe no Windows (DPAPI, privacidade do
-microfone) tem de sair como aviso "não se aplica" fora dele, e nunca quebrar.
-As sondas em processo à parte são exercitadas com módulos de mentira que
-falham, derrubam o processo ou travam - os três jeitos de uma DLL dar errado.
+Rodam em qualquer sistema: o que só existe no Windows (DPAPI, WebView2,
+privacidade do microfone, a versão do Windows) tem de sair como aviso "não
+se aplica" fora dele, e nunca quebrar. As sondas em processo à parte são
+exercitadas com módulos de mentira que falham, derrubam o processo ou
+travam - os três jeitos de uma DLL dar errado. As pastas do programa (dados
+e documentos do usuário) apontam para uma pasta temporária: nada toca no
+perfil de verdade.
 """
 
 from __future__ import annotations
@@ -20,15 +23,41 @@ from pathlib import Path
 from unittest import mock
 
 from helestron import verificar
-from helestron.nucleo import config
+from helestron.compartilhar import chatgpt, claude
+from helestron.nucleo import caminhos, config
 from helestron.verificar import AVISO, FALHA, OK, Item
+
+_ISOLAMENTO: list = []
+
+
+def setUpModule():
+    """Dados do programa e documentos do usuário numa pasta temporária."""
+    tmp = tempfile.TemporaryDirectory(prefix="helestron-verificar-")
+    base = Path(tmp.name)
+    _ISOLAMENTO.append(tmp)
+    for nome, valor in (("LOCAL", base / "Local"), ("LOGS", base / "Local" / "Logs"),
+                        ("TEMP", base / "Local" / "temp"), ("MODELOS", base / "Local" / "modelos"),
+                        ("BASE_USUARIO", base / "Documentos" / "Helestron")):
+        patch = mock.patch.object(caminhos, nome, valor)
+        patch.start()
+        _ISOLAMENTO.append(patch)
+
+
+def tearDownModule():
+    for item in reversed(_ISOLAMENTO):
+        if hasattr(item, "stop"):
+            item.stop()
+        else:
+            item.cleanup()
+    _ISOLAMENTO.clear()
 
 
 def cfg_temporaria(pasta: Path) -> config.Config:
-    """Config num arquivo temporário, com o acervo e os sigilosos dentro de `pasta`."""
+    """Config num arquivo temporário, com o acervo, os sigilosos e a pauta dentro de `pasta`."""
     cfg = config.Config(pasta / "config.ini")
     cfg.definir("geral", "pasta_acervo", str(pasta / "Acervo"))
     cfg.definir("geral", "pasta_sigilosos", str(pasta / "Sigilosos"))
+    cfg.definir("pauta", "pasta", str(pasta / "Pauta"))
     return cfg
 
 
@@ -51,7 +80,8 @@ class TestResumo(unittest.TestCase):
         self.assertIn("Tudo certo", f)
         f = verificar.frase_final(verificar.resumir([Item("A", AVISO), Item("B", AVISO), Item("C", FALHA)]))
         self.assertIn("0 OK, 2 avisos e 1 falha", f)
-        self.assertIn("INSTALAR.bat", f)
+        self.assertIn("Helestron-Setup", f)
+        self.assertNotIn("INSTALAR", f)
 
     def test_formatar_item(self):
         texto = verificar.formatar_item(Item("Microfone", AVISO, "Nenhum.", False,
@@ -68,6 +98,61 @@ class TestResumo(unittest.TestCase):
         self.assertTrue(dados["completo"])
         self.assertEqual(dados["resumo"], {OK: 1, AVISO: 1, FALHA: 0})
         self.assertEqual(set(dados["itens"][0]), {"nome", "situacao", "detalhe", "obrigatorio", "codigo", "acao"})
+        self.assertEqual(dados["programa"], "Helestron")
+        self.assertEqual(dados["dados"], str(caminhos.LOCAL))
+
+    def test_cabecalho_mostra_programa_e_dados(self):
+        texto = verificar.cabecalho(False)
+        self.assertTrue(texto.startswith("Helestron "))
+        self.assertIn(f"Programa: {caminhos.INSTALACAO}", texto)
+        self.assertIn(f"Dados: {caminhos.LOCAL}", texto)
+
+
+class TestSistemaEJanela(unittest.TestCase):
+    """Windows de 64 bits e WebView2: decididos por funções puras."""
+
+    def test_windows_64_bits(self):
+        item = verificar.avaliar_sistema("Windows", 22631, "AMD64", True)
+        self.assertEqual(item.situacao, OK)
+        self.assertIn("Windows 11", item.detalhe)
+        self.assertIn("64 bits", item.detalhe)
+        self.assertIn("Windows 10", verificar.avaliar_sistema("Windows", 19045, "AMD64", True).detalhe)
+
+    def test_32_bits_ou_antigo_reprova(self):
+        for args in (("Windows", 19045, "x86", False), ("Windows", 19045, "AMD64", False),
+                     ("Windows", 9600, "AMD64", True)):
+            with self.subTest(args=args):
+                item = verificar.avaliar_sistema(*args)
+                self.assertEqual((item.situacao, item.obrigatorio), (FALHA, True))
+                self.assertIn("Windows 10 ou 11 de 64 bits", item.acao)
+
+    def test_fora_do_windows_nao_se_aplica(self):
+        item = verificar.avaliar_sistema("Linux", 0, "x86_64", True)
+        self.assertEqual((item.situacao, item.obrigatorio), (AVISO, False))
+        self.assertIn("Não se aplica", item.detalhe)
+        if sys.platform != "win32":
+            self.assertEqual(verificar.checar_sistema().situacao, AVISO)
+
+    def test_webview2_pelo_registro(self):
+        self.assertIn("{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}", verificar.CHAVES_WEBVIEW2[0][1])
+        self.assertEqual({r for r, _ in verificar.CHAVES_WEBVIEW2}, {"HKLM", "HKCU"})
+        item = verificar.avaliar_webview2([None, "", "128.0.2739.42"])
+        self.assertEqual(item.situacao, OK)
+        self.assertIn("128.0.2739.42", item.detalhe)
+        # "0.0.0.0" é o que fica no registro depois de desinstalar
+        for versoes in ([], [None, None, None], ["0.0.0.0"]):
+            with self.subTest(versoes=versoes):
+                item = verificar.avaliar_webview2(versoes)
+                self.assertEqual((item.situacao, item.obrigatorio), (AVISO, False))
+                self.assertIn("modo aplicativo", item.acao)
+                self.assertIn("WebView2 Runtime", item.acao)
+
+    def test_webview2_fora_do_windows(self):
+        if sys.platform == "win32":
+            self.skipTest("só fora do Windows")
+        item = verificar.checar_webview2()
+        self.assertEqual(item.situacao, AVISO)
+        self.assertIn("Não se aplica", item.detalhe)
 
 
 class TestPrivacidadeDoMicrofone(unittest.TestCase):
@@ -100,32 +185,32 @@ class TestSonda(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         pasta = Path(self.tmp.name)
-        (pasta / "queda_assessor_teste.py").write_text("import os\nos._exit(3)\n", encoding="utf-8")
-        (pasta / "trava_assessor_teste.py").write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
+        (pasta / "queda_helestron_teste.py").write_text("import os\nos._exit(3)\n", encoding="utf-8")
+        (pasta / "trava_helestron_teste.py").write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
         self.extra = [str(pasta)]
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def test_ok_e_erro(self):
-        r = verificar.sondar_importacoes(["json", "modulo_que_nao_existe_assessor"])
+        r = verificar.sondar_importacoes(["json", "modulo_que_nao_existe_helestron"])
         self.assertTrue(r["json"]["ok"])
-        self.assertFalse(r["modulo_que_nao_existe_assessor"]["ok"])
-        self.assertIn("ModuleNotFoundError", r["modulo_que_nao_existe_assessor"]["erro"])
+        self.assertFalse(r["modulo_que_nao_existe_helestron"]["ok"])
+        self.assertIn("ModuleNotFoundError", r["modulo_que_nao_existe_helestron"]["erro"])
 
     def test_queda_aponta_o_culpado_e_segue(self):
-        r = verificar.sondar_importacoes(["json", "queda_assessor_teste", "csv"], extra_pythonpath=self.extra)
+        r = verificar.sondar_importacoes(["json", "queda_helestron_teste", "csv"], extra_pythonpath=self.extra)
         self.assertTrue(r["json"]["ok"])
-        self.assertFalse(r["queda_assessor_teste"]["ok"])
-        self.assertTrue(r["queda_assessor_teste"]["queda"])
-        self.assertIn("caiu", r["queda_assessor_teste"]["erro"])
+        self.assertFalse(r["queda_helestron_teste"]["ok"])
+        self.assertTrue(r["queda_helestron_teste"]["queda"])
+        self.assertIn("caiu", r["queda_helestron_teste"]["erro"])
         self.assertTrue(r["csv"]["ok"], "o módulo depois da queda tem de ser tentado de novo")
 
     def test_trava_vira_diagnostico(self):
-        r = verificar.sondar_importacoes(["trava_assessor_teste", "json"], limite_s=3,
+        r = verificar.sondar_importacoes(["trava_helestron_teste", "json"], limite_s=3,
                                          extra_pythonpath=self.extra)
-        self.assertFalse(r["trava_assessor_teste"]["ok"])
-        self.assertIn("travou", r["trava_assessor_teste"]["erro"])
+        self.assertFalse(r["trava_helestron_teste"]["ok"])
+        self.assertIn("travou", r["trava_helestron_teste"]["erro"])
         self.assertTrue(r["json"]["ok"])
 
     def test_explicar_queda(self):
@@ -180,54 +265,81 @@ class TestChecagens(unittest.TestCase):
                 item = verificar.checar_pastas(self.cfg)
                 self.assertEqual((item.situacao, item.codigo), (AVISO, "pastas"))
                 self.assertIn(config.conflito_de_pastas(acervo, sigilosos), item.detalhe)
-                self.assertIn("os processos em segredo de justiça iriam para a IA", item.detalhe)
-                self.assertIn("Configurações > Geral", item.acao)
+                self.assertIn("o que é de segredo de justiça iria para a IA", item.detalhe)
+                self.assertIn("Ajustes › Pastas", item.acao)
                 self.assertIn("\u201cAlterar\u2026\u201d", item.acao)
+
+    def test_pauta_dentro_do_acervo(self):
+        # A planilha da pauta traz as partes dos processos sigilosos.
+        self.cfg.definir("pauta", "pasta", str(self.pasta / "Acervo" / "Pauta"))
+        item = verificar.checar_pastas(self.cfg)
+        self.assertEqual(item.situacao, AVISO)
+        self.assertIn("pauta exportada", item.detalhe)
 
     def test_acervo_nao_pode_conter_o_programa_nem_as_senhas(self):
         acervo = self.pasta / "Acervo"
-        with mock.patch.object(verificar.caminhos, "RAIZ", acervo / "AssessorIntegrado"):
+        with mock.patch.object(verificar.caminhos, "INSTALADO", True), \
+                mock.patch.object(verificar.caminhos, "INSTALACAO", acervo / "Programs" / "Helestron"):
             item = verificar.checar_pastas(self.cfg)
         self.assertEqual(item.situacao, AVISO)
         self.assertIn("contém a pasta do programa", item.detalhe)
         self.assertIn("fora da pasta do programa", item.acao)
-        with mock.patch.object(verificar.caminhos, "LOCAL", acervo / "AppData" / "AssessorIntegrado"):
+        with mock.patch.object(verificar.caminhos, "LOCAL", acervo / "AppData" / "Helestron"):
             item = verificar.checar_pastas(self.cfg)
         self.assertEqual(item.situacao, AVISO)
-        self.assertIn("as senhas e os perfis do navegador", item.detalhe)
+        self.assertIn("as senhas, os registros e os perfis do navegador", item.detalhe)
         with mock.patch.object(verificar.caminhos, "LOCAL", acervo):
             self.assertEqual(verificar.checar_pastas(self.cfg).situacao, AVISO)
-        # O padrão (acervo DENTRO da pasta do programa) continua aceito
-        with mock.patch.object(verificar.caminhos, "RAIZ", self.pasta):
+        # Fora da instalação (repositório), a pasta "do programa" não conta
+        with mock.patch.object(verificar.caminhos, "INSTALADO", False), \
+                mock.patch.object(verificar.caminhos, "INSTALACAO", self.pasta):
             self.assertEqual(verificar.checar_pastas(self.cfg).situacao, OK)
+
+    def test_acervo_no_onedrive_e_aviso(self):
+        with mock.patch.dict(os.environ, {"OneDrive": str(self.pasta)}):
+            item = verificar.checar_local(self.cfg)
+        self.assertEqual((item.situacao, item.obrigatorio), (AVISO, False))
+        self.assertIn("OneDrive", item.detalhe)
+        self.assertIn("Ajustes › Pastas", item.acao)
+        with mock.patch.dict(os.environ, {"OneDrive": "", "OneDriveCommercial": "",
+                                          "OneDriveConsumer": ""}):
+            self.assertEqual(verificar.checar_local(self.cfg).situacao, OK)
 
     def test_modelo_presente_ou_ausente(self):
         try:
             from helestron.transcricao import modelos
         except ImportError:
             self.skipTest("módulo de modelos indisponível")
-        antes = modelos.PASTA
-        modelos.PASTA = self.pasta / "modelos"
-        try:
+
+        def instalar(pasta):
+            pasta.mkdir(parents=True)
+            (pasta / "model.bin").write_bytes(b"\0" * 1_100_000)
+            (pasta / "config.json").write_text("{}", encoding="utf-8")
+            (pasta / "tokenizer.json").write_text("{}", encoding="utf-8")
+
+        with mock.patch.object(modelos, "PASTA", self.pasta / "modelos"), \
+                mock.patch.object(modelos, "PASTA_EMBUTIDA", self.pasta / "programa" / "modelos"):
             item = verificar.checar_modelo(self.cfg)
             self.assertEqual(item.situacao, AVISO)
             self.assertFalse(item.obrigatorio)
             self.assertIn("small", item.detalhe)
             self.assertIn("484 MB", item.acao)
+            self.assertIn("Ajustes › Transcrição", item.acao)
             teste = verificar.checar_teste_transcricao(self.cfg)
             self.assertEqual(teste.situacao, AVISO)
             self.assertIn("Pulado", teste.detalhe)
 
-            pasta = modelos.PASTA / "whisper-small"
-            pasta.mkdir(parents=True)
-            (pasta / "model.bin").write_bytes(b"\0" * 1_100_000)
-            (pasta / "config.json").write_text("{}", encoding="utf-8")
-            (pasta / "tokenizer.json").write_text("{}", encoding="utf-8")
+            instalar(modelos.PASTA / "faster-whisper-small")
             item = verificar.checar_modelo(self.cfg)
             self.assertEqual(item.situacao, OK, item.detalhe)
+            self.assertIn("baixado", item.detalhe)
             self.assertIn("medium", item.detalhe)   # o da revisão, ainda por baixar
-        finally:
-            modelos.PASTA = antes
+
+            # o que vem no instalador vale primeiro, e o item diz que é ele
+            instalar(modelos.PASTA_EMBUTIDA / "faster-whisper-small")
+            item = verificar.checar_modelo(self.cfg)
+            self.assertEqual(item.situacao, OK, item.detalhe)
+            self.assertIn("embutido no programa", item.detalhe)
 
     def test_teste_de_transcricao_usa_o_caminho_nativo(self):
         # Regressão: a sonda carregava o modelo pelo caminho longo, com acento
@@ -257,13 +369,21 @@ class TestChecagens(unittest.TestCase):
 
         # Sem nome curto (disco com 8.3 desligado), a falha sugere também uma pasta sem acento.
         Modelos.caminho_nativo = staticmethod(lambda p: str(longo))
+        quebra = (1, "", "RuntimeError: Unable to open file 'model.bin'", False)
         with mock.patch.object(verificar, "_modelos", lambda: Modelos), \
-                mock.patch.object(verificar, "rodar", lambda *a, **k: (1, "", "RuntimeError: Unable to open file 'model.bin'", False)):
+                mock.patch.object(verificar, "rodar", lambda *a, **k: quebra):
             item = verificar.checar_teste_transcricao(self.cfg)
         self.assertEqual(item.situacao, FALHA)
-        self.assertIn("INSTALAR.bat", item.acao)
+        self.assertIn("baixe o modelo de novo em Ajustes › Transcrição", item.acao)
         self.assertIn("sem acento", item.acao)
-        self.assertIn("C:\\AssessorIntegrado", item.acao)
+        self.assertIn("C:\\Helestron", item.acao)
+        # O modelo que veio no instalador não se apaga: reinstala-se.
+        Modelos.embutido = staticmethod(lambda nome: True)
+        with mock.patch.object(verificar, "_modelos", lambda: Modelos), \
+                mock.patch.object(verificar, "rodar", lambda *a, **k: quebra):
+            item = verificar.checar_teste_transcricao(self.cfg)
+        self.assertIn("Helestron-Setup", item.acao)
+        self.assertNotIn("Apague", item.acao)
 
     def test_cofre(self):
         item = verificar.checar_cofre()
@@ -281,12 +401,21 @@ class TestChecagens(unittest.TestCase):
         self.assertRegex(item.detalhe, r"^\d+ tribunais no catálogo; \d+ com e-SAJ ou eProc\.$")
 
     def test_bibliotecas_faltando(self):
-        falsas = verificar.BIBLIOTECAS + (("modulo_inexistente_assessor", "pacote-inexistente", "teste"),)
+        falsas = verificar.BIBLIOTECAS + (("modulo_inexistente_helestron", "pacote-inexistente", "teste"),)
         with mock.patch.object(verificar, "BIBLIOTECAS", falsas):
             item = verificar.checar_bibliotecas()
         self.assertEqual(item.situacao, FALHA)
         self.assertIn("pacote-inexistente (teste)", item.detalhe)
-        self.assertIn("INSTALAR.bat", item.acao)
+        self.assertIn("Helestron-Setup", item.acao)
+
+    def test_bibliotecas_so_do_windows_nao_contam_fora_dele(self):
+        so_windows = (("modulo_inexistente_helestron", "pacote-do-windows", "janela", "windows"),)
+        with mock.patch.object(verificar, "BIBLIOTECAS", verificar.BIBLIOTECAS[:1] + so_windows):
+            item = verificar.checar_bibliotecas()
+        if sys.platform == "win32":
+            self.assertEqual(item.situacao, FALHA)
+        else:
+            self.assertEqual(item.situacao, OK, item.detalhe)
 
     def test_nativos_com_modulo_simples(self):
         with mock.patch.object(verificar, "NATIVOS", ("json",)):
@@ -296,29 +425,41 @@ class TestChecagens(unittest.TestCase):
 
     def test_sem_navegador(self):
         with mock.patch.object(verificar, "_navegadores_instalados", return_value=("", "")), \
-                mock.patch.object(verificar, "_chromium_proprio", return_value=""):
+                mock.patch.object(verificar, "_chromium_reserva", return_value=""):
             item = verificar.checar_navegador(self.cfg)
+        self.assertEqual(item.nome, "Navegador dos portais")
+        self.assertFalse(item.obrigatorio)     # a transcrição funciona sem ele
         if sys.platform == "win32":
-            self.assertEqual((item.situacao, item.obrigatorio), (FALHA, True))
-            self.assertIn("Microsoft Edge", item.acao)
+            self.assertEqual(item.situacao, FALHA)
+            self.assertIn("Microsoft Edge vem com o Windows", item.acao)
         else:
             self.assertEqual(item.situacao, AVISO)
 
     def test_navegador_encontrado(self):
         with mock.patch.object(verificar, "_navegadores_instalados", return_value=("", "C:/edge/msedge.exe")), \
-                mock.patch.object(verificar, "_chromium_proprio", return_value=""):
+                mock.patch.object(verificar, "_chromium_reserva", return_value="/pw/chromium-1"):
             item = verificar.checar_navegador(self.cfg)
         self.assertEqual(item.situacao, OK)
         self.assertEqual(item.detalhe, "Disponível: Microsoft Edge.")
 
+    def test_so_o_chromium_de_reserva(self):
+        with mock.patch.object(verificar, "_navegadores_instalados", return_value=("", "")), \
+                mock.patch.object(verificar, "_chromium_reserva", return_value="/pw/chromium-1"):
+            item = verificar.checar_navegador(self.cfg)
+            canais = verificar._canais(self.cfg)
+        self.assertEqual((item.situacao, item.obrigatorio), (AVISO, False))
+        self.assertIn("Chromium do Playwright", item.detalhe)
+        self.assertEqual(canais, ["chromium"])
+
     def test_falantes(self):
         with mock.patch.object(verificar, "_falantes_situacao",
-                               return_value=(False, "não instalada (falta o componente sherpa-onnx)")):
+                               return_value=(False, "incompleta (faltam os modelos de voz)")):
             item = verificar.checar_falantes()
         self.assertEqual((item.situacao, item.obrigatorio), (AVISO, False))
-        self.assertTrue(item.detalhe.startswith("Não instalada (falta o componente sherpa-onnx):"), item.detalhe)
-        # O nome do botão é o da tela (Configurações > Transcrição)
-        self.assertIn("Configurações > Transcrição > Instalar o componente", item.acao)
+        self.assertTrue(item.detalhe.startswith("Incompleta (faltam os modelos de voz):"), item.detalhe)
+        # Biblioteca e modelos vêm no instalador: não há botão a citar
+        self.assertIn("vêm no instalador", item.acao)
+        self.assertIn("Helestron-Setup", item.acao)
         with mock.patch.object(verificar, "_falantes_situacao", return_value=(True, "instalada")):
             self.assertEqual(verificar.checar_falantes().situacao, OK)
 
@@ -332,6 +473,69 @@ class TestChecagens(unittest.TestCase):
         self.assertIn("RuntimeError: inesperado", item.detalhe)
 
 
+class TestConector(unittest.TestCase):
+    """O conector MCP: roda de verdade (como o Claude Desktop o rodaria) e o
+    que está registrado nas IAs aponta para este acervo e esta instalação."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.pasta = Path(self.tmp.name)
+        self.cfg = cfg_temporaria(self.pasta)
+        self.desktop = self.pasta / "Claude" / "claude_desktop_config.json"
+        self.codex = self.pasta / ".codex" / "config.toml"
+        self.patches = [mock.patch.object(claude, "arquivos_config_desktop",
+                                          return_value=[self.desktop]),
+                        mock.patch.object(chatgpt, "arquivo_config_codex", return_value=self.codex)]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        self.tmp.cleanup()
+
+    def test_conector_de_verdade_responde(self):
+        ferramentas, erro = verificar.conversar_mcp(claude.entrada_mcp(self.cfg.pasta_acervo))
+        self.assertEqual(erro, "")
+        self.assertEqual(set(ferramentas), {"listar_acervo", "ler_processo", "buscar",
+                                            "ler_transcricao"})
+        item = verificar.checar_conector(self.cfg)
+        self.assertEqual((item.nome, item.situacao), ("Conector do acervo (MCP)", OK))
+        self.assertIn("4 ferramentas", item.detalhe)
+        self.assertIn("ainda não foi ligado", item.detalhe)
+
+    def test_ligado_as_duas_ias(self):
+        claude.registrar_mcp(self.cfg.pasta_acervo, [self.desktop])
+        chatgpt.registrar_mcp_codex(self.cfg.pasta_acervo, self.codex)
+        with mock.patch.object(verificar, "conversar_mcp", return_value=(["a", "b"], "")):
+            item = verificar.checar_conector(self.cfg)
+        self.assertEqual(item.situacao, OK, item.detalhe)
+        self.assertIn("ligado a: Claude Desktop, ChatGPT/Codex", item.detalhe)
+
+    def test_registro_velho_ou_de_outro_acervo(self):
+        outro = self.pasta / "Outro acervo"
+        claude.registrar_mcp(outro, [self.desktop])
+        dados = json.loads(self.desktop.read_text(encoding="utf-8"))
+        dados["mcpServers"]["assessor-integrado"] = {"command": "C:/x/python.exe", "args": []}
+        self.desktop.write_text(json.dumps(dados), encoding="utf-8")
+        with mock.patch.object(verificar, "conversar_mcp", return_value=(["a"], "")):
+            item = verificar.checar_conector(self.cfg)
+        self.assertEqual((item.situacao, item.obrigatorio), (AVISO, False))
+        self.assertIn("versão anterior", item.detalhe)
+        self.assertIn("aponta para outro acervo", item.detalhe)
+        self.assertIn("\u201cReconectar o acervo\u201d", item.acao)
+
+    def test_conector_que_nao_responde(self):
+        quebrado = {"command": sys.executable, "args": ["-c", "import sys; sys.exit(3)"]}
+        ferramentas, erro = verificar.conversar_mcp(quebrado, limite_s=60)
+        self.assertEqual(ferramentas, [])
+        self.assertIn("não se apresentou", erro)
+        with mock.patch.object(claude, "entrada_mcp", return_value=quebrado):
+            item = verificar.checar_conector(self.cfg)
+        self.assertEqual((item.situacao, item.obrigatorio), (FALHA, False))
+        self.assertIn("Helestron-Setup", item.acao)
+
+
 class TestVerificacaoInteira(unittest.TestCase):
     """A verificação de verdade, neste computador: nunca quebra, nunca trava."""
 
@@ -343,11 +547,16 @@ class TestVerificacaoInteira(unittest.TestCase):
         self.assertEqual(itens, recebidos, "ao_item recebe tudo, na ordem")
         nomes = [i.nome for i in itens]
         self.assertEqual(len(nomes), len(set(nomes)))
-        for esperado in ("Python e janela (Tk)", "Bibliotecas", "Componentes nativos (DLLs)",
-                         "Modelo de transcrição", "Navegador", "Microfone", "Permissão do microfone",
-                         "Pastas de trabalho", "Local da pasta", "Espaço em disco", "Cofre de senhas",
-                         "Catálogo de tribunais", "Separação de falantes (opcional)"):
+        for esperado in ("Windows 64 bits", "Bibliotecas", "Componentes nativos (DLLs)",
+                         "Modelo de transcrição", "Navegador dos portais",
+                         "WebView2 (janela do programa)", "Microfone", "Permissão do microfone",
+                         "Pastas de trabalho", "Local das pastas", "Espaço em disco",
+                         "Cofre de senhas", "Catálogo de tribunais",
+                         "Separação de falantes (opcional)", "Conector do acervo (MCP)"):
             self.assertIn(esperado, nomes)
+        # nada do programa antigo: a janela Tk e o INSTALAR.bat não existem mais
+        self.assertNotIn("Python e janela (Tk)", nomes)
+        self.assertFalse(any("INSTALAR" in i.acao or "INSTALAR" in i.detalhe for i in itens))
         for i in itens:
             self.assertIn(i.situacao, verificar.SITUACOES, i)
             self.assertTrue(i.detalhe, i)
@@ -356,7 +565,8 @@ class TestVerificacaoInteira(unittest.TestCase):
         if sys.platform != "win32":
             # Fora do Windows nada que é só do Windows pode reprovar.
             for i in itens:
-                if i.nome in ("Cofre de senhas", "Permissão do microfone"):
+                if i.nome in ("Cofre de senhas", "Permissão do microfone", "Windows 64 bits",
+                              "WebView2 (janela do programa)"):
                     self.assertEqual(i.situacao, AVISO)
 
     def test_pode_rodar_fora_da_thread_principal(self):
@@ -366,11 +576,11 @@ class TestVerificacaoInteira(unittest.TestCase):
             cfg = cfg_temporaria(Path(tmp))
             with mock.patch.object(verificar, "_etapas",
                                    return_value=[("Pastas de trabalho", lambda: verificar.checar_pastas(cfg)),
-                                                 ("Python e janela (Tk)", verificar.checar_python)]):
+                                                 ("Windows 64 bits", verificar.checar_sistema)]):
                 t = threading.Thread(target=lambda: resultado.extend(verificar.verificar(cfg=cfg)))
                 t.start()
                 t.join(120)
-        self.assertEqual([i.nome for i in resultado], ["Pastas de trabalho", "Python e janela (Tk)"])
+        self.assertEqual([i.nome for i in resultado], ["Pastas de trabalho", "Windows 64 bits"])
 
 
 class TestLinhaDeComando(unittest.TestCase):

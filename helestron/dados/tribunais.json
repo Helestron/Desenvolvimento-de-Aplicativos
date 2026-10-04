@@ -1,5 +1,5 @@
 {
- "_leia": "Catálogo de tribunais do Assessor Integrado. A chave é o 'J.TR' do número CNJ (8.02 = TJAL). sistema: esaj, eproc ou outro. 'alternativo' é o segundo sistema do tribunal (em transição), tentado quando o processo não é achado no primeiro. Um endereço pode ser uma lista: o programa tenta um por um. Se um portal mudar, corrija aqui (ou em Configurações > Acessos) e reabra o programa.",
+ "_leia": "Catálogo de tribunais do Helestron. A chave é o 'J.TR' do número CNJ (8.02 = TJAL). sistema: esaj, eproc ou outro. 'alternativo' é o segundo sistema do tribunal (em transição), tentado quando o processo não é achado no primeiro. Um endereço pode ser uma lista: o programa tenta um por um. Se um portal mudar, corrija aqui - ou, para a correção sobreviver às atualizações, no enderecos-locais.json da pasta de dados (%LOCALAPPDATA%\\Helestron) - e reabra o programa.",
  "versao": 2,
  "tribunais": [
   {
@@ -44,7 +44,7 @@
      ]
     }
    },
-   "observacao": "O TJAL implantou o eProc em 12/12/2025 e o amplia por comarca: o programa procura primeiro no e-SAJ e, não achando, no eProc. O endereço do eProc do TJAL ainda deve ser confirmado - corrija em Configurações > Acessos se necessário."
+   "observacao": "O TJAL implantou o eProc em 12/12/2025 e o amplia por comarca: o programa procura primeiro no e-SAJ e, não achando, no eProc. O endereço do eProc do TJAL ainda deve ser confirmado - se necessário, corrija-o no enderecos-locais.json da pasta de dados (%LOCALAPPDATA%\\Helestron)."
   },
   {
    "chave": "8.03",

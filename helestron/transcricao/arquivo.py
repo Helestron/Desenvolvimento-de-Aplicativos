@@ -110,7 +110,7 @@ def _decodificar_av(caminho: Path, taxa: int) -> np.ndarray:
         import av
     except ImportError as erro:
         raise AudioIlegivel("O decodificador de áudio (PyAV) não está instalado. "
-                            "Rode o INSTALAR.bat de novo.") from erro
+                            f"{sistema.REINSTALAR}") from erro
     try:
         try:
             recipiente = av.open(str(caminho), metadata_errors="ignore")

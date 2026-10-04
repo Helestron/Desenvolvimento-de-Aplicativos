@@ -328,7 +328,7 @@ class TestEProcDeMentira(apoio.PastaTemporaria):
             with self.assertRaises(modelos.PortalIndisponivel) as caso:
                 self.portal(nav, apoio.ContextoGravador(), tribunal=so_fora).entrar()
         self.assertIn(fora, str(caso.exception))
-        self.assertIn("Configurações > Acessos", str(caso.exception))
+        self.assertIn("enderecos-locais.json", str(caso.exception))
 
     # ------------------------------------------------- Download Completo
     def test_download_completo(self):

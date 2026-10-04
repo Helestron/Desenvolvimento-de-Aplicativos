@@ -28,7 +28,9 @@ class TestCli(unittest.TestCase):
         self.patches = [
             mock.patch.object(modelos, "carregar", side_effect=lambda *a, **k: self.modelo),
             mock.patch.object(modelos, "PASTA", self.tmp.raiz / "modelos"),
+            mock.patch.object(modelos, "PASTA_EMBUTIDA", self.tmp.raiz / "embutidos"),
             mock.patch.object(falantes, "PASTA", self.tmp.raiz / "falantes"),
+            mock.patch.object(falantes, "PASTA_EMBUTIDA", self.tmp.raiz / "embutidos" / "falantes"),
         ]
         for p in self.patches:
             p.start()
@@ -113,11 +115,12 @@ class TestCli(unittest.TestCase):
         self.assertEqual(codigo, 1)
         self.assertIn("Separação de falantes", saida)
         chamadas = []
-        with mock.patch.object(falantes, "instalar", side_effect=lambda p, pip: chamadas.append(pip)), \
+        with mock.patch.object(falantes, "instalar", side_effect=lambda p: chamadas.append(p)), \
                 mock.patch.object(falantes, "disponivel", return_value=True):
+            # --sem-pip, da versão anterior, é aceito e não muda nada: não há pip
             self.assertEqual(rodar(["falantes", "instalar", "--sem-pip"])[0], 0)
             self.assertEqual(rodar(["falantes", "instalar"])[0], 0)
-        self.assertEqual(chamadas, [False, True])
+        self.assertEqual(len(chamadas), 2)
         with mock.patch.object(falantes, "instalar",
                                side_effect=falantes.ComponenteAusente("sem internet")):
             codigo, saida = rodar(["falantes", "instalar"])

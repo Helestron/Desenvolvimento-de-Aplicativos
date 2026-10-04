@@ -26,7 +26,7 @@ from .mcp_servidor import _DO_CONFIG, Recorte, chaves_sigilosas, pasta_sigilosos
 
 log = logging.getLogger("compartilhar.nuvem")
 
-SUBPASTA = "Assessor Integrado - Acervo"
+SUBPASTA = "Helestron - Acervo"
 _IGNORAR_PASTAS = {"_controle", "_audio", "__pycache__"}
 _IGNORAR_SUFIXOS = (".parcial", ".tmp", ".part", ".lock")
 
@@ -83,7 +83,7 @@ def _chave(nome: str) -> str | None:
 
 def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None,
              sigilosos=_DO_CONFIG) -> tuple[int, int]:
-    """Copia o acervo para '<destino_raiz>/Assessor Integrado - Acervo'.
+    """Copia o acervo para '<destino_raiz>/Helestron - Acervo'.
 
     Devolve (copiados, iguais). Não apaga nada no destino, exceto a cópia de
     processo que está na pasta de sigilosos ('sigilosos'; por padrão, a do

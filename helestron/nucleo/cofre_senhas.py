@@ -21,7 +21,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-_ENTROPIA = b"AssessorIntegrado/credenciais/v1"
+_ENTROPIA = b"Helestron/credenciais/v1"
 
 
 # --------------------------------------------------------------- DPAPI
@@ -50,7 +50,7 @@ if sys.platform == "win32":  # pragma: no cover - exercitado no CI do Windows
     def _cifrar(dados: bytes) -> str:
         entrada, entropia, saida = _blob(dados), _blob(_ENTROPIA), _BLOB()
         ok = _crypt32.CryptProtectData(
-            ctypes.byref(entrada), "AssessorIntegrado", ctypes.byref(entropia),
+            ctypes.byref(entrada), "Helestron", ctypes.byref(entropia),
             None, None, _CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(saida))
         if not ok:
             raise OSError(ctypes.GetLastError(), "CryptProtectData falhou")

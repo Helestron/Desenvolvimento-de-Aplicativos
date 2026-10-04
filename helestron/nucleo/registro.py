@@ -1,5 +1,8 @@
 """O registro (log) do programa: arquivo mensal em Logs\\ e ponte para a tela.
 
+Logs\\ fica na pasta de dados do programa (%LOCALAPPDATA%\\Helestron),
+fora da pasta instalada e fora do acervo compartilhado com a IA.
+
 Sob o pythonw.exe (a janela sem console), sys.stdout e sys.stderr são None,
 e bibliotecas que escrevem barra de progresso (huggingface, tqdm) quebram
 ao escrever em None. preparar_saidas() troca os dois por um destino real
@@ -47,19 +50,19 @@ def configurar(console: bool = True, nivel: int = logging.INFO) -> Path:
     raiz = logging.getLogger()
     raiz.setLevel(nivel)
     for h in list(raiz.handlers):
-        if getattr(h, "_assessor", False):
+        if getattr(h, "_helestron", False):
             raiz.removeHandler(h)
 
     disco = logging.FileHandler(arquivo, encoding="utf-8")
     disco.setFormatter(logging.Formatter(
         "%(asctime)s  %(levelname)-7s  %(name)s  %(message)s"))
-    disco._assessor = True  # type: ignore[attr-defined]
+    disco._helestron = True  # type: ignore[attr-defined]
     raiz.addHandler(disco)
 
     if console and sys.stdout is not None and getattr(sys.stdout, "isatty", lambda: False)():
         tela = logging.StreamHandler(sys.stdout)
         tela.setFormatter(logging.Formatter("%(asctime)s  %(message)s", "%H:%M:%S"))
-        tela._assessor = True  # type: ignore[attr-defined]
+        tela._helestron = True  # type: ignore[attr-defined]
         raiz.addHandler(tela)
 
     for nome in RUIDOSOS:
@@ -75,7 +78,7 @@ def marca(nome_logger: str) -> str:
 
 
 class PonteDeLog(logging.Handler):
-    """Manda cada linha do log para a fila da janela (a thread do Tk lê)."""
+    """Manda cada linha do log para uma fila (o servidor a lê e publica)."""
 
     def __init__(self, fila: "queue.Queue", nivel: int = logging.INFO):
         super().__init__(nivel)

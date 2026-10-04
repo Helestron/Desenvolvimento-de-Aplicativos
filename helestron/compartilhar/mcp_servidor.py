@@ -2,15 +2,16 @@
 
 É o que deixa o Claude Desktop - no chat e no Cowork - consultar os autos
 baixados e as transcrições sem que o usuário tenha de anexar arquivo por
-arquivo. O Claude Desktop inicia este programa sozinho (o registro fica no
-claude_desktop_config.json, feito pela tela "Compartilhar com IA") e
+arquivo. O Claude Desktop (e o ChatGPT Work/Codex, pelo config.toml) inicia
+este programa sozinho - o registro é feito pela tela Compartilhar - e
 conversa com ele pela entrada e saída padrão, uma mensagem JSON por linha.
 
 Escrito sem a biblioteca 'mcp' de propósito: o protocolo usado aqui é
 pequeno (initialize, tools/list, tools/call, ping), e uma dependência a
 menos é uma falha de instalação a menos.
 
-    python -m helestron.compartilhar.mcp_servidor --pasta "C:\\...\\Acervo"
+    python -I -m helestron mcp --pasta "C:\\...\\Acervo"
+    python -I -m helestron mcp                 (sem --pasta: o acervo dos Ajustes)
 
 Nada é gravado fora da pasta de cache do próprio acervo (_ia), e nenhuma
 ferramenta altera ou apaga arquivo.
@@ -36,7 +37,7 @@ LIMITE_CARACTERES = 90_000   # por resposta; o resto vem por páginas
 _PASTAS_FORA = {"_ia", "produtos", "_controle", ".claude", "_audio"}
 
 INSTRUCOES = (
-    "Acervo judicial local do Assessor Integrado: autos em PDF (um arquivo por "
+    "Acervo judicial local do Helestron: autos em PDF (um arquivo por "
     "processo, nomeado com o número CNJ) e transcrições de audiência em DOCX. "
     "Use listar_acervo para ver o que há, ler_processo para ler os autos por "
     "faixa de páginas, buscar para localizar termos e ler_transcricao para as "
@@ -75,9 +76,14 @@ def _partes_relativas(pasta: Path, raiz: Path) -> tuple[str, ...] | None:
 def pastas_do_programa() -> tuple[Path, ...]:
     """Pastas do próprio programa, que nunca são acervo - nem quando o acervo
     foi apontado (por engano) para uma pasta que as contém: os registros
-    (com imagens das telas dos portais), o runtime e a pasta das senhas e
-    dos perfis do navegador."""
-    return (caminhos.LOGS, caminhos.RUNTIME, caminhos.LOCAL)
+    (com imagens das telas dos portais), a pasta de dados (senhas, perfis
+    do navegador, configuração, pauta) e a pasta instalada."""
+    pastas = [caminhos.LOGS, caminhos.LOCAL]
+    if caminhos.INSTALADO:
+        # Fora da instalação, INSTALACAO é o repositório: pode conter acervo
+        # de teste e não guarda nada do usuário.
+        pastas.append(caminhos.INSTALACAO)
+    return tuple(pastas)
 
 
 class Recorte:
@@ -399,8 +405,8 @@ class Servidor:
             return {
                 "protocolVersion": versao,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "assessor-integrado",
-                               "title": "Assessor Integrado — acervo judicial",
+                "serverInfo": {"name": "helestron",
+                               "title": "Helestron — acervo judicial",
                                "version": __version__},
                 "instructions": INSTRUCOES,
             }
@@ -467,9 +473,18 @@ def servir(raiz: Path, entrada=None, saida=None) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="assessor-mcp")
-    p.add_argument("--pasta", required=True, type=Path, help="raiz do acervo")
+    p = argparse.ArgumentParser(prog="python -m helestron mcp")
+    p.add_argument("--pasta", type=Path,
+                   help="raiz do acervo (padrão: a pasta do acervo dos Ajustes)")
     args = p.parse_args(argv)
+    if args.pasta is None:
+        try:
+            from ..nucleo import config
+
+            # Só leitura: o servidor roda a pedido do Claude e não grava nada.
+            args.pasta = config.carregar(criar=False).pasta_acervo
+        except Exception as erro:  # noqa: BLE001
+            p.error(f"não consegui ler a pasta do acervo da configuração ({erro}); use --pasta")
     # stdout é o canal do protocolo: todo log vai para stderr.
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")

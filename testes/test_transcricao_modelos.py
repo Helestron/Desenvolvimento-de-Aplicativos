@@ -4,6 +4,7 @@ alucinações."""
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import types
 import unittest
@@ -25,13 +26,16 @@ def instalar_falso(pasta: Path) -> None:
 class TestCatalogo(unittest.TestCase):
     def setUp(self):
         self.tmp = PastaTemporaria()
-        self.patch = mock.patch.object(modelos, "PASTA", self.tmp.raiz / "modelos")
-        self.patch.start()
+        self.patches = [mock.patch.object(modelos, "PASTA", self.tmp.raiz / "modelos"),
+                        mock.patch.object(modelos, "PASTA_EMBUTIDA", self.tmp.raiz / "programa")]
+        for p in self.patches:
+            p.start()
         modelos.descarregar()
 
     def tearDown(self):
         modelos.descarregar()
-        self.patch.stop()
+        for p in self.patches:
+            p.stop()
         self.tmp.apagar()
 
     def test_nomes_e_apelidos(self):
@@ -46,7 +50,7 @@ class TestCatalogo(unittest.TestCase):
 
     def test_pasta_e_instalado(self):
         pasta = modelos.pasta_do_modelo("small")
-        self.assertEqual(pasta.name, "whisper-small")
+        self.assertEqual(pasta, self.tmp.raiz / "modelos" / "faster-whisper-small")
         self.assertFalse(modelos.instalado("small"))
         instalar_falso(pasta)
         self.assertTrue(modelos.instalado("small"))
@@ -57,7 +61,39 @@ class TestCatalogo(unittest.TestCase):
         self.assertEqual(modelos.instalados(), ["small"])
         linhas = {linha["nome"]: linha for linha in modelos.listar()}
         self.assertTrue(linhas["small"]["instalado"])
+        self.assertFalse(linhas["small"]["embutido"])
         self.assertFalse(linhas["medium"]["instalado"])
+
+    def test_embutido_no_instalador_vale_primeiro(self):
+        # O small vem dentro do instalador (pasta do programa): instalado sem
+        # rede, e é ele que se carrega, mesmo que haja um baixado.
+        embutido = self.tmp.raiz / "programa" / "faster-whisper-small"
+        baixado = self.tmp.raiz / "modelos" / "faster-whisper-small"
+        instalar_falso(baixado)
+        instalar_falso(embutido)
+        self.assertEqual(modelos.pasta_do_modelo("small"), embutido)
+        self.assertTrue(modelos.embutido("small"))
+        self.assertFalse(modelos.embutido("medium"))
+        self.assertEqual(modelos.pasta_de_download("small"), baixado)
+        # embutido incompleto (cópia interrompida): vale o baixado
+        (embutido / "model.bin").write_bytes(b"\0" * 10)
+        self.assertEqual(modelos.pasta_do_modelo("small"), baixado)
+        self.assertFalse(modelos.embutido("small"))
+        # a pasta "whisper-small" da versão anterior (copiada de outro
+        # computador) também serve
+        shutil.rmtree(baixado)
+        instalar_falso(self.tmp.raiz / "modelos" / "whisper-small")
+        self.assertTrue(modelos.instalado("small"))
+        self.assertEqual(modelos.pasta_do_modelo("small").name, "whisper-small")
+
+    def test_baixar_o_embutido_nao_vai_a_rede(self):
+        embutido = self.tmp.raiz / "programa" / "faster-whisper-small"
+        instalar_falso(embutido)
+        falso = types.ModuleType("huggingface_hub")
+        falso.snapshot_download = mock.Mock(side_effect=AssertionError("foi à rede"))
+        with mock.patch.dict(sys.modules, {"huggingface_hub": falso}):
+            self.assertEqual(modelos.baixar("small"), embutido)
+        falso.snapshot_download.assert_not_called()
 
     def test_threads(self):
         self.assertEqual(modelos.threads_padrao(3), 3)
@@ -66,7 +102,7 @@ class TestCatalogo(unittest.TestCase):
     def test_carregar_sem_modelo_e_sem_baixar_explica(self):
         with self.assertRaises(ModeloAusente) as ctx:
             modelos.carregar("small", baixar_se_faltar=False)
-        self.assertIn("Configurações", str(ctx.exception))
+        self.assertIn("Ajustes › Transcrição (botão “Baixar”)", str(ctx.exception))
 
     def test_carregar_usa_a_pasta_local_e_guarda_no_maximo_dois(self):
         criados = []
@@ -102,6 +138,16 @@ class TestCatalogo(unittest.TestCase):
             with self.assertRaises(modelos.ErroDoModelo) as ctx:
                 modelos.carregar("small")
         self.assertIn("apague", str(ctx.exception))
+        self.assertIn("Ajustes › Transcrição", str(ctx.exception))
+        # o que veio no instalador não se apaga à mão: reinstala-se
+        modelos.descarregar()
+        instalar_falso(self.tmp.raiz / "programa" / "faster-whisper-small")
+        with mock.patch.dict(sys.modules, {"faster_whisper": falso}):
+            with self.assertRaises(modelos.ErroDoModelo) as ctx:
+                modelos.carregar("small")
+        self.assertIn("veio com o programa", str(ctx.exception))
+        self.assertIn("Helestron-Setup", str(ctx.exception))
+        self.assertNotIn("apague", str(ctx.exception))
 
     def test_baixar_chama_snapshot_download_na_pasta_local(self):
         chamadas = []

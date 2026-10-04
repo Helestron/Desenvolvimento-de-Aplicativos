@@ -42,7 +42,8 @@ URL_CHATGPT = "https://chatgpt.com/"
 URL_DOWNLOAD_APP = "https://openai.com/chatgpt/download/"
 LOJA_APP = "ms-windows-store://pdp/?productid=9PLM9XGG6VKS"
 COMANDO_INSTALAR_CODEX = "irm https://chatgpt.com/codex/install.ps1 | iex"
-NOME_MCP = "assessor_integrado"
+NOME_MCP = "helestron"
+NOMES_ANTIGOS = ("assessor_integrado",)    # o da versão anterior: sai ao registrar
 LIMITE_ARQUIVO_MB = 500     # o ChatGPT recusa arquivo acima de ~512 MB
 
 
@@ -135,19 +136,23 @@ def _toml_texto(valor: str) -> str:
 def bloco_toml(pasta_acervo: Path) -> str:
     e = entrada_mcp(pasta_acervo)
     args = ", ".join(_toml_texto(a) for a in e["args"])
-    env = ", ".join(f"{k} = {_toml_texto(v)}" for k, v in e["env"].items())
-    return (f"[mcp_servers.{NOME_MCP}]\n"
-            f"command = {_toml_texto(e['command'])}\n"
-            f"args = [{args}]\n"
-            f"env = {{ {env} }}\n"
-            "enabled = true\n")
+    linhas = [f"[mcp_servers.{NOME_MCP}]",
+              f"command = {_toml_texto(e['command'])}",
+              f"args = [{args}]"]
+    if e.get("env"):
+        env = ", ".join(f"{k} = {_toml_texto(v)}" for k, v in e["env"].items())
+        linhas.append(f"env = {{ {env} }}")
+    linhas.append("enabled = true")
+    return "\n".join(linhas) + "\n"
 
 
 def _sem_bloco(texto: str) -> str:
-    """O config.toml sem o nosso bloco (e suas subtabelas)."""
+    """O config.toml sem o nosso bloco (e suas subtabelas), nem o da versão
+    anterior."""
     linhas = texto.splitlines()
     saida, dentro = [], False
-    cab = re.compile(r"^\s*\[\s*mcp_servers\.(?:\"?)" + NOME_MCP + r"(?:\"?)\s*(\.|\])")
+    nomes = "|".join(re.escape(n) for n in (NOME_MCP, *NOMES_ANTIGOS))
+    cab = re.compile(r"^\s*\[\s*mcp_servers\.(?:\"?)(?:" + nomes + r")(?:\"?)\s*(\.|\])")
     for linha in linhas:
         if linha.lstrip().startswith("["):
             dentro = bool(cab.match(linha))
@@ -185,7 +190,7 @@ def registrar_mcp_codex(pasta_acervo: Path, arquivo: Path | None = None) -> Path
     arquivo.parent.mkdir(parents=True, exist_ok=True)
     if arquivo.exists():
         shutil.copy2(arquivo, arquivo.with_name(
-            f"config.antes-do-assessor-{datetime.now():%Y%m%d-%H%M%S}.toml"))
+            f"config.antes-do-helestron-{datetime.now():%Y%m%d-%H%M%S}.toml"))
     tmp = arquivo.with_name(arquivo.name + ".tmp")
     tmp.write_text(novo, encoding="utf-8", newline="\n")
     os.replace(tmp, arquivo)

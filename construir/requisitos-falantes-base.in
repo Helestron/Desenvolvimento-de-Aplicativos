@@ -1,2 +1,3 @@
-# Componente opcional: separacao automatica de falantes (sherpa-onnx, sem torch)
+# Separação automática de falantes (sherpa-onnx, sem torch): vai dentro do
+# instalador, com os dois modelos de voz (construir.py os baixa do GitHub).
 sherpa-onnx

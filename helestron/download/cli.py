@@ -29,10 +29,10 @@ def criar_parser() -> argparse.ArgumentParser:
     p.add_argument("processos", nargs="*", help="números de processo (opcional, além da --lista)")
     p.add_argument("--lista", "-l", help="arquivo da relação, ou link compartilhado (http...)")
     p.add_argument("--destino", "-d", help="pasta onde gravar os PDFs (padrão: "
-                   "Acervo\\Processos\\<nome da relação>)")
+                   "Documentos\\Helestron\\Acervo\\Processos\\<nome da relação>)")
     p.add_argument("--visivel", action="store_true", help="mostrar a janela do navegador")
     p.add_argument("--login", choices=("senha", "certificado", "manual"),
-                   help="forma de entrar no portal (padrão: a das Configurações)")
+                   help="forma de entrar no portal (padrão: a dos Ajustes)")
     p.add_argument("--rebaixar", action="store_true",
                    help="baixar de novo mesmo o que já está na pasta")
     p.add_argument("--midias", action="store_true", help="baixar também as gravações de audiência")

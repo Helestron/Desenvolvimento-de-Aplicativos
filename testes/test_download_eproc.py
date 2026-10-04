@@ -449,7 +449,8 @@ class TestPortalSemNavegador(apoio.PastaTemporaria):
         sem = replace(self.tribunal, urls={})
         with self.assertRaises(modelos.PortalIndisponivel) as caso:
             PortalEProc(_NavJanela(), sem, apoio.opcoes_de_teste(self.tmp), None, None)
-        self.assertIn("Configurações > Acessos", str(caso.exception))
+        self.assertIn("enderecos-locais.json", str(caso.exception))
+        self.assertNotIn("Configurações", str(caso.exception))
 
     def test_tribunal_com_endereco_por_secao_espera_o_primeiro_processo(self):
         trf4 = tribunais.por_sigla("TRF4")

@@ -1,16 +1,145 @@
-"""Testes do núcleo: número CNJ, tribunais, configuração, senhas e listas."""
+"""Testes do núcleo: caminhos, número CNJ, tribunais, configuração, senhas e listas."""
 
 from __future__ import annotations
 
 import configparser
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 from unittest import mock
 
-from helestron.nucleo import cnj, config, cofre_senhas, listas, sistema, tribunais
+from helestron.nucleo import caminhos, cnj, config, cofre_senhas, listas, sistema, tribunais
+
+REPOSITORIO = Path(caminhos.__file__).resolve().parents[2]
+
+# Lê as constantes de caminhos.py num processo novo: elas são calculadas na
+# importação, a partir do ambiente e do sys.prefix.
+_SONDA_CAMINHOS = r"""
+import json, sys
+prefixo = sys.argv[1]
+if prefixo:
+    sys.prefix = prefixo
+from helestron.nucleo import caminhos
+nomes = ["PACOTE", "INSTALADO", "INSTALACAO", "DADOS", "RECURSOS", "WEB", "MODELOS_EMBUTIDOS",
+         "LOCAL", "ARQUIVO_CONFIG", "LOGS", "PERFIS", "ARQUIVO_SENHAS", "TEMP", "MODELOS",
+         "ARQUIVO_PAUTA", "ARQUIVO_INSTANCIA", "BASE_USUARIO"]
+saida = {n: (getattr(caminhos, n) if isinstance(getattr(caminhos, n), bool)
+             else str(getattr(caminhos, n))) for n in nomes}
+saida["python"] = str(caminhos.python_exe())
+saida["pythonw"] = str(caminhos.python_exe(janela=True))
+saida["relativo"] = str(caminhos.resolver("Outra", "Acervo"))
+saida["vazio"] = str(caminhos.resolver("", "Acervo"))
+print(json.dumps(saida))
+"""
+
+
+def ler_caminhos(ambiente: dict, prefixo: str = "") -> dict:
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("HELESTRON_LOCAL", "HELESTRON_DADOS", "LOCALAPPDATA", "OneDrive",
+                        "OneDriveCommercial", "OneDriveConsumer", "USERPROFILE")}
+    env.update(ambiente)
+    env["PYTHONPATH"] = str(REPOSITORIO)
+    r = subprocess.run([sys.executable, "-c", _SONDA_CAMINHOS, prefixo], capture_output=True,
+                       text=True, env=env, cwd=str(REPOSITORIO), timeout=120)
+    if r.returncode != 0:
+        raise AssertionError(r.stderr)
+    return json.loads(r.stdout)
+
+
+class TestCaminhos(unittest.TestCase):
+    """O contrato da especificação (seção 4): nada do usuário na pasta do programa."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.base = Path(self.dir.name)
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_variaveis_dos_testes_isolam_tudo(self):
+        local, dados = self.base / "local", self.base / "docs"
+        c = ler_caminhos({"HELESTRON_LOCAL": str(local), "HELESTRON_DADOS": str(dados)})
+        self.assertFalse(c["INSTALADO"])
+        self.assertEqual(c["INSTALACAO"], str(REPOSITORIO))
+        self.assertEqual(c["PACOTE"], str(REPOSITORIO / "helestron"))
+        self.assertEqual(c["WEB"], str(REPOSITORIO / "helestron" / "web"))
+        self.assertEqual(c["DADOS"], str(REPOSITORIO / "helestron" / "dados"))
+        self.assertEqual(c["RECURSOS"], str(REPOSITORIO / "helestron" / "recursos"))
+        self.assertEqual(c["MODELOS_EMBUTIDOS"], str(REPOSITORIO / "modelos"))
+        self.assertEqual(c["LOCAL"], str(local))
+        for nome, rel in (("ARQUIVO_CONFIG", "config.ini"), ("LOGS", "Logs"), ("PERFIS", "perfis"),
+                          ("ARQUIVO_SENHAS", "credenciais.json"), ("TEMP", "temp"),
+                          ("MODELOS", "modelos"), ("ARQUIVO_PAUTA", "pauta.sqlite3"),
+                          ("ARQUIVO_INSTANCIA", "instancia.json")):
+            self.assertEqual(c[nome], str(local / rel), nome)
+        self.assertEqual(c["BASE_USUARIO"], str(dados))
+        # caminho relativo do config.ini: dentro de Documentos\Helestron
+        self.assertEqual(c["relativo"], str(dados / "Outra"))
+        self.assertEqual(c["vazio"], str(dados / "Acervo"))
+        self.assertFalse(list(self.base.iterdir()), "importar caminhos.py não cria pasta nenhuma")
+
+    def test_padroes_localappdata_e_documentos(self):
+        casa = self.base / "casa"
+        c = ler_caminhos({"LOCALAPPDATA": str(self.base / "AppData" / "Local"), "HOME": str(casa)})
+        self.assertEqual(c["LOCAL"], str(self.base / "AppData" / "Local" / "Helestron"))
+        if sys.platform != "win32":
+            self.assertEqual(c["BASE_USUARIO"], str(casa / "Documents" / "Helestron"))
+            # sem LOCALAPPDATA (fora do Windows): ~/.helestron
+            c = ler_caminhos({"HOME": str(casa)})
+            self.assertEqual(c["LOCAL"], str(casa / ".helestron"))
+
+    @unittest.skipIf(sys.platform == "win32", "no Windows, a pasta Documentos vem da API")
+    def test_documentos_no_onedrive_muda_a_base(self):
+        # Documentos redirecionado para o OneDrive: a base vai para o perfil,
+        # fora da sincronização (que trava arquivo em uso).
+        casa = self.base / "casa"
+        c = ler_caminhos({"HOME": str(casa), "OneDrive": str(casa / "Documents"),
+                          "USERPROFILE": str(casa)})
+        self.assertEqual(c["BASE_USUARIO"], str(casa / "Helestron"))
+
+    def test_instalado_pelo_manifesto(self):
+        programa = self.base / "Programs" / "Helestron"
+        programa.mkdir(parents=True)
+        for nome in ("manifesto.json", "python.exe", "pythonw.exe"):
+            (programa / nome).write_text("{}", encoding="utf-8")
+        c = ler_caminhos({"HELESTRON_LOCAL": str(self.base / "l"),
+                          "HELESTRON_DADOS": str(self.base / "d")}, prefixo=str(programa))
+        self.assertTrue(c["INSTALADO"])
+        self.assertEqual(c["INSTALACAO"], str(programa))
+        self.assertEqual(c["MODELOS_EMBUTIDOS"], str(programa / "modelos"))
+        self.assertEqual(c["python"], str(programa / "python.exe"))
+        self.assertEqual(c["pythonw"], str(programa / "pythonw.exe"))
+
+    def test_resolver(self):
+        with mock.patch.object(caminhos, "BASE_USUARIO", self.base):
+            self.assertEqual(caminhos.resolver("Acervo 2", "Acervo"), self.base / "Acervo 2")
+            self.assertEqual(caminhos.resolver(None, "Acervo"), self.base / "Acervo")
+            self.assertEqual(caminhos.resolver(f'"{self.base / "x"}"', "Acervo"), self.base / "x")
+        with mock.patch.dict(os.environ, {"HELESTRON_TESTE": str(self.base / "var")}):
+            self.assertEqual(caminhos.resolver("$HELESTRON_TESTE" if os.name != "nt"
+                                               else "%HELESTRON_TESTE%", "Acervo"),
+                             self.base / "var")
+
+    def test_onedrive(self):
+        with mock.patch.dict(os.environ, {"OneDrive": str(self.base / "OneDrive - TJ")}):
+            self.assertTrue(caminhos.dentro_do_onedrive(self.base / "OneDrive - TJ" / "Acervo"))
+            self.assertFalse(caminhos.dentro_do_onedrive(self.base / "Outra"))
+
+    def test_enderecos_corrigidos_ficam_na_pasta_de_dados(self):
+        # Fora da pasta do programa: a atualização não os apaga.
+        self.assertEqual(tribunais.ARQUIVO_LOCAL.parent, caminhos.LOCAL)
+        alvo = self.base / "Local" / "ainda-nao-existe" / "enderecos-locais.json"
+        with mock.patch.object(tribunais, "ARQUIVO_LOCAL", alvo):
+            tribunais.definir_endereco("eproc:TJAL", "1g", "https://eproc1g.tjal.jus.br/eproc/")
+            self.assertEqual(json.loads(alvo.read_text(encoding="utf-8")),
+                             {"eproc:TJAL": {"1g": "https://eproc1g.tjal.jus.br/eproc/"}})
+            tribunais.definir_endereco("eproc:TJAL", "1g", "")
+            self.assertEqual(json.loads(alvo.read_text(encoding="utf-8")), {})
 
 
 class _nada:
@@ -213,6 +342,64 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(c.inteiro("download", "pausa_entre_processos"), 3)
         self.assertTrue(c.flag("download", "pular_baixados"))
 
+    def test_padroes_do_helestron(self):
+        base = Path(self.dir.name) / "Documentos" / "Helestron"
+        with mock.patch.object(caminhos, "BASE_USUARIO", base):
+            c = config.Config(self.arq)
+            self.assertEqual(c.pasta_acervo, base / "Acervo")
+            self.assertEqual(c.pasta_processos, base / "Acervo" / "Processos")
+            self.assertEqual(c.pasta_sigilosos, base / "Sigilosos")
+            self.assertEqual(c.pasta_pauta, base / "Pauta")
+            self.assertEqual(c.conflito_de_pastas(), "")
+        self.assertTrue(c.flag("pauta", "monitorar"))
+        self.assertEqual(c.inteiro("pauta", "intervalo_horas"), 6)
+        self.assertEqual(c.inteiro("pauta", "dias_atras"), 7)
+        self.assertEqual(c.inteiro("pauta", "dias_a_frente"), 60)
+        self.assertFalse(c.flag("pauta", "incluir_partes_sigilosos"))
+        texto = self.arq.read_text(encoding="utf-8")
+        self.assertIn("Helestron - configuração", texto)
+        self.assertIn("tela de Ajustes", texto)
+        self.assertIn("[pauta]", texto)
+        self.assertNotIn("Assessor", texto)
+        self.assertNotIn("Configurações", texto)
+
+    def test_rotulos_da_pauta_para_a_tela_de_ajustes(self):
+        chaves = {(s, c) for s, c, _, _ in config.ESQUEMA}
+        for chave in ("monitorar", "intervalo_horas", "dias_atras", "dias_a_frente",
+                      "incluir_partes_sigilosos", "pasta"):
+            self.assertIn(("pauta", chave), config.ROTULOS)
+        for (secao, chave), (rotulo, tipo, ajuda) in config.ROTULOS.items():
+            with self.subTest(chave=chave):
+                self.assertIn((secao, chave), chaves)
+                self.assertIn(tipo, ("texto", "flag", "inteiro", "pasta", "escolha"))
+                self.assertTrue(rotulo and ajuda and ajuda.endswith("."))
+
+    def test_pasta_da_pauta_fora_do_acervo(self):
+        base = Path(self.dir.name)
+        acervo, sigilosos = base / "Acervo", base / "Sigilosos"
+        self.assertEqual(config.conflito_de_pastas(acervo, sigilosos, base / "Pauta"), "")
+        for pauta in (acervo, acervo / "Pauta"):
+            with self.subTest(pauta=pauta):
+                frase = config.conflito_de_pastas(acervo, sigilosos, pauta)
+                self.assertIn("pauta exportada", frase)
+                self.assertIn("compartilhado com a IA", frase)
+        # a pauta pode ficar junto dos sigilosos (nenhum dos dois vai para a IA)
+        self.assertEqual(config.conflito_de_pastas(acervo, sigilosos, sigilosos / "Pauta"), "")
+        c = config.Config(self.arq)
+        c.definir("geral", "pasta_acervo", str(acervo))
+        c.definir("geral", "pasta_sigilosos", str(sigilosos))
+        c.definir("pauta", "pasta", str(acervo / "Pauta"))
+        self.assertIn("pauta exportada", c.conflito_de_pastas())
+
+    def test_criar_pastas_inclui_a_pauta(self):
+        base = Path(self.dir.name)
+        with mock.patch.object(caminhos, "BASE_USUARIO", base / "Docs"), \
+                mock.patch.object(caminhos, "LOGS", base / "Local" / "Logs"):
+            config.Config(self.arq).criar_pastas()
+        for pasta in ("Docs/Acervo/Processos", "Docs/Acervo/Transcricoes", "Docs/Sigilosos",
+                      "Docs/Pauta", "Local/Logs"):
+            self.assertTrue((base / pasta).is_dir(), pasta)
+
 
 class TestCofreSenhas(unittest.TestCase):
     def test_guarda_obtem_apaga(self):
@@ -361,6 +548,10 @@ class TestSistema(unittest.TestCase):
             p = Path(d)
             (p / "x.docx").write_text("1")
             self.assertEqual(sistema.destino_livre(p, "x", ".docx").name, "x (2).docx")
+
+    def test_frase_de_reinstalar(self):
+        self.assertIn("Helestron-Setup", sistema.REINSTALAR)
+        self.assertIn("sem apagar os seus dados", sistema.REINSTALAR)
 
     def test_ambiente_sem_chaves(self):
         import os

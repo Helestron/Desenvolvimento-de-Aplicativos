@@ -95,6 +95,10 @@ class TestServidorMCP(BaseAcervo):
         ])
         self.assertEqual(len(r), 8)            # a notificação não tem resposta
         self.assertEqual(r[0]["result"]["protocolVersion"], "2025-06-18")
+        self.assertEqual(r[0]["result"]["serverInfo"]["name"], "helestron")
+        self.assertEqual(r[0]["result"]["serverInfo"]["title"], "Helestron — acervo judicial")
+        self.assertIn("Helestron", r[0]["result"]["instructions"])
+        self.assertNotIn("Assessor", json.dumps(r, ensure_ascii=False))
         self.assertEqual({f["name"] for f in r[1]["result"]["tools"]},
                          {"listar_acervo", "ler_processo", "buscar", "ler_transcricao"})
         lista = r[2]["result"]["content"][0]["text"]
@@ -112,6 +116,20 @@ class TestServidorMCP(BaseAcervo):
         r = self.conversar([{"jsonrpc": "2.0", "id": 1, "method": "initialize",
                              "params": {"protocolVersion": "2099-01-01"}}])
         self.assertEqual(r[0]["result"]["protocolVersion"], mcp_servidor.VERSOES[0])
+
+    def test_sem_pasta_usa_o_acervo_da_configuracao(self):
+        # "python -I -m helestron mcp" sem --pasta: o acervo dos Ajustes, lido
+        # sem criar o config.ini (o servidor roda a pedido do Claude).
+        lidos, servidos = [], []
+        falsa = mock.Mock(pasta_acervo=self.raiz)
+        with mock.patch.object(config, "carregar",
+                               side_effect=lambda criar=True: lidos.append(criar) or falsa), \
+                mock.patch.object(mcp_servidor, "servir",
+                                  side_effect=lambda raiz, saida=None: servidos.append(raiz)), \
+                mock.patch.object(mcp_servidor.os, "dup2"), \
+                mock.patch.object(mcp_servidor.sys, "stdout", io.StringIO()):
+            self.assertEqual(mcp_servidor.main([]), 0)
+        self.assertEqual((lidos, servidos), ([False], [self.raiz]))
 
     def test_json_invalido(self):
         saida = io.BytesIO()
@@ -139,6 +157,25 @@ class TestPreparo(BaseAcervo):
         self.assertTrue(skill.startswith("---\nname: acervo-judicial\ndescription: "))
         # O AGENTS.md cabe no limite do Codex (32 KiB)
         self.assertLess((self.raiz / "AGENTS.md").stat().st_size, 24 * 1024)
+
+    def test_a_ia_le_helestron(self):
+        # Tudo o que a IA lê traz o nome novo, o conector "helestron" e o
+        # botão como ele se chama na tela Compartilhar.
+        preparo.atualizar_contexto(raiz=self.raiz, extrair_texto=False)
+        for nome in ("CLAUDE.md", "AGENTS.md", "INDICE.md",
+                     ".claude/skills/acervo-judicial/SKILL.md"):
+            texto = (self.raiz / nome).read_text(encoding="utf-8")
+            self.assertNotIn("Assessor", texto, nome)
+        contexto = (self.raiz / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertIn("# Acervo judicial — Helestron", contexto)
+        self.assertIn('o conector "helestron" (MCP)', contexto)
+        self.assertIn("“Preparar acervo para a IA”", contexto)
+        z = claude.gerar_plugin_cowork(Path(self.dir.name))
+        with zipfile.ZipFile(z) as arq:
+            manifesto = json.loads(arq.read(".claude-plugin/plugin.json"))
+        self.assertEqual(manifesto["author"], {"name": "Helestron"})
+        self.assertIn("Helestron", manifesto["description"])
+        self.assertEqual(nuvem.SUBPASTA, "Helestron - Acervo")
 
     def test_idempotente_e_respeita_edicao_do_usuario(self):
         preparo.atualizar_contexto(raiz=self.raiz)
@@ -313,13 +350,14 @@ class TestRecorte(BaseAcervo):
 
     def test_pastas_do_programa_dentro_do_acervo_ficam_de_fora(self):
         # Acervo apontado (por engano) para uma pasta acima da do programa
-        logs, runtime, local = self.raiz / "Logs", self.raiz / "runtime", self.raiz / "Local"
+        logs, programa, local = self.raiz / "Logs", self.raiz / "Programs", self.raiz / "Local"
         _pdf(logs / "diagnostico" / f"{self.OUTRO}.pdf", ["TELA DO PORTAL"])
-        _docx(runtime / "temp" / f"{SIGILOSO}.docx", ["RASCUNHO"])
+        _docx(programa / "Lib" / f"{SIGILOSO}.docx", ["RASCUNHO"])
         (local / "perfis").mkdir(parents=True)
         (local / "credenciais.json").write_text("{}", encoding="utf-8")
         with mock.patch.object(mcp_servidor.caminhos, "LOGS", logs), \
-                mock.patch.object(mcp_servidor.caminhos, "RUNTIME", runtime), \
+                mock.patch.object(mcp_servidor.caminhos, "INSTALADO", True), \
+                mock.patch.object(mcp_servidor.caminhos, "INSTALACAO", programa), \
                 mock.patch.object(mcp_servidor.caminhos, "LOCAL", local):
             ac = mcp_servidor.Acervo(self.raiz, sigilosos=None)
             self.assertEqual(set(ac.pdfs()), {NUM})
@@ -394,9 +432,39 @@ class TestClaude(BaseAcervo):
         self.assertEqual(set(dados["mcpServers"]), {"outro", claude.NOME_MCP})
         self.assertTrue(dados["coworkScheduledTasksEnabled"])
         entrada = dados["mcpServers"][claude.NOME_MCP]
-        self.assertEqual(entrada["args"][:3], ["-s", "-m", "helestron.compartilhar.mcp_servidor"])
-        self.assertTrue(list(arq.parent.glob("*antes-do-assessor*")))
+        self.assertEqual(claude.NOME_MCP, "helestron")
+        self.assertEqual(entrada["args"][-5:], ["-m", "helestron", "mcp", "--pasta",
+                                                str(self.raiz.resolve())])
+        self.assertTrue(list(arq.parent.glob("*antes-do-helestron*")))
         self.assertEqual(claude.registrar_mcp(self.raiz, [arq]), [])   # nada mudou
+
+    def test_entrada_da_instalacao_usa_o_python_do_programa_isolado(self):
+        # Instalado: o python.exe da pasta do programa com -I (PYTHONPATH,
+        # PYTHONHOME e a pasta "site" do usuário não entram) e nenhuma
+        # variável de ambiente - nem o PYTHONNOUSERSITE da versão anterior.
+        programa = Path(self.dir.name) / "Programs" / "Helestron"
+        programa.mkdir(parents=True)
+        (programa / "python.exe").write_bytes(b"")
+        with mock.patch.object(claude.caminhos, "INSTALADO", True), \
+                mock.patch.object(claude.caminhos, "INSTALACAO", programa):
+            entrada = claude.entrada_mcp(self.raiz)
+            bloco = chatgpt.bloco_toml(self.raiz)
+        self.assertEqual(entrada, {"command": str(programa / "python.exe"),
+                                   "args": ["-I", "-m", "helestron", "mcp", "--pasta",
+                                            str(self.raiz.resolve())]})
+        self.assertNotIn("PYTHONNOUSERSITE", json.dumps(entrada))
+        dados = tomllib.loads(bloco)["mcp_servers"][chatgpt.NOME_MCP]
+        self.assertEqual(dados["args"][:4], ["-I", "-m", "helestron", "mcp"])
+        self.assertNotIn("env", dados)
+
+    def test_registrar_tira_o_conector_da_versao_anterior(self):
+        arq = Path(self.dir.name) / "claude_desktop_config.json"
+        velho = {"command": "C:/AssessorIntegrado/runtime/python/python.exe", "args": []}
+        arq.write_text(json.dumps({"mcpServers": {"assessor-integrado": velho,
+                                                  "outro": {"command": "x"}}}), encoding="utf-8")
+        self.assertEqual(claude.registrar_mcp(self.raiz, [arq]), [arq])
+        servidores = json.loads(arq.read_text(encoding="utf-8"))["mcpServers"]
+        self.assertEqual(set(servidores), {"outro", "helestron"})
 
     def test_json_invalido_nao_e_sobrescrito(self):
         arq = Path(self.dir.name) / "claude_desktop_config.json"
@@ -490,11 +558,23 @@ class TestChatGPT(BaseAcervo):
         nosso = dados["mcp_servers"][chatgpt.NOME_MCP]
         self.assertTrue(nosso["enabled"])
         self.assertIn("--pasta", nosso["args"])
-        self.assertNotIn("A", nosso["env"])
+        self.assertNotIn("A", nosso.get("env", {}))
         self.assertTrue(chatgpt.mcp_codex_registrado(arq))
         self.assertTrue(chatgpt.remover_mcp_codex(arq))
         self.assertFalse(chatgpt.mcp_codex_registrado(arq))
         self.assertIn("outro", tomllib.loads(arq.read_text(encoding="utf-8"))["mcp_servers"])
+
+    def test_config_toml_tira_o_bloco_da_versao_anterior(self):
+        arq = Path(self.dir.name) / ".codex" / "config.toml"
+        arq.parent.mkdir()
+        arq.write_text('[mcp_servers.assessor_integrado]\ncommand = "velho"\n'
+                       '[mcp_servers.assessor_integrado.env]\nA = "1"\n\n'
+                       '[mcp_servers.helestron_outro]\ncommand = "y"\n', encoding="utf-8")
+        chatgpt.registrar_mcp_codex(self.raiz, arq)
+        servidores = tomllib.loads(arq.read_text(encoding="utf-8"))["mcp_servers"]
+        self.assertEqual(set(servidores), {"helestron", "helestron_outro"})
+        self.assertEqual(list(arq.parent.glob("config.antes-do-helestron-*.toml"))[0].read_text(
+            encoding="utf-8").count("assessor_integrado"), 2)
 
     def test_conector_do_codex_confere_a_pasta(self):
         # Regressão: depois de trocar a pasta do acervo, a tela seguia dizendo

@@ -1,0 +1,16 @@
+# Helestron - bibliotecas dos testes no Linux (CI, job "testes").
+#
+# O requisitos-teste.txt sai daqui, travado com hashes para Linux 64 bits /
+# Python 3.12 (o msvc-runtime fica de fora pelo marcador de plataforma):
+#
+#   uv pip compile construir/requisitos-teste.in --python-platform x86_64-manylinux_2_28
+#      --python-version 3.12 --generate-hashes -o construir/requisitos-teste.txt
+
+-r requisitos-base.in
+-r requisitos-falantes-base.in
+# Leitura do workflow nos testes da construção (já vem com o huggingface-hub;
+# fica explícito para não depender disso).
+pyyaml
+# Os testes da construção instalam uma roda de exemplo com a mesma
+# biblioteca que construir.py usa.
+installer

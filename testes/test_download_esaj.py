@@ -368,7 +368,8 @@ class TestLoginInsiste(unittest.TestCase):
         p = PortalDeLogin(credenciais=None)
         with self.assertRaises(modelos.LoginFalhou) as caso:
             p.entrar()
-        self.assertIn("Entrar manualmente", str(caso.exception))
+        self.assertIn("“Entrar manualmente”", str(caso.exception))
+        self.assertIn("Cadastre-os em Ajustes › Acessos aos portais", str(caso.exception))
         self.assertEqual(p.tentativas, 0)
 
     def test_senha_recusada(self):
@@ -376,6 +377,7 @@ class TestLoginInsiste(unittest.TestCase):
         with self.assertRaises(modelos.LoginFalhou) as caso:
             p.entrar()
         self.assertIn("recusou o usuário ou a senha", str(caso.exception))
+        self.assertIn("Ajustes › Acessos aos portais", str(caso.exception))
         self.assertTrue(p.nav.esqueceu, "sessão velha não deve ser reaproveitada")
 
     def test_login_que_nao_conclui_sugere_mostrar_navegador(self):
@@ -550,7 +552,7 @@ class TestLoginNaJanela(unittest.TestCase):
         self.assertIn("passou-se 1 minuto sem o login", texto)
         self.assertNotIn("1 minutos", texto)
         # o campo da tela, e não a chave do config.ini
-        self.assertIn("Esperar o login até (min)", texto)
+        self.assertIn("Ajustes › Acessos aos portais, campo “Esperar o login até (minutos)”", texto)
         self.assertNotIn("espera_login_minutos", texto)
 
     def test_certificado_sem_web_signer_avisa(self):

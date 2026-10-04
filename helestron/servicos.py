@@ -1,16 +1,17 @@
-"""O ÚNICO ponto em que a interface chama o download, a transcrição, a
-verificação e as funções de compartilhamento que podem não existir ainda.
+"""O ÚNICO ponto em que a API do servidor local chama o download, a
+transcrição, a verificação e as funções de compartilhamento.
 
-Por que um módulo só: as telas não importam helestron.download.motor,
-helestron.transcricao.* nem helestron.verificar diretamente. Se uma assinatura mudar,
-ou se um pacote faltar na instalação, o ajuste é aqui - e a tela recebe uma
-exceção ComponenteAusente com a frase pronta para o usuário ("rode o
-INSTALAR.bat de novo"), em vez de um ImportError cru.
+Por que um módulo só: os tratadores da API (helestron.servidor) não importam
+helestron.download.motor, helestron.transcricao.* nem helestron.verificar
+diretamente. Se uma assinatura mudar, ou se um pacote faltar na instalação,
+o ajuste é aqui - e a interface recebe uma exceção ComponenteAusente com a
+frase pronta para o usuário ("reinstale o Helestron"), em vez de um
+ImportError cru.
 
 Tudo é importado DENTRO das funções: a janela abre em menos de 2 s mesmo
 sem faster-whisper, Playwright ou PyMuPDF. Quase tudo aqui é lento (disco,
-áudio, rede) e deve ser chamado de uma thread de trabalho - nunca da
-thread do Tk.
+áudio, rede) e deve ser chamado de uma thread de trabalho (helestron.tarefas)
+- nunca da thread que atende os pedidos da página, que ficaria presa.
 """
 
 from __future__ import annotations
@@ -25,11 +26,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from ..nucleo import caminhos, cnj, sistema
+from .nucleo import caminhos, cnj, sistema
 
-log = logging.getLogger("interface.servicos")
+log = logging.getLogger("servicos")
 
-DICA_INSTALAR = "Rode o INSTALAR.bat de novo (ele completa a instalação sem apagar nada)."
+DICA_INSTALAR = ("Instale o Helestron de novo com o Helestron-Setup: ele conserta a instalação "
+                 "sem apagar os seus dados.")
 
 
 class ComponenteAusente(RuntimeError):
@@ -44,7 +46,7 @@ def _ausente(erro: ImportError, funcao: str) -> ComponenteAusente:
 
 # =================================================================== download
 def opcoes_download(cfg):
-    from ..download.modelos import OpcoesDownload
+    from .download.modelos import OpcoesDownload
 
     return OpcoesDownload.de_config(cfg)
 
@@ -52,7 +54,7 @@ def opcoes_download(cfg):
 def baixar_lote(numeros, destino: Path, opcoes, ctx, senhas: dict | None, cofre, cfg):
     """Roda o lote inteiro (bloqueia). Devolve o ResumoLote do motor."""
     try:
-        from ..download import motor
+        from .download import motor
     except ImportError as erro:
         raise _ausente(erro, "download de processos") from erro
     return motor.executar(numeros, Path(destino), opcoes, ctx, senhas=senhas, cofre=cofre, cfg=cfg)
@@ -65,7 +67,7 @@ def testar_login(tribunal, opcoes, ctx, credenciais: tuple[str, str] | None) -> 
     que o download vai usar.
     """
     try:
-        from ..download import motor
+        from .download import motor
     except ImportError as erro:
         raise _ausente(erro, "download de processos") from erro
     nav = motor.fabrica_navegador_padrao(tribunal, opcoes)
@@ -75,7 +77,7 @@ def testar_login(tribunal, opcoes, ctx, credenciais: tuple[str, str] | None) -> 
 
 
 def cofre():
-    from ..nucleo.cofre_senhas import CofreSenhas
+    from .nucleo.cofre_senhas import CofreSenhas
 
     return CofreSenhas(caminhos.ARQUIVO_SENHAS)
 
@@ -174,16 +176,18 @@ def _mtime(p: Path) -> float:
 # ================================================================ transcrição
 def nova_sessao(numero, cfg, eventos: Callable[[str, object], None], *, tipo: str = "",
                 participantes: dict[str, str] | None = None, falante: str = "",
-                sigiloso: bool = False):
+                sigiloso: bool = False, dispositivo: int | str | None = None):
     """Cria (sem iniciar) a sessão ao vivo. iniciar() e encerrar() bloqueiam:
     chame-os de uma thread de trabalho. 'sigiloso': documento, gravação e
-    diário vão para a pasta dos sigilosos, fora do acervo."""
+    diário vão para a pasta dos sigilosos, fora do acervo. 'dispositivo':
+    o microfone escolhido na tela (None = o da configuração)."""
     try:
-        from ..transcricao.ao_vivo import SessaoAoVivo
+        from .transcricao.ao_vivo import SessaoAoVivo
     except ImportError as erro:
         raise _ausente(erro, "transcrição") from erro
+    extra = {} if dispositivo in (None, "") else {"dispositivo": dispositivo}
     return SessaoAoVivo(numero, cfg, eventos, tipo=tipo, participantes=participantes,
-                        falante=falante, sigiloso=sigiloso)
+                        falante=falante, sigiloso=sigiloso, **extra)
 
 
 def processo_sigiloso(cfg, numero) -> bool:
@@ -192,7 +196,7 @@ def processo_sigiloso(cfg, numero) -> bool:
     if numero is None:
         return False
     try:
-        from ..transcricao.documento import processo_sigiloso as _sigiloso
+        from .transcricao.documento import processo_sigiloso as _sigiloso
 
         return bool(_sigiloso(cfg, numero))
     except Exception as erro:
@@ -211,7 +215,7 @@ def na_pasta_dos_sigilosos(cfg, caminho) -> bool:
 
 def recuperaveis(cfg) -> list[Path]:
     try:
-        from ..transcricao import ao_vivo
+        from .transcricao import ao_vivo
     except ImportError:
         return []
     try:
@@ -223,7 +227,7 @@ def recuperaveis(cfg) -> list[Path]:
 
 def recuperar(jsonl: Path) -> Path:
     try:
-        from ..transcricao import ao_vivo
+        from .transcricao import ao_vivo
     except ImportError as erro:
         raise _ausente(erro, "transcrição") from erro
     return ao_vivo.recuperar(jsonl)
@@ -232,7 +236,7 @@ def recuperar(jsonl: Path) -> Path:
 def listar_microfones() -> list:
     """Entradas de áudio (Entrada: indice, nome, padrao, taxa). Lenta: PortAudio."""
     try:
-        from ..transcricao import microfone
+        from .transcricao import microfone
     except ImportError as erro:
         raise _ausente(erro, "microfone") from erro
     return list(microfone.listar_entradas())
@@ -243,7 +247,7 @@ def abrir_teste_microfone(dispositivo, ao_nivel: Callable[[float], None],
     """Liga o microfone só para medir o nível (botão Testar). Devolve o objeto
     de captura, que a tela desliga com parar()."""
     try:
-        from ..transcricao import microfone
+        from .transcricao import microfone
     except ImportError as erro:
         raise _ausente(erro, "microfone") from erro
     captura = microfone.Captura(dispositivo if dispositivo not in ("", None) else None,
@@ -255,7 +259,7 @@ def abrir_teste_microfone(dispositivo, ao_nivel: Callable[[float], None],
 def modelos_disponiveis() -> list[dict]:
     """[{'nome', 'mb', 'instalado', 'descricao'...}] do catálogo Whisper."""
     try:
-        from ..transcricao import modelos
+        from .transcricao import modelos
     except ImportError:
         return []
     try:
@@ -267,7 +271,7 @@ def modelos_disponiveis() -> list[dict]:
 
 def modelo_instalado(nome: str) -> bool:
     try:
-        from ..transcricao import modelos
+        from .transcricao import modelos
 
         return bool(modelos.instalado(nome))
     except Exception:
@@ -276,7 +280,7 @@ def modelo_instalado(nome: str) -> bool:
 
 def baixar_modelo(nome: str, progresso: Callable[[float, str], None] | None = None) -> Path:
     try:
-        from ..transcricao import modelos
+        from .transcricao import modelos
     except ImportError as erro:
         raise _ausente(erro, "transcrição") from erro
     return modelos.baixar(nome, progresso)
@@ -286,13 +290,13 @@ def transcrever_gravacao(origem: Path, numero, cfg, progresso, cancelado, *,
                          rotulos_manuais=None, destino: Path | None = None, tipo: str = "",
                          participantes: dict | None = None, sigiloso: bool = False) -> Path:
     try:
-        from ..transcricao import arquivo
+        from .transcricao import arquivo
     except ImportError as erro:
         raise _ausente(erro, "transcrição de gravações") from erro
     meta = None
     if tipo:
         try:
-            from ..transcricao.documento import MetaAudiencia
+            from .transcricao.documento import MetaAudiencia
 
             meta = MetaAudiencia(numero=numero.formatado if numero else "", tipo=tipo,
                                  participantes=dict(participantes or {}))
@@ -312,7 +316,7 @@ def excecao_cancelado(erro: BaseException) -> bool:
 def falantes_situacao() -> tuple[bool, str]:
     """(disponível, frase) da separação automática de falantes."""
     try:
-        from ..transcricao import falantes
+        from .transcricao import falantes
     except ImportError:
         return False, "não instalada"
     try:
@@ -324,7 +328,7 @@ def falantes_situacao() -> tuple[bool, str]:
 def instalar_falantes(progresso: Callable[[float, str], None] | None = None,
                       cancelado: Callable[[], bool] | None = None) -> None:
     try:
-        from ..transcricao import falantes
+        from .transcricao import falantes
     except ImportError as erro:
         raise _ausente(erro, "separação de falantes") from erro
     falantes.instalar(progresso, cancelado=cancelado)
@@ -334,7 +338,7 @@ def numero_no_nome(caminho: Path):
     """O número CNJ do arquivo: no nome (inclusive o dependente "-NN") ou na
     pasta (as mídias baixadas ficam em _controle/midias/<número>/)."""
     try:
-        from ..transcricao import arquivo
+        from .transcricao import arquivo
 
         return arquivo.numero_do_caminho(Path(caminho))
     except (ImportError, AttributeError):
@@ -345,13 +349,31 @@ def numero_no_nome(caminho: Path):
         return None
 
 
-def transcricoes_recentes(cfg, limite: int = 5) -> list[Path]:
-    pasta = cfg.pasta_transcricoes
+def _docx_da_pasta(pasta: Path) -> list[Path]:
     try:
-        docs = [p for p in pasta.glob("*.docx")
+        return [p for p in Path(pasta).glob("*.docx")
                 if not p.name.startswith("~$") and not p.name.endswith((".parcial", ".tmp"))]
     except OSError:
         return []
+
+
+def transcricoes_recentes(cfg, limite: int = 5, incluir_sigilosas: bool = False) -> list[Path]:
+    """As transcrições mais recentes, da mais nova para a mais antiga.
+
+    'incluir_sigilosas': também as da pasta dos sigilosos (fora do acervo) -
+    a lista da tela Audiências mostra as duas, com o selo do sigilo; o
+    resumo do acervo, só as do acervo.
+    """
+    docs = _docx_da_pasta(cfg.pasta_transcricoes)
+    if incluir_sigilosas:
+        try:
+            from .transcricao.documento import pastas_das_transcricoes
+
+            pastas = pastas_das_transcricoes(cfg)[1:]
+        except Exception:
+            pastas = [Path(cfg.pasta_sigilosos) / "Transcricoes"]
+        for pasta in pastas:
+            docs += _docx_da_pasta(pasta)
     docs.sort(key=_mtime, reverse=True)
     return docs[:limite]
 
@@ -372,7 +394,7 @@ def verificar_instalacao(completo: bool = False, cfg=None, ao_item=None) -> list
     conferência mínima daqui mesmo: os pacotes de cada função.
     """
     try:
-        from .. import verificar
+        from . import verificar
     except ImportError:
         return _verificacao_minima()
     return list(verificar.verificar(completo=completo, cfg=cfg, ao_item=ao_item))
@@ -386,7 +408,7 @@ PACOTES = (
     ("faster_whisper", "transcrição de audiências", True),
     ("sounddevice", "microfone", True),
     ("soundfile", "gravação do áudio", True),
-    ("PIL", "ícones e botões da janela", False),
+    ("PIL", "imagens e capturas de tela", False),
 )
 
 
@@ -412,34 +434,48 @@ def _verificacao_minima() -> list[ItemVerificacao]:
 
 @dataclass
 class Pendencia:
-    """Algo da instalação que falta, para o aviso amarelo da tela inicial."""
-    chave: str             # "pacotes" | "modelo"
-    texto: str
-    acao: str = ""         # rótulo do botão
+    """Algo que falta, para os "Primeiros passos" da tela Início.
+
+    'acao' é a rota da interface que resolve ("ajustes#pastas",
+    "ajustes#transcricao"...): a tela vira o item da lista num atalho.
+    """
+    chave: str             # "pastas" | "pacotes" | "modelo" | ...
+    titulo: str
+    mensagem: str
+    acao: str = ""
+
+    @property
+    def texto(self) -> str:          # nome antigo do campo
+        return self.mensagem
+
+    def como_dict(self) -> dict:
+        return {"chave": self.chave, "titulo": self.titulo, "mensagem": self.mensagem,
+                "acao": self.acao}
 
 
 def pendencias(cfg) -> list[Pendencia]:
-    """O que falta para as três funções. Rápido (só procura arquivos), mas
-    chame fora da thread do Tk."""
+    """O que falta para as funções. Rápido (só procura arquivos), mas chame
+    de uma thread que possa esperar um instante (disco de rede)."""
     faltam = [funcao for nome, funcao, obrigatorio in PACOTES
               if obrigatorio and not _pacote_presente(nome)]
     saida = []
-    problema = problema_nas_pastas(cfg.pasta_acervo, cfg.pasta_sigilosos)
+    problema = problema_nas_pastas(cfg.pasta_acervo, cfg.pasta_sigilosos, pasta_pauta(cfg))
     if problema:
-        saida.append(Pendencia("pastas", problema, "Abrir as Configurações"))
+        saida.append(Pendencia("pastas", "Pastas em conflito", problema, "ajustes#pastas"))
     if faltam:
         inicio = ("Falta o componente do programa: " if len(faltam) == 1
                   else "Faltam os componentes do programa: ")
-        saida.append(Pendencia("pacotes", inicio + ", ".join(faltam) + ". " + DICA_INSTALAR,
-                               "Abrir a pasta do programa"))
+        saida.append(Pendencia("pacotes", "Instalação incompleta",
+                               inicio + ", ".join(faltam) + ". " + DICA_INSTALAR,
+                               "ajustes#diagnostico"))
     modelo = cfg.texto("transcricao", "modelo_ao_vivo") or "small"
     if _pacote_presente("faster_whisper") and not modelo_instalado(modelo):
         # A sessão ao vivo baixa o modelo que faltar ao começar (o áudio é
         # gravado e a fila espera): o recado diz isso, e não que "não começa".
-        saida.append(Pendencia("modelo", f"O modelo de transcrição “{modelo}” ainda não foi "
-                                         "baixado. Baixe agora: senão, a primeira audiência "
-                                         "começa baixando o modelo, e o texto demora a aparecer.",
-                               "Baixar agora"))
+        saida.append(Pendencia("modelo", "Modelo de transcrição",
+                               f"O modelo de transcrição “{modelo}” ainda não foi baixado. "
+                               "Baixe agora: senão, a primeira audiência começa baixando o "
+                               "modelo, e o texto demora a aparecer.", "ajustes#transcricao"))
     return saida
 
 
@@ -459,18 +495,52 @@ def dentro_ou_igual(filho, pai) -> bool:
     return f == p or f.startswith(p.rstrip(os.sep) + os.sep)
 
 
-def problema_nas_pastas(acervo, sigilosos) -> str | None:
-    """Por que este par de pastas vazaria o que não pode sair, ou None.
+def pasta_do_programa() -> Path:
+    """A pasta instalada do programa (ou o repositório, fora da instalação)."""
+    pasta = getattr(caminhos, "INSTALACAO", None) or getattr(caminhos, "RAIZ", None)
+    return Path(pasta) if pasta is not None else Path(__file__).resolve().parents[1]
+
+
+def base_usuario() -> Path:
+    """Documentos\\Helestron (ou o que caminhos.BASE_USUARIO disser)."""
+    base = getattr(caminhos, "BASE_USUARIO", None)
+    if base is not None:
+        return Path(base)
+    return Path.home() / "Documents" / "Helestron"
+
+
+def pasta_pauta(cfg) -> Path:
+    """Onde vão as planilhas da pauta exportada ([pauta] pasta).
+
+    Em branco = Documentos\\Helestron\\Pauta. Fica FORA do acervo: a planilha
+    traz as partes dos processos em segredo de justiça.
+    """
+    propria = getattr(cfg, "pasta_pauta", None)
+    if propria is not None and not callable(propria):
+        return Path(propria)
+    try:
+        valor = cfg.texto("pauta", "pasta")
+    except Exception:
+        valor = ""
+    valor = os.path.expandvars(str(valor or "").strip().strip('"'))
+    if not valor:
+        return base_usuario() / "Pauta"
+    p = Path(valor).expanduser()
+    return p if p.is_absolute() else Path(cfg.pasta_acervo).parent / p
+
+
+def problema_nas_pastas(acervo, sigilosos, pauta=None) -> str | None:
+    """Por que estas pastas vazariam o que não pode sair, ou None.
 
     O acervo inteiro é lido pela IA (conector, CLAUDE.md, pacote) e copiado
     para a nuvem. Por isso a pasta dos sigilosos não pode ficar dentro dele,
-    e ele não pode conter a pasta do programa (registros com imagens das
-    telas dos portais, config.ini e, no padrão, a própria pasta Sigilosos)
-    nem a pasta das senhas e dos perfis do navegador.
+    nem a da pauta exportada (a planilha traz as partes dos processos em
+    segredo de justiça), e ele não pode conter a pasta do programa nem a
+    pasta das senhas e dos perfis do navegador.
     """
     # A regra acervo x sigilosos é do núcleo, quando ele a tiver: uma frase só
     # para a tela, o assistente e a verificação.
-    from ..nucleo import config as _config
+    from .nucleo import config as _config
 
     conferir = getattr(_config, "conflito_de_pastas", None)
     if conferir is not None:
@@ -484,10 +554,13 @@ def problema_nas_pastas(acervo, sigilosos) -> str | None:
         return ("A pasta dos processos em segredo de justiça não pode ficar dentro do acervo: "
                 "tudo o que está no acervo é lido pela IA e copiado para a nuvem. Escolha uma "
                 "pasta fora dele.")
-    if dentro_ou_igual(caminhos.RAIZ, acervo):
+    if pauta is not None and str(pauta).strip() and dentro_ou_igual(pauta, acervo):
+        return ("A pasta da pauta exportada não pode ficar dentro do acervo: a planilha traz "
+                "as partes dos processos em segredo de justiça, e tudo o que está no acervo é "
+                "lido pela IA e copiado para a nuvem. Escolha uma pasta fora dele.")
+    if dentro_ou_igual(pasta_do_programa(), acervo):
         return ("O acervo não pode ser a pasta do programa nem uma pasta que a contenha: ela "
-                "guarda os registros, a configuração e, no padrão, os processos sigilosos. "
-                "Escolha uma pasta só para o acervo.")
+                "guarda os arquivos do Helestron. Escolha uma pasta só para o acervo.")
     if dentro_ou_igual(caminhos.LOCAL, acervo):
         return ("O acervo não pode conter a pasta em que o programa guarda as senhas e os "
                 f"perfis do navegador ({caminhos.LOCAL}). Escolha uma pasta só para o acervo.")
@@ -500,7 +573,7 @@ def atualizar_indice(cfg) -> None:
     é o que a IA lê primeiro, e sem isto a audiência recém-transcrita não
     aparecia nele (nem no espelho da nuvem). Nunca levanta."""
     try:
-        from ..compartilhar import preparo
+        from .compartilhar import preparo
 
         preparo.atualizar_contexto(cfg, extrair_texto=False)
     except Exception as erro:
@@ -518,7 +591,7 @@ SITE_CHATGPT_APP = "https://openai.com/chatgpt/download/"
 
 def prompt_inicial() -> str:
     try:
-        from ..compartilhar import claude
+        from .compartilhar import claude
 
         return getattr(claude, "PROMPT_INICIAL", "") or PROMPT_PADRAO
     except ImportError:
@@ -540,7 +613,7 @@ def abrir_no_cowork(pasta: Path) -> str:
     'desktop'  esta versão do programa não sabe montar o link: abriu o app;
     'baixar'   o Claude Desktop não está instalado: abriu a página de download.
     """
-    from ..compartilhar import claude
+    from .compartilhar import claude
 
     if not claude.claude_desktop_instalado():
         claude.abrir_claude_desktop()          # sem o app, cai na página de download
@@ -562,7 +635,7 @@ def abrir_no_cowork(pasta: Path) -> str:
 
 
 def gerar_plugin_cowork(destino: Path) -> Path | None:
-    from ..compartilhar import claude
+    from .compartilhar import claude
 
     fn = getattr(claude, "gerar_plugin_cowork", None)
     return fn(Path(destino)) if fn else None
@@ -570,7 +643,7 @@ def gerar_plugin_cowork(destino: Path) -> Path | None:
 
 def chatgpt_desktop_instalado() -> bool | None:
     """True/False; None quando esta versão não sabe detectar."""
-    from ..compartilhar import chatgpt
+    from .compartilhar import chatgpt
 
     fn = getattr(chatgpt, "chatgpt_desktop_instalado", None)
     if fn is None:
@@ -588,7 +661,7 @@ def abrir_chatgpt_work(pasta: Path) -> str:
     falha em algumas versões do app no Windows): a tela sempre mostra o
     plano B - Ctrl+O e colar o caminho, que já vai copiado.
     """
-    from ..compartilhar import chatgpt
+    from .compartilhar import chatgpt
 
     fn = getattr(chatgpt, "abrir_chatgpt_work", None)
     if fn is None:
@@ -601,7 +674,7 @@ def abrir_chatgpt_work(pasta: Path) -> str:
 
 
 def instalar_chatgpt_desktop() -> None:
-    from ..compartilhar import chatgpt
+    from .compartilhar import chatgpt
 
     fn = getattr(chatgpt, "instalar_chatgpt_desktop", None)
     if fn is not None:
@@ -616,19 +689,20 @@ def instalar_chatgpt_desktop() -> None:
 def registrar_mcp_codex(pasta: Path):
     """Conecta o acervo ao ChatGPT (Work/Codex) pelo config.toml do Codex.
     Devolve o arquivo alterado, ou None se esta versão não souber fazê-lo."""
-    from ..compartilhar import chatgpt
+    from .compartilhar import chatgpt
 
     fn = getattr(chatgpt, "registrar_mcp_codex", None)
     return fn(Path(pasta)) if fn else None
 
 
 def estado_ia(cfg) -> dict:
-    """Tudo o que a página Compartilhar mostra (procura arquivos: fora do Tk).
+    """Tudo o que a tela Compartilhar mostra (procura arquivos: chame de uma thread
+    que possa esperar).
 
     Cada ferramenta numa chave própria ('claude', 'chatgpt'): os dois
     módulos usam o mesmo nome 'mcp' para coisas diferentes.
     """
-    from ..compartilhar import chatgpt, claude, nuvem
+    from .compartilhar import chatgpt, claude, nuvem
 
     estado: dict = {"claude": {}, "chatgpt": {}}
     try:
@@ -656,7 +730,7 @@ def estado_ia(cfg) -> dict:
 
 def resumo_acervo(cfg) -> dict:
     """Quantos processos e transcrições há, e quando o acervo foi preparado."""
-    from ..compartilhar.mcp_servidor import Acervo
+    from .compartilhar.mcp_servidor import Acervo
 
     raiz = cfg.pasta_acervo
     try:

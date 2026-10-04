@@ -288,7 +288,8 @@ def cmd_modelos(argv: list[str]) -> int:
 
     if args.acao in (None, "listar"):
         for linha in modelos.listar():
-            marca = "instalado" if linha["instalado"] else "não instalado"
+            marca = ("embutido" if linha.get("embutido") else "instalado") \
+                if linha["instalado"] else "não instalado"
             _imprimir(f"{linha['nome']:<15} ~{linha['mb']:>5} MB  {marca:<14} {linha['descricao']}")
         return OK
     try:
@@ -313,11 +314,13 @@ def cmd_falantes(argv: list[str]) -> int:
     from . import falantes
 
     p = _Analisador(prog="python -m helestron falantes",
-                    description="Separação automática de falantes (componente opcional).")
+                    description="Separação automática de falantes (a biblioteca vem no "
+                                "instalador; os modelos de voz também, quando disponíveis).")
     sub = p.add_subparsers(dest="acao")
-    i = sub.add_parser("instalar", help="instala a biblioteca e baixa os modelos "
-                       f"(cerca de {falantes.TAMANHO_MB} MB)")
-    i.add_argument("--sem-pip", action="store_true", help="não instalar a biblioteca, só os modelos")
+    i = sub.add_parser("instalar", help="baixa os modelos de voz que faltarem "
+                       f"(cerca de {falantes.TAMANHO_MB} MB, do GitHub)")
+    # Aceita e ignora a opção da versão anterior (nada de pip agora).
+    i.add_argument("--sem-pip", action="store_true", help=argparse.SUPPRESS)
     sub.add_parser("estado", help="mostra se o componente está instalado")
     try:
         args = p.parse_args(argv)
@@ -331,7 +334,7 @@ def cmd_falantes(argv: list[str]) -> int:
         _imprimir(f"Separação de falantes: {falantes.situacao()}")
         return OK if falantes.disponivel() else FALHOU
     try:
-        falantes.instalar(_Progresso(), pip=not args.sem_pip)
+        falantes.instalar(_Progresso())
     except falantes.ComponenteAusente as erro:
         _imprimir(str(erro))
         return FALHOU

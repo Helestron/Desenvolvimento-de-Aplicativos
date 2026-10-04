@@ -1,9 +1,10 @@
-"""A ponte entre o motor de download e quem o acompanha (janela ou terminal).
+"""A ponte entre o motor de download e quem o acompanha (interface ou terminal).
 
 O motor roda numa thread de trabalho e nunca toca na interface: tudo o que
-ele quer dizer ou perguntar passa por um Contexto. A janela implementa uma
-subclasse que põe eventos numa fila (lida pelo Tk com after()) e responde
-``pedir_codigo`` com um threading.Event; o terminal usa ContextoTerminal.
+ele quer dizer ou perguntar passa por um Contexto. O servidor do programa
+(helestron/tarefas.py) implementa uma subclasse que publica eventos para a
+interface e responde ``pedir_codigo`` com um threading.Event (a pergunta
+aparece numa folha da janela); o terminal usa ContextoTerminal.
 
 No Assessor SAJ o código de verificação do e-SAJ chegava por um arquivo
 (runtime\\codigo-esaj.txt) e a janela só sabia que devia pedi-lo lendo o

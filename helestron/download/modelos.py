@@ -107,10 +107,27 @@ FALHAS = {ERRO, NAO_ENCONTRADO, SEM_ACESSO, NAO_SUPORTADO, SIGILOSO_SEM_SENHA}
 
 MODOS_LOGIN = ("senha", "certificado", "manual")
 
-# Rótulos da tela que as mensagens dos portais citam: têm de ser os mesmos
-# da tela, ou o usuário procura uma opção que não existe.
+# Rótulos da interface que as mensagens dos portais citam: têm de ser os
+# mesmos da tela (helestron/web e os campos de Ajustes descritos pelo
+# servidor), ou o usuário procura uma opção que não existe. O teste
+# test_download_motor.TestRotulosCitados confere cada um de ROTULOS_CITADOS.
 MOSTRAR_NAVEGADOR = "Mostrar o navegador enquanto baixa"
-CAMPO_PRAZO_LOGIN = "Configurações > Acessos, campo 'Esperar o login até (min)'"
+TENTAR_DE_NOVO = "Tentar de novo"
+ENTRAR_MANUALMENTE = "Entrar manualmente"
+AJUSTES_ACESSOS = "Ajustes › Acessos aos portais"
+PRAZO_LOGIN = "Esperar o login até (minutos)"
+PERFIL_EPROC = "Perfil do eProc"
+CAMPO_PRAZO_LOGIN = f"{AJUSTES_ACESSOS}, campo “{PRAZO_LOGIN}”"
+# Onde cadastrar ou corrigir usuário e senha de um portal.
+ONDE_CADASTRAR_ACESSO = (f"em {AJUSTES_ACESSOS} (ou na revisão do lote, na tela Processos, "
+                         "em “Acesso aos portais”)")
+# Endereço de portal errado: não há campo na tela (o catálogo é do programa).
+ONDE_CORRIGIR_ENDERECO = ("no arquivo enderecos-locais.json da pasta de dados do Helestron "
+                          "(%LOCALAPPDATA%\\Helestron), que vale por cima do catálogo "
+                          "dados\\tribunais.json - ou peça ao suporte")
+ROTULOS_CITADOS = (MOSTRAR_NAVEGADOR, TENTAR_DE_NOVO, ENTRAR_MANUALMENTE, "Ajustes",
+                   "Acessos aos portais", "Acesso aos portais", PRAZO_LOGIN, PERFIL_EPROC,
+                   "Pastas")
 
 
 def rotulo(situacao: str) -> str:
@@ -181,7 +198,7 @@ class OpcoesDownload:
     espera_s: int = 60                    # resposta de cada página do portal
     espera_login_min: int = 10            # código por e-mail, certificado, manual
     salvar_diagnostico: bool = True
-    pasta_sigilosos: Path = field(default_factory=lambda: caminhos.RAIZ / "Sigilosos")
+    pasta_sigilosos: Path = field(default_factory=lambda: caminhos.BASE_USUARIO / "Sigilosos")
     pasta_diagnostico: Path = field(default_factory=lambda: caminhos.LOGS / "diagnostico")
     login: dict[str, str] = field(default_factory=lambda: {"esaj": "senha", "eproc": "senha"})
     espera_tela_codigo_s: int = 45        # quanto esperar o portal abrir a tela do código

@@ -61,7 +61,7 @@ class PastaTemporaria(unittest.TestCase):
     def setUp(self) -> None:
         # No Windows, o navegador recém-fechado ainda segura arquivos do
         # perfil por um instante; a limpeza não pode reprovar o teste.
-        self._tmp = tempfile.TemporaryDirectory(prefix="assessor-teste-",
+        self._tmp = tempfile.TemporaryDirectory(prefix="helestron-teste-",
                                                 ignore_cleanup_errors=True)
         self.tmp = Path(self._tmp.name)
 

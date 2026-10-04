@@ -173,7 +173,7 @@ class PastaTemporaria:
     """Uma pasta temporária com config.ini cujo acervo fica dentro dela."""
 
     def __init__(self, **ajustes: str):
-        self.raiz = Path(tempfile.mkdtemp(prefix="assessor-transcricao-"))
+        self.raiz = Path(tempfile.mkdtemp(prefix="helestron-transcricao-"))
         self.acervo = self.raiz / "Acervo"
         self.ini = self.raiz / "config.ini"
         linhas = ["[geral]", f"pasta_acervo = {self.acervo}",

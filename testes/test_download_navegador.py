@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from helestron.download import modelos, navegador
@@ -76,20 +78,49 @@ class TestSemAcento(unittest.TestCase):
 
 
 class TestEscolhaDoNavegador(unittest.TestCase):
-    def test_auto_prefere_chrome_depois_edge_depois_o_do_programa(self):
-        self.assertEqual(navegador.escolher_canais("auto", chrome="c", edge="e"),
+    def test_auto_prefere_chrome_depois_edge_e_o_chromium_so_se_ja_existir(self):
+        self.assertEqual(navegador.escolher_canais("auto", chrome="c", edge="e", chromium=""),
+                         ["chrome", "msedge"])
+        self.assertEqual(navegador.escolher_canais("auto", chrome="", edge="e", chromium=""),
+                         ["msedge"])
+        # o Chromium do Playwright só entra, por último, se já estiver aqui
+        self.assertEqual(navegador.escolher_canais("auto", chrome="c", edge="e", chromium="/pw"),
                          ["chrome", "msedge", None])
-        self.assertEqual(navegador.escolher_canais("auto", chrome="", edge="e"),
-                         ["msedge", None])
-        self.assertEqual(navegador.escolher_canais("auto", chrome="", edge=""), [None])
+        self.assertEqual(navegador.escolher_canais("auto", chrome="", edge="", chromium="/pw"),
+                         [None])
+
+    def test_sem_chrome_nem_edge_explica(self):
+        with self.assertRaises(modelos.PortalIndisponivel) as caso:
+            navegador.escolher_canais("auto", chrome="", edge="", chromium="")
+        texto = str(caso.exception)
+        self.assertIn("nem o Google Chrome nem o Microsoft Edge", texto)
+        self.assertIn("O Edge vem com o Windows 10 e 11", texto)
 
     def test_preferencias_explicitas(self):
-        self.assertEqual(navegador.escolher_canais("msedge", chrome="c", edge="e"),
-                         ["msedge", "chrome", None])
-        self.assertEqual(navegador.escolher_canais("chromium", chrome="c", edge="e"), [None])
+        self.assertEqual(navegador.escolher_canais("msedge", chrome="c", edge="e", chromium=""),
+                         ["msedge", "chrome"])
+        self.assertEqual(navegador.escolher_canais("chromium", chrome="c", edge="e",
+                                                   chromium="/pw"), [None, "chrome", "msedge"])
+        # pediu o Chromium, mas não há: segue com o Chrome e o Edge
+        with self.assertLogs("download.navegador", "WARNING"):
+            self.assertEqual(navegador.escolher_canais("chromium", chrome="c", edge="e",
+                                                       chromium=""), ["chrome", "msedge"])
         # pediu Chrome, não tem: segue com o que houver, sem derrubar
-        self.assertEqual(navegador.escolher_canais("chrome", chrome="", edge="e"),
-                         ["msedge", None])
+        with self.assertLogs("download.navegador", "WARNING"):
+            self.assertEqual(navegador.escolher_canais("chrome", chrome="", edge="e",
+                                                       chromium=""), ["msedge"])
+        # valor estranho no config.ini vale como "auto"
+        self.assertEqual(navegador.escolher_canais("firefox", chrome="c", edge="", chromium=""),
+                         ["chrome"])
+
+    def test_chromium_de_reserva_so_o_que_ja_existe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"PLAYWRIGHT_BROWSERS_PATH": tmp}), \
+                    mock.patch("pathlib.Path.home", return_value=Path(tmp) / "casa"), \
+                    mock.patch.dict(os.environ, {"LOCALAPPDATA": str(Path(tmp) / "local")}):
+                self.assertEqual(navegador.chromium_reserva(), "")
+                (Path(tmp) / "chromium-1194").mkdir()
+                self.assertEqual(navegador.chromium_reserva(), str(Path(tmp) / "chromium-1194"))
 
     def test_certificado_exige_chrome(self):
         self.assertEqual(navegador.escolher_canais("auto", certificado=True, chrome="c", edge=""),
@@ -365,7 +396,7 @@ class TestNavegadorSemAbrir(apoio.PastaTemporaria):
         with mock.patch.dict("sys.modules", {"playwright": None, "playwright.sync_api": None}):
             with self.assertRaises(modelos.PortalIndisponivel) as caso:
                 n.abrir()
-        self.assertIn("INSTALAR.bat", str(caso.exception))
+        self.assertIn("Instale o Helestron de novo com o Helestron-Setup", str(caso.exception))
 
 
 if __name__ == "__main__":
