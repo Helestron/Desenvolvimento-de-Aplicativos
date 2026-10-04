@@ -201,6 +201,64 @@ def definir_endereco(portal: str, grau: str, url: str) -> None:
     os.replace(tmp, ARQUIVO_LOCAL)
 
 
+# Os graus que a tela de Ajustes mostra para cada chave de 'urls'.
+SECOES_JF = {"70": "Paraná", "71": "Rio Grande do Sul", "72": "Santa Catarina",
+             "50": "Rio de Janeiro", "51": "Espírito Santo"}
+
+
+def rotulo_do_grau(grau: str) -> str:
+    """'base' -> 'Endereço do portal'; '1g' -> '1º grau'; '1g_71' -> '1º grau — Rio Grande do Sul'."""
+    if grau == "base":
+        return "Endereço do portal"
+    numero, _, secao = grau.partition("_")
+    texto = {"1g": "1º grau", "2g": "2º grau"}.get(numero, numero)
+    if secao:
+        texto += f" — {SECOES_JF.get(secao, 'seção ' + secao)}"
+    return texto
+
+
+def _do_portal(lista: tuple[Tribunal, ...], portal: str) -> Tribunal | None:
+    sistema, _, sigla = (portal or "").partition(":")
+    for t in lista:
+        if t.sigla.upper() == sigla.upper():
+            for alvo in (t, t.alternativo):
+                if alvo is not None and alvo.sistema == sistema:
+                    return alvo
+    return None
+
+
+def enderecos(portal: str) -> list[dict]:
+    """Os endereços do portal ('esaj:TJAL'), grau a grau, para a tela de Ajustes:
+    [{grau, rotulo, url, padrao, corrigido}] - 'padrao' é o do catálogo, 'url' o
+    que vale (a correção do usuário, se houver)."""
+    base = _do_portal(_carregar(str(ARQUIVO), _mtime(ARQUIVO)), portal)
+    if base is None:
+        raise KeyError(portal)
+    locais = _ler_locais().get(base.portal, {})
+    saida = []
+    for grau in list(base.urls) + [g for g in locais if g not in base.urls]:
+        valor = base.urls.get(grau, "")
+        padrao = valor if isinstance(valor, str) else ", ".join(v for v in valor or [] if v)
+        corrigido = str(locais.get(grau) or "")
+        primeiro = valor if isinstance(valor, str) else next((v for v in valor or [] if v), "")
+        saida.append({"grau": grau, "rotulo": rotulo_do_grau(grau), "url": corrigido or primeiro,
+                      "padrao": padrao, "corrigido": bool(corrigido)})
+    return saida
+
+
+def enderecos_corrigidos() -> list[dict]:
+    """[{portal, grau, rotulo, url}] - só o que o usuário corrigiu."""
+    saida = []
+    for portal, graus in sorted(_ler_locais().items()):
+        if not isinstance(graus, dict):
+            continue
+        for grau, url in sorted(graus.items()):
+            if isinstance(url, str) and url.strip():
+                saida.append({"portal": portal, "grau": grau, "rotulo": rotulo_do_grau(grau),
+                              "url": url.strip()})
+    return saida
+
+
 def por_chave(chave: str) -> Tribunal | None:
     for t in carregar():
         if t.chave == chave:

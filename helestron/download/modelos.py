@@ -121,13 +121,16 @@ CAMPO_PRAZO_LOGIN = f"{AJUSTES_ACESSOS}, campo “{PRAZO_LOGIN}”"
 # Onde cadastrar ou corrigir usuário e senha de um portal.
 ONDE_CADASTRAR_ACESSO = (f"em {AJUSTES_ACESSOS} (ou na revisão do lote, na tela Processos, "
                          "em “Acesso aos portais”)")
-# Endereço de portal errado: não há campo na tela (o catálogo é do programa).
-ONDE_CORRIGIR_ENDERECO = ("no arquivo enderecos-locais.json da pasta de dados do Helestron "
-                          "(%LOCALAPPDATA%\\Helestron), que vale por cima do catálogo "
-                          "dados\\tribunais.json - ou peça ao suporte")
+# Endereço de portal errado: Ajustes › Acessos aos portais, "Endereço do
+# portal" (a correção fica no enderecos-locais.json da pasta de dados e vale
+# por cima do catálogo dados\\tribunais.json).
+ENDERECO_DO_PORTAL = "Endereço do portal"
+ONDE_CORRIGIR_ENDERECO = (f"em {AJUSTES_ACESSOS}, “{ENDERECO_DO_PORTAL}” (a correção fica "
+                          "no arquivo enderecos-locais.json da pasta de dados do Helestron, "
+                          "%LOCALAPPDATA%\\Helestron) - ou peça ao suporte")
 ROTULOS_CITADOS = (MOSTRAR_NAVEGADOR, TENTAR_DE_NOVO, ENTRAR_MANUALMENTE, "Ajustes",
                    "Acessos aos portais", "Acesso aos portais", PRAZO_LOGIN, PERFIL_EPROC,
-                   "Pastas")
+                   "Pastas", ENDERECO_DO_PORTAL)
 
 
 def rotulo(situacao: str) -> str:

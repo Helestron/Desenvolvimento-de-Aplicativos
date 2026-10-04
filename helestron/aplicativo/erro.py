@@ -3,8 +3,9 @@
 Em vez do "No module named ..." cru da versão anterior, a janela mostra o
 que falta, a hipótese mais provável (o antivírus pôs o arquivo em
 quarentena, ou a instalação foi interrompida), que os dados do usuário não
-foram afetados, e o botão Reparar: reabre o instalador, se houver uma cópia
-dele no computador, ou explica como reinstalar.
+foram afetados, e o botão Reparar: procura o instalador (Helestron-Setup) na
+pasta Downloads e o abre; se não o encontrar, explica como baixá-lo e
+reinstalar. O instalador não deixa cópia de si no computador.
 
 Roda no mesmo servidor local (modo de erro: poucas rotas) e na mesma
 janela; se nem isso for possível, quem chama mostra a caixa de mensagem
@@ -37,9 +38,10 @@ DADOS_INTACTOS = ("Os seus dados — acervo, transcrições, pauta, configuraç�
 
 
 def instrucoes_reinstalar(pasta) -> str:
-    return ("Baixe o instalador do Helestron (Helestron-Setup) de novo e execute-o: ele conserta "
-            "a instalação sem apagar os seus dados. Se o antivírus bloqueou um arquivo, peça ao "
-            f"suporte de informática que libere a pasta {pasta} e reinstale.")
+    return ("Não encontrei o instalador na pasta Downloads. Baixe de novo o instalador do "
+            "Helestron (Helestron-Setup) e execute-o: ele conserta a instalação sem apagar os "
+            "seus dados. Se o antivírus bloqueou um arquivo, peça ao suporte de informática que "
+            f"libere a pasta {pasta} e reinstale.")
 
 
 def pagina(problemas: list[integridade.Problema], nonce: str) -> str:
@@ -83,10 +85,12 @@ button:focus-visible{{outline:3px solid rgba(10,102,232,.45);outline-offset:2px}
 <p>{html.escape(HIPOTESE)}</p>
 <p>{html.escape(DADOS_INTACTOS)}</p>
 <div class="acoes">
-<button class="principal" id="reparar">Reparar</button>
+<button class="principal" id="reparar" aria-describedby="sobre-reparar">Reparar</button>
 <button id="registros">Abrir os registros</button>
 <button id="fechar">Fechar</button>
 </div>
+<p class="sub" id="sobre-reparar">Reparar abre o instalador do {NOME} (Helestron-Setup) que estiver na
+pasta Downloads; se ele não estiver lá, explica como baixá-lo de novo.</p>
 <p id="recado" role="status" aria-live="polite"></p>
 <p class="versao">{NOME} {__version__} · pasta do programa: <code>{html.escape(str(pasta))}</code></p>
 </main>
@@ -101,7 +105,7 @@ button:focus-visible{{outline:3px solid rgba(10,102,232,.45);outline-offset:2px}
       .then(function (r) {{ return r.json(); }});
   }}
   document.getElementById("reparar").addEventListener("click", function () {{
-    recado.textContent = "Procurando o instalador…";
+    recado.textContent = "Procurando o instalador na pasta Downloads…";
     api("/api/integridade/reparar").then(function (r) {{
       recado.textContent = r.ok ? r.dados.mensagem : r.erro.mensagem;
     }}).catch(function () {{ recado.textContent = "Não consegui falar com o programa."; }});

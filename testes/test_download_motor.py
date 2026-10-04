@@ -1179,6 +1179,17 @@ class TestRotulosCitados(unittest.TestCase):
             with self.subTest(rotulo=rotulo):
                 self.assertIn(rotulo, texto)
 
+    def test_rotulos_da_transcricao(self):
+        """As mensagens da transcrição e da verificação citam o botão que
+        baixa os modelos de voz e o grupo Transcrição de Ajustes."""
+        from helestron.transcricao import falantes
+
+        texto = self._textos_da_interface()
+        for rotulo in (falantes.BOTAO_BAIXAR, "Transcrição", "Baixar"):
+            with self.subTest(rotulo=rotulo):
+                self.assertIn(rotulo, texto)
+        self.assertIn(falantes.BOTAO_BAIXAR, falantes.ONDE_BAIXAR)
+
     def test_mensagens_montadas_com_os_rotulos(self):
         self.assertIn(f"“{modelos.PRAZO_LOGIN}”", modelos.CAMPO_PRAZO_LOGIN)
         self.assertTrue(modelos.CAMPO_PRAZO_LOGIN.startswith(modelos.AJUSTES_ACESSOS))
@@ -1201,3 +1212,26 @@ class TestRotulosCitados(unittest.TestCase):
         texto = (pacote / "verificar.py").read_text(encoding="utf-8")
         for antigo in antigos:
             self.assertFalse(antigo in texto, f"verificar.py cita “{antigo}”")
+
+    def test_nada_do_programa_cita_o_assessor_integrado(self):
+        """O pacote inteiro (código, interface, dados): nenhuma tela ou
+        mensagem manda o usuário ao INSTALAR.bat, à tela "Configurações" do
+        programa antigo ou ao componente que se instalava à parte. (O
+        "Assessor Integrado" só aparece onde se removem os registros da
+        versão anterior.)"""
+        pacote = Path(motor.__file__).resolve().parents[1]
+        antigos = ("INSTALAR.bat", "Configurações >", "AssessorIntegrado", "Instalar o componente",
+                   "instalar o componente", "Configurações do Helestron", "tela de Configurações")
+        permitidos = {"compartilhar/claude.py", "compartilhar/chatgpt.py", "verificar.py"}
+        for arquivo in sorted(pacote.rglob("*")):
+            if arquivo.suffix not in (".py", ".js", ".html", ".json", ".css") or \
+                    "__pycache__" in arquivo.parts:
+                continue
+            relativo = arquivo.relative_to(pacote).as_posix()
+            texto = arquivo.read_text(encoding="utf-8")
+            for antigo in antigos:
+                with self.subTest(arquivo=relativo, antigo=antigo):
+                    self.assertNotIn(antigo, texto)
+            if relativo not in permitidos:
+                with self.subTest(arquivo=relativo, antigo="Assessor Integrado"):
+                    self.assertNotIn("Assessor Integrado", texto)

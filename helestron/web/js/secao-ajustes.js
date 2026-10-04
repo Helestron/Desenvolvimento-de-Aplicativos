@@ -42,7 +42,7 @@
   }
 
   const RODAPES = {
-    acessos: "As senhas ficam cifradas pelo Windows (DPAPI): só a sua conta, neste computador, consegue lê-las. Com “Manualmente”, o navegador abre na tela de entrada do portal e o Helestron continua depois que você entrar.",
+    acessos: "As senhas ficam cifradas pelo Windows (DPAPI): só a sua conta, neste computador, consegue lê-las. Com “Entrar manualmente”, o navegador abre na tela de entrada do portal e o Helestron continua depois que você entrar.",
     pastas: "A pasta dos sigilosos fica fora do acervo (e o acervo, fora dela): tudo o que está no acervo é lido pela IA e copiado para a nuvem. A pauta exportada também fica fora, porque traz as partes dos processos sigilosos.",
     download: "Não zere a pausa entre processos em listas grandes: rajada de acessos pode ser lida pelo portal como abuso.",
     transcricao: "A transcrição roda no próprio computador, sem internet: o áudio da audiência não sai da máquina.",
@@ -292,7 +292,93 @@
       trocar(lista, grupo({ titulo: "Portais", linhas: linhas.concat([adicionar]), rodape: RODAPES.acessos }));
     };
     await carregar();
-    return [lista, campos.length ? grupo({ titulo: "Como entrar", linhas: campos.map((c) => campo(c, ctx)) }) : null];
+    return [lista, campos.length ? grupo({ titulo: "Como entrar", linhas: campos.map((c) => campo(c, ctx)) }) : null, grupoEnderecos(ctx)];
+  }
+
+  // ================================================================ endereços dos portais
+  /**
+   * Quando o tribunal muda o endereço do portal antes de o Helestron ser
+   * atualizado: a correção fica neste computador (enderecos-locais.json) e
+   * vale por cima do catálogo. Em branco, volta ao endereço do catálogo.
+   */
+  async function corrigirEndereco(portalInicial) {
+    let tribunais = [];
+    try { tribunais = await api.tribunais(); } catch (_e) { tribunais = []; }
+    const portais = [];
+    for (const t of tribunais) {
+      for (const s of [t.sistema, t.alternativo]) {
+        if (s === "esaj" || s === "eproc") portais.push([`${s}:${t.sigla}`, `${t.sigla} · ${nomeSistema(s)}`]);
+      }
+    }
+    const escolha = el("select", { classe: "campo", id: "endereco-portal" }, portais.map(([v, r]) => el("option", { value: v, texto: r })));
+    if (portalInicial) escolha.value = portalInicial;
+    const campos = el("div", { classe: "formulario", estilo: { gap: "12px" } });
+    let atuais = [];
+    const desenhar = async () => {
+      trocar(campos, H.ui.esqueleto(1));
+      let dados = null;
+      try { dados = await api.acessos.enderecosDoPortal(escolha.value); } catch (erro) { trocar(campos, H.ui.faixa({ tipo: "erro", texto: erro.message })); return; }
+      atuais = dados.enderecos || [];
+      trocar(campos, atuais.map((e, i) => {
+        const entrada = el("input", { classe: "campo", id: "endereco-" + i, spellcheck: "false", placeholder: e.padrao || "https://", dados: { grau: e.grau } });
+        entrada.value = e.corrigido ? e.url : "";
+        return el("div", {},
+          el("label", { classe: "rotulo", for: "endereco-" + i, texto: e.rotulo }),
+          entrada,
+          el("p", { classe: "ajuda-campo", texto: e.corrigido ? `Corrigido. O do catálogo é ${e.padrao || "—"}.` : `Em branco: vale o do catálogo (${e.padrao || "—"}).` }));
+      }));
+    };
+    escolha.addEventListener("change", desenhar);
+    await desenhar();
+    const f = folha.abrir({
+      titulo: "Endereço do portal", icone: "link",
+      mensagem: "Use só quando o tribunal mudar o endereço do e-SAJ ou do eProc e o Helestron ainda não souber. Deixe em branco para voltar ao endereço que vem com o programa.",
+      conteudo: [el("div", {}, el("label", { classe: "rotulo", for: "endereco-portal", texto: "Portal" }), escolha), campos],
+      botoes: [{ rotulo: "Cancelar", valor: false }, { rotulo: "Salvar", tipo: "primario", padrao: true, acao: async () => {
+        const portal = escolha.value;
+        let mudou = 0;
+        for (const entrada of campos.querySelectorAll("input[data-grau]")) {
+          const atual = atuais.find((e) => e.grau === entrada.dataset.grau) || {};
+          const novo = entrada.value.trim();
+          const antes = atual.corrigido ? atual.url : "";
+          if (novo === antes) continue;
+          await api.acessos.corrigirEndereco(portal, entrada.dataset.grau, novo);
+          mudou++;
+        }
+        if (mudou) aviso({ titulo: "Endereço do portal salvo", mensagem: (portais.find(([v]) => v === portal) || [portal, portal])[1], tipo: "sucesso" });
+        return true;
+      } }],
+    });
+    return (await f.resultado) === true;
+  }
+
+  function grupoEnderecos(ctx) {
+    const caixa = el("div", { id: "grupo-enderecos" });
+    const carregar = async () => {
+      let lista = [];
+      try { lista = await api.acessos.enderecos(); } catch (_e) { lista = []; }
+      if (!ctx.vivo) return;
+      const linhas = lista.map((e) => linha({
+        icone: "link", cor: "ambar", titulo: `${e.rotulo_portal || e.portal} — ${e.rotulo}`,
+        sub: el("span", { classe: "caminho", texto: e.url }),
+        acessorio: el("span", { classe: "grupo-botoes", estilo: { flexWrap: "nowrap" } },
+          botao({ rotulo: "Alterar", tamanho: "pequeno", tipo: "texto", acao: async () => { if (await corrigirEndereco(e.portal)) carregar(); } }),
+          botao({ rotulo: "Restaurar", tamanho: "pequeno", tipo: "texto", acao: async () => {
+            await api.acessos.corrigirEndereco(e.portal, e.grau, "");
+            aviso({ titulo: "Endereço restaurado", mensagem: `${e.rotulo_portal || e.portal}: vale de novo o do catálogo.`, tipo: "sucesso" });
+            carregar();
+          } })),
+      }));
+      const corrigir = el("button", { type: "button", classe: "linha com-icone", id: "corrigir-endereco", on: { click: async () => { if (await corrigirEndereco()) carregar(); } } },
+        el("span", { classe: "bloco-icone cor-azul" }, icone("link")),
+        el("span", { classe: "linha-texto" }, el("span", { classe: "linha-titulo", estilo: { color: "var(--azul-texto)" }, texto: "Corrigir o endereço de um portal" })));
+      trocar(caixa, grupo({
+        titulo: "Endereço do portal", linhas: linhas.concat([corrigir]),
+        rodape: "Raramente é preciso: o Helestron já conhece os endereços do e-SAJ e do eProc de cada tribunal. Use quando uma mensagem disser que o endereço do portal mudou.",
+      }));
+    };
+    carregar();
+    return caixa;
   }
 
   async function telaPastas(ctx, campos) {
@@ -308,6 +394,54 @@
     ];
   }
 
+  // O servidor manda 'descricao' (frase pronta) e 'recomendado_para' (códigos).
+  const PARA = { ao_vivo: "a audiência ao vivo", revisao: "a revisão e as gravações" };
+  function sobreModelo(m) {
+    if (m.descricao) return m.descricao;
+    const lista = Array.isArray(m.recomendado_para) ? m.recomendado_para : (m.recomendado_para ? [m.recomendado_para] : []);
+    const textos = lista.map((x) => PARA[x] || String(x).replace(/_/g, " "));
+    return textos.length ? "para " + textos.join(" e ") : "";
+  }
+
+  /** Separação automática de falantes: situação e, se faltarem os modelos de voz, o botão para baixá-los. */
+  function grupoFalantes(ctx) {
+    const caixa = el("div", { id: "grupo-falantes" });
+    let tarefa = null;
+    const carregar = async () => {
+      let e = null;
+      try { e = await api.transcricao.falantes(); } catch (_e) { e = null; }
+      if (!ctx.vivo) return;
+      if (!e) { trocar(caixa); return; }
+      const rodando = tarefa && H.loja.tarefas.get(tarefa) && H.loja.tarefas.get(tarefa).estado === "rodando";
+      let sub, acessorio;
+      if (e.disponivel) {
+        sub = e.embutidos ? "Os modelos de voz vieram com o instalador." : "Os modelos de voz estão neste computador.";
+        acessorio = pilula("Pronta", "verde", "check");
+      } else if (e.biblioteca) {
+        sub = `Faltam os modelos de voz (cerca de ${fmt.mb(e.tamanho_mb || 47)}, baixados uma vez do GitHub). Sem eles, a revisão não separa as vozes sozinha; os falantes marcados durante a audiência continuam valendo.`;
+        acessorio = rodando
+          ? el("span", { classe: "valor-salvo" }, el("span", { classe: "girando" }), "Baixando…")
+          : botao({ rotulo: "Baixar os modelos de voz", tamanho: "pequeno", tipo: "tonal", acao: async () => {
+            const r = await api.transcricao.baixarFalantes();
+            tarefa = r.tarefa;
+            aviso({ titulo: "Baixando os modelos de voz", mensagem: "Acompanhe na barra lateral.", tipo: "info" });
+            carregar();
+          } });
+      } else {
+        sub = "O componente da separação de vozes não está nesta instalação. Instale o Helestron de novo com o instalador Helestron-Setup: os seus dados ficam.";
+        acessorio = pilula("Indisponível", "ambar", "aviso");
+      }
+      trocar(caixa, grupo({
+        titulo: "Separação de falantes",
+        linhas: [linha({ icone: "pessoas", cor: e.disponivel ? "azul" : "cinza", titulo: "Separação automática das vozes", sub, acessorio })],
+        rodape: "Usada na revisão final: identifica as trocas de voz e atribui cada fala a um participante.",
+      }));
+    };
+    ctx.on("tarefa", (t) => { if (t.tipo === "modelo" && (!tarefa || t.id === tarefa) && t.estado !== "rodando") { tarefa = null; carregar(); } });
+    carregar();
+    return caixa;
+  }
+
   async function telaTranscricao(ctx, campos) {
     const modelos = el("div", {}, H.ui.esqueleto(2));
     const carregar = async () => {
@@ -321,7 +455,7 @@
         linhas: lista.map((m) => linha({
           icone: "chip", cor: m.instalado || m.embutido ? "azul" : "cinza",
           titulo: m.rotulo || m.nome,
-          sub: [fmt.mb(m.tamanho_mb || 0), m.recomendado_para ? "para " + m.recomendado_para : ""].filter(Boolean).join(" · "),
+          sub: [fmt.mb(m.tamanho_mb || 0), sobreModelo(m)].filter(Boolean).join(" · "),
           acessorio: m.instalado || m.embutido
             ? pilula(m.embutido ? "Embutido" : "Instalado", "verde", "check")
             : botao({ rotulo: "Baixar", tamanho: "pequeno", tipo: "tonal", acao: async () => {
@@ -339,6 +473,7 @@
       curtos.length ? grupo({ titulo: "Transcrição", linhas: curtos.map((c) => campo(c, ctx)), rodape: RODAPES.transcricao }) : null,
       longos.length ? grupo({ titulo: "Participantes e vocabulário", linhas: longos.map((c) => campo(c, ctx)) }) : null,
       modelos,
+      grupoFalantes(ctx),
     ];
   }
 
@@ -351,14 +486,24 @@
       const linhas = fontes.map((f) => linha({
         icone: f.modo === "capturado" ? "capturar" : "sincronizar", cor: f.ultimo_erro ? "ambar" : "ciano",
         titulo: f.rotulo || `${nomeSistema(f.sistema)} · ${f.tribunal}`,
-        sub: f.ultimo_erro ? "Último erro: " + f.ultimo_erro
-          : [f.modo === "capturado" ? "Endereço capturado" : "Descoberta automática", f.ultima_sincronizacao ? "sincronizada " + fmt.quando(f.ultima_sincronizacao) : "ainda não sincronizada"].join(" · "),
-        acessorio: botao({ icone: "lixeira", titulo: "Remover esta fonte", tamanho: "pequeno", tipo: "texto", acao: async () => {
+        sub: el("span", {},
+          el("span", { estilo: { display: "block" }, texto: [
+            f.modo === "capturado" ? "Endereço capturado no portal" : f.url ? "Pauta encontrada pelo Helestron" : "Pauta ainda não encontrada",
+            f.ultima_sincronizacao ? "sincronizada " + fmt.quando(f.ultima_sincronizacao) : "ainda não sincronizada",
+          ].join(" · ") }),
+          f.menu ? el("span", { estilo: { display: "block" }, texto: "Caminho no portal: " + f.menu }) : null,
+          el("span", { estilo: { display: "block" }, texto: f.monitorada
+            ? "Entra no monitoramento automático."
+            : "Fica fora do monitoramento até a primeira sincronização bem-sucedida (ou uma captura)." }),
+          f.ultimo_erro ? el("span", { estilo: { display: "block", color: "var(--ambar-texto, var(--ambar))" }, texto: "Último erro: " + f.ultimo_erro }) : null),
+        acessorio: el("span", { classe: "grupo-botoes", estilo: { flexWrap: "nowrap" } },
+          f.monitorada ? pilula("Monitorada", "verde", "sino") : pilula("Sem rota", "cinza"),
+          botao({ icone: "lixeira", titulo: "Remover esta fonte", tamanho: "pequeno", tipo: "texto", acao: async () => {
           const ok = await folha.confirmar({ titulo: "Remover esta fonte?", mensagem: "As audiências já trazidas continuam na pauta; só deixam de ser conferidas no portal.", confirmar: "Remover", perigo: true });
           if (!ok) return;
           await api.pauta.removerFonte(f.id);
           carregar();
-        } }),
+        } })),
       }));
       const adicionar = el("button", { type: "button", classe: "linha com-icone", id: "adicionar-fonte", on: { click: async () => {
         const escolha = await H.pauta.escolherFonte({ titulo: "Nova fonte da pauta", confirmar: "Adicionar", comRotulo: true, mensagem: "O Helestron entra no portal com o acesso cadastrado e procura a pauta de audiências." });
@@ -391,10 +536,12 @@
       trocar(verificacao, grupo({
         titulo: "Verificação da instalação",
         linhas: itens.map((i) => linha({
-          titulo: i.nome, sub: i.detalhe,
-          acessorio: el("span", { classe: "grupo-botoes", estilo: { flexWrap: "nowrap" } },
-            i.acao ? el("span", { classe: "ajuda-campo", estilo: { margin: 0 }, texto: i.acao }) : null,
-            icone(nomesIcone[i.situacao] || "info", { classe: "verificacao-icone " + (i.situacao || ""), rotulo: rotulos[i.situacao] || i.situacao })),
+          titulo: i.nome,
+          // O que fazer vai embaixo do detalhe: ao lado, um texto longo espremia o título.
+          sub: el("span", {},
+            el("span", { texto: i.detalhe || "" }),
+            i.acao && i.situacao !== "ok" ? el("span", { classe: "verificacao-acao", texto: "O que fazer: " + i.acao }) : null),
+          acessorio: icone(nomesIcone[i.situacao] || "info", { classe: "verificacao-icone situacao-" + (i.situacao || "info"), rotulo: rotulos[i.situacao] || i.situacao }),
         })),
       }));
     };

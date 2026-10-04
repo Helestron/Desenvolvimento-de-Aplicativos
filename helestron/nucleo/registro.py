@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import os
-import queue
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -75,20 +74,3 @@ def marca(nome_logger: str) -> str:
         if parte in MARCAS:
             return MARCAS[parte]
     return ""
-
-
-class PonteDeLog(logging.Handler):
-    """Manda cada linha do log para uma fila (o servidor a lê e publica)."""
-
-    def __init__(self, fila: "queue.Queue", nivel: int = logging.INFO):
-        super().__init__(nivel)
-        self.fila = fila
-        self.setFormatter(logging.Formatter("%(asctime)s  %(message)s", "%H:%M:%S"))
-
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            linha = self.format(record)
-            m = marca(record.name)
-            self.fila.put(("log", (m, linha, record.levelno)))
-        except Exception:  # pragma: no cover - log nunca derruba o programa
-            pass

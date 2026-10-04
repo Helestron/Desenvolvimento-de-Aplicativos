@@ -252,8 +252,11 @@
       if (r.arquivo) acoes.push({ rotulo: "Abrir", acao: () => api.abrir("arquivo", r.arquivo) });
       if (r.documento) acoes.push({ rotulo: "Abrir documento", acao: () => api.abrir("arquivo", r.documento) });
     }
+    // Concluída, mas com itens que não deram certo (lote com falhas, fonte da
+    // pauta que não respondeu): aviso âmbar, não o verde de "tudo certo".
+    const comProblema = r && typeof r === "object" && ((Number(r.falhas) || 0) > 0 || (Array.isArray(r.erros) && r.erros.length > 0));
     if (t.estado === "concluida") {
-      aviso({ titulo: t.titulo || "Concluído", mensagem: t.status || "Pronto.", tipo: "sucesso", acoes });
+      aviso({ titulo: t.titulo || "Concluído", mensagem: t.status || "Pronto.", tipo: comProblema ? "alerta" : "sucesso", acoes });
     } else if (t.estado === "falhou") {
       aviso({ titulo: (t.titulo || "Tarefa") + " — não deu certo", mensagem: t.erro || t.status || "", tipo: "erro" });
     } else if (t.estado === "parada") {

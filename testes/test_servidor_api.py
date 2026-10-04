@@ -152,6 +152,45 @@ class TestTribunaisEAcessos(ServidorDeTeste):
                                                        "modo": "certificado"})
         self.assertEqual(status, 400)
 
+    def test_endereco_do_portal_corrigido_e_restaurado(self):
+        """Ajustes › Acessos aos portais, "Endereço do portal": a correção vale por
+        cima do catálogo, para o motor também, e em branco volta ao catálogo."""
+        from helestron.nucleo import tribunais
+
+        arquivo = self.amb.local / "enderecos-locais.json"
+        with mock.patch.object(tribunais, "ARQUIVO_LOCAL", arquivo):
+            dados = self.cliente.dados("GET", "/api/tribunais/enderecos/esaj:TJAL")
+            self.assertEqual(dados["rotulo"], "TJAL · e-SAJ")
+            self.assertEqual(dados["enderecos"], [{
+                "grau": "base", "rotulo": "Endereço do portal", "url": "https://www2.tjal.jus.br",
+                "padrao": "https://www2.tjal.jus.br", "corrigido": False}])
+            self.assertEqual(self.cliente.dados("GET", "/api/tribunais/enderecos"), [])
+
+            novo = "https://novo.tjal.jus.br"
+            dados = self.cliente.dados("POST", "/api/tribunais/enderecos",
+                                       {"portal": "esaj:TJAL", "grau": "base", "url": novo})
+            self.assertEqual((dados["enderecos"][0]["url"], dados["enderecos"][0]["corrigido"]),
+                             (novo, True))
+            self.assertEqual(tribunais.por_sigla("TJAL").urls_para(), [novo])   # o motor usa
+            corrigidos = self.cliente.dados("GET", "/api/tribunais/enderecos")
+            self.assertEqual(corrigidos, [{"portal": "esaj:TJAL", "grau": "base",
+                                           "rotulo": "Endereço do portal", "url": novo,
+                                           "rotulo_portal": "TJAL · e-SAJ"}])
+            # eProc da Justiça Federal: um endereço por seção judiciária
+            trf4 = self.cliente.dados("GET", "/api/tribunais/enderecos/eproc:TRF4")["enderecos"]
+            self.assertIn("1º grau — Rio Grande do Sul", [e["rotulo"] for e in trf4])
+            # inválidos
+            for corpo in ({"portal": "esaj:TJAL", "grau": "base", "url": "novo.tjal.jus.br"},
+                          {"portal": "esaj:TJAL", "grau": "3g", "url": novo},
+                          {"portal": "pje:TJAL", "grau": "base", "url": novo}):
+                with self.subTest(corpo=corpo):
+                    self.assertEqual(self.cliente.post("/api/tribunais/enderecos", corpo)[0], 400)
+            # em branco: volta ao catálogo
+            self.cliente.dados("POST", "/api/tribunais/enderecos",
+                               {"portal": "esaj:TJAL", "grau": "base", "url": ""})
+            self.assertEqual(tribunais.por_sigla("TJAL").urls_para(), ["https://www2.tjal.jus.br"])
+            self.assertEqual(self.cliente.dados("GET", "/api/tribunais/enderecos"), [])
+
     def test_portal_invalido(self):
         for portal in ("pje:TJAL", "esaj:TJXX", "eproc:TJPE", "esaj"):
             with self.subTest(portal=portal):

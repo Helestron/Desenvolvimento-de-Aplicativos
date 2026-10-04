@@ -21,6 +21,8 @@
 
   const PAUTA_VAZIA = params.get("pauta") === "vazia";
   const SEM_DIALOGO = params.get("sem_dialogo") === "1";
+  // &falantes=ausentes: construção sem os modelos de voz (a tela oferece baixá-los)
+  let falantesProntos = params.get("falantes") !== "ausentes";
 
   // ------------------------------------------------------- aleatório estável
   // Semente fixa: a mesma pauta a cada abertura (capturas comparáveis).
@@ -192,8 +194,8 @@
   const alteracoes = gerarAlteracoes();
 
   let fontes = PAUTA_VAZIA ? [] : [
-    { id: "f-esaj-tjal", tribunal: "TJAL", sistema: "esaj", rotulo: "e-SAJ · TJAL — 2ª Vara Cível da Capital", modo: "automatico", url: "https://www2.tjal.jus.br/sajcas/agendaAudiencias", ultima_sincronizacao: isoHora(agoraMenos(42)), ultimo_erro: "" },
-    { id: "f-eproc-tjal", tribunal: "TJAL", sistema: "eproc", rotulo: "eProc · TJAL", modo: "capturado", url: "https://eproc1g.tjal.jus.br/eproc/controlador.php?acao=audiencia_listar", ultima_sincronizacao: isoHora(agoraMenos(42)), ultimo_erro: "" },
+    { id: "f-esaj-tjal", tribunal: "TJAL", sistema: "esaj", rotulo: "e-SAJ · TJAL — 2ª Vara Cível da Capital", modo: "automatico", url: "https://www2.tjal.jus.br/sajcas/agendaAudiencias", menu: "Agenda › Audiências", monitorada: true, ultima_sincronizacao: isoHora(agoraMenos(42)), ultimo_erro: "" },
+    { id: "f-eproc-tjal", tribunal: "TJAL", sistema: "eproc", rotulo: "eProc · TJAL", modo: "capturado", url: "https://eproc1g.tjal.jus.br/eproc/controlador.php?acao=audiencia_listar", menu: "", monitorada: true, ultima_sincronizacao: isoHora(agoraMenos(42)), ultimo_erro: "" },
   ];
   let monitoramento = { ativo: !PAUTA_VAZIA, intervalo_horas: 6, proxima: isoHora(new Date(Date.now() + 5.3 * 3600000)) };
   let ultimaSincronizacao = PAUTA_VAZIA ? null : isoHora(agoraMenos(42));
@@ -218,7 +220,7 @@
   const ESQUEMA = [
     ["geral", "pasta_acervo", "pasta", "Pasta do acervo", "O que fica aqui é compartilhado com a IA: processos, transcrições e arquivos de contexto."],
     ["geral", "pasta_sigilosos", "pasta", "Pasta dos sigilosos", "Processos em segredo de justiça. Fica fora do acervo e nunca vai para a IA."],
-    ["geral", "pasta_pauta", "pasta", "Pasta da pauta exportada", "Onde ficam as planilhas da pauta. Fora do acervo: trazem partes de processos sigilosos."],
+    ["pauta", "pasta", "pasta", "Pasta da pauta exportada", "Onde ficam as planilhas da pauta. Fora do acervo: trazem partes de processos sigilosos."],
     ["geral", "nome_usuario", "texto", "Como chamar você", "Aparece na saudação da tela inicial."],
     ["unidade", "magistrado", "texto", "Magistrado(a)", "Aparece no cabeçalho das transcrições."],
     ["unidade", "cargo", "texto", "Cargo", ""],
@@ -233,14 +235,14 @@
     ["download", "separar_sigilosos", "flag", "Separar os sigilosos", "Processo em segredo de justiça vai para a pasta dos sigilosos, fora do acervo."],
     ["download", "baixar_midias", "flag", "Baixar também as gravações de audiência", "Ficam em _controle\\midias, dentro da pasta do lote."],
     ["download", "mostrar_navegador", "flag", "Mostrar o navegador enquanto baixa", "O login por certificado e o login manual sempre mostram."],
-    ["download", "navegador", "escolha", "Navegador", "Automático: Chrome; senão, Edge; senão, o navegador do Helestron.", [["auto", "Automático"], ["chrome", "Chrome"], ["msedge", "Edge"], ["chromium", "Embutido"]]],
+    ["download", "navegador", "escolha", "Navegador dos portais", "O Helestron usa o Google Chrome ou o Microsoft Edge deste computador (o Edge vem com o Windows) e não baixa navegador próprio.", [["auto", "Automático (Chrome, senão Edge)"], ["chrome", "Google Chrome"], ["msedge", "Microsoft Edge"], ["chromium", "Chromium já instalado no computador"]]],
     ["download", "pausa_entre_processos", "inteiro", "Pausa entre processos (s)", "Não zere em listas grandes: rajada de acessos pode ser lida pelo portal como abuso."],
     ["download", "tentativas", "inteiro", "Tentativas por processo", "Quantas vezes tentar um processo que falhou por instabilidade."],
     ["eproc", "modo", "escolha", "Montagem do PDF no eProc", "Peça por peça (com marcadores por evento) ou pelo “Download Completo” do eProc.", [["documentos", "Peça por peça"], ["completo", "Download completo"]]],
     ["transcricao", "modelo_ao_vivo", "escolha", "Modelo ao vivo", "Base para computador mais simples; small é o recomendado.", [["base", "Base"], ["small", "Small"], ["medium", "Medium"]]],
     ["transcricao", "modelo_revisao", "escolha", "Modelo da revisão", "Usado na revisão final e nas gravações.", [["small", "Small"], ["medium", "Medium"], ["large-v3-turbo", "Large v3 turbo"]]],
     ["transcricao", "refinar_ao_encerrar", "flag", "Revisar ao encerrar", "Refaz a transcrição inteira com o modelo de revisão (leva alguns minutos)."],
-    ["transcricao", "separar_falantes", "flag", "Separar os falantes na revisão", "Se o componente de separação de vozes estiver instalado."],
+    ["transcricao", "separar_falantes", "flag", "Separar as vozes na revisão", "Os modelos de voz vêm com o instalador."],
     ["transcricao", "salvar_audio", "flag", "Guardar a gravação", "Arquivo FLAC ao lado da transcrição, na pasta _audio."],
     ["transcricao", "marcar_tempo", "flag", "Marcar o tempo de cada fala", "Mostra [hh:mm:ss] no documento."],
     ["transcricao", "falantes", "texto", "Participantes (F1 a F8)", "Nomes dos botões de quem está falando, separados por ponto e vírgula."],
@@ -255,7 +257,7 @@
     ["compartilhar", "incluir_texto", "flag", "Gerar o texto dos autos para a IA", "Com a página e o documento marcados; a IA lê melhor e gasta menos."],
   ];
   const valores = {
-    geral: { pasta_acervo: PASTAS.acervo, pasta_sigilosos: PASTAS.sigilosos, pasta_pauta: PASTAS.pauta, nome_usuario: "Dra. Camila" },
+    geral: { pasta_acervo: PASTAS.acervo, pasta_sigilosos: PASTAS.sigilosos, nome_usuario: "Dra. Camila" },
     unidade: { magistrado: "Camila Duarte Albuquerque", cargo: "Juíza de Direito", vara: "2ª Vara Cível da Capital", comarca: "Maceió", tribunal: "Tribunal de Justiça de Alagoas" },
     esaj: { login: "senha" },
     eproc: { login: "senha", perfil: "MAGISTRADO", modo: "documentos" },
@@ -266,9 +268,28 @@
       falantes: "Juiz(a);Promotor(a);Defensor(a);Advogado(a) do autor;Advogado(a) do réu;Testemunha;Parte;Outro",
       contexto: "Transcrição de audiência judicial. Participam o Juiz de Direito, o Ministério Público, advogados, partes e testemunhas. Vocabulário forense: Meritíssimo, Excelência, contraditado, compromissada, depoimento, oitiva, instrução.",
     },
-    pauta: { monitorar: String(!PAUTA_VAZIA), intervalo_horas: "6", dias_atras: "7", dias_a_frente: "60", incluir_partes_sigilosos: "false" },
+    pauta: { pasta: PASTAS.pauta, monitorar: String(!PAUTA_VAZIA), intervalo_horas: "6", dias_atras: "7", dias_a_frente: "60", incluir_partes_sigilosos: "false" },
     compartilhar: { pasta_nuvem: "", espelhar_automaticamente: "false", incluir_texto: "true" },
   };
+
+  // Endereços dos portais: o do catálogo e as correções do usuário.
+  const ENDERECOS_CATALOGO = {
+    "esaj:TJAL": { base: "https://www2.tjal.jus.br" },
+    "eproc:TJAL": { "1g": "https://eproc1g.tjal.jus.br/eproc/", "2g": "https://eproc2g.tjal.jus.br/eproc/" },
+    "esaj:TJSP": { base: "https://esaj.tjsp.jus.br" },
+    "eproc:TRF4": { "1g_70": "https://eproc.jfpr.jus.br/eprocV2/", "1g_71": "https://eproc.jfrs.jus.br/eprocV2/", "1g_72": "https://eproc.jfsc.jus.br/eprocV2/", "2g": "https://eproc.trf4.jus.br/eproc2trf4/" },
+  };
+  const enderecosLocais = {};
+  const rotuloGrau = (g) => (g === "base" ? "Endereço do portal" : ({ "1g": "1º grau", "2g": "2º grau" }[g.split("_")[0]] || g) + (g.includes("_") ? " — " + ({ 70: "Paraná", 71: "Rio Grande do Sul", 72: "Santa Catarina" }[g.split("_")[1]] || "seção " + g.split("_")[1]) : ""));
+  const rotuloPortal = (portal) => { const [s, sigla] = portal.split(":"); return `${sigla} · ${s === "eproc" ? "eProc" : "e-SAJ"}`; };
+  function enderecosDe(portal) {
+    const catalogo = ENDERECOS_CATALOGO[portal] || (portal.startsWith("esaj:") ? { base: "https://esaj." + portal.split(":")[1].toLowerCase() + ".jus.br" } : { "1g": "https://eproc1g." + portal.split(":")[1].toLowerCase() + ".jus.br/eproc/" });
+    const locais = enderecosLocais[portal] || {};
+    return {
+      portal, rotulo: rotuloPortal(portal),
+      enderecos: Object.keys(Object.assign({}, catalogo, locais)).map((grau) => ({ grau, rotulo: rotuloGrau(grau), url: locais[grau] || catalogo[grau] || "", padrao: catalogo[grau] || "", corrigido: !!locais[grau] })),
+    };
+  }
 
   let acessos = [
     { portal: "esaj:TJAL", rotulo: "e-SAJ · TJAL", usuario: "camila.albuquerque", tem_senha: true },
@@ -637,6 +658,16 @@
       emitir("estado", {});
       return {};
     },
+    "GET /api/tribunais/enderecos": () => Object.entries(enderecosLocais).flatMap(([portal, graus]) =>
+      Object.entries(graus).map(([grau, url]) => ({ portal, grau, rotulo: rotuloGrau(grau), url, rotulo_portal: rotuloPortal(portal) }))),
+    "GET /api/tribunais/enderecos/{portal}": ({ params: p }) => enderecosDe(p.portal),
+    "POST /api/tribunais/enderecos": ({ corpo }) => {
+      if (corpo.url && !/^https?:\/\/\S+/i.test(corpo.url)) throw erro("valor_invalido", "Informe o endereço completo do portal, começando com https://.");
+      const graus = enderecosLocais[corpo.portal] || {};
+      if (corpo.url) graus[corpo.grau] = corpo.url; else delete graus[corpo.grau];
+      if (Object.keys(graus).length) enderecosLocais[corpo.portal] = graus; else delete enderecosLocais[corpo.portal];
+      return enderecosDe(corpo.portal);
+    },
     "POST /api/acessos/testar": ({ corpo }) => {
       const t = novaTarefa("teste_login", `Testar o acesso ao ${corpo.tribunal}`, 0);
       (async () => {
@@ -664,16 +695,17 @@
       return {};
     },
     "GET /api/verificacao": () => [
-      { nome: "Arquivos do programa", situacao: "ok", detalhe: "1.284 arquivos conferidos com o manifesto.", acao: "" },
-      { nome: "Python", situacao: "ok", detalhe: "3.12.10 (isolado)", acao: "" },
-      { nome: "Janela do aplicativo (WebView2)", situacao: "ok", detalhe: "Microsoft Edge WebView2 129.0", acao: "" },
-      { nome: "Download de processos", situacao: "ok", detalhe: "Playwright e o navegador Chrome encontrados.", acao: "" },
-      { nome: "Montagem dos PDFs", situacao: "ok", detalhe: "PyMuPDF 1.24", acao: "" },
-      { nome: "Modelo de transcrição ao vivo", situacao: "ok", detalhe: "small (embutido no instalador)", acao: "" },
-      { nome: "Microfone", situacao: "ok", detalhe: "3 entradas de áudio.", acao: "" },
-      { nome: "Separação de falantes", situacao: "aviso", detalhe: "Componente opcional não instalado: a revisão não separa as vozes sozinha.", acao: "" },
-      { nome: "Pastas", situacao: "ok", detalhe: "Acervo e sigilosos separados; a pasta da pauta fica fora do acervo.", acao: "" },
-      { nome: "Cofre de senhas", situacao: "ok", detalhe: "Senhas cifradas pelo Windows (DPAPI).", acao: "" },
+      { nome: "Windows 64 bits", situacao: "ok", detalhe: "Windows 11 (compilação 22631), 64 bits; Python 3.12.10.", acao: "" },
+      { nome: "Bibliotecas", situacao: "ok", detalhe: "As 19 bibliotecas estão presentes (faster-whisper 1.1.1, playwright 1.55.0, pymupdf 1.26.4, pywebview 6.2.1).", acao: "" },
+      { nome: "Componentes nativos (DLLs)", situacao: "ok", detalhe: "Os 9 componentes carregaram (PyAV 15.1.0, CTranslate2 4.6.0, onnxruntime 1.22.1).", acao: "" },
+      { nome: "Modelo de transcrição", situacao: "ok", detalhe: "Ao vivo: small, embutido no programa (modelos\\faster-whisper-small, pasta do programa).", acao: "" },
+      { nome: "Navegador dos portais", situacao: "ok", detalhe: "Disponível: Google Chrome, Microsoft Edge.", acao: "" },
+      { nome: "WebView2 (janela do programa)", situacao: "ok", detalhe: "Microsoft Edge WebView2 Runtime 129.0.2792.89 instalado.", acao: "" },
+      { nome: "Microfone", situacao: "ok", detalhe: "3 entradas de áudio; padrão: Microfone (Realtek Audio).", acao: "" },
+      { nome: "Pastas de trabalho", situacao: "ok", detalhe: "Acervo, sigilosos e pauta separados e graváveis.", acao: "" },
+      { nome: "Cofre de senhas", situacao: "ok", detalhe: "As senhas ficam cifradas pela proteção de dados do Windows (DPAPI).", acao: "" },
+      { nome: "Separação de falantes (opcional)", situacao: "ok", detalhe: "Instalada.", acao: "" },
+      { nome: "Conector do acervo (MCP)", situacao: "aviso", detalhe: "O conector responde (4 ferramentas); ainda não foi ligado ao Claude Desktop nem ao ChatGPT (opcional: tela Compartilhar).", acao: "" },
     ],
     "POST /api/verificacao/completa": () => {
       const t = novaTarefa("verificacao", "Verificação completa", 6);
@@ -767,11 +799,27 @@
       return {};
     },
     "GET /api/transcricao/modelos": () => [
-      { nome: "base", rotulo: "Base", tamanho_mb: 142, instalado: false, embutido: false, recomendado_para: "computadores mais simples" },
-      { nome: "small", rotulo: "Small", tamanho_mb: 466, instalado: true, embutido: true, recomendado_para: "transcrição ao vivo" },
-      { nome: "medium", rotulo: "Medium", tamanho_mb: 1460, instalado: false, embutido: false, recomendado_para: "revisão e gravações" },
-      { nome: "large-v3-turbo", rotulo: "Large v3 turbo", tamanho_mb: 1540, instalado: false, embutido: false, recomendado_para: "revisão mais precisa" },
+      { nome: "base", rotulo: "Base", tamanho_mb: 145, instalado: false, embutido: false, recomendado_para: ["ao_vivo"], descricao: "rápido, para computador modesto (qualidade razoável)" },
+      { nome: "small", rotulo: "Small", tamanho_mb: 484, instalado: true, embutido: true, recomendado_para: ["ao_vivo"], descricao: "recomendado para a audiência ao vivo" },
+      { nome: "medium", rotulo: "Medium", tamanho_mb: 1530, instalado: false, embutido: false, recomendado_para: ["revisao"], descricao: "mais preciso; bom para a revisão final" },
+      { nome: "large-v3-turbo", rotulo: "Large v3 Turbo", tamanho_mb: 1620, instalado: false, embutido: false, recomendado_para: ["revisao"], descricao: "o mais preciso; revisão em computador forte" },
     ],
+    "GET /api/transcricao/falantes": () => ({
+      disponivel: falantesProntos, situacao: falantesProntos ? "instalada" : "incompleta (faltam os modelos de voz)",
+      biblioteca: true, modelos: falantesProntos, embutidos: falantesProntos, tamanho_mb: 47,
+    }),
+    "POST /api/transcricao/falantes/baixar": () => {
+      const t = novaTarefa("modelo", "Baixar os modelos de voz", 100);
+      (async () => {
+        for (let p = 0; p <= 100; p += 20) {
+          atualizar(t, { status: `Baixando os modelos de voz: ${p}%`, progresso: { feitos: p, percentual: p } });
+          await pausa(200);
+        }
+        falantesProntos = true;
+        concluir(t, "concluida", { status: "Separação de falantes pronta." });
+      })();
+      return { tarefa: t.id };
+    },
     "POST /api/transcricao/modelos/baixar": ({ corpo }) => {
       const t = novaTarefa("modelo", `Baixar o modelo ${corpo.nome}`, 100);
       (async () => {
@@ -861,7 +909,7 @@
     },
     "GET /api/pauta/fontes": () => fontes,
     "POST /api/pauta/fontes": ({ corpo }) => {
-      const f = { id: "f-" + corpo.sistema + "-" + String(corpo.tribunal).toLowerCase(), tribunal: corpo.tribunal, sistema: corpo.sistema, rotulo: corpo.rotulo || `${corpo.sistema === "eproc" ? "eProc" : "e-SAJ"} · ${corpo.tribunal}`, modo: corpo.url ? "capturado" : "automatico", url: corpo.url || "", ultima_sincronizacao: null, ultimo_erro: "" };
+      const f = { id: "f-" + corpo.sistema + "-" + String(corpo.tribunal).toLowerCase(), tribunal: corpo.tribunal, sistema: corpo.sistema, rotulo: corpo.rotulo || `${corpo.sistema === "eproc" ? "eProc" : "e-SAJ"} · ${corpo.tribunal}`, modo: corpo.url ? "capturado" : "automatico", url: corpo.url || "", menu: "", monitorada: !!corpo.url, ultima_sincronizacao: null, ultimo_erro: "" };
       fontes = fontes.filter((x) => x.id !== f.id).concat([f]);
       return f;
     },
@@ -883,10 +931,15 @@
             feitos++;
           }
           f.ultima_sincronizacao = isoHora(new Date());
+          f.monitorada = true;
+          if (!f.url) f.url = "https://www2.tjal.jus.br/sajcas/agendaAudiencias";
         }
         ultimaSincronizacao = isoHora(new Date());
         monitoramento.proxima = isoHora(new Date(Date.now() + monitoramento.intervalo_horas * 3600000));
-        concluir(t, "concluida", { status: `${pauta.length} audiências conferidas · 1 alteração.`, progresso: { feitos, percentual: 100 } });
+        concluir(t, "concluida", {
+          status: `${pauta.length} audiências conferidas · 1 alterada.`, progresso: { feitos, percentual: 100 },
+          resultado: { novas: 0, atualizadas: 1, canceladas: 0, removidas: 0, total: pauta.length, alteracoes: 1, fontes: fontes.map((f) => ({ fonte: f.id, rotulo: f.rotulo })), erros: [], avisos: [] },
+        });
         const futura = pauta.find((a) => a.data > iso(dia(2)) && a.situacao === "Designada");
         if (futura) {
           const antes = futura.hora;
@@ -907,12 +960,15 @@
         atualizar(t, { status: "Vá até a pauta de audiências e clique em “Capturar esta tela” na barra do Helestron." });
         await pausa(4200);
         if (t._parar) { concluir(t, "parada", { status: "Captura interrompida." }); return; }
-        concluir(t, "concluida", { status: "Captura concluída: 12 audiências reconhecidas. O endereço ficou lembrado para o monitoramento." });
+        concluir(t, "concluida", {
+          status: "Captura concluída: 12 audiências. O endereço ficou lembrado para o monitoramento.",
+          resultado: { novas: 12, atualizadas: 0, capturadas: 12, telas: 2, url: "https://eproc1g.tjal.jus.br/eproc/controlador.php?acao=audiencia_listar", motivo: "concluida" },
+        });
         emitir("pauta", { tipo: "atualizada", dados: {} });
       })();
       return { tarefa: t.id };
     },
-    "POST /api/pauta/importar": () => ({ novas: 6, atualizadas: 2, ignoradas: 1, avisos: ["Linha 14: data ilegível (“32/10/2026”); a linha foi ignorada."] }),
+    "POST /api/pauta/importar": () => ({ novas: 6, atualizadas: 2, ignoradas: 1, total: 8, arquivo: "Pauta de outubro.xlsx", avisos: ["Linha 14: data ilegível (“32/10/2026”); a linha foi ignorada."] }),
     "POST /api/pauta/exportar": ({ corpo }) => ({ arquivo: `${PASTAS.pauta}\\Pauta de audiências ${corpo.de} a ${corpo.ate}.xlsx`, pasta: PASTAS.pauta }),
     "GET /api/pauta/alteracoes": ({ consulta }) => alteracoes
       .filter((a) => !consulta.desde || a.quando >= consulta.desde)

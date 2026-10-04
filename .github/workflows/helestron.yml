@@ -147,7 +147,7 @@ jobs:
     timeout-minutes: 90
     env:
       PASTA: 'C:\Teste Área\Helestron'
-      PROCESSO: '0700123-45.2024.8.02.0001'
+      PROCESSO: '0700123-83.2024.8.02.0001'
       FALA: >-
         Bom dia a todos. Está aberta a audiência de instrução e julgamento.
         Presentes o autor, o réu e os advogados das partes.
@@ -368,9 +368,9 @@ jobs:
           $python = Join-Path $env:PASTA 'python.exe'
           $csv = Join-Path $env:RUNNER_TEMP 'pauta.csv'
           $linhas = @('Data;Hora;Processo;Tipo de audiencia;Situacao;Local',
-                      '05/10/2026;14:30;0700123-45.2024.8.02.0001;Conciliacao;Designada;Sala 1',
-                      '06/10/2026;09:00;0700456-78.2024.8.02.0001;Instrucao e julgamento;Designada;Virtual',
-                      '07/10/2026;10:15;0700789-01.2024.8.02.0001;Una;Cancelada;Sala 2')
+                      '05/10/2026;14:30;0700123-83.2024.8.02.0001;Conciliacao;Designada;Sala 1',
+                      '06/10/2026;09:00;0700456-35.2024.8.02.0001;Instrucao e julgamento;Designada;Virtual',
+                      '07/10/2026;10:15;0700789-84.2024.8.02.0001;Una;Cancelada;Sala 2')
           Set-Content -LiteralPath $csv -Encoding Ascii -Value $linhas
           & $python -I -m helestron pauta importar $csv
           if ($LASTEXITCODE -ne 0) { throw "pauta importar terminou com o codigo $LASTEXITCODE" }
@@ -387,7 +387,7 @@ jobs:
           print(arquivos[0], livro.sheetnames)
           assert "Pauta" in livro.sheetnames, livro.sheetnames
           valores = [str(c.value) for linha in livro["Pauta"].iter_rows() for c in linha if c.value is not None]
-          for numero in ("0700123-45.2024.8.02.0001", "0700456-78.2024.8.02.0001"):
+          for numero in ("0700123-83.2024.8.02.0001", "0700456-35.2024.8.02.0001"):
               assert any(numero in v for v in valores), numero + " nao esta na planilha"
           print("Pauta OK")
           '@

@@ -45,12 +45,19 @@ class RelatorioPreparo:
 
     @property
     def resumo(self) -> str:
-        partes = [f"{self.processos} processo(s)", f"{self.transcricoes} transcrição(ões)"]
+        partes = [_plural(self.processos, "processo", "processos"),
+                  _plural(self.transcricoes, "transcrição", "transcrições")]
         if self.textos_novos:
-            partes.append(f"{self.textos_novos} texto(s) extraído(s) agora")
+            partes.append(_plural(self.textos_novos, "texto extraído", "textos extraídos")
+                          + " agora")
         if self.erros:
-            partes.append(f"{len(self.erros)} arquivo(s) com problema")
+            partes.append(_plural(len(self.erros), "arquivo com problema",
+                                  "arquivos com problema"))
         return ", ".join(partes)
+
+
+def _plural(n: int, um: str, varios: str) -> str:
+    return f"{n} {um if n == 1 else varios}"
 
 
 def _gravar_se_mudou(destino: Path, conteudo: str) -> bool:
@@ -223,8 +230,9 @@ def _indice(acervo: Acervo, pdfs: dict[str, Path], trans: dict[str, list[Path]])
     quando = datetime.fromtimestamp(max(datas)) if datas else datetime.now()
     linhas = ["# Índice do acervo", "",
               f"Última inclusão em {quando:%d/%m/%Y %H:%M}. "
-              f"{len(pdfs)} processo(s) e {sum(len(v) for v in trans.values())} "
-              "transcrição(ões).", ""]
+              f"{_plural(len(pdfs), 'processo', 'processos')} e "
+              f"{_plural(sum(len(v) for v in trans.values()), 'transcrição', 'transcrições')}.",
+              ""]
     if pdfs:
         linhas += ["## Processos", "",
                    "| Processo | Tribunal | Páginas | Lote | Autos | Texto | Transcrições |",

@@ -46,8 +46,11 @@ class Campo:
         return d
 
 
+# O Helestron não baixa navegador: usa o Google Chrome ou o Microsoft Edge do
+# computador. O Chromium só entra se já estiver instalado (reserva).
 NAVEGADORES = (("auto", "Automático (Chrome, senão Edge)"), ("chrome", "Google Chrome"),
-               ("msedge", "Microsoft Edge"), ("chromium", "Chromium do programa"))
+               ("msedge", "Microsoft Edge"),
+               ("chromium", "Chromium já instalado no computador"))
 LOGIN_ESAJ = (("senha", "Usuário e senha"), ("certificado", "Certificado digital"),
               ("manual", "Entrar manualmente"))
 LOGIN_EPROC = (("senha", "Usuário e senha"), ("manual", "Entrar manualmente"))
@@ -83,7 +86,9 @@ CAMPOS: tuple[Campo, ...] = (
           "(recomendado)."),
     Campo("download", "baixar_midias", "flag", "Baixar também as gravações de audiência"),
     Campo("download", "mostrar_navegador", "flag", "Mostrar o navegador enquanto baixa"),
-    Campo("download", "navegador", "escolha", "Navegador dos portais", opcoes=NAVEGADORES),
+    Campo("download", "navegador", "escolha", "Navegador dos portais",
+          "O Helestron usa o Google Chrome ou o Microsoft Edge deste computador (o Edge vem "
+          "com o Windows) e não baixa navegador próprio.", opcoes=NAVEGADORES),
     Campo("download", "pausa_entre_processos", "inteiro", "Pausa entre processos (segundos)",
           "Não zere em listas grandes: rajada de acessos pode ser lida pelo portal como abuso.",
           minimo=0, maximo=60),
@@ -132,13 +137,19 @@ CAMPOS: tuple[Campo, ...] = (
           "A IA lê o texto muito melhor e mais barato que o PDF."),
     # -------------------------------------------------------------- pauta
     Campo("pauta", "monitorar", "flag", "Monitorar a pauta",
-          "Sincroniza sozinho com o e-SAJ e o eProc e avisa as alterações.", padrao="false"),
+          "Sincroniza sozinho com o e-SAJ e o eProc e avisa as alterações. Só entra no portal "
+          "sozinho com a senha guardada em Acessos aos portais.", padrao="true"),
     Campo("pauta", "intervalo_horas", "inteiro", "Intervalo do monitoramento (horas)",
           minimo=1, maximo=72, padrao="6"),
     Campo("pauta", "dias_atras", "inteiro", "Dias para trás na sincronização",
           minimo=0, maximo=90, padrao="7"),
     Campo("pauta", "dias_a_frente", "inteiro", "Dias à frente na sincronização",
           minimo=1, maximo=365, padrao="60"),
+    Campo("pauta", "incluir_partes_sigilosos", "flag",
+          "Mostrar as partes dos processos sigilosos na planilha",
+          "Desligado (recomendado), a coluna Partes dos processos em segredo de justiça sai "
+          "como “(segredo de justiça)”. Vale como sugestão inicial em Exportar Excel.",
+          padrao="false"),
 )
 
 POR_CHAVE = {(c.secao, c.chave): c for c in CAMPOS}

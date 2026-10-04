@@ -39,6 +39,9 @@ def registrar(r: Roteador) -> None:
     r.adicionar("POST", "/api/acessos", gravar_acesso)
     r.adicionar("POST", "/api/acessos/testar", testar_acesso)
     r.adicionar("DELETE", "/api/acessos/{portal}", apagar_acesso)
+    r.adicionar("GET", "/api/tribunais/enderecos", listar_enderecos)
+    r.adicionar("GET", "/api/tribunais/enderecos/{portal}", enderecos_do_portal)
+    r.adicionar("POST", "/api/tribunais/enderecos", corrigir_endereco)
     r.adicionar("POST", "/api/dialogo/arquivo", dialogo_arquivo)
     r.adicionar("POST", "/api/dialogo/pasta", dialogo_pasta)
     r.adicionar("POST", "/api/abrir", abrir)
@@ -315,6 +318,44 @@ def gravar_acesso(p: Pedido) -> dict:
                 app.credenciais_sessao[portal] = (usuario, senha)
     app.hub.publicar("estado", {})
     return _acesso(app, cofre, portal)
+
+
+# ================================================== endereços dos portais
+def listar_enderecos(p: Pedido) -> list[dict]:
+    """As correções feitas pelo usuário (enderecos-locais.json)."""
+    saida = []
+    for e in tribunais.enderecos_corrigidos():
+        sistema_, _, sigla = e["portal"].partition(":")
+        saida.append(dict(e, rotulo_portal=f"{sigla} · {tribunais.NOMES_SISTEMA.get(sistema_, sistema_)}"))
+    return saida
+
+
+def _enderecos(portal: str) -> dict:
+    t = _tribunal_do_portal(portal)
+    return {"portal": t.portal, "rotulo": f"{t.sigla} · {t.nome_sistema}",
+            "enderecos": tribunais.enderecos(t.portal)}
+
+
+def enderecos_do_portal(p: Pedido) -> dict:
+    return _enderecos(p.params["portal"])
+
+
+def corrigir_endereco(p: Pedido) -> dict:
+    """Corrige (ou, em branco, devolve ao catálogo) o endereço de um portal."""
+    t = _tribunal_do_portal(p.campo("portal", obrigatorio=True, tipo=str))
+    grau = p.campo("grau", padrao="base" if t.sistema == "esaj" else "1g", tipo=str).strip()
+    if not re.fullmatch(r"base|[12]g(_\d{2})?", grau):
+        raise erro_400("Grau inválido (use base, 1g, 2g ou 1g_71).", "valor_invalido")
+    url = p.campo("url", padrao="", tipo=str).strip()
+    if url and not re.match(r"^https?://[^\s/]+", url, re.I):
+        raise erro_400("Informe o endereço completo do portal, começando com https://.",
+                       "valor_invalido")
+    if len(url) > 500:
+        raise erro_400("O endereço é longo demais.", "valor_invalido")
+    tribunais.definir_endereco(t.portal, grau, url)
+    log.info("Endereço do %s (%s) %s.", t.portal, grau, f"corrigido para {url}" if url
+             else "devolvido ao catálogo")
+    return _enderecos(t.portal)
 
 
 def apagar_acesso(p: Pedido) -> dict:

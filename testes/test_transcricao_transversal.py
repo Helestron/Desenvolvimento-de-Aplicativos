@@ -86,14 +86,19 @@ class TestAvisoDoDocumento(unittest.TestCase):
 # ================================================================= falantes
 class TestComponenteDeFalantes(unittest.TestCase):
     def test_mensagens_dizem_o_que_fazer(self):
-        # Não há botão de "instalar o componente" na interface: a biblioteca e
-        # os modelos de voz vêm no instalador, e a mensagem diz isso.
+        # Sem os modelos de voz (construção --sem-falantes), a mensagem manda
+        # ao botão que os baixa em Ajustes › Transcrição; sem a biblioteca,
+        # que vem no instalador, manda reinstalar.
         with mock.patch.object(falantes, "PASTA", Path("/caminho/que/nao/existe")), \
                 mock.patch.object(falantes, "PASTA_EMBUTIDA", Path("/outro/que/nao/existe")):
             with self.assertRaises(falantes.ComponenteAusente) as ctx:
                 falantes.diarizar(np.zeros(16000, dtype=np.float32))
-        self.assertIn("Instale o Helestron de novo com o Helestron-Setup", str(ctx.exception))
+        self.assertIn(falantes.ONDE_BAIXAR, str(ctx.exception))
         self.assertNotIn("Configurações", str(ctx.exception))
+        with mock.patch.object(falantes, "biblioteca_presente", return_value=False):
+            with self.assertRaises(falantes.ComponenteAusente) as ctx:
+                falantes.instalar()
+        self.assertIn("Instale o Helestron de novo com o Helestron-Setup", str(ctx.exception))
 
     def test_ajuda_da_cli_usa_o_tamanho_unico(self):
         saida = io.StringIO()

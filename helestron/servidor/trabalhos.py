@@ -389,4 +389,5 @@ def _erro_esperado(erro: BaseException) -> bool:
     """Erros do motor com frase pronta não precisam do rastro no registro."""
     nome = type(erro).__name__
     return nome in ("LoginFalhou", "PortalIndisponivel", "ListaInvalida", "ComponenteAusente",
-                    "ModeloAusente", "ErroDoModelo", "LookupError", "FileNotFoundError")
+                    "ModeloAusente", "ErroDoModelo", "LookupError", "FileNotFoundError",
+                    "ErroPauta", "PautaNaoEncontrada", "RelatorioInvalido")

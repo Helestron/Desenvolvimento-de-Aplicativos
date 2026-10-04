@@ -7,6 +7,7 @@ import io
 import json
 import shutil
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -155,6 +156,121 @@ class TestVerificarInstalacao(unittest.TestCase):
         self.assertIn("helestron.servidor.rede", saida)
 
 
+class TestVerificacaoRobusta(unittest.TestCase):
+    """O instalador sempre tem relatório: as checagens do motor rodam num
+    processo à parte, e o relatório é regravado a cada item."""
+
+    def setUp(self):
+        self.amb = AmbienteTemporario().iniciar()
+        self.addCleanup(self.amb.parar)
+
+    def test_relatorio_gravado_a_cada_passo(self):
+        relatorio = self.amb.raiz / "relatorio.txt"
+        vistos = []
+
+        def primeiro():
+            return verificacao.Resultado("Arquivos do programa", verificacao.OK, "certo")
+
+        def segundo():
+            # Se o processo caísse aqui, o instalador já acharia isto:
+            vistos.append(relatorio.read_text(encoding="utf-8"))
+            return verificacao.Resultado("Módulos do programa", verificacao.OK, "certo")
+
+        codigo = verificacao.executar(relatorio, saida=lambda _t: None, passos=[primeiro, segundo])
+        self.assertEqual(codigo, 0)
+        self.assertIn("Arquivos do programa", vistos[0])
+        self.assertIn(verificacao.EM_ANDAMENTO, vistos[0])
+        final = relatorio.read_text(encoding="utf-8")
+        self.assertNotIn(verificacao.EM_ANDAMENTO, final)
+        self.assertIn("Resultado: tudo certo", final)
+
+    def test_motor_de_verdade_num_processo_a_parte(self):
+        with mock.patch.object(verificacao, "LIMITE_MOTOR_S", 300.0):
+            resultados = verificacao.conferir_motor()
+        nomes = [r.nome for r in resultados]
+        self.assertEqual(nomes, verificacao.nomes_do_motor())
+        for esperado in ("Windows 64 bits", "Bibliotecas", "Componentes nativos (DLLs)",
+                         "Modelo de transcrição", "Teste de transcrição",
+                         "Navegador dos portais", "Pastas de trabalho", "Cofre de senhas",
+                         "Conector do acervo (MCP)"):
+            self.assertIn(esperado, nomes)
+        # o WebView2 sai uma vez só, pela conferência da janela
+        self.assertNotIn("WebView2 (janela do programa)", nomes)
+        self.assertEqual(verificacao.conferir_janela().nome, "WebView2 (janela do programa)")
+
+    def test_queda_nativa_no_filho_vira_falha_e_o_resto_segue(self):
+        """Uma checagem derruba o processo (DLL quebrada): ela sai como falha,
+        com a explicação, e as demais rodam num processo novo."""
+        sonda = r"""
+import json, os, sys
+for nome in [a for a in sys.argv[1:] if not a.startswith("--")]:
+    print(json.dumps({"inicio": nome}), flush=True)
+    if nome == "Microfone":
+        os.abort()
+    print(json.dumps({"item": nome, "dados": {"nome": nome, "situacao": "ok", "detalhe": "certo",
+                                              "obrigatorio": True, "acao": ""}}), flush=True)
+"""
+        recebidos = []
+        with mock.patch.object(verificacao, "_SONDA_MOTOR", sonda):
+            resultados = verificacao.conferir_motor(ao_resultado=recebidos.append)
+        por_nome = {r.nome: r for r in resultados}
+        self.assertEqual(list(por_nome), verificacao.nomes_do_motor())
+        self.assertEqual(por_nome["Microfone"].situacao, verificacao.FALHA)
+        self.assertIn("caiu", por_nome["Microfone"].detalhe)
+        self.assertIn("Helestron-Setup", por_nome["Microfone"].acao)
+        outros = [r for r in resultados if r.nome != "Microfone"]
+        self.assertTrue(all(r.situacao == verificacao.OK for r in outros))
+        self.assertEqual(len(recebidos), len(resultados))
+
+    def test_checagem_que_trava_de_verdade(self):
+        """Uma checagem que trava (caixa de erro invisível de uma DLL) não prende
+        a verificação até o limite total: o processo calado é encerrado."""
+        sonda = r"""
+import json, sys, time
+for nome in [a for a in sys.argv[1:] if not a.startswith("--")]:
+    print(json.dumps({"inicio": nome}), flush=True)
+    if nome == "Microfone":
+        time.sleep(600)
+    print(json.dumps({"item": nome, "dados": {"nome": nome, "situacao": "ok", "detalhe": "certo",
+                                              "obrigatorio": True, "acao": ""}}), flush=True)
+"""
+        inicio = time.monotonic()
+        with mock.patch.object(verificacao, "_SONDA_MOTOR", sonda), \
+                mock.patch.object(verificacao, "SEM_NOVIDADE_MOTOR_S", 2.0):
+            resultados = verificacao.conferir_motor()
+        self.assertLess(time.monotonic() - inicio, 60)
+        por_nome = {r.nome: r for r in resultados}
+        self.assertEqual(list(por_nome), verificacao.nomes_do_motor())
+        self.assertEqual(por_nome["Microfone"].situacao, verificacao.FALHA)
+        self.assertIn("travou", por_nome["Microfone"].detalhe)
+        self.assertTrue(all(r.situacao == verificacao.OK for r in resultados if r.nome != "Microfone"))
+
+    def test_python_que_nao_abre(self):
+        with mock.patch("helestron.verificar.rodar", return_value=(1, "", "Fatal Python error", False)):
+            resultados = verificacao.conferir_motor()
+        self.assertTrue(resultados)
+        self.assertTrue(all(r.situacao == verificacao.FALHA for r in resultados))
+        self.assertIn("não iniciou", resultados[0].detalhe)
+
+    def test_checagem_que_trava(self):
+        nomes = verificacao.nomes_do_motor()
+        saidas = [
+            # paralelo: as duas primeiras começam e a segunda trava
+            (None, json.dumps({"inicio": nomes[0]}) + "\n" + json.dumps({"inicio": nomes[1]})
+             + "\n" + json.dumps({"item": nomes[0], "dados": {"nome": nomes[0], "situacao": "ok"}}),
+             "", True),
+            (0, "\n".join(json.dumps({"item": n, "dados": {"nome": n, "situacao": "ok"}})
+                           for n in nomes[2:]) + "\n" + "\n".join(
+                json.dumps({"inicio": n}) for n in nomes[2:]), "", False),
+        ]
+        with mock.patch("helestron.verificar.rodar", side_effect=saidas):
+            resultados = verificacao.conferir_motor()
+        por_nome = {r.nome: r for r in resultados}
+        self.assertEqual(por_nome[nomes[1]].situacao, verificacao.FALHA)
+        self.assertIn("travou", por_nome[nomes[1]].detalhe)
+        self.assertEqual(len(resultados), len(nomes))
+
+
 class TestModulos(unittest.TestCase):
     def test_percorre_o_pacote_inteiro(self):
         nomes, erros = verificacao.modulos_do_pacote()
@@ -166,7 +282,7 @@ class TestModulos(unittest.TestCase):
         self.assertNotIn("helestron.interface", " ".join(nomes))
 
     def test_importar_todos_aponta_o_que_falha(self):
-        def sondar(nomes, limite, extra):
+        def sondar(nomes, limite, extra, **_):
             return {n: ({"ok": False, "erro": "ModuleNotFoundError: x"}
                         if n == "helestron.servidor.rede" else {"ok": True}) for n in nomes}
 
@@ -244,12 +360,15 @@ class TestTelaDeErro(unittest.TestCase):
         self.assertIn("rede.py", mensagem.call_args[0][1])
 
     def test_procurar_instalador(self):
-        pasta = self.amb.local / "instalador"
-        pasta.mkdir(parents=True)
-        (pasta / "Helestron-Setup-1.0.0.exe").write_bytes(b"MZ")
-        with mock.patch.object(caminhos, "INSTALADO", False, create=True):
+        """O instalador não deixa cópia de si: o Reparar o acha em Downloads."""
+        casa = self.amb.raiz / "casa"
+        (casa / "Downloads").mkdir(parents=True)
+        with mock.patch.object(caminhos, "INSTALADO", False, create=True), \
+                mock.patch("pathlib.Path.home", return_value=casa):
+            self.assertIsNone(integridade.procurar_instalador())
+            (casa / "Downloads" / "Helestron-Setup-1.0.0.exe").write_bytes(b"MZ")
             achado = integridade.procurar_instalador()
-        self.assertEqual(achado.name, "Helestron-Setup-1.0.0.exe")
+        self.assertEqual(achado, casa / "Downloads" / "Helestron-Setup-1.0.0.exe")
 
 
 class TestAberturaSemPacote(unittest.TestCase):

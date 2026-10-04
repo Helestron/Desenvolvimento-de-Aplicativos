@@ -52,7 +52,9 @@ class TestServidorPelaLinhaDeComando(unittest.TestCase):
         processo = subprocess.Popen(
             [sys.executable, "-c", INICIO_ISOLADO, "--servidor", "--sem-janela",
              "--token", "token-de-teste"],
-            cwd=str(RAIZ), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            # fora do repositório: nada que o programa grave pode cair na raiz dele
+            cwd=str(self.amb.raiz), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True)
         self.addCleanup(lambda: processo.poll() is None and processo.kill())
         linha = processo.stdout.readline().strip()
         self.assertTrue(linha.startswith("URL=http://127.0.0.1:"), linha)
@@ -91,7 +93,8 @@ class TestProgramaEntreProcessos(unittest.TestCase):
         self.env.pop("LOCALAPPDATA", None)
 
     def rodar(self, *args, esperar: bool = True):
-        processo = subprocess.Popen([sys.executable, "-c", INICIO_ISOLADO, *args], cwd=str(RAIZ),
+        processo = subprocess.Popen([sys.executable, "-c", INICIO_ISOLADO, *args],
+                                    cwd=str(self.amb.raiz),
                                     env=self.env, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: processo.poll() is None and processo.kill())

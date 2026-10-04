@@ -217,17 +217,19 @@ def descrever(problemas: list[Problema], limite: int = 10) -> str:
 
 
 def procurar_instalador() -> Path | None:
-    """O Helestron-Setup guardado no computador, para o botão Reparar.
+    """O Helestron-Setup que estiver no computador, para o botão Reparar.
 
-    Procura em LOCAL (onde o instalador deixa uma cópia de si, se deixar),
-    na pasta do programa e em Downloads - o mais novo primeiro.
+    O instalador não deixa cópia de si (seriam centenas de MB a mais): quem
+    o baixou costuma tê-lo em Downloads. Procura ali e, por garantia, em
+    LOCAL e na pasta do programa (onde a TI pode tê-lo deixado) - o mais
+    novo primeiro.
     """
     candidatos: list[Path] = []
     pastas: list[Path] = []
     try:
         from ..nucleo import caminhos
 
-        pastas += [Path(caminhos.LOCAL), Path(caminhos.LOCAL) / "instalador"]
+        pastas.append(Path(caminhos.LOCAL))
     except Exception:
         pass
     instalada = pasta_instalada()

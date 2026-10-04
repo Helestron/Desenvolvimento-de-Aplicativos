@@ -1,18 +1,31 @@
 """python -m helestron --verificar-instalacao [--relatorio ARQ]: a conferência do instalador.
 
-Sem janela. O instalador roda isto ao final e, se o código de saída for 1,
-mostra o resumo e onde está o relatório. Confere, nesta ordem:
+Sem janela. O instalador roda isto ao final e, se o código de saída não for
+0, mostra o resumo e onde está o relatório. Confere, nesta ordem:
 
   1. o manifesto: existência, tamanho e SHA-256 de TODOS os arquivos
      instalados (o arquivo que o antivírus levou aparece aqui, pelo nome);
-  2. os módulos: importa TODOS os módulos do pacote helestron (percorrido
-     com pkgutil.walk_packages), num processo à parte - um módulo que falte
-     ou não carregue aparece aqui, e não no meio do uso, como o "No module
-     named 'app.interface.pagina_config'" da versão anterior;
-  3. o restante, por helestron.verificar: bibliotecas, componentes nativos,
-     modelo de transcrição (carregado de verdade, se estiver embutido),
-     navegador, pastas, cofre de senhas;
+  2. os módulos: importa TODOS os módulos do pacote helestron (listados
+     sem importar nada, pelo sistema de arquivos), num processo à parte - um
+     módulo que falte ou não carregue aparece aqui, e não no meio do uso,
+     como o "No module named 'app.interface.pagina_config'" da versão
+     anterior;
+  3. o restante, por helestron.verificar, TAMBÉM num processo à parte:
+     Windows, bibliotecas, componentes nativos, modelo de transcrição
+     (carregado de verdade), navegador dos portais, microfone, pastas,
+     cofre de senhas, catálogo de tribunais, separação de falantes e o
+     conector do acervo (MCP);
   4. a janela: WebView2 ou, na falta dele, o Edge.
+
+Por que processos à parte: uma biblioteca nativa quebrada (DLL faltando,
+processador sem AVX, o numpy no Wine) derruba o processo sem exceção
+nenhuma. Se isso acontecesse aqui, o instalador ficaria sem relatório. No
+processo-filho, a queda vira um item de falha com o nome da checagem, e a
+verificação segue com as demais num processo novo.
+
+O relatório é regravado a cada passo: mesmo que este processo caia, o
+instalador encontra o que já foi conferido e a marca de que a verificação
+não terminou.
 
 Relatório em texto UTF-8 (padrão: LOCAL\\Logs\\verificacao-instalacao.txt).
 Código de saída: 0 = pronto (talvez com avisos); 1 = falha.
@@ -20,11 +33,15 @@ Código de saída: 0 = pronto (talvez com avisos); 1 = falha.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import pkgutil
 import platform
 import sys
-from dataclasses import dataclass
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -77,20 +94,34 @@ def conferir_manifesto(progresso: Callable[[int, int, str], None] | None = None)
                      tuple(p.frase for p in problemas))
 
 
-def modulos_do_pacote() -> tuple[list[str], list[tuple[str, str]]]:
-    """(nomes de todos os módulos do pacote helestron, pacotes que falharam
-    ao ser percorridos)."""
-    import helestron
+def _pasta_do_pacote() -> Path:
+    return Path(__file__).resolve().parents[1]
 
+
+def modulos_do_pacote() -> tuple[list[str], list[tuple[str, str]]]:
+    """(nomes de todos os módulos do pacote helestron, pastas que não
+    puderam ser lidas).
+
+    Percorre as pastas com pkgutil.iter_modules, que só lê o disco: o
+    pkgutil.walk_packages importaria cada subpacote AQUI, e a importação de
+    verdade fica para o processo à parte (importar_todos).
+    """
     nomes = ["helestron"]
     erros: list[tuple[str, str]] = []
 
-    def ao_erro(nome: str) -> None:
-        tipo, valor, _ = sys.exc_info()
-        erros.append((nome, f"{tipo.__name__ if tipo else 'Erro'}: {valor}"))
+    def percorrer(pasta: Path, prefixo: str) -> None:
+        try:
+            achados = sorted(pkgutil.iter_modules([str(pasta)]), key=lambda i: i.name)
+        except OSError as erro:
+            erros.append((prefixo.rstrip("."), f"{type(erro).__name__}: {erro}"))
+            return
+        for info in achados:
+            nome = prefixo + info.name
+            nomes.append(nome)
+            if info.ispkg:
+                percorrer(pasta / info.name, nome + ".")
 
-    for info in pkgutil.walk_packages(helestron.__path__, "helestron.", onerror=ao_erro):
-        nomes.append(info.name)
+    percorrer(_pasta_do_pacote(), "helestron.")
     return nomes, erros
 
 
@@ -100,8 +131,9 @@ def importar_todos() -> list[tuple[str, str]]:
     from .. import verificar
 
     nomes, erros = modulos_do_pacote()
-    pasta = str(Path(__file__).resolve().parents[2])
-    resultado = verificar.sondar_importacoes(nomes, 600.0, [pasta])
+    pasta = str(_pasta_do_pacote().parent)
+    resultado = verificar.sondar_importacoes(nomes, LIMITE_MODULOS_S, [pasta],
+                                             total_s=LIMITE_MODULOS_S)
     for nome in nomes:
         r = resultado.get(nome)
         if r is None:
@@ -126,44 +158,207 @@ def conferir_modulos() -> Resultado:
                      tuple(f"{nome}: {erro}" for nome, erro in erros))
 
 
-def conferir_motor(cfg=None) -> list[Resultado]:
-    """As checagens de helestron.verificar (bibliotecas, modelo, navegador...)."""
+# As checagens de helestron.verificar que entram aqui. O WebView2 fica de
+# fora: conferir_janela() o confere, e também diz o que acontece sem ele.
+TESTE_TRANSCRICAO = "Teste de transcrição"
+FORA_DO_MOTOR = ("WebView2 (janela do programa)",)
+# Tempo total das checagens do motor, e quanto o processo delas pode ficar
+# calado (sem começar nem terminar uma checagem) antes de ser dado como
+# travado - o teste do modelo pode levar uns minutos num computador lento.
+LIMITE_MOTOR_S = 900.0
+SEM_NOVIDADE_MOTOR_S = 360.0
+# A importação de todos os módulos (num processo à parte).
+LIMITE_MODULOS_S = 600.0
+
+# O processo-filho: roda as checagens pedidas e escreve uma linha JSON ao
+# começar cada uma ({"inicio": nome}) e outra ao terminar ({"item": {...}}).
+_SONDA_MOTOR = r"""
+import sys
+from helestron.aplicativo import verificacao
+sys.exit(verificacao.motor_no_filho(sys.argv[1:]))
+"""
+
+
+def _etapas_do_motor(cfg) -> list[tuple[str, Callable]]:
     from .. import verificar
 
-    saida = []
-    for i in verificar.verificar(completo=False, cfg=cfg):
-        situacao = i.situacao
-        if situacao == FALHA and not i.obrigatorio:
-            situacao = AVISO
-        saida.append(Resultado(i.nome, situacao, i.detalhe, i.acao if situacao != OK else ""))
-    # O modelo embutido carrega de verdade (1 s de silêncio).
-    try:
-        from ..nucleo import config
+    etapas = [(nome, funcao) for nome, funcao in verificar._etapas(cfg, False)
+              if nome not in FORA_DO_MOTOR]
+    # O modelo embutido carrega de verdade (1 s de silêncio), logo depois do
+    # item do modelo.
+    posicao = next((i + 1 for i, (nome, _) in enumerate(etapas)
+                    if nome == "Modelo de transcrição"), len(etapas))
+    etapas.insert(posicao, (TESTE_TRANSCRICAO, lambda: verificar.checar_teste_transcricao(cfg)))
+    return etapas
 
-        item = verificar.checar_teste_transcricao(cfg or config.carregar(criar=False))
-        situacao = item.situacao if item.obrigatorio or item.situacao != FALHA else AVISO
-        saida.append(Resultado(item.nome, situacao, item.detalhe, item.acao))
-    except Exception as erro:                       # noqa: BLE001
-        saida.append(Resultado("Teste de transcrição", AVISO, f"{type(erro).__name__}: {erro}"))
-    return saida
+
+def nomes_do_motor(cfg=None) -> list[str]:
+    from ..nucleo import config
+
+    return [nome for nome, _ in _etapas_do_motor(cfg or config.carregar(criar=False))]
+
+
+def motor_no_filho(argv: list[str]) -> int:
+    """No processo-filho: roda as checagens nomeadas em argv ("--paralelo"
+    para várias ao mesmo tempo) e as escreve na saída, uma linha JSON cada."""
+    from .. import verificar
+    from ..nucleo import config
+
+    paralelo = "--paralelo" in argv
+    pedidos = [a for a in argv if not a.startswith("--")]
+    cfg = config.carregar(criar=False)
+    etapas = dict(_etapas_do_motor(cfg))
+
+    def emitir(dados: dict) -> None:
+        sys.stdout.write(json.dumps(dados) + "\n")
+        sys.stdout.flush()
+
+    def comecar(nome: str):
+        emitir({"inicio": nome})
+        funcao = etapas.get(nome)
+        if funcao is None:
+            return verificar.Item(nome, FALHA, "Checagem desconhecida.", obrigatorio=False)
+        return verificar._protegido(nome, funcao)
+
+    if paralelo:
+        # Várias ao mesmo tempo (as que esperam processos-filhos andam juntas);
+        # cada uma sai assim que fica pronta - quem chama põe na ordem do
+        # relatório. Sair na hora também mostra ao vigia que o processo não
+        # travou enquanto uma checagem lenta ainda corre.
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="verificar") as pool:
+            futuros = {pool.submit(comecar, nome): nome for nome in pedidos}
+            for futuro in as_completed(futuros):
+                emitir({"item": futuros[futuro], "dados": asdict(futuro.result())})
+    else:
+        for nome in pedidos:
+            emitir({"item": nome, "dados": asdict(comecar(nome))})
+    return 0
+
+
+def _resultado_do_item(dados: dict) -> Resultado:
+    situacao = str(dados.get("situacao") or FALHA)
+    if situacao not in (OK, AVISO, FALHA):
+        situacao = FALHA
+    obrigatorio = bool(dados.get("obrigatorio", True))
+    if situacao == FALHA and not obrigatorio:
+        situacao = AVISO        # opcional: não reprova a instalação
+    acao = str(dados.get("acao") or "")
+    return Resultado(str(dados.get("nome") or "Verificação"), situacao,
+                     str(dados.get("detalhe") or ""), acao if situacao != OK else "")
+
+
+def conferir_motor(cfg=None, ao_resultado: Callable[[Resultado], None] | None = None
+                   ) -> list[Resultado]:
+    """As checagens de helestron.verificar, num processo à parte.
+
+    Se o processo cair (biblioteca nativa quebrada) ou travar, a checagem
+    em curso vira FALHA com a explicação, e as que faltam rodam num processo
+    novo. Com várias em curso na hora da queda, elas são repetidas uma a
+    uma, para achar a culpada. 'ao_resultado' recebe cada item pronto.
+    """
+    from .. import verificar
+    from ..nucleo import config
+
+    cfg = cfg or config.carregar(criar=False)
+    nomes = nomes_do_motor(cfg)
+    pasta = str(_pasta_do_pacote().parent)
+    feitos: dict[str, Resultado] = {}
+
+    def guardar(nome: str, r: Resultado) -> None:
+        feitos[nome] = r
+        if ao_resultado is not None:
+            try:
+                ao_resultado(r)
+            except Exception:                       # noqa: BLE001 - o relatório nunca derruba
+                log.exception("falha ao registrar o resultado %s", nome)
+
+    pendentes, paralelo = list(nomes), True
+    prazo = time.monotonic() + LIMITE_MOTOR_S
+    while pendentes:
+        resta = prazo - time.monotonic()
+        if resta <= 1:
+            for nome in pendentes:
+                guardar(nome, Resultado(nome, FALHA, "Não foi conferido: a verificação passou do "
+                                                     "tempo.", REINSTALAR))
+            break
+        argumentos = [verificar._python(), "-c", _SONDA_MOTOR, *(["--paralelo"] if paralelo else []),
+                      *pendentes]
+        codigo, saida, erro, estourou = verificar.rodar(
+            argumentos, resta, [pasta], sem_novidade_s=min(resta, SEM_NOVIDADE_MOTOR_S))
+        iniciados: list[str] = []
+        for linha in saida.splitlines():
+            try:
+                d = json.loads(linha)
+            except ValueError:
+                continue
+            if not isinstance(d, dict):
+                continue
+            if "inicio" in d:
+                iniciados.append(str(d["inicio"]))
+            elif "item" in d and str(d["item"]) in pendentes:
+                guardar(str(d["item"]), _resultado_do_item(d.get("dados") or {}))
+        restantes = [n for n in pendentes if n not in feitos]
+        if not restantes:
+            break
+        em_curso = [n for n in iniciados if n in restantes]
+        if not iniciados:
+            # O próprio Python do programa não abriu (ou não achou o pacote).
+            ultima = (erro.strip().splitlines() or [""])[-1][:300]
+            motivo = f"o Python do programa não iniciou ({verificar.explicar_queda(None if estourou else codigo)})"
+            if ultima:
+                motivo += f": {ultima}"
+            for nome in restantes:
+                guardar(nome, Resultado(nome, FALHA, f"Não foi conferido: {motivo}.", REINSTALAR))
+            break
+        if estourou and paralelo and len(em_curso) > 1:
+            # Várias em curso quando o processo calou: de novo, uma a uma, para
+            # não culpar a que só estava esperando a vez de terminar.
+            paralelo = False
+            pendentes = em_curso + [n for n in restantes if n not in em_curso]
+        elif estourou:
+            for nome in em_curso:
+                guardar(nome, Resultado(nome, FALHA,
+                                        "A checagem não terminou no tempo esperado (travou).",
+                                        REINSTALAR))
+            pendentes = [n for n in restantes if n not in em_curso]
+        elif len(em_curso) == 1:
+            nome = em_curso[0]
+            guardar(nome, Resultado(nome, FALHA,
+                                    f"O processo da verificação caiu nesta checagem "
+                                    f"({verificar.explicar_queda(codigo)}).", REINSTALAR))
+            pendentes = [n for n in restantes if n != nome]
+        elif not em_curso:
+            if codigo == 0:
+                for nome in restantes:
+                    guardar(nome, Resultado(nome, FALHA, "Não foi conferido.", REINSTALAR))
+                break
+            pendentes = restantes
+        else:
+            # Várias ao mesmo tempo na hora da queda: de novo, uma a uma.
+            paralelo = False
+            pendentes = em_curso + [n for n in restantes if n not in em_curso]
+    return [feitos[n] for n in nomes if n in feitos]
 
 
 def conferir_janela() -> Resultado:
     from . import janela
 
+    nome = "WebView2 (janela do programa)"
     if sys.platform != "win32":
-        return Resultado("Janela (WebView2)", AVISO, "Não se aplica fora do Windows.")
+        return Resultado(nome, AVISO, "Não se aplica fora do Windows.")
     if janela.webview2_disponivel():
-        return Resultado("Janela (WebView2)", OK, "WebView2 Runtime instalado.")
+        return Resultado(nome, OK, "Microsoft Edge WebView2 Runtime instalado.")
     edge = janela.achar_edge()
     if edge is not None:
-        return Resultado("Janela (WebView2)", AVISO,
+        return Resultado(nome, AVISO,
                          "WebView2 ausente: o Helestron abre no Microsoft Edge, em modo "
-                         "aplicativo.", "Instale o WebView2 Runtime da Microsoft para a janela "
-                                        "própria do programa.")
-    return Resultado("Janela (WebView2)", AVISO,
-                     "Nem WebView2 nem Edge encontrados: o Helestron abre no navegador padrão.",
-                     "Instale o WebView2 Runtime da Microsoft.")
+                         "aplicativo.", "Para a janela própria do programa, instale o "
+                                        "“Microsoft Edge WebView2 Runtime” (gratuito, da "
+                                        "Microsoft, sem administrador).")
+    return Resultado(nome, AVISO,
+                     "Nem o WebView2 nem o Microsoft Edge foram encontrados: o Helestron abre "
+                     "no navegador padrão.",
+                     "Instale o “Microsoft Edge WebView2 Runtime” (gratuito, da Microsoft).")
 
 
 # ================================================================ relatório
@@ -175,34 +370,84 @@ def formatar(r: Resultado) -> list[str]:
     return linhas
 
 
+EM_ANDAMENTO = ("Verificação em andamento. Se o relatório terminar aqui, ela foi interrompida "
+                "antes do fim (o processo caiu): instale o Helestron de novo com o "
+                "Helestron-Setup e, se o problema continuar, envie este relatório ao suporte.")
+
+
+def _gravar(destino: Path, texto: str) -> OSError | None:
+    """Grava o relatório (troca atômica, para nunca ficar pela metade)."""
+    try:
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        tmp = destino.with_name(destino.name + ".tmp")
+        tmp.write_text(texto, encoding="utf-8")
+        try:
+            os.replace(tmp, destino)
+        except OSError:
+            # arquivo preso por um instante (antivírus, indexador): grava direto
+            destino.write_text(texto, encoding="utf-8")
+            tmp.unlink(missing_ok=True)
+        return None
+    except OSError as erro:
+        return erro
+
+
 def executar(relatorio: Path | None = None, saida: Callable[[str], None] | None = None,
              passos: list[Callable[[], Resultado | list[Resultado]]] | None = None) -> int:
-    """Roda a verificação, grava o relatório e devolve o código de saída."""
+    """Roda a verificação e devolve o código de saída.
+
+    O relatório é regravado a cada item: se este processo cair no meio, o
+    instalador ainda encontra o que já foi conferido e o aviso de que a
+    verificação não terminou.
+    """
     escrever = saida or (lambda texto: print(texto, flush=True))
     destino = Path(relatorio) if relatorio else arquivo_padrao()
     pasta = integridade.pasta_instalada()
     cabecalho = [f"{NOME} {__version__} — verificação da instalação",
                  f"Data: {datetime.now():%d/%m/%Y %H:%M:%S}",
-                 f"Pasta do programa: {pasta or Path(__file__).resolve().parents[2]}",
+                 f"Pasta do programa: {pasta or _pasta_do_pacote().parent}",
                  f"Sistema: {platform.platform()} · Python {platform.python_version()}", ""]
     for linha in cabecalho:
         escrever(linha)
+    resultados: list[Resultado] = []        # na ordem em que ficaram prontos
+    em_ordem: list[Resultado] = []          # na ordem do relatório final
+    vistos: set[int] = set()
+    problema: list[OSError] = []
+
+    def gravar(fim: list[str], lista: list[Resultado] | None = None) -> None:
+        erro = _gravar(destino, "\n".join(
+            cabecalho + [linha for r in (resultados if lista is None else lista)
+                         for linha in formatar(r)] + fim) + "\n")
+        if erro is not None and not problema:
+            problema.append(erro)
+
+    def registrar(item: Resultado) -> None:
+        if id(item) in vistos:
+            return
+        vistos.add(id(item))
+        resultados.append(item)
+        for linha in formatar(item):
+            escrever(linha)
+        gravar(["", EM_ANDAMENTO])
+
+    gravar(["", EM_ANDAMENTO])          # o relatório existe desde o primeiro instante
     if passos is None:
-        passos = [conferir_manifesto, conferir_modulos, conferir_motor, conferir_janela]
-    resultados: list[Resultado] = []
+        def conferir_o_resto() -> list[Resultado]:
+            return conferir_motor(ao_resultado=registrar)
+
+        passos = [conferir_manifesto, conferir_modulos, conferir_o_resto, conferir_janela]
     for passo in passos:
         try:
             r = passo()
         except Exception as erro:                   # noqa: BLE001 - vira falha no relatório
             log.exception("falha inesperada na verificação")
-            r = Resultado(getattr(passo, "__name__", "Verificação"), FALHA,
-                          f"Erro inesperado: {type(erro).__name__}: {erro}")
+            r = Resultado(NOMES_DOS_PASSOS.get(getattr(passo, "__name__", ""), "Verificação"),
+                          FALHA, f"Erro inesperado: {type(erro).__name__}: {erro}", REINSTALAR)
         for item in (r if isinstance(r, list) else [r]):
-            resultados.append(item)
-            for linha in formatar(item):
-                escrever(linha)
-    falhas = [r for r in resultados if r.situacao == FALHA]
-    avisos = [r for r in resultados if r.situacao == AVISO]
+            registrar(item)
+            em_ordem.append(item)
+    falhas = [r for r in em_ordem if r.situacao == FALHA]
+    avisos = [r for r in em_ordem if r.situacao == AVISO]
     if falhas:
         final = (f"Resultado: {len(falhas)} falha{'s' if len(falhas) != 1 else ''}. A instalação "
                  "tem problemas: veja acima o que fazer.")
@@ -213,12 +458,16 @@ def executar(relatorio: Path | None = None, saida: Callable[[str], None] | None 
         final = "Resultado: tudo certo. A instalação está pronta."
     escrever("")
     escrever(final)
-    texto = "\n".join(cabecalho + [linha for r in resultados for linha in formatar(r)]
-                      + ["", final]) + "\n"
-    try:
-        destino.parent.mkdir(parents=True, exist_ok=True)
-        destino.write_text(texto, encoding="utf-8")
+    gravar(["", final], em_ordem)
+    if problema:
+        escrever(f"Não foi possível gravar o relatório em {destino}: {problema[0]}")
+    else:
         escrever(f"Relatório: {destino}")
-    except OSError as erro:
-        escrever(f"Não foi possível gravar o relatório em {destino}: {erro}")
     return 1 if falhas else 0
+
+
+NOMES_DOS_PASSOS = {"conferir_manifesto": "Arquivos do programa",
+                    "conferir_modulos": "Módulos do programa",
+                    "conferir_o_resto": "Componentes do programa",
+                    "conferir_motor": "Componentes do programa",
+                    "conferir_janela": "WebView2 (janela do programa)"}

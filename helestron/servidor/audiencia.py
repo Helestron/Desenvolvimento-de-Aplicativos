@@ -221,6 +221,10 @@ class GerenteAudiencia:
                 with self._trava:
                     self.estado = "erro"
                     self.erro = texto[:1].upper() + texto[1:]
+                # O estado "erro" diz à tela que a gravação NÃO começou (sem
+                # microfone, microfone ocupado, permissão negada): ela volta à
+                # preparação e mostra o motivo, em vez de um cronômetro andando.
+                self._publicar("estado", {"texto": self.erro, "estado": "erro", "fase": "inicio"})
                 self._publicar("erro", {"texto": self.erro})
                 return
             with self._trava:
@@ -241,6 +245,7 @@ class GerenteAudiencia:
                 with self._trava:
                     self.estado = "erro"
                     self.erro = texto[:1].upper() + texto[1:]
+                self._publicar("estado", {"texto": self.erro, "estado": "erro", "fase": "fim"})
                 self._publicar("erro", {"texto": self.erro})
                 return
             with self._trava:

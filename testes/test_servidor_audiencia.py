@@ -164,7 +164,14 @@ class TestAoVivo(ServidorDeTeste):
             leitor = self.eventos()
             self.cliente.dados("POST", "/api/transcricao/iniciar", {"processo": NUMERO})
             erro = leitor.esperar("transcricao", lambda d: d["tipo"] == "erro")
+            # A tela sai do "Gravando": o estado diz que a gravação não começou.
+            estado = leitor.esperar("transcricao", lambda d: d["tipo"] == "estado"
+                                    and d["dados"].get("estado") == "erro")
         self.assertEqual(erro["dados"]["texto"], "Microfone indisponível")
+        self.assertEqual(estado["dados"], {"texto": "Microfone indisponível", "estado": "erro",
+                                           "fase": "inicio"})
+        atual = self.cliente.dados("GET", "/api/transcricao/estado")
+        self.assertEqual((atual["estado"], atual["erro"]), ("erro", "Microfone indisponível"))
         limite = time.monotonic() + 5
         while self.app.recursos.quem_tem("microfone") and time.monotonic() < limite:
             time.sleep(0.02)
@@ -316,6 +323,47 @@ class TestMicrofoneEModelos(ServidorDeTeste):
         self.assertEqual(tarefa["estado"], "concluida")
         self.assertEqual(tarefa["tipo"], "modelo")
         self.assertEqual(tarefa["progresso"]["percentual"], 100.0)
+
+    def test_falantes_estado_e_download_dos_modelos_de_voz(self):
+        """Construção sem os modelos de voz (--sem-falantes): Ajustes oferece baixá-los."""
+        faltando = {"disponivel": False, "situacao": "incompleta (faltam os modelos de voz)",
+                    "biblioteca": True, "modelos": False, "embutidos": False, "tamanho_mb": 47}
+        pronto = dict(faltando, disponivel=True, situacao="instalada", modelos=True)
+        estados = [faltando, faltando, pronto]
+        chamadas = []
+
+        def instalar(progresso, cancelado=None):
+            chamadas.append(cancelado)
+            progresso(0.5, "Baixando o modelo de voz: 20 de 40 MB")
+
+        with mock.patch("helestron.servicos.falantes_estado", side_effect=lambda: estados.pop(0)), \
+                mock.patch("helestron.servicos.instalar_falantes", side_effect=instalar):
+            self.assertEqual(self.cliente.dados("GET", "/api/transcricao/falantes"), faltando)
+            tarefa = self.esperar_tarefa(self.cliente.dados(
+                "POST", "/api/transcricao/falantes/baixar")["tarefa"])
+        self.assertEqual(tarefa["estado"], "concluida", tarefa)
+        self.assertEqual(tarefa["tipo"], "modelo")
+        self.assertEqual(tarefa["titulo"], "Baixar os modelos de voz")
+        self.assertEqual(tarefa["resultado"], pronto)
+        self.assertTrue(callable(chamadas[0]))        # o Parar chega ao download
+
+    def test_falantes_sem_a_biblioteca_409(self):
+        sem = {"disponivel": False, "situacao": "indisponível", "biblioteca": False,
+               "modelos": False, "embutidos": False, "tamanho_mb": 47}
+        with mock.patch("helestron.servicos.falantes_estado", return_value=sem), \
+                mock.patch("helestron.servicos.instalar_falantes") as instalar:
+            status, corpo = self.cliente.post("/api/transcricao/falantes/baixar")
+        self.assertEqual(status, 409)
+        self.assertIn("Helestron-Setup", corpo["erro"]["mensagem"])
+        instalar.assert_not_called()
+
+    def test_falantes_estado_de_verdade(self):
+        from helestron import servicos
+
+        estado = servicos.falantes_estado()
+        self.assertEqual(set(estado), {"disponivel", "situacao", "biblioteca", "modelos",
+                                       "embutidos", "tamanho_mb"})
+        self.assertEqual(estado["disponivel"], estado["biblioteca"] and estado["modelos"])
 
 
 if __name__ == "__main__":

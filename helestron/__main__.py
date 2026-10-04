@@ -11,7 +11,7 @@ a linha de comando. O lançador Helestron.exe roda `python -I -m helestron`.
     python -m helestron baixar --lista X.xlsx         baixa os processos da relação
     python -m helestron transcrever ARQUIVO           transcreve uma gravação
     python -m helestron modelos baixar small          baixa um modelo de transcrição
-    python -m helestron falantes instalar             instala a separação automática de falantes
+    python -m helestron falantes instalar             baixa os modelos da separação de falantes
     python -m helestron microfones                    lista os microfones
     python -m helestron verificar [--completo]        confere a instalação (detalhado)
     python -m helestron mcp --pasta ACERVO            servidor MCP do acervo (Claude/ChatGPT)
@@ -29,12 +29,9 @@ from pathlib import Path
 
 
 def _ambiente() -> None:
-    from .nucleo import caminhos
-
-    # O Chromium de reserva do Playwright mora dentro do programa.
-    navegadores = getattr(caminhos, "NAVEGADORES", None)
-    if navegadores is not None:
-        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(navegadores))
+    # O programa não traz navegador próprio: o download e a pauta usam o
+    # Google Chrome ou o Microsoft Edge do computador (download/navegador.py),
+    # e por isso PLAYWRIGHT_BROWSERS_PATH não é definido aqui.
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 

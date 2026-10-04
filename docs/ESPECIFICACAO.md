@@ -32,7 +32,7 @@ compartilhamento), que foi testado e deve ser preservado.
 | Problema | Causa | Solução no Helestron |
 |---|---|---|
 | Instalação por `INSTALAR.bat` + PowerShell, baixando ~800 MB na hora | rede do tribunal (proxy, bloqueio de PyPI/Hugging Face), GPO que bloqueia scripts, janela de console | **Um só `Helestron-Setup-1.0.0.exe`** (NSIS, assistente gráfico em português), **offline**: Python, bibliotecas e modelo de transcrição vão dentro. Sem PowerShell, sem console, sem administrador. |
-| `No module named 'app.interface.pagina_config'` | um arquivo do programa sumiu depois da extração (antivírus que põe em quarentena arquivo que lida com senhas, extração parcial) e as telas eram importadas por nome em tempo de execução (`importlib`) | (a) interface em HTML: não há mais módulo Python por tela; (b) **imports estáticos** em todo o pacote; (c) **manifesto de integridade** conferido na abertura, com mensagem clara e botão "Reparar"; (d) o instalador roda `Helestron.exe --verificar-instalacao` ao final e avisa se algo faltar; (e) Python isolado (`-I`): variáveis `PYTHONPATH`/`PYTHONHOME` da máquina não interferem. |
+| `No module named 'app.interface.pagina_config'` | um arquivo do programa sumiu depois da extração (antivírus que põe em quarentena arquivo que lida com senhas, extração parcial) e as telas eram importadas por nome em tempo de execução (`importlib`) | (a) interface em HTML: não há mais módulo Python por tela; (b) **imports estáticos** em todo o pacote; (c) **manifesto de integridade** conferido na abertura, com mensagem clara e botão "Reparar" (abre o `Helestron-Setup` que estiver em Downloads - o instalador não deixa cópia de si - ou explica como baixá-lo de novo); (d) o instalador roda `Helestron.exe --verificar-instalacao` ao final e avisa se algo faltar; (e) Python isolado (`-I`): variáveis `PYTHONPATH`/`PYTHONHOME` da máquina não interferem. |
 | Janela Tkinter datada | limitação do Tk | Interface web local (HTML/CSS/JS) numa janela nativa (WebView2), com vidro translúcido e componentes no estilo iOS. |
 
 ## 3. Arquitetura
@@ -92,7 +92,8 @@ Helestron.exe          lançador (ícone H); roda python -I -m helestron
 python.exe pythonw.exe python312.dll python3.dll vcruntime140*.dll msvcp140*.dll
 DLLs\  Lib\  Lib\site-packages\helestron\ ...   (bibliotecas + o pacote, com .pyc pré-compilados)
 modelos\faster-whisper-small\   modelo de transcrição ao vivo (embutido)
-modelos\falantes\               modelos da separação de falantes (embutidos, se disponíveis)
+modelos\falantes\               modelos da separação de falantes (embutidos; numa construção
+                       --sem-falantes, Ajustes › Transcrição oferece "Baixar os modelos de voz")
 helestron.ico  manifesto.json  Desinstalar.exe
 ```
 
@@ -135,7 +136,7 @@ pastas temporárias (ou com `mock.patch` nas constantes, como já fazem).
 | Comando | O que faz |
 |---|---|
 | *(sem argumentos)* | abre o programa (servidor + janela) |
-| `--verificar-instalacao [--relatorio ARQ]` | sem janela: confere o manifesto (hash de todos os arquivos), importa **todos** os módulos do pacote, testa o modelo embutido (carrega), WebView2/Edge. Código de saída 0 = ok, 1 = falha. Grava relatório em texto (UTF-8) em `ARQ` (padrão `LOCAL/Logs/verificacao-instalacao.txt`). Usado pelo instalador. |
+| `--verificar-instalacao [--relatorio ARQ]` | sem janela: confere o manifesto (hash de todos os arquivos), importa **todos** os módulos do pacote, roda as checagens de `helestron.verificar` (bibliotecas, componentes nativos, modelo embutido carregado de verdade, navegador, pastas, cofre, regras da pauta, conector MCP...) e confere WebView2/Edge. A importação e as checagens rodam em **processos à parte**: uma biblioteca nativa que derrube o processo vira um item de falha com o nome da checagem, e as demais seguem num processo novo. O relatório (UTF-8, em `ARQ`; padrão `LOCAL/Logs/verificacao-instalacao.txt`) é regravado a cada item, com a marca "Verificação em andamento" até o fim: o instalador sempre tem relatório. Código de saída 0 = ok, 1 = falha. Usado pelo instalador. |
 | `--autoteste PASTA` | abre a janela de verdade, a interface percorre todas as telas sozinha (`?autoteste=1`), o programa salva capturas (PNG) e `autoteste.json` em `PASTA` e fecha. Usado no CI do Windows. |
 | `--servidor [--porta N] [--sem-janela] [--token T]` | só o servidor (testes e desenvolvimento); imprime `URL=...` na saída |
 | `--encerrar` | pede à instância aberta que feche (usado pelo instalador antes de atualizar) |
@@ -178,6 +179,7 @@ Sucesso: `{"ok": true, "dados": ...}`. Erro: `{"ok": false, "erro": {"codigo":
 * `POST /api/config` `{secao, chave, valor}` → `{valor}` (valida; pastas conflitantes → erro com a frase de `problema_nas_pastas`)
 * `GET /api/tribunais` → `[{sigla, nome, sistema, alternativo}]`
 * `GET /api/acessos` → `[{portal, rotulo, usuario, tem_senha}]`; `POST /api/acessos` `{portal, usuario, senha}`; `DELETE /api/acessos/{portal}`; `POST /api/acessos/testar` `{tribunal}` → `{tarefa}`
+* `GET /api/tribunais/enderecos` → `[{portal, grau, rotulo, url, rotulo_portal}]` (só os endereços corrigidos pelo usuário); `GET /api/tribunais/enderecos/{portal}` → `{portal, rotulo, enderecos: [{grau, rotulo, url, padrao, corrigido}]}`; `POST /api/tribunais/enderecos` `{portal, grau, url}` → o mesmo (url em branco volta ao catálogo). É o "Endereço do portal" de Ajustes › Acessos aos portais: a correção fica em `LOCAL/enderecos-locais.json` e vale por cima de `dados/tribunais.json`, para o download e a pauta; as mensagens do motor sobre endereço mudado apontam para ela.
 * `POST /api/dialogo/arquivo` `{titulo, tipos: ["Planilhas|*.xlsx;*.xls", ...]}` e `POST /api/dialogo/pasta` `{titulo, inicial}` → `{caminho|null}` (diálogo nativo pela pywebview; fora dela → erro `sem_dialogo`, e a interface usa `<input type=file>`)
 * `POST /api/abrir` `{tipo: "pasta"|"arquivo"|"url", alvo}`
 * `GET /api/verificacao` → `[{nome, situacao: "ok"|"aviso"|"falha", detalhe, acao}]`; `POST /api/verificacao/completa` → `{tarefa}`
@@ -197,7 +199,8 @@ Sucesso: `{"ok": true, "dados": ...}`. Erro: `{"ok": false, "erro": {"codigo":
 **Audiências (transcrição)**
 * `GET /api/transcricao/microfones` → `[{indice, nome, padrao}]`
 * `POST /api/transcricao/microfone/teste` `{dispositivo}` (eventos `microfone_nivel`) ; `POST /api/transcricao/microfone/parar`
-* `GET /api/transcricao/modelos` → `[{nome, rotulo, tamanho_mb, instalado, embutido, recomendado_para}]`; `POST /api/transcricao/modelos/baixar` `{nome}` → `{tarefa}`
+* `GET /api/transcricao/modelos` → `[{nome, rotulo, tamanho_mb, instalado, embutido, recomendado_para, descricao}]`; `POST /api/transcricao/modelos/baixar` `{nome}` → `{tarefa}`
+* `GET /api/transcricao/falantes` → `{disponivel, situacao, biblioteca, modelos, embutidos, tamanho_mb}` (separação automática de falantes); `POST /api/transcricao/falantes/baixar` → `{tarefa}` (tipo `modelo`: baixa do GitHub, uma vez, os modelos de voz que faltarem, por `servicos.instalar_falantes`; a biblioteca `sherpa-onnx` vem sempre no instalador, e sem ela a resposta é 409 pedindo a reinstalação). Os modelos de voz vão embutidos pela construção; a tela Ajustes › Transcrição mostra o botão "Baixar os modelos de voz" só quando faltarem (construção `--sem-falantes`).
 * `POST /api/transcricao/iniciar` `{processo, dispositivo, sigiloso, tipo, participantes: {"F1": "Juiz(a)", ...}, falante}` → `{sessao}`
 * `POST /api/transcricao/pausar` · `/retomar` · `/falante` `{falante}` · `/encerrar` → `{documento}` (a sessão é única)
 * `GET /api/transcricao/estado` → `{sessao|null, estado, segundos, processo, falas: [...]}`
@@ -207,10 +210,10 @@ Sucesso: `{"ok": true, "dados": ...}`. Erro: `{"ok": false, "erro": {"codigo":
 
 **Pauta** (seção 8)
 * `GET /api/pauta?de=&ate=&sistema=&situacao=&busca=` → `{audiencias: [Audiencia], resumo: {total, hoje, semana, por_situacao: {}, por_tipo: {}}, ultima_sincronizacao, monitoramento: {ativo, intervalo_horas, proxima}}`
-* `GET /api/pauta/fontes`; `POST /api/pauta/fontes` `{tribunal, sistema, rotulo, url?}`; `DELETE /api/pauta/fontes/{id}`
-* `POST /api/pauta/sincronizar` `{fontes?: [id], de?, ate?}` → `{tarefa}`
-* `POST /api/pauta/capturar` `{tribunal, sistema}` → `{tarefa}` (captura assistida, seção 8.4)
-* `POST /api/pauta/importar` (multipart `arquivo` ou JSON `{caminho}`) → `{novas, atualizadas, ignoradas, avisos}`
+* `GET /api/pauta/fontes` → `[{id, tribunal, sistema, rotulo, modo, url, menu, monitorada, ultima_sincronizacao, ultimo_erro, criada_em}]` (`monitorada` = tem rota lembrada e entra no monitoramento); `POST /api/pauta/fontes` `{tribunal, sistema, rotulo, url?}`; `DELETE /api/pauta/fontes/{id}`
+* `POST /api/pauta/sincronizar` `{fontes?: [id], de?, ate?}` → `{tarefa}`; o `resultado` da tarefa é `{novas, atualizadas, canceladas, removidas, total, alteracoes, fontes: [...], erros: [{fonte, rotulo, mensagem}], avisos: [texto], periodo}` e o `status` final, a frase pronta ("8 audiências conferidas · 1 nova…"). Uma fonte que falha não derruba as outras; só quando todas falham a tarefa termina como `falhou`. A tela da Pauta mostra o resultado numa faixa que fica à vista (fontes com problema, avisos e as saídas: Capturar no portal, Importar relatório, Acessos aos portais).
+* `POST /api/pauta/capturar` `{tribunal, sistema}` → `{tarefa}` (captura assistida, seção 8.4); `resultado` = `{novas, atualizadas, capturadas, telas, url, motivo: "concluida"|"fechada"|"prazo", fonte}`
+* `POST /api/pauta/importar` (multipart `arquivo` ou JSON `{caminho}`) → `{novas, atualizadas, ignoradas, avisos, total, arquivo}` (`arquivo` = o nome que o usuário escolheu)
 * `POST /api/pauta/exportar` `{de, ate, sistema?, situacao?, busca?}` → `{arquivo}`
 * `GET /api/pauta/alteracoes?desde=` → `[{quando, tipo: "nova"|"alterada"|"cancelada"|"removida", audiencia, campos: [{campo, antes, depois}]}]`; `POST /api/pauta/alteracoes/vistas`
 * `POST /api/pauta/monitoramento` `{ativo, intervalo_horas}`
@@ -236,7 +239,7 @@ Cada evento: `event: <tipo>` + `data: <json>`. Tipos:
 | `pergunta` | `{id, tarefa, tipo: "codigo"|"confirmar"|"texto"|"escolha", titulo, mensagem, opcoes?, prazo_s}` |
 | `pergunta_fechada` | `{id, motivo}` |
 | `aviso` | `{titulo, mensagem, nivel}` |
-| `transcricao` | `{tipo: "estado"|"nivel"|"fala"|"atraso"|"aviso"|"erro"|"salvo"|"fim", dados}` (`fala` = `{inicio, fim, falante, texto}`) |
+| `transcricao` | `{tipo: "estado"|"nivel"|"fala"|"atraso"|"aviso"|"erro"|"salvo"|"fim", dados}` (`fala` = `{inicio, fim, falante, texto}`; `estado` = `{texto, estado}`, e `estado: "erro"` com `fase: "inicio"|"fim"` quando a sessão acaba com erro - sem microfone, a gravação não começa e a tela volta à preparação com o motivo) |
 | `microfone_nivel` | `{nivel}` (0..1) |
 | `pauta` | `{tipo: "atualizada"|"alteracoes", dados}` |
 | `estado` | `{}` — algo do resumo mudou; a interface relê `/api/estado` |
@@ -332,7 +335,8 @@ chamadas da API com dados realistas e simula eventos (download andando, texto da
 audiência chegando, pauta com 40 audiências), **sem servidor**. Serve para
 desenvolver o visual, para as capturas de tela e para testes da interface.
 **Modo autoteste** (`?autoteste=1`): percorre as seções, espera cada uma
-carregar e avisa o servidor (`POST /api/autoteste/passo {secao}`) para a captura.
+carregar e avisa o servidor (`POST /api/autoteste/passo {secao}`) para a captura;
+no fim, manda o balanço (`POST /api/autoteste/fim {secoes, erros}`).
 
 ## 8. Pauta de audiências (`helestron/pauta`)
 
@@ -493,8 +497,8 @@ class ServicoPauta:
 
 `construir/marca.py` (Pillow) gera, a partir de desenho vetorial próprio:
 `helestron/recursos/helestron.ico` (16, 20, 24, 32, 40, 48, 64, 128, 256),
-`helestron.png` (512), `helestron-64.png`, `web/img/helestron.svg` (SVG
-equivalente para a interface) e as imagens do instalador
+`helestron.png` (512), `helestron-64.png`, `web/img/marca/helestron.svg` e
+`web/img/marca/helestron-64.png` (para a interface) e as imagens do instalador
 (`instalador-boas-vindas.bmp` 164×314, `instalador-cabecalho.bmp` 150×57).
 
 Desenho: "squircle" do iOS (superelipse), **navy** em gradiente
@@ -549,7 +553,9 @@ senhas (padrão: não) e **nunca** apaga `Documentos\Helestron`. Modo silencioso
 ## 11. CI (`.github/workflows/helestron.yml`)
 
 * **testes** (ubuntu): unittest completo (+ Playwright Chromium para a
-  interface em modo demonstração, com capturas como artefato).
+  interface em modo demonstração e para `testes/test_ponta_a_ponta.py`, que
+  sobe o programa real e percorre a interface contra portais falsos locais;
+  capturas de `HELESTRON_CAPTURAS` como artefato).
 * **construir** (ubuntu): apt `nsis` e `mingw-w64`; `construir.py` com o modelo
   baixado do Hugging Face; artefato `Helestron-Setup`.
 * **windows** (windows-latest, depende de construir): instala em silêncio
@@ -573,6 +579,9 @@ senhas (padrão: não) e **nunca** apaga `Documentos\Helestron`. Modo silencioso
   `bottle`, `proxy_tools`, `typing_extensions` (Windows), `installer` (só na
   construção). Biblioteca padrão para HTTP, SQLite, threads.
 * Testes com `unittest`, rodando em Linux sem rede e sem Windows (o que é só do
-  Windows é pulado com `skipUnless`), sem tocar em `~` ou `%LOCALAPPDATA%` reais.
+  Windows é pulado com `skipUnless`), sem tocar em `~` ou `%LOCALAPPDATA%` reais:
+  `testes/__init__.py` aponta `HELESTRON_LOCAL` e `HELESTRON_DADOS` para uma
+  pasta temporária antes de qualquer import de `helestron` (e a apaga no fim);
+  depois da suíte, a raiz do repositório e o HOME não ganham arquivos.
 * Nada de `importlib.import_module` com nome montado em tempo de execução para
   partes essenciais do programa.

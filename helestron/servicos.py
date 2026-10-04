@@ -325,8 +325,36 @@ def falantes_situacao() -> tuple[bool, str]:
         return False, f"indisponível ({erro})"
 
 
+def falantes_estado() -> dict:
+    """A separação de falantes para a tela de Ajustes › Transcrição.
+
+    {disponivel, situacao, biblioteca, modelos, embutidos, tamanho_mb}: a
+    biblioteca (sherpa-onnx) vem no instalador; os modelos de voz também,
+    salvo numa construção sem eles - aí a tela oferece baixá-los (uma vez,
+    do GitHub, para a pasta de dados).
+    """
+    estado = {"disponivel": False, "situacao": "não instalada", "biblioteca": False,
+              "modelos": False, "embutidos": False, "tamanho_mb": 47}
+    try:
+        from .transcricao import falantes
+    except ImportError:
+        return estado
+    try:
+        biblioteca = bool(falantes.biblioteca_presente())
+        modelos = bool(falantes.modelos_presentes())
+        embutidos = modelos and Path(falantes.modelo_embedding()).is_relative_to(
+            Path(falantes.PASTA_EMBUTIDA))
+        estado.update(disponivel=biblioteca and modelos, situacao=falantes.situacao(),
+                      biblioteca=biblioteca, modelos=modelos, embutidos=bool(embutidos),
+                      tamanho_mb=int(getattr(falantes, "TAMANHO_MB", 47)))
+    except Exception as erro:
+        estado["situacao"] = f"indisponível ({erro})"
+    return estado
+
+
 def instalar_falantes(progresso: Callable[[float, str], None] | None = None,
                       cancelado: Callable[[], bool] | None = None) -> None:
+    """Baixa os modelos de voz que faltarem (a biblioteca vem no instalador)."""
     try:
         from .transcricao import falantes
     except ImportError as erro:
@@ -497,16 +525,12 @@ def dentro_ou_igual(filho, pai) -> bool:
 
 def pasta_do_programa() -> Path:
     """A pasta instalada do programa (ou o repositório, fora da instalação)."""
-    pasta = getattr(caminhos, "INSTALACAO", None) or getattr(caminhos, "RAIZ", None)
-    return Path(pasta) if pasta is not None else Path(__file__).resolve().parents[1]
+    return Path(caminhos.INSTALACAO)
 
 
 def base_usuario() -> Path:
     """Documentos\\Helestron (ou o que caminhos.BASE_USUARIO disser)."""
-    base = getattr(caminhos, "BASE_USUARIO", None)
-    if base is not None:
-        return Path(base)
-    return Path.home() / "Documents" / "Helestron"
+    return Path(caminhos.BASE_USUARIO)
 
 
 def pasta_pauta(cfg) -> Path:
@@ -518,15 +542,12 @@ def pasta_pauta(cfg) -> Path:
     propria = getattr(cfg, "pasta_pauta", None)
     if propria is not None and not callable(propria):
         return Path(propria)
+    # Configuração simulada (testes) sem a propriedade: a mesma regra do núcleo.
     try:
         valor = cfg.texto("pauta", "pasta")
     except Exception:
         valor = ""
-    valor = os.path.expandvars(str(valor or "").strip().strip('"'))
-    if not valor:
-        return base_usuario() / "Pauta"
-    p = Path(valor).expanduser()
-    return p if p.is_absolute() else Path(cfg.pasta_acervo).parent / p
+    return caminhos.resolver(valor, "Pauta", base_usuario())
 
 
 def problema_nas_pastas(acervo, sigilosos, pauta=None) -> str | None:
@@ -538,23 +559,21 @@ def problema_nas_pastas(acervo, sigilosos, pauta=None) -> str | None:
     segredo de justiça), e ele não pode conter a pasta do programa nem a
     pasta das senhas e dos perfis do navegador.
     """
-    # A regra acervo x sigilosos é do núcleo, quando ele a tiver: uma frase só
-    # para a tela, o assistente e a verificação.
+    # A regra acervo x sigilosos x pauta é do núcleo: uma frase só para a
+    # tela, o assistente e a verificação.
     from .nucleo import config as _config
 
-    conferir = getattr(_config, "conflito_de_pastas", None)
-    if conferir is not None:
-        try:
-            frase = conferir(Path(acervo), Path(sigilosos))
-        except Exception:
-            frase = ""
-        if frase:
-            return frase
+    pauta = Path(pauta) if pauta is not None and str(pauta).strip() else None
+    frase = _config.conflito_de_pastas(Path(acervo), Path(sigilosos), pauta)
+    if frase:
+        return frase
+    # Defesa: o núcleo compara caminhos resolvidos; aqui, também sem
+    # distinguir maiúsculas no Windows.
     if dentro_ou_igual(sigilosos, acervo):
         return ("A pasta dos processos em segredo de justiça não pode ficar dentro do acervo: "
                 "tudo o que está no acervo é lido pela IA e copiado para a nuvem. Escolha uma "
                 "pasta fora dele.")
-    if pauta is not None and str(pauta).strip() and dentro_ou_igual(pauta, acervo):
+    if pauta is not None and dentro_ou_igual(pauta, acervo):
         return ("A pasta da pauta exportada não pode ficar dentro do acervo: a planilha traz "
                 "as partes dos processos em segredo de justiça, e tudo o que está no acervo é "
                 "lido pela IA e copiado para a nuvem. Escolha uma pasta fora dele.")

@@ -25,6 +25,8 @@ def registrar(r: Roteador) -> None:
     r.adicionar("POST", "/api/transcricao/microfone/parar", parar_microfone)
     r.adicionar("GET", "/api/transcricao/modelos", modelos)
     r.adicionar("POST", "/api/transcricao/modelos/baixar", baixar_modelo)
+    r.adicionar("GET", "/api/transcricao/falantes", falantes)
+    r.adicionar("POST", "/api/transcricao/falantes/baixar", baixar_falantes)
     r.adicionar("POST", "/api/transcricao/iniciar", iniciar)
     r.adicionar("POST", "/api/transcricao/pausar", pausar)
     r.adicionar("POST", "/api/transcricao/retomar", retomar)
@@ -87,6 +89,30 @@ def baixar_modelo(p: Pedido) -> dict:
         return {"nome": nome, "pasta": str(pasta)}
 
     tw = p.app.tarefas.iniciar("modelo", f"Baixar o modelo {nome}", alvo, chave=f"modelo:{nome}")
+    return {"tarefa": tw.id}
+
+
+# ================================================== separação de falantes
+def falantes(p: Pedido) -> dict:
+    return servicos.falantes_estado()
+
+
+def baixar_falantes(p: Pedido) -> dict:
+    """Os modelos de voz da separação de falantes, quando a construção não os
+    embutiu (a biblioteca vem sempre no instalador)."""
+    estado = servicos.falantes_estado()
+    if not estado.get("biblioteca"):
+        raise ErroApi(409, "componente_ausente",
+                      "A separação de falantes não está nesta instalação (falta o componente "
+                      "sherpa-onnx). " + servicos.DICA_INSTALAR)
+
+    def alvo(tw):
+        tw.definir_fracao(0.0, f"Baixando os modelos de voz (cerca de {estado.get('tamanho_mb', 47)} MB)…")
+        servicos.instalar_falantes(lambda f, t="": tw.definir_fracao(f, t), cancelado=tw.cancelado)
+        tw.definir_fracao(1.0, "Separação de falantes pronta.")
+        return servicos.falantes_estado()
+
+    tw = p.app.tarefas.iniciar("modelo", "Baixar os modelos de voz", alvo, chave="falantes")
     return {"tarefa": tw.id}
 
 

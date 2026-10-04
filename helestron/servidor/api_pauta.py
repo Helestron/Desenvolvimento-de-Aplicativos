@@ -187,7 +187,10 @@ def sincronizar(p: Pedido) -> dict:
         resultado = servico.sincronizar(tw.contexto(), [str(x) for x in lista] if lista else None,
                                         de, ate)
         app.pendencia_pauta = None
-        tw.definir_status("Pauta atualizada.")
+        # O status final já é a frase do serviço ("8 audiências conferidas ·
+        # 1 nova…"): não é trocado por outra mais pobre.
+        if not tw.status or tw.status.startswith("Entrando"):
+            tw.definir_status("Pauta atualizada.")
         return resultado
 
     tw = app.tarefas.iniciar("pauta_sincronizar", "Sincronizar a pauta", alvo, (NAVEGADOR,),
@@ -221,6 +224,9 @@ def importar(p: Pedido) -> dict:
             if arquivo is None:
                 raise erro_400("Envie o relatório no campo “arquivo”.", "campo_ausente")
             resultado = servico.importar(arquivo.caminho)
+            if isinstance(resultado, dict) and arquivo.nome:
+                # o nome que o usuário reconhece, e não o aleatório do envio
+                resultado["arquivo"] = Path(arquivo.nome.replace("\\", "/")).name
     else:
         caminho = Path(p.campo("caminho", obrigatorio=True, tipo=str).strip().strip('"'))
         if not caminho.is_absolute():

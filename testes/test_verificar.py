@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import threading
 import unittest
 from pathlib import Path
@@ -212,6 +213,35 @@ class TestSonda(unittest.TestCase):
         self.assertFalse(r["trava_helestron_teste"]["ok"])
         self.assertIn("travou", r["trava_helestron_teste"]["erro"])
         self.assertTrue(r["json"]["ok"])
+
+    def test_trava_sem_novidade_nao_espera_o_limite_inteiro(self):
+        """Um módulo que trava (uma caixa de erro que ninguém vê) é dado como
+        travado depois de por_modulo_s, e o resto segue: a verificação do
+        instalador nunca fica presa até o limite total."""
+        inicio = time.monotonic()
+        r = verificar.sondar_importacoes(["json", "trava_helestron_teste", "csv"], limite_s=120,
+                                         extra_pythonpath=self.extra, por_modulo_s=2)
+        self.assertLess(time.monotonic() - inicio, 30)
+        self.assertTrue(r["json"]["ok"])
+        self.assertIn("travou", r["trava_helestron_teste"]["erro"])
+        self.assertTrue(r["csv"]["ok"])
+
+    def test_prazo_total(self):
+        r = verificar.sondar_importacoes(["trava_helestron_teste", "json"], limite_s=120,
+                                         extra_pythonpath=self.extra, por_modulo_s=2, total_s=2.5)
+        self.assertIn("travou", r["trava_helestron_teste"]["erro"])
+        self.assertIn("não foi conferido", r["json"]["erro"])
+
+    def test_rodar_vigiado(self):
+        codigo, saida, _, estourou = verificar.rodar(
+            [sys.executable, "-c", "import time; print('um', flush=True); time.sleep(60)"],
+            60, sem_novidade_s=1.5)
+        self.assertTrue(estourou)
+        self.assertIsNone(codigo)
+        self.assertIn("um", saida)
+        codigo, saida, _, estourou = verificar.rodar(
+            [sys.executable, "-c", "print('ok')"], 60, sem_novidade_s=5)
+        self.assertEqual((codigo, saida.strip(), estourou), (0, "ok", False))
 
     def test_explicar_queda(self):
         self.assertIn("AVX", verificar.explicar_queda(0xC000001D))
@@ -457,11 +487,34 @@ class TestChecagens(unittest.TestCase):
             item = verificar.checar_falantes()
         self.assertEqual((item.situacao, item.obrigatorio), (AVISO, False))
         self.assertTrue(item.detalhe.startswith("Incompleta (faltam os modelos de voz):"), item.detalhe)
-        # Biblioteca e modelos vêm no instalador: não há botão a citar
-        self.assertIn("vêm no instalador", item.acao)
+        # Com a biblioteca (que vem no instalador) e sem os modelos de voz
+        # (construção --sem-falantes): a tela de Ajustes tem o botão.
+        with mock.patch.object(verificar, "_falantes_situacao",
+                               return_value=(False, "incompleta (faltam os modelos de voz)")), \
+                mock.patch.object(verificar, "_presente", return_value=True):
+            item = verificar.checar_falantes()
+        self.assertIn("Ajustes › Transcrição", item.acao)
+        self.assertIn("“Baixar os modelos de voz”", item.acao)
+        # Sem a biblioteca: só reinstalando.
+        with mock.patch.object(verificar, "_falantes_situacao",
+                               return_value=(False, "indisponível")), \
+                mock.patch.object(verificar, "_presente", return_value=False):
+            item = verificar.checar_falantes()
+        self.assertIn("vem no instalador", item.acao)
         self.assertIn("Helestron-Setup", item.acao)
         with mock.patch.object(verificar, "_falantes_situacao", return_value=(True, "instalada")):
             self.assertEqual(verificar.checar_falantes().situacao, OK)
+
+    def test_regras_da_pauta(self):
+        self.assertEqual(verificar.checar_regras_pauta().situacao, OK)
+        from helestron.pauta import regras
+
+        estragadas = regras.Regras({}, "o arquivo pauta.json tem erro de formatação na linha 3, coluna 1")
+        with mock.patch.object(regras, "carregar", return_value=estragadas):
+            item = verificar.checar_regras_pauta()
+        self.assertEqual((item.situacao, item.obrigatorio), (AVISO, False))
+        self.assertTrue(item.detalhe.startswith("O arquivo pauta.json tem erro"), item.detalhe)
+        self.assertIn("pauta.json", item.acao)
 
     def test_checagem_que_quebra_vira_item(self):
         def quebra():
@@ -551,7 +604,7 @@ class TestVerificacaoInteira(unittest.TestCase):
                          "Modelo de transcrição", "Navegador dos portais",
                          "WebView2 (janela do programa)", "Microfone", "Permissão do microfone",
                          "Pastas de trabalho", "Local das pastas", "Espaço em disco",
-                         "Cofre de senhas", "Catálogo de tribunais",
+                         "Cofre de senhas", "Catálogo de tribunais", "Regras da pauta",
                          "Separação de falantes (opcional)", "Conector do acervo (MCP)"):
             self.assertIn(esperado, nomes)
         # nada do programa antigo: a janela Tk e o INSTALAR.bat não existem mais

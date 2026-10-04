@@ -222,6 +222,7 @@
 
       // ---------------------------------------------- resumo, lista, lateral
       const faixaTarefa = el("div");
+      const faixaResultado = el("div", { id: "resultado-pauta", aria: { live: "polite" } });
       const chips = el("div", { classe: "chips", id: "chips-pauta" });
       const lista = el("div", { classe: "pauta-lista", id: "lista-pauta", role: "list", aria: { label: "Audiências" } }, H.ui.esqueleto(5));
       const monitor = cartao({ classe: "monitoramento" });
@@ -233,7 +234,7 @@
       const lembrete = el("div", { classe: "so-estreito" });
       const principal = el("div", { classe: "pauta-principal" }, lembrete, chips, el("div", { estilo: { height: "14px" } }), lista);
       const grade = el("div", { classe: "pauta-grade" }, principal, lateral);
-      raiz.append(cab, barra, faixaTarefa, grade);
+      raiz.append(cab, barra, faixaTarefa, faixaResultado, grade);
       desenharFiltros();
 
       // ---------------------------------------------- ações
@@ -275,17 +276,18 @@
         const escolha = await api.escolherArquivo({ titulo: "Escolha o relatório da pauta", tipos: TIPOS_RELATORIO, aceitar: ACEITAR_RELATORIO });
         if (!escolha) return;
         const r = await api.pauta.importar(escolha);
-        const partes = [`${fmt.plural(r.novas || 0, "nova", "novas")}`, `${fmt.plural(r.atualizadas || 0, "atualizada", "atualizadas")}`];
+        const total = typeof r.total === "number" ? r.total : (r.novas || 0) + (r.atualizadas || 0);
+        const partes = [fmt.plural(total, "audiência lida", "audiências lidas"), fmt.plural(r.novas || 0, "nova", "novas"), fmt.plural(r.atualizadas || 0, "atualizada", "atualizadas")];
         if (r.ignoradas) partes.push(`${fmt.plural(r.ignoradas, "linha ignorada", "linhas ignoradas")}`);
+        const resumo = (r.arquivo ? r.arquivo + ": " : "") + partes.join(" · ") + ".";
         const avisos = r.avisos || [];
-        if (avisos.length) {
-          folha.informar({
-            titulo: "Relatório importado", icone: "importar", mensagem: partes.join(" · ") + ".",
-            conteudo: faixa({ tipo: "aviso", titulo: avisos.length === 1 ? "Um aviso" : `${avisos.length} avisos`, texto: el("ul", { classe: "lista-avisos" }, avisos.map((x) => el("li", { texto: x }))) }),
-          });
-        } else {
-          aviso({ titulo: "Relatório importado", mensagem: partes.join(" · ") + ".", tipo: "sucesso" });
-        }
+        mostrarResultado({
+          tipo: total ? (avisos.length ? "aviso" : "ok") : "aviso", icone: "importar",
+          titulo: total ? "Relatório importado" : "Nenhuma audiência no relatório",
+          texto: total ? resumo : (r.arquivo ? r.arquivo + ": " : "") + "o Helestron não reconheceu nenhuma audiência neste arquivo. Confira se é o relatório da pauta (com as colunas de data e processo).",
+          lista: avisos,
+          tituloLista: avisos.length === 1 ? "Um aviso" : `${avisos.length} avisos`,
+        });
         await carregar();
       }
 
@@ -351,9 +353,72 @@
         aviso({ titulo: "Download começou", mensagem: "Acompanhe em Processos.", tipo: "info", acoes: [{ rotulo: "Ver o andamento", acao: () => H.app.ir("processos") }] });
       }
 
+      // ---------------------------------------------- resultado (fica à vista até fechar)
+      function mostrarResultado({ tipo, icone: nomeIcone, titulo, texto, lista, tituloLista, acoes }) {
+        const itens = (lista || []).filter(Boolean);
+        const corpo = el("div", {},
+          texto ? el("span", { estilo: { display: "block" }, texto }) : null,
+          itens.length ? el("details", { classe: "resultado-detalhes", open: itens.length <= 4 },
+            el("summary", { texto: tituloLista || fmt.plural(itens.length, "observação", "observações") }),
+            el("ul", { classe: "lista-avisos" }, itens.map((x) => el("li", { texto: x })))) : null);
+        const fechar = botao({ icone: "x", titulo: "Fechar este aviso", tamanho: "pequeno", tipo: "texto", acao: () => trocar(faixaResultado) });
+        trocar(faixaResultado, el("div", { estilo: { marginBottom: "14px" } },
+          faixa({ tipo, icone: nomeIcone, titulo, texto: corpo, acoes: (acoes || []).concat([fechar]) })));
+      }
+
+      const acoesDeSaida = () => [
+        botao({ rotulo: "Capturar no portal", icone: "capturar", tamanho: "pequeno", tipo: "tonal", acao: () => capturar().catch((e) => folha.erro(e)) }),
+        botao({ rotulo: "Importar relatório", icone: "importar", tamanho: "pequeno", tipo: "texto", acao: () => importar().catch((e) => folha.erro(e)) }),
+        botao({ rotulo: "Acessos aos portais", icone: "chave", tamanho: "pequeno", tipo: "texto", acao: () => H.app.ir("ajustes/acessos") }),
+      ];
+
+      /** O que a sincronização ou a captura trouxe (ou por que não trouxe). */
+      function resultadoDaTarefa(t) {
+        const r = (t.resultado && typeof t.resultado === "object") ? t.resultado : {};
+        if (t.estado === "parada") {
+          mostrarResultado({ tipo: "", icone: "info", titulo: t.tipo === "pauta_capturar" ? "Captura cancelada" : "Sincronização interrompida", texto: "Nada foi perdido: o que já estava na pauta continua aqui." });
+          return;
+        }
+        if (t.estado === "falhou") {
+          mostrarResultado({
+            tipo: "erro", titulo: t.tipo === "pauta_capturar" ? "A captura não deu certo" : "Não consegui sincronizar a pauta",
+            texto: t.erro || t.status || "O portal não respondeu como esperado.",
+            acoes: acoesDeSaida(),
+          });
+          return;
+        }
+        if (t.tipo === "pauta_capturar") {
+          const n = r.capturadas || 0;
+          const telas = r.telas ? " em " + fmt.plural(r.telas, "tela", "telas") : "";
+          const motivo = {
+            fechada: "O navegador foi fechado antes de “Concluir”.",
+            prazo: "O tempo da captura acabou antes de “Concluir”.",
+          }[r.motivo] || "";
+          const lembrou = r.url ? " O endereço ficou lembrado: a fonte entra no monitoramento automático." : "";
+          mostrarResultado({
+            tipo: n ? "ok" : "aviso", icone: "capturar",
+            titulo: n ? `Captura concluída: ${fmt.plural(n, "audiência", "audiências")}${telas}` : "Nenhuma audiência capturada",
+            texto: [motivo, n ? (t.status || "") + lembrou : "Na barra do Helestron, no topo do portal, clique em “Capturar esta tela” com a pauta à vista e, no fim, em “Concluir”."].filter(Boolean).join(" "),
+          });
+          return;
+        }
+        const erros = (r.erros || []).map((e) => `${e.rotulo || e.fonte}: ${e.mensagem}`);
+        const avisos = r.avisos || [];
+        const lista = erros.concat(avisos);
+        mostrarResultado({
+          tipo: erros.length ? "aviso" : "ok", icone: "sincronizar",
+          titulo: erros.length ? "Pauta sincronizada em parte" : "Pauta sincronizada",
+          texto: t.status || "Pauta atualizada.",
+          lista,
+          tituloLista: erros.length ? fmt.plural(erros.length, "fonte com problema", "fontes com problema") + (avisos.length ? " e " + fmt.plural(avisos.length, "aviso", "avisos") : "") : fmt.plural(avisos.length, "aviso", "avisos"),
+          acoes: erros.length ? acoesDeSaida() : [],
+        });
+      }
+
       // ---------------------------------------------- tarefa de sincronização/captura
       function acompanhar(id) {
         tarefaSinc = id;
+        trocar(faixaResultado);
         desenharTarefa();
       }
       function desenharTarefa() {
@@ -376,7 +441,11 @@
           if (t.estado === "rodando" && !tarefaSinc) tarefaSinc = t.id;
           if (t.id === tarefaSinc) {
             desenharTarefa();
-            if (t.estado !== "rodando") { tarefaSinc = null; carregar(); }
+            if (t.estado !== "rodando") {
+              tarefaSinc = null;
+              resultadoDaTarefa(t);
+              Promise.all([carregarFontes(), carregarAlteracoes()]).then(() => { carregar(); desenharAlteracoes(); });
+            }
           }
         }
       });
@@ -493,8 +562,11 @@
             el("span", { classe: "ajuda-campo", estilo: { margin: "0" } }, "Última sincronização: ", el("strong", { texto: ultima ? fmt.quando(ultima) : "nunca" })),
             m.ativo && m.proxima ? el("span", { classe: "ajuda-campo", estilo: { margin: "0" } }, "Próxima: ", el("strong", { texto: fmt.quando(m.proxima) })) : null,
             el("span", { classe: "ajuda-campo", estilo: { margin: "0" } },
-              fontes.length ? fmt.plural(fontes.length, "fonte", "fontes") + ": " + fontes.map((x) => `${nomeSistema(x.sistema)} ${x.tribunal}`).join(", ") + " · " : "Nenhuma fonte ainda · ",
-              el("a", { href: "#/ajustes/pauta", texto: "gerenciar" }))));
+              fontes.length ? fmt.plural(fontes.length, "fonte", "fontes") + ": " + fontes.map((x) => `${nomeSistema(x.sistema)} ${x.tribunal}${x.monitorada ? "" : " (sem rota)"}`).join(", ") + " · " : "Nenhuma fonte ainda · ",
+              el("a", { href: "#/ajustes/pauta", texto: "gerenciar" })),
+            m.ativo && fontes.length && !fontes.some((x) => x.monitorada)
+              ? el("span", { classe: "ajuda-campo", estilo: { margin: "4px 0 0" }, texto: "O monitoramento começa quando uma fonte tiver a pauta encontrada: sincronize ou capture no portal uma vez." })
+              : null));
       }
 
       function desenharAlteracoes() {

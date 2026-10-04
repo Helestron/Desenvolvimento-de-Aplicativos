@@ -34,12 +34,13 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Callable
-
-import numpy as np
+from typing import TYPE_CHECKING, Callable
 
 from ..nucleo import caminhos, sistema
 from .documento import Fala
+
+if TYPE_CHECKING:  # pragma: no cover - só para as anotações
+    import numpy as np
 
 log = logging.getLogger("transcricao.falantes")
 
@@ -65,6 +66,11 @@ PASTA_EMBUTIDA: Path = caminhos.MODELOS_EMBUTIDOS / "falantes"
 # Download dos dois modelos (7 + 40 MB), arredondado: um número só para a
 # tela, a verificação e a CLI.
 TAMANHO_MB = 47
+# O botão da tela Ajustes › Transcrição que baixa os modelos que faltarem
+# (POST /api/transcricao/falantes/baixar). Citado nas mensagens; o teste
+# test_download_motor.TestRotulosCitados confere que ele existe na tela.
+BOTAO_BAIXAR = "Baixar os modelos de voz"
+ONDE_BAIXAR = f"Ajustes › Transcrição, botão “{BOTAO_BAIXAR}”"
 LIMIAR = 0.85
 SUAVIZAR_S = 1.5
 
@@ -284,12 +290,17 @@ def diarizar(audio16k: np.ndarray, num_falantes: int = 0, *, limiar: float = LIM
     if not modelos_presentes():
         raise ComponenteAusente(
             "Os modelos da separação de falantes não estão neste computador: a transcrição "
-            f"sai sem a separação automática das vozes. {sistema.REINSTALAR}")
+            f"sai sem a separação automática das vozes. Para baixá-los (cerca de {TAMANHO_MB} "
+            f"MB, uma vez só): {ONDE_BAIXAR}.")
     try:
         import sherpa_onnx
     except ImportError as erro:
         raise ComponenteAusente("O componente da separação de falantes (sherpa-onnx) não "
                                 f"está nesta instalação. {sistema.REINSTALAR}") from erro
+
+    # O numpy só aqui: consultar a situação (verificação, tela de Ajustes)
+    # não carrega biblioteca nativa nenhuma.
+    import numpy as np
 
     audio = np.ascontiguousarray(audio16k, dtype=np.float32).reshape(-1)
     duracao = audio.size / TAXA

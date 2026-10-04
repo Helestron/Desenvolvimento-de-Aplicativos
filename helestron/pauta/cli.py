@@ -199,8 +199,11 @@ def _importar(args, servico) -> int:
             print(f"{caminho.name}: {erro}", file=sys.stderr)
             codigo = 1
             continue
-        print(f"{caminho.name}: {r['novas']} nova(s), {r['atualizadas']} atualizada(s), "
-              f"{r['ignoradas']} linha(s) ignorada(s).")
+        total = r.get("total", r["novas"] + r["atualizadas"])
+        print(f"{caminho.name}: {_plural(total, 'audiência lida', 'audiências lidas')} · "
+              f"{_plural(r['novas'], 'nova', 'novas')} · "
+              f"{_plural(r['atualizadas'], 'atualizada', 'atualizadas')} · "
+              f"{_plural(r['ignoradas'], 'linha ignorada', 'linhas ignoradas')}.")
         for aviso in r.get("avisos") or []:
             print(f"  aviso: {aviso}")
     return codigo
@@ -221,7 +224,7 @@ def _listar(args, servico) -> int:
     for a in lista:
         print(_linha(a))
     r = dados["resumo"]
-    print(f"\n{r['total']} audiência(s) no período; {r['hoje']} hoje.")
+    print(f"\n{_plural(r['total'], 'audiência', 'audiências')} no período; {r['hoje']} hoje.")
     return 0
 
 
@@ -251,6 +254,10 @@ def _fontes(args, servico) -> int:
         print(f"{f['id']:16} {f['rotulo']}  ({estado})" + (f"\n{'':16} {f['url']}" if f.get("url")
                                                             else ""))
     return 0
+
+
+def _plural(n: int, um: str, varios: str) -> str:
+    return f"{n} {um if n == 1 else varios}"
 
 
 COMANDOS = {"sincronizar": _sincronizar, "exportar": _exportar, "importar": _importar,

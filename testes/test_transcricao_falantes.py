@@ -186,7 +186,9 @@ class TestInstalar(unittest.TestCase):
         with self.assertRaises(falantes.ComponenteAusente) as ctx:
             falantes.diarizar(np.zeros(16000, dtype=np.float32))
         self.assertIn("sem a separação automática das vozes", str(ctx.exception))
-        self.assertIn("Helestron-Setup", str(ctx.exception))
+        # A biblioteca vem no instalador; os modelos de voz, se faltarem, se
+        # baixam pela tela (POST /api/transcricao/falantes/baixar).
+        self.assertIn("Ajustes › Transcrição, botão “Baixar os modelos de voz”", str(ctx.exception))
 
 
 @unittest.skipUnless(PACOTE.exists() and EMBEDDING.exists() and QUATRO_VOZES.exists()

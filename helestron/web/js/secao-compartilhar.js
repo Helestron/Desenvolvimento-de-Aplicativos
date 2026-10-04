@@ -187,7 +187,7 @@
             texto: "Uma pasta e um .zip com os autos, os textos, as transcrições, o índice e as instruções, para anexar numa conversa ou num Projeto.",
             acoes: [botao({ rotulo: "Gerar o pacote", tipo: "tonal", tamanho: "pequeno", acao: async () => {
               await api.compartilhar.pacote();
-              aviso({ titulo: "Gerando o pacote", mensagem: "Acompanhe na barra lateral; a pasta abre quando terminar.", tipo: "info" });
+              aviso({ titulo: "Gerando o pacote", mensagem: "Acompanhe na barra lateral; quando terminar, o aviso traz o botão para abrir a pasta.", tipo: "info" });
             } })],
           }),
           destino({

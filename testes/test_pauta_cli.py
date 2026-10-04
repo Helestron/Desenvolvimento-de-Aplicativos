@@ -57,7 +57,7 @@ class TestCLI(apoio.PastaTemporaria):
     def test_importar_listar_e_exportar(self):
         codigo, saida, _ = self.rodar("importar", str(self.tmp / "rel.csv"))
         self.assertEqual(codigo, 0, saida)
-        self.assertIn("rel.csv: 2 nova(s), 0 atualizada(s), 0 linha(s) ignorada(s).", saida)
+        self.assertIn("rel.csv: 2 audiências lidas · 2 novas · 0 atualizadas · 0 linhas ignoradas.", saida)
         self.assertTrue((self.tmp / "local" / "pauta.sqlite3").exists(), "o banco de LOCAL")
 
         codigo, saida, _ = self.rodar("listar", "--de", "2026-10-01", "--ate", "2026-10-31",
@@ -69,7 +69,7 @@ class TestCLI(apoio.PastaTemporaria):
                                       "--situacao", "Cancelada")
         self.assertIn(f"06/10/2026 14:30  {N2}", saida)
         self.assertNotIn(N1, saida)
-        self.assertIn("1 audiência(s) no período", saida)
+        self.assertIn("1 audiência no período", saida)
         codigo, saida, _ = self.rodar("listar", "--de", "2027-01-01")
         self.assertIn("Nenhuma audiência de 01/01/2027 a 08/01/2027.", saida)
 
@@ -86,7 +86,7 @@ class TestCLI(apoio.PastaTemporaria):
         codigo, saida, erro = self.rodar("importar", str(self.tmp / "rel.csv"),
                                          str(self.tmp / "nao-existe.pdf"))
         self.assertEqual(codigo, 1)
-        self.assertIn("rel.csv: 2 nova(s)", saida)
+        self.assertIn("rel.csv: 2 audiências lidas · 2 novas", saida)
         self.assertIn("nao-existe.pdf: Não encontrei o arquivo nao-existe.pdf.", erro)
 
     def test_fontes_e_sincronizar(self):

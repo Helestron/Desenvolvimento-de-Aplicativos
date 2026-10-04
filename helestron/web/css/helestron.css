@@ -1733,6 +1733,28 @@ a.linha:active {
   height: 16px;
 }
 
+/* Pauta: o que a sincronização, a captura ou a importação trouxeram */
+.resultado-detalhes {
+  margin-top: 6px;
+}
+
+.resultado-detalhes summary {
+  cursor: pointer;
+  color: var(--azul-texto);
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.resultado-detalhes summary:focus-visible {
+  outline: 3px solid rgba(10, 102, 232, 0.45);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.resultado-detalhes .lista-avisos {
+  margin-top: 6px;
+}
+
 .detalhes-tecnicos {
   font-size: 13px;
   color: var(--texto-2);
@@ -3257,9 +3279,16 @@ button.item-simples:hover {
   flex: none;
 }
 
-.verificacao-icone.ok { color: var(--verde); }
-.verificacao-icone.aviso { color: var(--ambar); }
-.verificacao-icone.falha { color: var(--vermelho); }
+/* "situacao-": a classe .aviso é a do aviso flutuante (toast) */
+.verificacao-icone.situacao-ok { color: var(--verde); }
+.verificacao-icone.situacao-aviso { color: var(--ambar); }
+.verificacao-icone.situacao-falha { color: var(--vermelho); }
+
+.verificacao-acao {
+  display: block;
+  margin-top: 3px;
+  color: var(--texto);
+}
 
 .sobre-topo {
   display: flex;

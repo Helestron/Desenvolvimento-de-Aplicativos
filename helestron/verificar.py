@@ -46,6 +46,7 @@ import sys
 import tempfile
 import textwrap
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -177,9 +178,17 @@ def _texto(dados) -> str:
     return str(dados)
 
 
-def rodar(argumentos: list[str], limite_s: float, extra_pythonpath: list[str] | None = None
-          ) -> tuple[int | None, str, str, bool]:
-    """(código de saída, stdout, stderr, estourou o tempo). Nunca levanta."""
+def rodar(argumentos: list[str], limite_s: float, extra_pythonpath: list[str] | None = None,
+          sem_novidade_s: float | None = None) -> tuple[int | None, str, str, bool]:
+    """(código de saída, stdout, stderr, estourou o tempo). Nunca levanta.
+
+    'sem_novidade_s': desiste também se o processo passar esse tempo sem
+    escrever uma linha na saída - uma biblioteca nativa que trava (uma caixa
+    de erro do Windows que ninguém vê, por exemplo) não prende a verificação
+    até o limite total.
+    """
+    if sem_novidade_s is not None:
+        return _rodar_vigiado(argumentos, limite_s, sem_novidade_s, extra_pythonpath)
     try:
         r = subprocess.run(
             argumentos, capture_output=True, timeout=limite_s, cwd=_pasta_de_trabalho(),
@@ -190,6 +199,49 @@ def rodar(argumentos: list[str], limite_s: float, extra_pythonpath: list[str] | 
         return None, _texto(erro.stdout), _texto(erro.stderr), True
     except OSError as erro:
         return -1, "", str(erro), False
+
+
+def _rodar_vigiado(argumentos: list[str], limite_s: float, sem_novidade_s: float,
+                   extra_pythonpath: list[str] | None) -> tuple[int | None, str, str, bool]:
+    try:
+        proc = subprocess.Popen(
+            argumentos, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+            cwd=_pasta_de_trabalho(), env=_ambiente_filho(extra_pythonpath),
+            creationflags=0x08000000 if NO_WINDOWS else 0)
+    except OSError as erro:
+        return -1, "", str(erro), False
+    saida: list[bytes] = []
+    erros: list[bytes] = []
+    ultimo = [time.monotonic()]
+
+    def ler(cano, destino: list[bytes], marca: bool) -> None:
+        for linha in iter(cano.readline, b""):
+            destino.append(linha)
+            if marca:
+                ultimo[0] = time.monotonic()
+        cano.close()
+
+    leitores = [threading.Thread(target=ler, args=(proc.stdout, saida, True), daemon=True),
+                threading.Thread(target=ler, args=(proc.stderr, erros, False), daemon=True)]
+    for leitor in leitores:
+        leitor.start()
+    inicio = time.monotonic()
+    estourou = False
+    while proc.poll() is None:
+        agora = time.monotonic()
+        if agora - inicio > limite_s or agora - ultimo[0] > sem_novidade_s:
+            estourou = True
+            proc.kill()
+            break
+        time.sleep(0.1)
+    try:
+        proc.wait(10)
+    except subprocess.TimeoutExpired:  # pragma: no cover - defesa
+        pass
+    for leitor in leitores:
+        leitor.join(5)
+    codigo = None if estourou else proc.returncode
+    return codigo, _texto(b"".join(saida)), _texto(b"".join(erros)), estourou
 
 
 def explicar_queda(codigo: int | None) -> str:
@@ -219,19 +271,40 @@ for nome in sys.argv[1:]:
 """
 
 
+# Quanto um único módulo pode levar para carregar (antivírus conferindo cada
+# DLL, computador lento) antes de ser dado como travado.
+LIMITE_POR_MODULO_S = 120.0
+
+
 def sondar_importacoes(modulos: list[str] | tuple[str, ...], limite_s: float = 180.0,
-                       extra_pythonpath: list[str] | None = None) -> dict[str, dict]:
+                       extra_pythonpath: list[str] | None = None,
+                       por_modulo_s: float | None = None,
+                       total_s: float | None = None) -> dict[str, dict]:
     """Importa cada módulo num processo à parte e diz o que aconteceu.
 
     {"modulo": {"ok": True, "versao": "1.2"} | {"ok": False, "erro": "...", "queda": bool}}.
-    Se o processo cair no meio, o módulo que estava sendo importado é o
-    culpado; os seguintes são tentados de novo num processo novo.
+    Se o processo cair (ou travar) no meio, o módulo que estava sendo
+    importado é o culpado; os seguintes são tentados de novo num processo
+    novo. 'limite_s' vale para cada processo; um módulo que passe
+    'por_modulo_s' sem terminar é dado como travado; com 'total_s', o que
+    não couber nesse tempo sai como não conferido.
     """
     pendentes = list(modulos)
     resultado: dict[str, dict] = {}
+    por_modulo = min(limite_s, por_modulo_s or LIMITE_POR_MODULO_S)
+    prazo = time.monotonic() + total_s if total_s else None
     while pendentes:
+        limite = limite_s
+        if prazo is not None:
+            limite = min(limite_s, prazo - time.monotonic())
+            if limite <= 1:
+                for m in pendentes:
+                    resultado[m] = {"ok": False, "queda": True,
+                                    "erro": "não foi conferido: a verificação passou do tempo"}
+                break
         codigo, saida, erro, estourou = rodar(
-            [_python(), "-c", _SONDA_IMPORTACAO, *pendentes], limite_s, extra_pythonpath)
+            [_python(), "-c", _SONDA_IMPORTACAO, *pendentes], limite, extra_pythonpath,
+            sem_novidade_s=min(limite, por_modulo))
         em_curso = None
         for linha in saida.splitlines():
             try:
@@ -259,9 +332,11 @@ def sondar_importacoes(modulos: list[str] | tuple[str, ...], limite_s: float = 1
             for m in restantes:
                 resultado[m] = {"ok": False, "queda": True, "erro": motivo}
             break
-        resultado[em_curso] = {"ok": False, "queda": True,
-                               "erro": "o processo " + ("travou" if estourou else "caiu")
-                                       + f" ao carregar ({explicar_queda(None if estourou else codigo)})"}
+        if estourou:
+            motivo = "o carregamento travou (não terminou no tempo esperado)"
+        else:
+            motivo = f"o processo caiu ao carregar ({explicar_queda(codigo)})"
+        resultado[em_curso] = {"ok": False, "queda": True, "erro": motivo}
         pendentes = [m for m in restantes if m != em_curso]
     return resultado
 
@@ -722,8 +797,8 @@ def checar_microfone() -> Item:
 
 
 _CHAVE_MICROFONE = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone"
-_CAMINHO_CONFIG = ("Configurações do Windows > Privacidade e segurança > Microfone "
-                   "(no Windows 10: Privacidade > Microfone)")
+_CAMINHO_CONFIG = ("Configurações do Windows › Privacidade e segurança › Microfone "
+                   "(no Windows 10: Privacidade › Microfone)")
 
 
 def avaliar_privacidade(geral: str | None, desktop: str | None, maquina: str | None) -> Item:
@@ -958,6 +1033,27 @@ def checar_tribunais() -> Item:
                 f"{len(lista)} tribunais no catálogo; {suportados} com e-SAJ ou eProc.", codigo="tribunais")
 
 
+def checar_regras_pauta() -> Item:
+    """As regras de leitura da pauta (dados\\pauta.json): sinônimos das colunas,
+    tipos e situações de audiência, rotas dos portais."""
+    nome = "Regras da pauta"
+    try:
+        from .pauta import regras
+
+        lidas = regras.carregar()
+    except Exception as erro:  # noqa: BLE001 - módulo ausente ou quebrado
+        return Item(nome, FALHA, f"As regras da pauta não puderam ser carregadas: {erro}",
+                    obrigatorio=False, codigo="pauta", acao=RODE_O_INSTALADOR)
+    problema = getattr(lidas, "problema", "")
+    if problema:
+        return Item(nome, AVISO, f"{problema[:1].upper()}{problema[1:]}; valem as regras que vêm "
+                    "embutidas no programa.", obrigatorio=False, codigo="pauta",
+                    acao=("Desfaça a última edição do dados\\pauta.json. Se não houve edição: "
+                          + REINSTALAR))
+    return Item(nome, OK, "Colunas, tipos e situações de audiência e rotas dos portais carregados.",
+                obrigatorio=False, codigo="pauta")
+
+
 # -------------------------------------------------------------- falantes
 def _falantes_situacao() -> tuple[bool, str]:
     """(disponível, descrição). Ponto único de integração com a transcrição."""
@@ -974,11 +1070,16 @@ def checar_falantes(completo: bool = False) -> Item:
     nome = "Separação de falantes (opcional)"
     disponivel, situacao = _falantes_situacao()
     if not disponivel:
+        if _presente("sherpa_onnx"):
+            # A biblioteca veio; faltam só os modelos de voz (construção sem eles).
+            acao = (f"Baixe os modelos de voz em {AJUSTES_TRANSCRICAO}, botão \u201cBaixar os "
+                    "modelos de voz\u201d (cerca de 47\u00a0MB, uma vez só).")
+        else:
+            acao = f"A separação de vozes vem no instalador. {REINSTALAR}"
         return Item(nome, AVISO,
                     f"{situacao[:1].upper()}{situacao[1:]}: a revisão final não separa as vozes "
                     "sozinha (os falantes marcados durante a audiência continuam valendo).",
-                    obrigatorio=False, codigo="falantes",
-                    acao=f"A biblioteca e os modelos de voz vêm no instalador. {REINSTALAR}")
+                    obrigatorio=False, codigo="falantes", acao=acao)
     if completo:
         r = sondar_importacoes(["sherpa_onnx"], 120).get("sherpa_onnx", {})
         if not r.get("ok"):
@@ -1127,6 +1228,7 @@ def _etapas(cfg, completo: bool) -> list[tuple[str, Callable[[], Item]]]:
         ("Espaço em disco", lambda: checar_espaco(cfg)),
         ("Cofre de senhas", checar_cofre),
         ("Catálogo de tribunais", checar_tribunais),
+        ("Regras da pauta", checar_regras_pauta),
         ("Separação de falantes (opcional)", lambda: checar_falantes(completo)),
         ("Conector do acervo (MCP)", lambda: checar_conector(cfg)),
     ]

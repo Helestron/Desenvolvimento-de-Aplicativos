@@ -46,7 +46,7 @@ REABRIR_S = 3.0
 
 AVISO_PRIVACIDADE = (
     "O microfone está entregando silêncio absoluto. No Windows, a causa mais "
-    "comum é a privacidade: abra as Configurações do Windows > Privacidade e segurança > "
+    "comum é a privacidade: abra as Configurações do Windows › Privacidade e segurança › "
     "Microfone e ligue \"Acesso ao microfone\" e \"Permitir que aplicativos da "
     "área de trabalho acessem o microfone\". Confira também se o microfone não "
     "está no mudo (tecla ou botão do próprio aparelho) e se é o microfone certo."
@@ -403,7 +403,7 @@ class Captura(_CapturaBase):
             raise MicrofoneIndisponivel(
                 "Nenhum microfone foi encontrado. Ligue o microfone (ou o fone com "
                 "microfone) e clique em Testar de novo. Se ele estiver ligado, confira "
-                "em Configurações do Windows > Sistema > Som > Entrada.")
+                "em Configurações do Windows › Sistema › Som › Entrada.")
         erros: list[str] = []
         for indice, canais, taxa, extra in candidatos:
             try:

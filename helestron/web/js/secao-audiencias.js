@@ -391,7 +391,7 @@
   }
 
   // ===================================================================== ao vivo
-  function telaAoVivo(ctx, inicial, aoTerminar) {
+  function telaAoVivo(ctx, inicial, aoTerminar, aoFalhar) {
     const r = rascunho();
     const participantes = (r.participantes || participantesDaConfig()).map((n) => n.trim());
     const corDe = corDoFalante;
@@ -418,6 +418,13 @@
       const t = H.normalizar(texto);
       const e = H.normalizar(interno);
       const agora = segundos();
+      if (e === "erro") {
+        // A sessão acabou com erro (não começou, ou não conseguiu salvar):
+        // volta à preparação com o motivo, em vez de um cronômetro andando.
+        rodando = false;
+        if (!terminou && aoFalhar) { terminou = true; aoFalhar(texto, (info && info.fase) || "", r.falas.length); }
+        return;
+      }
       if (e === "pausada" || t.startsWith("pausad")) {
         base = agora; rodando = false;
         selo.className = "selo-gravando pausado";
@@ -458,12 +465,20 @@
 
     ctx.cada(250, () => { cronometro.textContent = fmt.duracao(segundos()); });
     // De tempos em tempos, o relógio do servidor manda (pausas, atrasos da janela).
-    ctx.cada(15000, async () => {
+    const conferirServidor = async () => {
       try {
         const e = await api.transcricao.estado();
+        if (!ctx.vivo) return;
+        if (e && e.estado === "erro") {
+          // O erro pode ter chegado antes de esta tela se inscrever nos eventos.
+          definirEstado({ estado: "erro", texto: e.erro || e.texto_estado || "", fase: (e.falas || []).length ? "fim" : "inicio" });
+          return;
+        }
         if (e && e.sessao && typeof e.segundos === "number") { base = e.segundos; desde = performance.now(); }
       } catch (_e) { /* fica o local */ }
-    });
+    };
+    ctx.cada(15000, conferirServidor);
+    setTimeout(() => { if (ctx.vivo) conferirServidor(); }, 1500);
 
     // --- botões
     const botaoPausar = botao({ rotulo: "Pausar", icone: "pausa", tamanho: "grande", acao: async () => {
@@ -717,7 +732,19 @@
       const aoVivo = (inicial) => {
         cab.subtitulo.textContent = "Audiência em gravação. F1 a F8 indicam quem está falando.";
         H.loja.gravando = true;
-        return mostrar((c) => telaAoVivo(c, inicial, documento));
+        return mostrar((c) => telaAoVivo(c, inicial, documento, falhou));
+      };
+      const falhou = (motivo, fase, falas) => {
+        H.loja.gravando = false;
+        cab.subtitulo.textContent = "Transcrição simultânea, no próprio computador. O áudio não sai da máquina.";
+        preparo();
+        const comeco = fase === "inicio" || !falas;
+        folha.informar({
+          titulo: comeco ? "A gravação não começou" : "A audiência foi interrompida",
+          icone: "aviso",
+          mensagem: motivo || "O microfone não respondeu.",
+          conteudo: comeco ? null : el("p", { classe: "ajuda-campo", texto: "O áudio gravado até aqui foi guardado: use “Recuperar sessão interrompida” para gerar o documento." }),
+        });
       };
       const documento = (caminho) => {
         r.documento = caminho;
