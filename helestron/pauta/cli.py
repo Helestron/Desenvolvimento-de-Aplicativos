@@ -258,6 +258,8 @@ def _fontes(args, servico) -> int:
             else "ainda não sincronizada")
         print(f"{f['id']:16} {f['rotulo']}  ({estado})" + (f"\n{'':16} {f['url']}" if f.get("url")
                                                             else ""))
+        if f.get("motivo_presenca"):
+            print(f"{'':16} fora do monitoramento automático: {f['motivo_presenca']}")
     return 0
 
 

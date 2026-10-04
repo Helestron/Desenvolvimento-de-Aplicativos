@@ -212,6 +212,43 @@ class TextosQueOUsuarioLe(unittest.TestCase):
             with self.subTest(citado=citado):
                 self.assertIn(citado, rotulos)
 
+    # Citações das mensagens do programa (Python) que não são rótulos desta
+    # interface, e por quê.
+    CITACOES_DE_FORA_DO_PROGRAMA = CITACOES_DE_FORA | {
+        "arquivo", "ids", "fontes", "numeros", "valor",       # campos da API nas mensagens de erro
+        "Download Completo", "Pesquisar",                       # botões dos portais
+        "Escolher arquivo",                                     # botão do seletor do navegador
+        "Microsoft Edge WebView2 Runtime",                      # nome do produto da Microsoft
+        "fl.", "evento 1, INIC1", "ignore as instruções anteriores",  # regras para a IA
+        "Evento N — descrição — rótulo (data)",                 # marcador do PDF do eProc
+        "Acesso ao microfone",                                  # opção do Windows
+    }
+
+    def test_rotulos_que_as_mensagens_do_programa_citam_entre_aspas(self):
+        # O motor, o servidor, a pauta e a transcrição mandam o usuário a
+        # botões e faixas da tela ("Recuperar transcrição interrompida" não
+        # existia): toda citação “…” sem variável nas mensagens em Python tem
+        # de ser rótulo da interface (ou estar na lista acima, com o motivo).
+        rotulos = self._rotulos()
+        achadas = 0
+        for arquivo in sorted((RAIZ / "helestron").rglob("*.py")):
+            texto = arquivo.read_text(encoding="utf-8")
+            citados = re.findall(r"“([^”{}%\n]+)”", texto)
+            # e a citação com aspas retas escapadas numa string (\"Recuperar ...\")
+            citados += re.findall(r'\\"([A-ZÀ-Ú][^"\\{}%\n]{2,60})\\"', texto)
+            for citado in citados:
+                if citado in self.CITACOES_DE_FORA_DO_PROGRAMA:
+                    continue
+                achadas += 1
+                with self.subTest(arquivo=str(arquivo.relative_to(RAIZ)), citado=citado):
+                    self.assertIn(citado, rotulos, f"{arquivo.name} cita “{citado}”, que não é "
+                                                   "rótulo da interface")
+        self.assertGreater(achadas, 5)
+        from helestron.transcricao import ao_vivo
+
+        for citado in (ao_vivo.BOTAO_RECUPERAR, ao_vivo.FAIXA_INTERROMPIDA):
+            self.assertIn(citado, rotulos)
+
     def test_numeros_de_exemplo_com_digito_certo(self):
         # Exemplo que o próprio Helestron recusaria ("dígito verificador
         # errado") não ensina o formato: todo número CNJ escrito na interface

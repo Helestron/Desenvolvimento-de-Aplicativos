@@ -28,6 +28,7 @@ import shutil
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -943,6 +944,141 @@ class InterfaceNoNavegador(unittest.TestCase):
         self.assertEqual(pedido["tipo"], "Conciliação")
         self.assertIs(pedido["sigiloso"], False)
         self.assertIn("A pauta de audiências indica", pagina.locator("#motivo-sigilo-gravacao").inner_text())
+        self.sem_problemas(pagina)
+
+    def test_gravacao_enviada_pela_pagina_leva_o_nome_e_a_data(self):
+        """Nos modos Edge e navegador (sem o diálogo do Windows), a gravação vai
+        por envio e chega ao programa como um temporário de hoje: o nome do
+        arquivo e a data dele (File.lastModified, em ISO 8601) vão junto, para
+        a ficha do documento."""
+        pasta = Path(tempfile.mkdtemp(prefix="helestron-gravacao-"))
+        self.addCleanup(shutil.rmtree, pasta, True)
+        audio = pasta / "Audiência sala 2.wav"
+        audio.write_bytes(b"RIFF....WAVEfmt ")
+        quando = datetime(2026, 9, 15, 13, 30, tzinfo=timezone.utc)
+        os.utime(audio, (quando.timestamp(), quando.timestamp()))
+        pagina = self.abrir(secao="audiencias", extra="&sem_dialogo=1")
+        with pagina.expect_file_chooser() as escolha:
+            pagina.click("#transcrever-gravacao")
+        escolha.value.set_files(str(audio))
+        pagina.wait_for_selector(".folha:has-text('Transcrever a gravação')")
+        pagina.fill("#processo-gravacao", "07002311520248020001")
+        pagina.click(".folha button:has-text('Transcrever')")
+        pagina.wait_for_function(
+            "() => Helestron.demo.chamadas.some(c => c.rota === 'POST /api/transcricao/gravacao')")
+        pedido = pagina.evaluate(
+            "Helestron.demo.chamadas.find(c => c.rota === 'POST /api/transcricao/gravacao')")
+        self.assertTrue(pedido["multipart"])
+        corpo = pedido["corpo"]
+        self.assertEqual(corpo["arquivo"]["nome"], audio.name)
+        self.assertEqual(corpo["nome_original"], audio.name)
+        self.assertEqual(corpo["data_arquivo"], "2026-09-15T13:30:00.000Z")
+        self.assertEqual(corpo["processo"], "0700231-15.2024.8.02.0001")
+        self.sem_problemas(pagina)
+
+    # ------------------------------------------------ atenção à pergunta
+    SEM_FOCO = "() => { document.hasFocus = () => false; window.dispatchEvent(new Event('blur')); }"
+    COM_FOCO = "() => { document.hasFocus = () => true; window.dispatchEvent(new Event('focus')); }"
+
+    def pedir_codigo(self, pagina):
+        pagina.click("#area-soltar button:has-text('Colar lista')")
+        pagina.fill(".folha textarea", "0700231-15.2024.8.02.0001\n1004512-63.2024.8.26.0100")
+        pagina.click(".folha button:has-text('Ler a lista')")
+        pagina.wait_for_selector(".revisao")
+        pagina.click("#botao-baixar")
+
+    def test_pergunta_pisca_o_titulo_no_edge_e_no_navegador(self):
+        """Fora da janela do aplicativo (Edge ou navegador), a página não
+        alcança a janela: com a página sem foco, o título da aba alterna
+        enquanto a pergunta espera, volta ao normal com o foco e para de vez
+        quando a pergunta é respondida."""
+        for modo in ("edge", "navegador"):
+            with self.subTest(modo=modo):
+                pagina = self.abrir(secao="processos", extra=f"&modo={modo}")
+                self.assertEqual(pagina.title(), "Processos — Helestron")
+                self.pedir_codigo(pagina)
+                pagina.evaluate(self.SEM_FOCO)      # o usuário foi para outro programa
+                pagina.wait_for_selector(".folha-pergunta")
+                pagina.wait_for_function("() => document.title === 'Código pedido — Helestron'",
+                                         timeout=5000)
+                pagina.wait_for_function("() => document.title === 'Processos — Helestron'",
+                                         timeout=5000)
+                pagina.wait_for_function("() => document.title === 'Código pedido — Helestron'",
+                                         timeout=5000)
+                pagina.evaluate(self.COM_FOCO)      # voltou: o título normal, sem alternar
+                self.assertEqual(pagina.title(), "Processos — Helestron")
+                pagina.wait_for_timeout(2300)
+                self.assertEqual(pagina.title(), "Processos — Helestron")
+                pagina.evaluate(self.SEM_FOCO)      # saiu de novo, sem responder
+                pagina.wait_for_function("() => document.title === 'Código pedido — Helestron'",
+                                         timeout=5000)
+                pagina.fill("#campo-codigo", "482193")      # respondeu: para de vez
+                pagina.wait_for_selector(".folha-pergunta", state="detached")
+                pagina.wait_for_function("() => document.title === 'Processos — Helestron'",
+                                         timeout=5000)
+                pagina.wait_for_timeout(2300)
+                self.assertEqual(pagina.title(), "Processos — Helestron")
+                self.assertIsNone(pagina.evaluate("Helestron.atencao.relogio"))
+                self.sem_problemas(pagina)
+
+    def test_pergunta_com_a_pagina_em_foco_ou_na_janela_do_aplicativo_nao_pisca(self):
+        # Na janela do aplicativo, quem chama a atenção é o lado nativo (a
+        # janela pisca na barra de tarefas); com a página em foco, ninguém
+        # precisa ser chamado.
+        for extra, foco in (("", False), ("&modo=edge", True)):
+            with self.subTest(extra=extra, foco=foco):
+                pagina = self.abrir(secao="processos", extra=extra)
+                self.pedir_codigo(pagina)
+                if not foco:
+                    pagina.evaluate(self.SEM_FOCO)
+                pagina.wait_for_selector(".folha-pergunta")
+                pagina.wait_for_timeout(2300)
+                self.assertEqual(pagina.title(), "Processos — Helestron")
+                self.assertIsNone(pagina.evaluate("Helestron.atencao.relogio"))
+                self.sem_problemas(pagina)
+
+    # ------------------------------------------------ pauta: fontes só com a pessoa
+    def test_fonte_que_exige_a_pessoa_nao_aparece_como_monitorada(self):
+        """Com o certificado digital (ou a entrada manual, ou a senha não
+        guardada), o monitoramento não entra sozinho: a fonte não leva o selo
+        “Monitorada”, e a tela diz por quê."""
+        pagina = self.abrir(secao="ajustes", extra="&presenca=certificado")
+        pagina.click(".ajustes-indice a[data-grupo='pauta']")
+        pagina.wait_for_selector(".grupo[aria-label='Fontes da pauta'] .linha")
+        lista = pagina.locator(".grupo[aria-label='Fontes da pauta']").inner_text()
+        self.assertNotIn("Monitorada", lista)
+        self.assertIn("Só com você", lista)
+        self.assertIn("Fica fora do monitoramento automático: a entrada no portal é pelo "
+                      "certificado digital", lista)
+        self.capturar(pagina, "ajustes-pauta-fonte-so-com-voce")
+        self.ir(pagina, "pauta")
+        pagina.wait_for_selector("#monitor-sem-fontes")
+        texto = pagina.locator("#monitor-sem-fontes").inner_text()
+        self.assertIn("O monitoramento não entra sozinho no portal: a entrada no portal é pelo "
+                      "certificado digital (e-SAJ TJAL e eProc TJAL).", texto)
+        cartao = pagina.locator(".cartao:has-text('Conferir sozinho')").inner_text()
+        self.assertIn("(só com você)", cartao)
+        pagina.locator("#monitor-sem-fontes").scroll_into_view_if_needed()
+        self.capturar(pagina, "pauta-monitor-so-com-voce")
+        self.sem_problemas(pagina)
+        # Sem a variação, as fontes da demonstração são monitoradas.
+        pagina = self.abrir(secao="pauta")
+        self.assertEqual(pagina.locator("#monitor-sem-fontes").count(), 0)
+        self.sem_problemas(pagina)
+
+    def test_semana_conta_os_mesmos_dias_da_visao_semana(self):
+        """“Nos próximos 7 dias” (Pauta e Início) conta de hoje a hoje + 6 - os
+        dias da visão Semana -, sem as canceladas e as redesignadas."""
+        pagina = self.abrir(secao="pauta")
+        pagina.wait_for_selector("#lista-pauta .audiencia")
+        na_lista = pagina.evaluate("""() => [...document.querySelectorAll('#lista-pauta .audiencia')]
+            .map(a => a.querySelector('.audiencia-lado .pilula').textContent.trim())
+            .filter(situacao => !['Cancelada', 'Redesignada'].includes(situacao)).length""")
+        chip = int(pagina.locator("#chip-semana strong").inner_text())
+        self.assertEqual(chip, na_lista)
+        self.ir(pagina, "inicio")
+        cartao = pagina.locator("text=nos próximos 7 dias").first.locator("xpath=..").inner_text()
+        self.assertIn(f"{chip} nos próximos 7 dias", cartao.replace("\n", " "))
         self.sem_problemas(pagina)
 
 if __name__ == "__main__":

@@ -50,9 +50,9 @@ MENSAGEM_PRESENCA = ("O monitoramento automático não entra sozinho em {fontes}
 class ContextoMonitor(ContextoFundo):
     """O Contexto de fundo que lembra POR QUE o login não aconteceu.
 
-    'pediu_login' fica verdadeiro nos dois casos: quando o portal pediu o
-    código (perguntar) e quando a pauta viu que o login exige a pessoa
-    (ServicoPauta._acesso). Só o primeiro passa por aqui: motivo "codigo".
+    'pediu_login' fica verdadeiro nos dois casos, e 'motivo' diz qual foi:
+    "codigo" quando o portal pediu o código (perguntar, aqui) e "presenca"
+    quando a pauta viu que o login exige a pessoa (ServicoPauta._acesso).
     """
 
     def __init__(self, tarefa, aviso_titulo: str, aviso_mensagem: str):

@@ -59,6 +59,14 @@ INTERVALO_AVISO_ATRASO_S = 300.0
 SINCRONIZAR_AUDIO_S = 5.0
 VERSAO_DIARIO = 1
 
+# Onde o usuário recupera uma audiência interrompida: o botão e a faixa da
+# tela Audiências (helestron/web/js/secao-audiencias.js). Os nomes têm de ser
+# os da tela - test_web_contrato confere toda citação “...” das mensagens.
+BOTAO_RECUPERAR = "Recuperar"
+FAIXA_INTERROMPIDA = "Uma transcrição foi interrompida"
+ONDE_RECUPERAR = (f"pelo botão “{BOTAO_RECUPERAR}”, na faixa “{FAIXA_INTERROMPIDA}” da "
+                  "tela Audiências")
+
 _ativos: set[str] = set()          # diários das sessões abertas neste processo
 _trava_ativos = threading.Lock()
 SUFIXO_TRAVA = ".trava"            # ao lado do diário: a sessão aberta em OUTRO processo
@@ -665,8 +673,8 @@ class SessaoAoVivo:
                                    marcar_tempo=self.marcar_tempo)
             except Exception as erro:
                 self._emitir("erro", f"Não consegui gravar o documento final ({erro}). As falas "
-                                     "estão no diário da audiência e podem ser recuperadas em "
-                                     "\"Recuperar transcrição interrompida\".")
+                                     "estão no diário da audiência e podem ser recuperadas "
+                                     f"{ONDE_RECUPERAR}.")
                 self._fechar_diario(None)
                 raise
             self.ultimo_docx = final

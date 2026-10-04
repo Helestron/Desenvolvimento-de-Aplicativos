@@ -43,8 +43,17 @@ instalador de um só arquivo, interface nova e a pauta de audiências.
 A instalação é **offline** (Python, bibliotecas e modelo de transcrição vão
 dentro do instalador), **sem administrador** (por usuário, em
 `%LOCALAPPDATA%\Programs\Helestron`) e termina com uma **conferência** de
-todos os arquivos. Para a equipe de informática, há o modo silencioso:
-`Helestron-Setup-1.0.0.exe /S [/D=pasta]`.
+todos os arquivos. Numa atualização, uma audiência sendo transcrita nunca é
+interrompida (o instalador pede que ela seja encerrada antes), e o conector
+do acervo aberto pelo Claude Desktop ou pelo Codex não trava a cópia. Para a
+equipe de informática, há o modo silencioso,
+`Helestron-Setup-1.0.0.exe /S [/D=pasta]`, com códigos de saída próprios: 0
+(instalado), 2 (a conferência encontrou problema), 4 (o Helestron não
+fechou), 5 (outro instalador aberto), 6 (Windows incompatível), 7 (audiência
+em andamento: nada foi alterado), 8 (sem permissão na pasta) e 9 (instalado,
+mas falta o WebView2 Runtime para abrir a janela). O desinstalador retira os
+conectores do acervo do Claude Desktop e do Codex/ChatGPT Work e nunca apaga
+`Documentos\Helestron`.
 
 O passo a passo completo, com cada função, os ajustes, a desinstalação e os
 problemas comuns, está no **[manual do usuário](docs/MANUAL.md)**.
@@ -55,8 +64,11 @@ problemas comuns, está no **[manual do usuário](docs/MANUAL.md)**.
 - pouco mais de 1 GB livre em disco para o programa;
 - Google Chrome ou Microsoft Edge (o Edge já vem no Windows), para os
   portais;
-- Microsoft Edge WebView2 Runtime, que já vem no Windows 11 e no Windows 10
-  atualizado (sem ele, o Helestron abre no Edge em modo aplicativo);
+- Microsoft Edge WebView2 Runtime 101 ou mais recente, que já vem no
+  Windows 11 e no Windows 10 atualizado (sem ele, ou com um mais antigo, o
+  Helestron abre no Edge em modo aplicativo e, sem o Edge, no navegador
+  padrão, nunca no Internet Explorer; sem nenhum deles, explica como
+  instalar o WebView2 em vez de abrir uma janela em branco);
 - microfone, para a transcrição;
 - acesso aos portais (e-SAJ e eProc) para baixar processos e ler a pauta.
 
@@ -114,7 +126,9 @@ Para ver a interface:
 ```bash
 # modo demonstração: o demo.js responde a toda a API, sem servidor
 python -m http.server -d helestron/web 8000
-#   http://127.0.0.1:8000/?demo=1   (variantes: &pauta=vazia, &sem_dialogo=1)
+#   http://127.0.0.1:8000/?demo=1
+#   variantes: &pauta=vazia, &sem_dialogo=1, &lote=falhas,
+#              &claude_code=ausente, &microfone=<nome>
 
 # o servidor de verdade, sem janela: imprime URL=... para abrir no navegador
 python -m helestron --servidor --sem-janela
@@ -166,8 +180,11 @@ roda a cada envio:
   confere arquivos, atalhos e registro, roda `--verificar-instalacao`, abre a
   janela de verdade (`--autoteste`, com capturas), transcreve uma fala
   sintetizada, conversa com o conector MCP, importa e exporta a pauta, usa o
-  cofre de senhas (DPAPI), reinstala por cima e desinstala, conferindo que os
-  documentos do usuário ficaram.
+  cofre de senhas (DPAPI), reinstala por cima com o conector MCP aberto (os
+  arquivos presos vão para `.antigos`, e a limpeza fica agendada) e
+  desinstala, conferindo que os documentos do usuário ficaram e que os
+  conectores do Claude Desktop e do Codex saíram. As capturas da janela real
+  também vão para o registro, reduzidas e em base64.
 - **Publicar a versão:** nas tags `v*`, depois dos testes e da instalação no
   Windows, cria a versão no GitHub com o instalador e o `.sha256`.
 

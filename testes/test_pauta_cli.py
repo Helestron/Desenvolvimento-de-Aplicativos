@@ -132,6 +132,9 @@ class TestCLI(apoio.PastaTemporaria):
         self.assertIn("esaj-tjal", saida)
         self.assertIn("ainda não sincronizada", saida)
         self.assertIn("https://www2.tjal.jus.br/pauta", saida)
+        # sem a senha guardada, o monitoramento não entra sozinho - e diz por quê
+        self.assertIn("fora do monitoramento automático: o usuário e a senha do portal não "
+                      "estão guardados neste computador", saida)
         codigo, saida, _ = self.rodar("fontes", "--remover", "esaj-tjal")
         self.assertIn("removida", saida)
 

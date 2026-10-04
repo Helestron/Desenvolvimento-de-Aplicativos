@@ -182,6 +182,59 @@ class TestFontesEMonitoramento(Base):
                 with self.assertRaises(ValueError):
                     self.servico.configurar_monitoramento(True, valor)
 
+    def test_fonte_que_exige_a_pessoa_nao_e_monitorada(self):
+        """Certificado, entrada manual ou senha não guardada: o login só acontece
+        com a pessoa à frente, e o monitor não sincroniza a fonte. Antes ela
+        aparecia como “Monitorada” só por ter a rota da pauta."""
+        from helestron.pauta import servico as mod
+
+        self.servico.salvar_fonte("TJAL", "esaj", "", "https://portal/pauta")
+        self.servico.salvar_fonte("TJRS", "eproc", "")            # sem rota ainda
+        self.servico.credenciais_sessao = {"esaj:TJAL": ("u", "digitada-agora")}
+
+        def fonte(id_):
+            return {f["id"]: f for f in self.servico.fontes()}[id_]
+
+        casos = (("senha", {"esaj:TJAL": ("u", "s")}, ""),
+                 # a senha digitada "só por agora" não serve ao monitor
+                 ("senha", {}, mod.PRESENCA_SEM_SENHA),
+                 ("certificado", {"esaj:TJAL": ("u", "s")}, mod.PRESENCA_CERTIFICADO),
+                 ("manual", {"esaj:TJAL": ("u", "s")}, mod.PRESENCA_MANUAL))
+        for modo, cofre, motivo in casos:
+            with self.subTest(modo=modo, cofre=cofre):
+                self.amb.cfg.definir("esaj", "login", modo)
+                self.cofre.dados = dict(cofre)
+                f = fonte("esaj-tjal")
+                self.assertEqual((f["exige_presenca"], f["motivo_presenca"], f["monitorada"]),
+                                 (bool(motivo), motivo, not motivo))
+                self.assertEqual(self.servico.exige_presenca(f), bool(motivo))
+                self.assertEqual(self.servico.motivo_presenca("esaj-tjal"), motivo)
+                m = self.servico.monitoramento()
+                self.assertEqual(m["fontes_monitoradas"], 0 if motivo else 1)
+                # só fontes que exigem a pessoa: o monitor não tem próxima vez
+                self.assertEqual(m["proxima"], None if motivo else AGORA.isoformat())
+        # a fonte sem rota continua "sem rota" (entra sozinha, mas não sabe onde)
+        self.cofre.dados["eproc:TJRS"] = ("u", "s")
+        tjrs = fonte("eproc-tjrs")
+        self.assertEqual((tjrs["exige_presenca"], tjrs["monitorada"]), (False, False))
+        # na dúvida (tribunal que não usa o sistema), não exige: a sincronização decide
+        self.servico.armazem.salvar_fonte("TJRS", "esaj", "TJRS · e-SAJ")
+        self.assertFalse(self.servico.exige_presenca("esaj-tjrs"))
+
+    def test_monitor_marca_o_motivo_presenca(self):
+        # O monitor distingue "o portal pediu o código" de "o login exige você".
+        self.servico.salvar_fonte("TJAL", "esaj", "", "https://portal.invalid/pauta")
+        self.amb.cfg.definir("esaj", "login", "certificado")
+        ctx = ap.ContextoDeFundo()
+        ctx.motivo = None
+        with self.assertRaises(ErroPauta):
+            self.servico.sincronizar(ctx, None, date(2026, 10, 1), date(2026, 10, 31))
+        self.assertEqual((ctx.pediu_login, ctx.motivo), (True, "presenca"))
+        ctx.motivo = "codigo"            # o código pedido antes, por outra fonte, prevalece
+        with self.assertRaises(ErroPauta):
+            self.servico.sincronizar(ctx, None, date(2026, 10, 1), date(2026, 10, 31))
+        self.assertEqual(ctx.motivo, "codigo")
+
     def test_configuracao_ausente_ou_estragada(self):
         class CfgVelho:
             """Um config de antes da pauta: sem a seção, ou com lixo."""
@@ -287,10 +340,13 @@ class TestSincronizar(Base):
         self.servico.salvar_fonte("TJAL", "esaj", "")
         ExtratorFalso.roteiro["esaj-tjal"] = [PautaNaoEncontrada(
             "não encontrei a pauta de audiências no e-SAJ do TJAL")]
+        ctx = apoio.ContextoGravador()
         with self.assertRaises(ErroPauta) as erro:
-            self.servico.sincronizar(apoio.ContextoGravador(), None, *self.PERIODO)
+            self.servico.sincronizar(ctx, None, *self.PERIODO)
         self.assertEqual(str(erro.exception), "Não consegui ler a pauta: TJAL · e-SAJ — Não "
                                               "encontrei a pauta de audiências no e-SAJ do TJAL.")
+        # o erro da tarefa já diz qual fonte e por quê: sem o mesmo texto num aviso à parte
+        self.assertEqual(ctx.avisos, [])
         self.assertIsNone(self.servico.ultima_sincronizacao())
         self.assertEqual(self.eventos, [])
 

@@ -425,6 +425,30 @@ class TestRecuperacao(BaseSessao):
         self.assertLessEqual(info.duration, 18.0)
         self.assertEqual(recuperaveis(self.cfg), [])
 
+    def test_documento_final_que_nao_grava_cita_o_botao_da_tela(self):
+        """O erro mandava procurar “Recuperar transcrição interrompida”, que não
+        existe: o botão é “Recuperar”, na faixa “Uma transcrição foi
+        interrompida” da tela Audiências. E a audiência fica entre as
+        recuperáveis, que é o que faz essa faixa aparecer."""
+        from unittest import mock
+
+        s, eventos = self.sessao()
+        s.iniciar()
+        self.assertTrue(s.captura.esperar(30))
+        with mock.patch.object(ao_vivo, "gerar_docx", side_effect=OSError("disco cheio")):
+            with self.assertRaises(OSError):
+                s.encerrar()
+        erro = eventos.de("erro")[-1]
+        self.assertIn("disco cheio", erro)
+        self.assertIn("“Recuperar”, na faixa “Uma transcrição foi interrompida” da tela "
+                      "Audiências", erro)
+        self.assertNotIn("Recuperar transcrição interrompida", erro)
+        tela = (Path(ao_vivo.__file__).resolve().parents[1] / "web" / "js"
+                / "secao-audiencias.js").read_text(encoding="utf-8")
+        self.assertIn(f'rotulo: "{ao_vivo.BOTAO_RECUPERAR}"', tela)
+        self.assertIn(f'"{ao_vivo.FAIXA_INTERROMPIDA}"', tela)
+        self.assertIn(s.caminho_diario, recuperaveis(self.cfg))
+
 
 if __name__ == "__main__":
     unittest.main()

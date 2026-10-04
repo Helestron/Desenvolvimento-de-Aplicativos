@@ -183,12 +183,21 @@ class TestAbertura(unittest.TestCase):
 
     def test_sem_appusermodelid_explicito(self):
         """O ID explícito "Helestron.App" não estava nos atalhos do instalador:
-        o Helestron fixado na barra de tarefas abria como um segundo botão."""
-        with mock.patch("helestron.nucleo.sistema.id_do_aplicativo") as aumid, \
-                mock.patch("helestron.nucleo.registro.configurar"), \
+        o Helestron fixado na barra de tarefas abria como um segundo botão.
+        Vale o ID implícito do Helestron.exe, o mesmo dos atalhos: nenhuma
+        parte do programa define outro (e a função que o fazia saiu)."""
+        from pathlib import Path
+
+        from helestron.nucleo import sistema
+
+        self.assertFalse(hasattr(sistema, "id_do_aplicativo"))
+        pacote = Path(inicio.__file__).resolve().parents[1]
+        for arquivo in sorted(pacote.rglob("*.py")):
+            with self.subTest(arquivo=arquivo.name):
+                self.assertNotIn("ExplicitAppUserModelID", arquivo.read_text(encoding="utf-8"))
+        with mock.patch("helestron.nucleo.registro.configurar"), \
                 mock.patch.object(inicio, "_abrir", return_value=0):
             self.assertEqual(inicio.main(), 0)
-        aumid.assert_not_called()
 
     def test_sem_janela_explica_e_espera_o_encerramento_inteiro(self):
         from helestron.aplicativo import janela

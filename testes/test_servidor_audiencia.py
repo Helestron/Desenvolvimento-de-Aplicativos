@@ -405,6 +405,23 @@ class TestGravacaoERecuperacao(ServidorDeTeste):
         self.assertTrue(env["dados"]["sigiloso_forcado"])
         self.assertEqual(recebidos[-1]["data"], datetime(2026, 9, 15, 14, 0))
 
+    def test_data_da_gravacao_no_formato_que_a_pagina_manda(self):
+        """A página manda o File.lastModified em ISO 8601 com o fuso (o
+        toISOString do navegador, em UTC): na ficha vai a hora local, sem fuso."""
+        from datetime import timezone
+
+        from helestron.servidor.api_audiencias import data_da_gravacao
+
+        quando = datetime(2026, 9, 15, 10, 30)
+        iso = quando.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        self.assertEqual(data_da_gravacao(iso, "sala 2.wav"), quando)
+        self.assertEqual(data_da_gravacao(str(int(quando.timestamp() * 1000))), quando)
+        self.assertEqual(data_da_gravacao("2026-09-15T10:30:00"), quando)
+        # sem a data da página: a do nome que o Helestron dá à gravação; sem nada, None
+        self.assertEqual(data_da_gravacao("", f"{NUMERO} 2026-09-15 14h00.flac"),
+                         datetime(2026, 9, 15, 14, 0))
+        self.assertIsNone(data_da_gravacao(None, "sala 2.wav"))
+
     def test_gravacao_sigilosa_pela_pauta(self):
         audio = self.amb.raiz / "gravacao.mp3"
         audio.write_bytes(b"ID3")

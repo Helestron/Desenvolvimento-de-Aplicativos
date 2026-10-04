@@ -600,12 +600,16 @@
             f.ultima_sincronizacao ? "sincronizada " + fmt.quando(f.ultima_sincronizacao) : "ainda não sincronizada",
           ].join(" · ") }),
           f.menu ? el("span", { estilo: { display: "block" }, texto: "Caminho no portal: " + f.menu }) : null,
+          // Certificado, entrada manual ou senha não guardada: o portal só abre
+          // com a pessoa à frente, e o monitoramento não a sincroniza.
           el("span", { estilo: { display: "block" }, texto: f.monitorada
             ? "Entra no monitoramento automático."
-            : "Fica fora do monitoramento até a primeira sincronização bem-sucedida (ou uma captura)." }),
+            : f.exige_presenca
+              ? `Fica fora do monitoramento automático: ${f.motivo_presenca || "o login exige você à frente"}. Sincronize na tela Pauta quando quiser, ou use a entrada por usuário e senha, com a senha guardada, em Acessos aos portais.`
+              : "Fica fora do monitoramento até a primeira sincronização bem-sucedida (ou uma captura)." }),
           f.ultimo_erro ? el("span", { estilo: { display: "block", color: "var(--ambar-texto, var(--ambar))" }, texto: "Último erro: " + f.ultimo_erro }) : null),
         acessorio: el("span", { classe: "grupo-botoes", estilo: { flexWrap: "nowrap" } },
-          f.monitorada ? pilula("Monitorada", "verde", "sino") : pilula("Sem rota", "cinza"),
+          f.monitorada ? pilula("Monitorada", "verde", "sino") : f.exige_presenca ? pilula("Só com você", "ambar", "pessoa") : pilula("Sem rota", "cinza"),
           botao({ icone: "lixeira", titulo: "Remover esta fonte", tamanho: "pequeno", tipo: "texto", acao: async () => {
           const ok = await folha.confirmar({ titulo: "Remover esta fonte?", mensagem: "As audiências já trazidas continuam na pauta; só deixam de ser conferidas no portal.", confirmar: "Remover", perigo: true });
           if (!ok) return;

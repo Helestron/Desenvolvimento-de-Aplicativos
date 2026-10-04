@@ -16,9 +16,12 @@ O que vale para todas as entradas:
   usuário entrar - como no download. No monitoramento (ninguém olhando)
   isso não acontece: só a senha GUARDADA vale, e sem ela a fonte fica
   pendente, com o aviso "Entre no portal para continuar o monitoramento",
-  em vez de abrir uma janela do nada;
-* uma fonte que falha não derruba as outras; só quando todas falham a
-  tarefa termina como "falhou", com o motivo de cada uma;
+  em vez de abrir uma janela do nada. Por isso a fonte com certificado,
+  entrada manual ou senha não guardada não é "monitorada" (fontes(),
+  exige_presenca(), motivo_presenca()): o monitor a deixa de fora;
+* uma fonte que falha não derruba as outras (cada uma que falhou vira um
+  aviso); só quando todas falham a tarefa termina como "falhou", com o
+  motivo de cada uma no erro (sem o aviso por fonte, que só o repetiria);
 * SIGILO é do PROCESSO, não da linha: a audiência é sigilosa se o portal
   (ou o relatório) disse segredo de justiça em QUALQUER audiência daquele
   processo, ou se os autos do processo estão na pasta de sigilosos - a
@@ -52,6 +55,11 @@ DICA_INSTALAR = ("Instale o Helestron de novo com o Helestron-Setup: ele consert
 MENSAGEM_LOGIN = ("Entre no portal para continuar o monitoramento: sem a senha guardada (ou no "
                   "login por certificado), o {nome} só pode ser aberto com você à frente. Na tela "
                   "Pauta, clique em Sincronizar.")
+# Por que o login de uma fonte só acontece com a pessoa à frente (o
+# monitoramento automático a deixa de fora; a tela mostra o motivo).
+PRESENCA_CERTIFICADO = "a entrada no portal é pelo certificado digital"
+PRESENCA_MANUAL = "a entrada no portal é manual"
+PRESENCA_SEM_SENHA = "o usuário e a senha do portal não estão guardados neste computador"
 CACHE_SIGILOSOS_S = 15.0
 DIAS_DA_SEMANA = 7            # "nos próximos 7 dias": hoje e os 6 seguintes
 
@@ -245,7 +253,45 @@ class ServicoPauta:
                 "por_situacao": por_situacao, "por_tipo": por_tipo}
 
     def fontes(self) -> list[dict]:
-        return self.armazem.fontes()
+        """As fontes cadastradas, com o que o monitoramento faz com cada uma:
+        'monitorada' (tem a rota da pauta e entra no portal sozinha),
+        'exige_presenca' e 'motivo_presenca' (o login só acontece com a
+        pessoa à frente: certificado, entrada manual ou senha não guardada)."""
+        lista = self.armazem.fontes()
+        for fonte in lista:
+            motivo = self.motivo_presenca(fonte)
+            fonte["exige_presenca"] = bool(motivo)
+            fonte["motivo_presenca"] = motivo
+            fonte["monitorada"] = bool(fonte.get("url")) and not motivo
+        return lista
+
+    def motivo_presenca(self, fonte) -> str:
+        """Por que o login desta fonte exige a pessoa à frente ("" se entra
+        sozinha). É a regra de _acesso no segundo plano, onde só vale a senha
+        GUARDADA no computador (a digitada "só por agora" não serve ao
+        monitor). 'fonte': o dicionário da fonte ou o id dela. Na dúvida
+        (tribunal desconhecido, componente ausente), "": a sincronização decide."""
+        if not isinstance(fonte, dict):
+            fonte = self.armazem.fonte(str(fonte)) or {}
+        try:
+            tribunal = self._tribunal(str(fonte.get("tribunal") or ""),
+                                      str(fonte.get("sistema") or ""))
+            opcoes = self._opcoes(tribunal)
+            modo = opcoes.modo_login(tribunal.sistema)
+            if modo == "certificado":
+                return PRESENCA_CERTIFICADO
+            if modo == "manual":
+                return PRESENCA_MANUAL
+            if self._credenciais(tribunal, opcoes, sessao=False) is None:
+                return PRESENCA_SEM_SENHA
+        except Exception as erro:
+            log.debug("não sei se a fonte %s entra sozinha: %s", fonte.get("id"), erro)
+        return ""
+
+    def exige_presenca(self, fonte) -> bool:
+        """O login desta fonte só acontece com a pessoa à frente? (O monitor
+        a deixa fora da sincronização automática.)"""
+        return bool(self.motivo_presenca(fonte))
 
     def salvar_fonte(self, tribunal, sistema, rotulo, url="") -> dict:
         sistema = (sistema or "").strip().lower()
@@ -281,11 +327,13 @@ class ServicoPauta:
 
     def monitoramento(self) -> dict:
         conf = self.config_monitoramento()
-        com_rota = [f for f in self.armazem.fontes() if f.get("url")]
-        proxima = Agenda(self.relogio).proxima(conf, self.ultima_sincronizacao(), bool(com_rota))
+        # só as que o monitor sincroniza de fato: com a rota e sem exigir a pessoa
+        monitoradas = [f for f in self.fontes() if f.get("monitorada")]
+        proxima = Agenda(self.relogio).proxima(conf, self.ultima_sincronizacao(),
+                                               bool(monitoradas))
         return {"ativo": conf.ativo, "intervalo_horas": conf.intervalo_horas,
                 "dias_atras": conf.dias_atras, "dias_a_frente": conf.dias_a_frente,
-                "proxima": _iso(proxima), "fontes_monitoradas": len(com_rota)}
+                "proxima": _iso(proxima), "fontes_monitoradas": len(monitoradas)}
 
     def configurar_monitoramento(self, ativo: bool, intervalo_horas: int) -> dict:
         try:
@@ -410,6 +458,10 @@ class ServicoPauta:
         if precisa_de_alguem and fundo:
             try:
                 ctx.pediu_login = True
+                # o motivo: o login exige a pessoa (e não "o portal pediu o
+                # código", que o Contexto do monitor marca como "codigo")
+                if getattr(ctx, "motivo", None) != "codigo":
+                    ctx.motivo = "presenca"
             except Exception:
                 pass
             raise ErroPauta(MENSAGEM_LOGIN.format(
@@ -476,10 +528,6 @@ class ServicoPauta:
                 self.armazem.atualizar_fonte(fonte["id"], ultimo_erro=mensagem[:500])
                 resultado["erros"].append({"fonte": fonte["id"], "rotulo": rotulo,
                                            "mensagem": mensagem})
-                try:
-                    ctx.avisar(f"Pauta: {rotulo}", mensagem)
-                except Exception:
-                    pass
                 continue
             sucesso = True
             resultado["fontes"].append(parcial)
@@ -494,6 +542,15 @@ class ServicoPauta:
         if sucesso:
             self.armazem.definir_meta("ultima_sincronizacao", self.relogio())
             self._publicar_mudancas(resultado)
+            # Outras fontes deram certo: o fim da tarefa só diz "N fontes com
+            # problema", e o aviso de cada uma diz qual e por quê. Quando
+            # todas falham, o erro da tarefa já traz cada fonte com o motivo
+            # (e a faixa da Pauta, também): o aviso por fonte só repetiria.
+            for e in resultado["erros"]:
+                try:
+                    ctx.avisar(f"Pauta: {e['rotulo']}", e["mensagem"])
+                except Exception:
+                    pass
         if not sucesso:
             raise ErroPauta("Não consegui ler a pauta: " + "; ".join(
                 f"{e['rotulo']} — {e['mensagem'].rstrip('.')}" for e in resultado["erros"]) + ".")

@@ -143,8 +143,10 @@ class Monitor:
         self.ultima_decisao: Decisao | None = None
 
     def fontes_com_rota(self) -> list[str]:
+        """As fontes que o monitor sincroniza: com a rota da pauta e sem exigir
+        a pessoa à frente no login (ServicoPauta.fontes, 'exige_presenca')."""
         return [str(f.get("id")) for f in (self.servico.fontes() or [])
-                if f.get("id") and f.get("url")]
+                if f.get("id") and f.get("url") and not f.get("exige_presenca")]
 
     def ciclo(self) -> float:
         """Uma avaliação; devolve quantos segundos esperar até a próxima."""

@@ -13,7 +13,11 @@
  * &sem_dialogo=1 (sem diálogo nativo: usa o <input type=file>),
  * &lote=falhas (nenhum processo do lote é baixado),
  * &claude_code=ausente (o Claude Code não está instalado),
- * &microfone=<nome> (o microfone guardado em Ajustes, pelo nome).
+ * &microfone=<nome> (o microfone guardado em Ajustes, pelo nome),
+ * &presenca=certificado (as fontes da pauta entram pelo certificado digital:
+ *   o monitoramento não as sincroniza sozinho),
+ * &modo=edge|navegador (a página aberta no Edge ou no navegador padrão, sem a
+ *   janela do aplicativo).
  */
 (function () {
   "use strict";
@@ -26,6 +30,9 @@
   const SEM_DIALOGO = params.get("sem_dialogo") === "1";
   const LOTE_FALHA = params.get("lote") === "falhas";
   const SEM_CLAUDE_CODE = params.get("claude_code") === "ausente";
+  // Fontes que só entram com a pessoa à frente (ServicoPauta.motivo_presenca).
+  const MOTIVO_PRESENCA = params.get("presenca") === "certificado" ? "a entrada no portal é pelo certificado digital" : "";
+  const MODO_JANELA = ["edge", "navegador"].includes(params.get("modo")) ? params.get("modo") : "janela";
   // &falantes=ausentes: construção sem os modelos de voz (a tela oferece baixá-los)
   let falantesProntos = params.get("falantes") !== "ausentes";
 
@@ -220,10 +227,10 @@
   const alteracoes = gerarAlteracoes();
 
   let fontes = PAUTA_VAZIA ? [] : [
-    { id: "f-esaj-tjal", tribunal: "TJAL", sistema: "esaj", rotulo: "e-SAJ · TJAL — 2ª Vara Cível da Capital", modo: "automatico", url: "https://www2.tjal.jus.br/sajcas/agendaAudiencias", menu: "Agenda › Audiências", monitorada: true, ultima_sincronizacao: isoHora(agoraMenos(42)), ultimo_erro: "" },
-    { id: "f-eproc-tjal", tribunal: "TJAL", sistema: "eproc", rotulo: "eProc · TJAL", modo: "capturado", url: "https://eproc1g.tjal.jus.br/eproc/controlador.php?acao=audiencia_listar", menu: "", monitorada: true, ultima_sincronizacao: isoHora(agoraMenos(42)), ultimo_erro: "" },
+    { id: "f-esaj-tjal", tribunal: "TJAL", sistema: "esaj", rotulo: "e-SAJ · TJAL — 2ª Vara Cível da Capital", modo: "automatico", url: "https://www2.tjal.jus.br/sajcas/agendaAudiencias", menu: "Agenda › Audiências", monitorada: !MOTIVO_PRESENCA, exige_presenca: !!MOTIVO_PRESENCA, motivo_presenca: MOTIVO_PRESENCA, ultima_sincronizacao: isoHora(agoraMenos(42)), ultimo_erro: "" },
+    { id: "f-eproc-tjal", tribunal: "TJAL", sistema: "eproc", rotulo: "eProc · TJAL", modo: "capturado", url: "https://eproc1g.tjal.jus.br/eproc/controlador.php?acao=audiencia_listar", menu: "", monitorada: !MOTIVO_PRESENCA, exige_presenca: !!MOTIVO_PRESENCA, motivo_presenca: MOTIVO_PRESENCA, ultima_sincronizacao: isoHora(agoraMenos(42)), ultimo_erro: "" },
   ];
-  let monitoramento = { ativo: !PAUTA_VAZIA, intervalo_horas: 6, proxima: isoHora(new Date(Date.now() + 5.3 * 3600000)) };
+  let monitoramento = { ativo: !PAUTA_VAZIA, intervalo_horas: 6, proxima: MOTIVO_PRESENCA ? null : isoHora(new Date(Date.now() + 5.3 * 3600000)) };
   let ultimaSincronizacao = PAUTA_VAZIA ? null : isoHora(agoraMenos(42));
   let pautaImportada = false;
 
@@ -631,8 +638,15 @@
     });
   }
 
+  // Como o servidor (ServicoPauta.resumo): "hoje" e "nos próximos 7 dias"
+  // (de hoje a hoje + 6, os dias da visão Semana) contam só as audiências que
+  // acontecem - as canceladas e as redesignadas ficam de fora.
+  const SEM_AUDIENCIA = ["Cancelada", "Redesignada"];
+  const acontecem = (lista) => lista.filter((a) => !SEM_AUDIENCIA.includes(a.situacao));
+  const contarHoje = (lista) => acontecem(lista).filter((a) => a.data === iso(hoje)).length;
+  const contarSemana = (lista) => acontecem(lista).filter((a) => a.data >= iso(hoje) && a.data <= iso(dia(6))).length;
+
   function resumoPauta(lista) {
-    const h = iso(hoje), sete = iso(dia(7));
     const por_situacao = {}, por_tipo = {};
     for (const a of lista) {
       por_situacao[a.situacao] = (por_situacao[a.situacao] || 0) + 1;
@@ -640,8 +654,8 @@
     }
     return {
       total: lista.length,
-      hoje: lista.filter((a) => a.data === h).length,
-      semana: lista.filter((a) => a.data >= h && a.data <= sete).length,
+      hoje: contarHoje(lista),
+      semana: contarSemana(lista),
       por_situacao, por_tipo,
     };
   }
@@ -657,15 +671,15 @@
       pendencias.push({ chave: "acessos", titulo: "Cadastre o acesso ao eProc do TJAL", mensagem: "Sem a senha, o navegador abre para você entrar a cada lote.", acao: "ajustes#acessos" });
     }
     return {
-      nome: "Helestron", versao: "1.0.0", modo: "janela", usuario: valores.geral.nome_usuario, pastas: PASTAS, pendencias,
+      nome: "Helestron", versao: "1.0.0", modo: MODO_JANELA, usuario: valores.geral.nome_usuario, pastas: PASTAS, pendencias,
       audiencia: { ativa: !!sessao.id && sessao.estado !== "encerrada", estado: sessao.estado, processo: sessao.id ? sessao.processo : null },
       resumo: {
         processos: 312, transcricoes: 47,
         ultimos_lotes: lotes.slice(0, 5),
         transcricoes_recentes: recentes.map((r) => ({ numero: r.numero, arquivo: r.arquivo, quando: r.quando })),
         pauta: {
-          hoje: pauta.filter((a) => a.data === h).length,
-          semana: pauta.filter((a) => a.data >= h && a.data <= iso(dia(7))).length,
+          hoje: contarHoje(pauta),
+          semana: contarSemana(pauta),
           proxima, ultima_sincronizacao: ultimaSincronizacao,
           alteracoes_nao_vistas: alteracoes.filter((a) => !a.vista).length,
           // Como o servidor (C5): quantas fontes há, e se a pauta já foi
@@ -994,7 +1008,7 @@
     },
     "GET /api/pauta/fontes": () => fontes,
     "POST /api/pauta/fontes": ({ corpo }) => {
-      const f = { id: "f-" + corpo.sistema + "-" + String(corpo.tribunal).toLowerCase(), tribunal: corpo.tribunal, sistema: corpo.sistema, rotulo: corpo.rotulo || `${corpo.sistema === "eproc" ? "eProc" : "e-SAJ"} · ${corpo.tribunal}`, modo: corpo.url ? "capturado" : "automatico", url: corpo.url || "", menu: "", monitorada: !!corpo.url, ultima_sincronizacao: null, ultimo_erro: "" };
+      const f = { id: "f-" + corpo.sistema + "-" + String(corpo.tribunal).toLowerCase(), tribunal: corpo.tribunal, sistema: corpo.sistema, rotulo: corpo.rotulo || `${corpo.sistema === "eproc" ? "eProc" : "e-SAJ"} · ${corpo.tribunal}`, modo: corpo.url ? "capturado" : "automatico", url: corpo.url || "", menu: "", monitorada: !!corpo.url && !MOTIVO_PRESENCA, exige_presenca: !!MOTIVO_PRESENCA, motivo_presenca: MOTIVO_PRESENCA, ultima_sincronizacao: null, ultimo_erro: "" };
       fontes = fontes.filter((x) => x.id !== f.id).concat([f]);
       return f;
     },
@@ -1016,7 +1030,7 @@
             feitos++;
           }
           f.ultima_sincronizacao = isoHora(new Date());
-          f.monitorada = true;
+          f.monitorada = !f.exige_presenca;
           if (!f.url) f.url = "https://www2.tjal.jus.br/sajcas/agendaAudiencias";
         }
         ultimaSincronizacao = isoHora(new Date());
@@ -1153,9 +1167,17 @@
   // Registro das chamadas (os testes da interface conferem o que a tela pediu).
   const chamadas = [];
 
+  /** Os campos de um envio multipart; o arquivo vira {nome, tamanho}. */
+  function camposDoFormulario(fd) {
+    const campos = {};
+    for (const [k, v] of fd.entries()) campos[k] = typeof v === "string" ? v : { nome: v.name, tamanho: v.size };
+    return campos;
+  }
+
   async function responder(rota, pedido) {
     const fn = ROTAS[rota];
-    chamadas.push({ rota, params: pedido.params, corpo: pedido.corpo === undefined ? null : pedido.corpo });
+    const corpo = pedido.corpo !== undefined ? pedido.corpo : pedido.formulario ? camposDoFormulario(pedido.formulario) : null;
+    chamadas.push({ rota, params: pedido.params, corpo, multipart: !!pedido.formulario });
     if (chamadas.length > 500) chamadas.splice(0, 100);
     await atraso();
     if (!fn) throw new H.api.ErroApi("nao_encontrado", "Esta função não existe na demonstração.", rota, 404);

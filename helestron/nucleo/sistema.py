@@ -90,15 +90,3 @@ def ambiente_sem_chaves() -> dict[str, str]:
     for chave in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"):
         env.pop(chave, None)
     return env
-
-
-def id_do_aplicativo(nome: str = "Helestron.App") -> None:
-    """Ícone próprio na barra de tarefas (sem isso, aparece o do Python)."""
-    if not NO_WINDOWS:
-        return
-    try:
-        import ctypes
-
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(nome)
-    except Exception:
-        pass

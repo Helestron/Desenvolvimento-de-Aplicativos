@@ -454,8 +454,10 @@
               return false;
             }
             // Enviado pela página, o arquivo chega ao programa como um
-            // temporário: o nome e a data dele vão junto, para a ficha.
-            const extras = escolha.arquivo ? { nome_original: escolha.arquivo.name, data_arquivo: escolha.arquivo.lastModified || "" } : {};
+            // temporário de hoje: o nome e a data da gravação (a da última
+            // modificação, em ISO 8601) vão junto, para a ficha do documento.
+            const extras = escolha.arquivo ? { nome_original: escolha.arquivo.name } : {};
+            if (escolha.arquivo && escolha.arquivo.lastModified) extras.data_arquivo = new Date(escolha.arquivo.lastModified).toISOString();
             const resposta = await api.transcricao.gravacao(escolha, Object.assign({ processo: cnj.mascarar(d), sigiloso: !!sig.checked, tipo: tipoGravacao.value }, extras));
             mostrarTarefaArquivo(resposta.tarefa, resposta);
             return true;

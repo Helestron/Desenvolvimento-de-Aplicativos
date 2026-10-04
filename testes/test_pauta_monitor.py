@@ -73,7 +73,10 @@ class TestMonitor(apoio.PastaTemporaria):
         self.amb = ap.config_temporaria(self.tmp, intervalo_horas=4, dias_atras=2,
                                         dias_a_frente=10)
         self.relogio = Relogio(T0)
-        self.servico = ServicoPauta(self.amb.cfg, self.tmp / "p.sqlite3", relogio=self.relogio)
+        # a senha do eProc do TJAL guardada no computador: o monitor entra sozinho
+        self.cofre = apoio.CofreFalso({"eproc:TJAL": ("u", "s")})
+        self.servico = ServicoPauta(self.amb.cfg, self.tmp / "p.sqlite3", relogio=self.relogio,
+                                    cofre=self.cofre)
         self.addCleanup(self.servico.fechar)
         self.chamadas = []
         self.ocupado = False
@@ -100,6 +103,15 @@ class TestMonitor(apoio.PastaTemporaria):
         self.assertEqual(self.chamadas, [(T0, ["eproc-tjal"], date(2026, 10, 3),
                                           date(2026, 10, 15))])
         self.assertEqual(self.monitor.proxima, T0 + timedelta(hours=4))
+        self.assertEqual(self.monitor.fontes_com_rota(), ["eproc-tjal"])
+        # sem a senha guardada (ou com o certificado), o login exige a pessoa:
+        # a fonte sai do monitoramento automático
+        self.cofre.dados.clear()
+        self.assertEqual(self.monitor.fontes_com_rota(), [])
+        self.cofre.dados["eproc:TJAL"] = ("u", "s")
+        self.amb.cfg.definir("eproc", "login", "certificado")
+        self.assertEqual(self.monitor.fontes_com_rota(), [])
+        self.amb.cfg.definir("eproc", "login", "senha")
         # 1 h depois: ainda em dia
         self.relogio.andar(hours=1)
         self.assertEqual(self.monitor.ciclo(), 3 * 3600)

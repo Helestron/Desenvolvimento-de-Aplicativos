@@ -562,11 +562,25 @@
             el("span", { classe: "ajuda-campo", estilo: { margin: "0" } }, "Última sincronização: ", el("strong", { texto: ultima ? fmt.quando(ultima) : "nunca" })),
             m.ativo && m.proxima ? el("span", { classe: "ajuda-campo", estilo: { margin: "0" } }, "Próxima: ", el("strong", { texto: fmt.quando(m.proxima) })) : null,
             el("span", { classe: "ajuda-campo", estilo: { margin: "0" } },
-              fontes.length ? fmt.plural(fontes.length, "fonte", "fontes") + ": " + fontes.map((x) => `${nomeSistema(x.sistema)} ${x.tribunal}${x.monitorada ? "" : " (sem rota)"}`).join(", ") + " · " : "Nenhuma fonte ainda · ",
+              fontes.length ? fmt.plural(fontes.length, "fonte", "fontes") + ": " + fontes.map((x) => `${nomeSistema(x.sistema)} ${x.tribunal}${x.monitorada ? "" : x.exige_presenca ? " (só com você)" : " (sem rota)"}`).join(", ") + " · " : "Nenhuma fonte ainda · ",
               el("a", { href: "#/ajustes/pauta", texto: "gerenciar" })),
-            m.ativo && fontes.length && !fontes.some((x) => x.monitorada)
-              ? el("span", { classe: "ajuda-campo", estilo: { margin: "4px 0 0" }, texto: "O monitoramento começa quando uma fonte tiver a pauta encontrada: sincronize ou capture no portal uma vez." })
-              : null));
+            m.ativo && fontes.length && !fontes.some((x) => x.monitorada) ? avisoSemMonitoradas(fontes) : null));
+      }
+
+      /** Monitoramento ligado sem nenhuma fonte que ele sincronize: diz por quê. */
+      function avisoSemMonitoradas(fontes) {
+        // As fontes agrupadas pelo motivo: "a entrada no portal é pelo
+        // certificado digital (e-SAJ TJAL e eProc TJAL)".
+        const porMotivo = new Map();
+        for (const x of fontes.filter((f) => f.exige_presenca)) {
+          const motivo = x.motivo_presenca || "o login exige você à frente";
+          porMotivo.set(motivo, (porMotivo.get(motivo) || []).concat([`${nomeSistema(x.sistema)} ${x.tribunal}`]));
+        }
+        const lista = (nomes) => (nomes.length > 1 ? nomes.slice(0, -1).join(", ") + " e " + nomes[nomes.length - 1] : nomes[0]);
+        const texto = porMotivo.size
+          ? `O monitoramento não entra sozinho no portal: ${[...porMotivo].map(([motivo, nomes]) => `${motivo} (${lista(nomes)})`).join("; ")}. Sincronize aqui quando quiser, ou use a entrada por usuário e senha, com a senha guardada, em Ajustes › Acessos aos portais.`
+          : "O monitoramento começa quando uma fonte tiver a pauta encontrada: sincronize ou capture no portal uma vez.";
+        return el("span", { classe: "ajuda-campo", id: "monitor-sem-fontes", estilo: { margin: "4px 0 0" }, texto });
       }
 
       function desenharAlteracoes() {

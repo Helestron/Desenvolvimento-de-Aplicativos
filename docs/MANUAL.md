@@ -92,9 +92,10 @@ O Helestron substitui o antigo Assessor Integrado. O que mudou:
   Edge** (o Edge já vem no Windows).
 - Para transcrever, um **microfone** (o do notebook serve; um microfone de
   mesa capta melhor a sala de audiências).
-- Para a janela do programa, o componente **WebView2** da Microsoft, que já
-  vem no Windows 11 e no Windows 10 atualizado. Sem ele, o Helestron abre no
-  Edge (veja [Problemas comuns](#a-janela-abriu-no-microsoft-edge)).
+- Para a janela do programa, o componente **WebView2** da Microsoft (versão
+  101 ou mais recente), que já vem no Windows 11 e no Windows 10 atualizado.
+  Sem ele, ou com uma versão mais antiga, o Helestron abre no Edge (veja
+  [Problemas comuns](#a-janela-abriu-no-microsoft-edge)).
 
 ### Passo a passo
 
@@ -125,13 +126,16 @@ O Helestron substitui o antigo Assessor Integrado. O que mudou:
    | Tela | O que fazer |
    |---|---|
    | **Bem-vindo ao Helestron** | clique em **Próximo** |
-   | **Pasta do programa** | deixe a pasta sugerida e clique em **Próximo** (para usar outra, clique em **Procurar**) |
+   | **Pasta do programa** | deixe a pasta sugerida e clique em **Próximo** (para usar outra, clique em **Procurar**; se não houver permissão para gravar nela, como em `C:\Program Files`, o assistente avisa e continua nesta tela) |
    | **Opções** | o programa é obrigatório; desmarque **Atalho na Área de Trabalho** se não quiser o ícone ali; clique em **Instalar** |
    | **Instalando** | aguarde: o Helestron é copiado e, no fim, conferido (pode levar até um minuto) |
    | **Pronto!** | deixe marcado **Abrir o Helestron** e clique em **Concluir** |
 
 Se o Helestron estiver aberto (numa atualização, por exemplo), o instalador o
-fecha antes de copiar; a transcrição de uma audiência em curso é salva antes.
+fecha antes de copiar. Uma audiência sendo transcrita **não é interrompida**:
+o instalador pede que você a encerre no Helestron (botão **Encerrar**: o
+documento é salvo) e clique em **Repetir**; **Cancelar** deixa a instalação
+para depois, sem mudar nada (veja [Atualizar](#atualizar)).
 
 ### Onde o Helestron é instalado
 
@@ -165,8 +169,8 @@ No fim da instalação, o assistente roda a **conferência da instalação**:
   SHA-256) contra a lista do que esta versão instala;
 - **abre todos os módulos** do programa, um por um;
 - **carrega o modelo de transcrição**;
-- confere se o componente da janela (WebView2) ou, na falta dele, o Edge
-  está disponível.
+- confere se o componente da janela (WebView2, versão 101 ou mais recente)
+  ou, na falta dele, o Edge está disponível.
 
 Se tudo estiver em ordem, aparece "Instalação conferida: tudo certo." Se algo
 faltar (quase sempre, um arquivo que o antivírus pôs em quarentena), o
@@ -178,6 +182,12 @@ assistente diz o que aconteceu e onde está o relatório:
 
 Quase sempre resolve instalar de novo. Se o problema continuar, peça à equipe
 de informática que libere, no antivírus, a pasta do programa.
+
+Há um caso à parte: o computador não tem o WebView2 nem o Microsoft Edge, e o
+navegador padrão é o Internet Explorer, que não abre o Helestron. O programa
+fica instalado, mas o assistente avisa que falta o **Microsoft Edge WebView2
+Runtime** (gratuito, da Microsoft) e pede que a equipe de informática o
+instale antes de abrir o Helestron.
 
 Além disso, **a cada abertura** o Helestron confere rapidamente se os seus
 arquivos essenciais estão lá. Se faltar algum, ele mostra uma tela própria em
@@ -205,6 +215,11 @@ Helestron-Setup-1.0.0.exe /S /D=D:\Programas\Helestron
   `start /wait "" Helestron-Setup-1.0.0.exe /S` e leia o `%ERRORLEVEL%`.
 - A conferência final roda também no modo silencioso, e o relatório fica em
   `%LOCALAPPDATA%\Helestron\Logs\verificacao-instalacao.txt`.
+- Numa atualização, o Claude Desktop e o Codex podem continuar abertos, mesmo
+  usando o conector do acervo: os arquivos do programa que eles prendem são
+  renomeados para a pasta `.antigos`, dentro da pasta do programa, e
+  apagados no próximo logon do usuário (pela chave RunOnce do Windows) ou na
+  próxima abertura do Helestron. Nenhum programa é encerrado.
 
 Códigos de saída:
 
@@ -212,9 +227,12 @@ Códigos de saída:
 |---|---|
 | 0 | instalado e conferido |
 | 2 | copiado, mas a conferência final encontrou problema (veja o relatório) |
-| 4 | o Helestron (ou o Claude Desktop, usando o conector do acervo) continuou aberto e prendeu os arquivos; feche-o e rode de novo |
+| 4 | o Helestron não fechou a tempo e continuou prendendo os arquivos do programa; feche-o e rode de novo |
 | 5 | outro instalador do Helestron já estava aberto |
 | 6 | Windows incompatível (32 bits, ou anterior ao Windows 10) |
+| 7 | havia uma audiência sendo transcrita no Helestron: nada foi alterado, para não interromper a transcrição; rode de novo depois que ela for encerrada |
+| 8 | sem permissão para gravar na pasta escolhida (por exemplo, `/D=C:\Program Files\Helestron`); use uma pasta do usuário, como a padrão |
+| 9 | instalado e conferido, mas o computador não tem como abrir a janela do Helestron: falta o Microsoft Edge WebView2 Runtime (e o Edge), e o navegador padrão é o Internet Explorer; instale o WebView2 Runtime |
 
 Para conferir a impressão digital do instalador, no PowerShell:
 `Get-FileHash .\Helestron-Setup-1.0.0.exe -Algorithm SHA256`, e compare com o
@@ -232,8 +250,11 @@ Iniciar. Se ele já estiver aberto, o atalho só traz a janela para a frente.
 A tela **Início** mostra a saudação, os quatro cartões das funções e, à
 direita, os **Primeiros passos**: uma lista de verificação com o que ainda
 falta configurar (o acesso aos portais, as pastas, o modelo de transcrição e
-a pauta de audiências). Cada item pendente tem o botão **Resolver**, que leva
-direto ao lugar certo; o que já está em ordem aparece marcado.
+a pauta de audiências). Cada item pendente tem um botão que leva direto ao
+lugar certo (**Resolver** ou, na pauta, **Configurar**); o que já está em
+ordem aparece marcado, e o quadro sai da tela quando tudo estiver feito. A
+pauta só conta como configurada depois que você cadastra uma fonte,
+sincroniza ou importa um relatório: abrir a tela da Pauta não basta.
 
 Nos **Ajustes**, as opções valem na hora, sem botão para salvar: ao lado do
 campo alterado aparece **Salvo**. O que o programa recusa (por exemplo, uma pasta
@@ -254,13 +275,20 @@ Em **Ajustes › Acessos aos portais**:
    sigla)**, no eProc) e a **Senha**.
 4. Deixe ligado **Lembrar neste computador**: a senha fica cifrada pelo
    Windows (DPAPI) e só a sua conta, neste computador, consegue lê-la.
-   Desligado, a senha vale só até fechar o Helestron.
+   Desligado, a senha vale só até fechar o Helestron: serve para baixar
+   processos e para sincronizar ou capturar a pauta, mas não para o
+   monitoramento automático, que só usa a senha guardada.
 5. Clique em **Salvar**.
 
-Cada portal cadastrado aparece na lista com "Senha guardada" e o botão
-**Testar**, que entra no portal e diz se o acesso funcionou. Para trocar a
-senha, clique no nome do portal; para apagar o acesso, clique no nome e, na
-janela que se abre, em **Apagar**.
+Cada portal aparece na lista com a situação da senha ("Senha guardada",
+"Senha só até fechar o Helestron" ou "Sem senha guardada") e, ao lado, os
+botões **Testar** (quando há senha) e **Alterar** (ou **Cadastrar**, se o
+acesso ainda não foi cadastrado). **Testar** entra exatamente no portal
+daquela linha (no TJAL, no TJSP e no TJAC, o e-SAJ e o eProc são testados
+cada um no seu botão) e mostra o resultado na própria linha: "Testando o
+acesso…", "Acesso confirmado às 14:32." ou "O teste falhou.", com o motivo.
+Para trocar a senha, clique em **Alterar**; para apagar o acesso, clique em
+**Alterar** e, na janela que se abre, em **Apagar**.
 
 Logo abaixo, o grupo **Como entrar** define o modo de entrada em cada
 sistema:
@@ -316,9 +344,19 @@ Em **Ajustes › Unidade**:
   janela aparece no meio da tela, com um campo grande. Digite o código: com
   seis dígitos, ele é enviado sozinho. Se o código por e-mail não chegar, use
   **Pedir novo código**. A janela mostra o prazo ("Responda em até 4:59",
-  por exemplo).
+  por exemplo). Se o Helestron estiver minimizado ou atrás de outro
+  programa, a janela dele volta para a frente e pisca na barra de tarefas,
+  para o pedido não passar despercebido. No Edge em modo aplicativo ou no
+  navegador, o título da janela alterna com "Código pedido — Helestron" até
+  você responder.
 - **Avisos.** Os avisos (um lote que terminou, uma planilha pronta) aparecem
-  no canto superior direito, às vezes com um botão, como **Abrir pasta**.
+  no canto superior direito, logo abaixo dos botões da tela, sem cobri-los,
+  às vezes com um botão, como **Abrir pasta**. A mesma mensagem não aparece
+  repetida, e ficam no máximo três à vista.
+- **Tamanho.** A janela abre com 1280 × 820 pontos. Numa tela menor (um
+  notebook de 1366 × 768, ou uma tela Full HD com a escala do Windows em
+  150 %), ela abre maximizada, e nada fica escondido atrás da barra de
+  tarefas.
 - **Fechar.** Se você fechar a janela com trabalho em andamento, o Helestron
   pergunta antes (**Fechar mesmo assim** ou **Continuar**). Ao fechar, a
   transcrição de uma audiência em curso é salva antes.
@@ -380,9 +418,14 @@ Em **Ajustes › Unidade**:
    | Falhou | outro problema; o detalhe aparece na linha |
    | Interrompido | o lote foi parado antes |
 
-   **Parar** interrompe depois do processo atual. No fim aparecem **Abrir
-   pasta**, **Relatório**, **Tentar de novo (N)** (baixa de novo só os que
-   falharam) e **Novo lote**.
+   **Parar** interrompe depois do processo atual. No fim, o título resume o
+   lote: **Lote concluído**, **Lote concluído com falhas** (anel âmbar) ou
+   **Nenhum processo baixado** (anel vermelho). Aparecem então **Abrir
+   pasta**, **Relatório**, **Tentar de novo (N)** e **Novo lote**.
+   **Tentar de novo** baixa de novo só os que falharam, no mesmo lote (a
+   mesma pasta), e atualiza o relatório dele: as linhas refeitas tomam o
+   lugar das antigas, e as dos processos que já estavam baixados continuam
+   lá.
 
 Abaixo da área da relação, **Últimos lotes** lista os lotes já baixados, com
 **Abrir** (a pasta) e o ícone do relatório.
@@ -391,7 +434,9 @@ Abaixo da área da relação, **Últimos lotes** lista os lotes já baixados, co
 
 Uma pasta com o nome do lote, em `Acervo\Processos\`, contendo **um PDF por
 processo**, nomeado com o número (`0700123-83.2024.8.02.0001.pdf`). O
-relatório do lote fica em `_controle\relatorio.csv`, que abre no Excel.
+relatório do lote fica em `_controle\relatorio.csv`, que abre no Excel. Se o
+relatório estiver aberto no Excel quando o lote terminar, o Helestron grava
+ao lado `relatorio (atualizado).csv`.
 
 ### Bom saber
 
@@ -439,14 +484,21 @@ Em **Audiências**, no cartão **Nova audiência**:
 1. **Número do processo**: é ele que dá nome ao documento. O Helestron
    confere o dígito verificador ("Número válido · TJAL", ou "O dígito
    verificador não confere"). Se houver audiências de hoje na pauta, elas
-   aparecem logo abaixo ("Hoje na pauta:"): um clique preenche o número, o
-   tipo e o sigilo.
+   aparecem logo abaixo ("Hoje na pauta:"): um clique preenche o número e o
+   tipo e, se a audiência for sigilosa, liga o **Segredo de justiça**.
 2. **Tipo de audiência**: Conciliação, Instrução e julgamento, Una,
    Custódia, Justificação, Mediação ou Outra.
-3. **Segredo de justiça**: ligue para processo sigiloso (veja abaixo).
-4. **Microfone**: escolha o microfone e clique em **Testar**; fale algo, e
-   as barras do medidor devem se mexer. Clique em **Parar teste** quando
-   terminar.
+3. **Segredo de justiça**: ligue para processo sigiloso. Se a pauta de
+   audiências indicar que o processo corre em segredo de justiça, o
+   Helestron liga o interruptor sozinho e diz por quê (veja abaixo).
+4. **Microfone**: escolha o microfone (ou **Padrão do Windows**) e clique em
+   **Testar**; fale algo, e as barras do medidor devem se mexer. Clique em
+   **Parar teste** quando terminar. A escolha fica guardada pelo **nome** do
+   microfone, e não pela posição na lista: ligar o fone USB em outra porta
+   não troca o microfone. Se o microfone guardado não estiver ligado, ele
+   aparece na lista como "(não encontrado)", com um aviso em vermelho, e o
+   Helestron não grava por outro aparelho sem avisar: ligue-o ou escolha
+   outro.
 5. **Participantes**: os nomes dos botões de quem está falando, um para cada
    tecla de **F1 a F8**. O padrão é Juiz(a), Promotor(a), Defensor(a),
    Advogado(a) do autor, Advogado(a) do réu, Testemunha, Parte e Outro.
@@ -461,8 +513,8 @@ pronto ("Modelo … pronto").
 2. O texto aparece poucos segundos depois de cada fala, com o horário e o
    nome de quem falou.
 3. Indique **quem está falando** com os botões ou com as teclas **F1 a F8**.
-4. **Pausar** suspende a gravação (num intervalo, por exemplo); **Retomar**
-   continua.
+4. **Pausar** suspende a gravação (num intervalo, por exemplo): pausada,
+   nada é captado, e o "Ouvindo…" some da tela. **Retomar** continua.
 5. Se você subir o texto para reler um trecho, a rolagem automática fica
    suspensa; o botão **Ir para o fim** volta ao ponto atual.
 6. Para terminar, clique em **Encerrar** e confirme em **Encerrar e salvar**.
@@ -471,7 +523,10 @@ pronto ("Modelo … pronto").
 No alto da tela ficam o cronômetro e a situação (**Gravando**, **Pausado**).
 Se o computador ficar para trás, aparece "Atraso de N s": nada se perde, o
 áudio está gravado e a fila é transcrita. No rodapé, "Salvo automaticamente
-às …" mostra o último salvamento.
+às …" mostra o último salvamento. Se o microfone escolhido deixar de abrir
+no meio da audiência (desligado, ou tomado por outro programa) e outro
+aparelho continuar a gravação, o Helestron avisa na hora: confira o
+microfone.
 
 Você pode sair da tela de Audiências durante a gravação: ela continua, e uma
 bolinha vermelha em **Audiências**, na barra lateral, indica que a audiência
@@ -491,11 +546,12 @@ houver uma transcrição do mesmo processo, a nova sai como
 
 **Revisar com o modelo preciso**: o botão **Revisar** refaz o texto inteiro
 com um modelo maior e mais preciso, a partir da gravação e dos falantes que
-você marcou. Leva alguns minutos; acompanhe ali mesmo ou na barra lateral. No
-fim, o botão vira **Abrir a revisão**. Para que a revisão aconteça sempre ao
-encerrar, ligue **Revisar ao encerrar a audiência** em **Ajustes ›
-Transcrição**; com **Separar as vozes na revisão** ligado, ela também separa
-os falantes automaticamente.
+você marcou; a ficha mantém o tipo de audiência e os participantes. Leva
+alguns minutos; acompanhe ali mesmo ou na barra lateral. No fim, o botão vira
+**Abrir a revisão**. Para que a revisão aconteça sempre ao encerrar, ligue
+**Revisar ao encerrar a audiência** em **Ajustes › Transcrição**; com
+**Separar as vozes na revisão** ligado, ela também separa os falantes
+automaticamente.
 
 > A transcrição é automática: confira o texto antes de usá-lo em qualquer
 > ato, especialmente nas passagens decisivas, com a gravação.
@@ -504,24 +560,42 @@ os falantes automaticamente.
 
 Com **Segredo de justiça** ligado, a transcrição e a gravação vão para
 `Sigilosos\Transcricoes` (e `Sigilosos\Transcricoes\_audio`), **fora** do
-acervo compartilhado com a IA. Se os autos do processo já estiverem na pasta
-dos sigilosos, a transcrição vai para lá mesmo com o interruptor desligado.
+acervo compartilhado com a IA.
+
+O Helestron também grava como sigilosa, mesmo com o interruptor desligado, a
+audiência de um processo que ele já sabe ser sigiloso:
+
+- os autos do processo estão na pasta dos sigilosos, ou uma transcrição ou
+  gravação anterior dele já foi para lá;
+- a pauta de audiências indica segredo de justiça em alguma audiência desse
+  processo (vinda do portal ou de um relatório importado).
+
+Nesses casos, o interruptor se liga sozinho (pela pauta, logo que o número
+é digitado; nos outros casos, ao começar a gravação) e a tela mostra o motivo
+(por exemplo, "A pauta de audiências indica que este processo corre em
+segredo de justiça."). O Helestron nunca desliga o sigilo que você ligou; o que ele
+ligou sozinho volta a ficar desligado se você trocar o número do processo.
 
 ### Transcrever uma gravação
 
 Para transcrever uma gravação já existente (por exemplo, a mídia baixada do
 processo, ou um arquivo de áudio ou vídeo), clique em **Transcrever uma
 gravação**, escolha o arquivo, confira o **Número do processo** (o Helestron
-o lê do nome do arquivo, quando ele está lá) e o **Segredo de justiça**, e
-clique em **Transcrever**. A transcrição usa o modelo preciso e pode levar
-alguns minutos; acompanhe na barra lateral.
+o lê do nome do arquivo, quando ele está lá), o **Tipo de audiência** e o
+**Segredo de justiça**, e clique em **Transcrever**. O sigilo segue as mesmas
+regras da audiência ao vivo e vale também quando a gravação escolhida está
+na pasta dos sigilosos. O nome e a data do arquivo de áudio vão para a ficha
+do documento. A transcrição usa o modelo preciso e pode levar alguns
+minutos; acompanhe na barra lateral.
 
 ### Recuperar uma transcrição interrompida
 
 O documento é salvo sozinho a cada poucos segundos. Se o computador desligar
 ou o programa fechar no meio, ao abrir **Audiências** de novo aparece o aviso
 "Uma transcrição foi interrompida", com o botão **Recuperar**: o que já tinha
-sido transcrito volta para o documento, e a gravação é reparada.
+sido transcrito volta para o documento, e a gravação é reparada. Como no fim
+de uma audiência, o índice do acervo é atualizado e, se o espelho automático
+estiver ligado, a cópia na nuvem também.
 
 As **Transcrições recentes** ficam na lateral da tela; um clique abre o
 documento.
@@ -535,7 +609,8 @@ documento.
   vivo. Os maiores (para a revisão e as gravações) aparecem em **Modelos de
   transcrição**, em **Ajustes › Transcrição**, com o botão **Baixar** (exige
   internet, uma única vez).
-- Em **Ajustes › Transcrição** também ficam **Participantes padrão**,
+- Em **Ajustes › Transcrição** também ficam o **Microfone** (a mesma escolha
+  da tela Audiências, guardada pelo nome), **Participantes padrão**,
   **Vocabulário da transcrição** (mantenha o texto acentuado: o modelo imita
   a grafia dele) e **Guardar a gravação da audiência**.
 - A **Separação de falantes** (no fim de **Ajustes › Transcrição**) mostra se
@@ -575,14 +650,29 @@ portais** (veja [Primeiro uso](#acessos-aos-portais)).
 3. O Helestron entra no portal e procura a pauta de audiências. Se o portal
    pedir código, a janela de sempre pede que você o digite. Uma faixa no alto
    da tela mostra o andamento, com **Parar**.
-4. No fim, um aviso resume o que mudou, por exemplo: "8 audiências
-   conferidas · 1 nova, 2 alteradas, 1 saiu da pauta."
+4. No fim, uma faixa que fica à vista até você fechá-la resume o que mudou,
+   por exemplo: "8 audiências conferidas · 1 nova, 2 alteradas, 1 saiu da
+   pauta.", com as fontes que tiveram problema e os avisos. (Se você estiver
+   em outra tela, o resultado chega num aviso.)
 
 O endereço da pauta que funcionou fica **lembrado** na fonte e é usado nas
 próximas vezes e pelo monitoramento. Para acrescentar outro portal (o eProc
 do mesmo tribunal, por exemplo), use **Ajustes › Pauta › Adicionar fonte**.
 **Sincronizar** confere todas as fontes de uma vez; se uma falhar, as outras
-seguem.
+seguem. A senha digitada com **Lembrar neste computador** desligado também
+vale aqui, até você fechar o Helestron.
+
+**Nada sai da pauta por engano.** Uma audiência só é marcada como **Saiu da
+pauta** quando o Helestron leu a pauta do portal inteira. Se a leitura ficar
+incompleta (a página seguinte não abriu a tempo ou não mostrou a tabela, o
+portal voltou a uma página já lida, a pauta passou de 50 páginas, ou o
+portal informou mais audiências do que vieram), o resultado avisa que a
+leitura "ficou incompleta" e que "nenhuma audiência foi dada como fora da
+pauta": as novas e as alteradas são gravadas, e nenhuma é dada como
+removida. Sincronize de novo mais tarde (ou escolha um período menor). Se a
+sessão cair no meio da leitura, o Helestron entra de novo e relê tudo. E, se
+o portal não aceitar o período pedido (ou mostrar outro), só as datas que
+vieram na tela são conferidas, e o resultado também avisa.
 
 ### Capturar no portal (a barra do Helestron)
 
@@ -624,10 +714,22 @@ Helestron lê:
 - `.pdf` (a tabela é lida pelo texto da página);
 - `.docx`.
 
+O relatório pode vir como o sistema o gera: com título, vara, período e a
+data de emissão no alto (o cabeçalho das colunas é procurado nas primeiras
+15 linhas), com o cabeçalho em duas linhas, com células mescladas (a data
+escrita uma vez para todas as audiências do dia, inclusive nas planilhas
+`.xlsx`, `.xls` e `.ods`) e com linhas de grupo por dia ("Segunda-feira,
+05/10/2026", com ou sem a contagem ao lado). Tabelas que não são de
+audiências (intimações, prazos, movimentações, fila de processos) são
+deixadas de lado.
+
 No fim, aparece **Relatório importado**, com quantas audiências são novas,
 quantas foram atualizadas e quantas linhas foram ignoradas (com os avisos,
 se houver). Uma audiência que já tinha vindo do portal não é duplicada: o
-relatório só completa o que faltava nela.
+relatório só completa o que faltava nela. O contrário também vale: se você
+importa o relatório e depois sincroniza, a audiência que o portal trouxer
+(mesmo processo, data e hora) toma o lugar da importada, e o que só o
+relatório sabia, como o sigilo, continua valendo.
 
 ### A tela da pauta
 
@@ -637,7 +739,8 @@ relatório só completa o que faltava nela.
   (**Todas as situações**, Designada, Realizada, Cancelada, Redesignada, Não
   realizada, Suspensa) e a busca (**Buscar processo, parte ou local**).
 - **Resumo**: quatro números, que também servem de filtro rápido: **no
-  período**, **hoje**, **nos próximos 7 dias** e **canceladas ou
+  período**, **hoje**, **nos próximos 7 dias** (hoje e os seis dias
+  seguintes, os mesmos da visão **Semana**) e **canceladas ou
   redesignadas**.
 - **Lista por dia** ("Segunda-feira, 5 de outubro"), com a hora, o número do
   processo (clique nele para **copiar**), o tipo, o sistema e o tribunal, o
@@ -656,9 +759,11 @@ O quadro **Alterações recentes**, à direita, mostra o que mudou desde a
 última conferência: **Nova audiência**, **Audiência alterada** (com o campo
 de antes e o de depois, por exemplo "Hora: 09:00 → 14:30"), **Audiência
 cancelada** e **Saiu da pauta** (a audiência que sumiu do portal não é
-apagada: fica marcada). O número de alterações não vistas aparece num selo
-vermelho em **Pauta**, na barra lateral. Clique em **Marcar como vistas**
-depois de conferir; **Ver todas** abre o histórico completo.
+apagada: fica marcada; e só é dada como fora da pauta depois de uma leitura
+completa, veja [Sincronizar](#sincronizar)). O número de alterações não
+vistas aparece num selo vermelho em **Pauta**, na barra lateral. Clique em
+**Marcar como vistas** depois de conferir; **Ver todas** abre o histórico
+completo.
 
 Na primeira sincronização de uma fonte, a pauta inteira entra sem aparecer
 como alteração.
@@ -684,12 +789,22 @@ três abas:
 - **Alterações**: o histórico do período.
 
 **Partes dos processos sigilosos**: por padrão, a coluna Partes dos
-processos em segredo de justiça sai como "(segredo de justiça)". Para
-mostrá-las, ligue **Incluir as partes dos sigilosos** na janela de
-exportação. (A posição inicial desse interruptor vem de **Mostrar as partes
-dos processos sigilosos na planilha**, em **Ajustes › Pauta**; o recomendado
-é deixá-lo desligado.) O sigilo vale quando o portal indica segredo de
-justiça **ou** quando os autos do processo estão na pasta dos sigilosos.
+processos em segredo de justiça sai como "(segredo de justiça)", também na
+aba Alterações. Para mostrá-las, ligue **Incluir as partes dos sigilosos** na
+janela de exportação; a escolha feita ali vale para aquela planilha, nos dois
+sentidos: desligado, as partes saem mascaradas mesmo que o ajuste esteja
+ligado. (A posição inicial desse interruptor vem de **Mostrar as partes dos
+processos sigilosos na planilha**, em **Ajustes › Pauta**; o recomendado é
+deixá-lo desligado.)
+
+O sigilo é do **processo**, e não de uma linha só: vale quando o portal ou um
+relatório importado indica segredo de justiça em **qualquer** audiência
+daquele processo, **ou** quando os autos do processo estão na pasta dos
+sigilosos. Com as partes mascaradas e algum processo sigiloso no resultado,
+o texto de uma busca não é escrito no alto da planilha (aparece "busca por
+texto (omitido por causa do segredo de justiça)"), porque poderia ser o nome
+de uma parte. E um texto que começa com "=" (num nome de parte ou numa
+observação) vai para a planilha como texto, nunca como fórmula.
 
 ### Monitoramento automático
 
@@ -705,14 +820,25 @@ Para o monitoramento funcionar, é preciso:
 - **o Helestron aberto**: ele confere a pauta enquanto o programa está
   aberto (pode ficar minimizado);
 - **uma fonte com endereço lembrado**, o que acontece depois da primeira
-  sincronização bem-sucedida ou de uma captura concluída. Em **Ajustes ›
-  Pauta**, cada fonte mostra **Monitorada** ou **Sem rota** (esta ainda fica
-  fora do monitoramento);
+  sincronização bem-sucedida ou de uma captura concluída;
 - **a senha guardada** em **Ajustes › Acessos aos portais**, com
   **Lembrar neste computador** ligado e a entrada por **Usuário e senha**.
-  Sem senha guardada, ou com a entrada por certificado ou manual, o
-  monitoramento não abre o navegador sozinho, para não surgir uma janela do
-  nada.
+
+Em **Ajustes › Pauta**, cada fonte mostra se entra no monitoramento:
+**Monitorada** (o endereço está lembrado, e o Helestron entra no portal
+sozinho), **Sem rota** (a pauta ainda não foi encontrada: sincronize ou
+capture uma vez) ou **Só com você**. Este último é o caso da fonte que só
+abre com você à frente: entrada por **Certificado digital** ou **Entrar
+manualmente**, ou sem a senha guardada (inclusive quando a senha foi
+digitada com **Lembrar neste computador** desligado). Ela **fica de fora**
+da conferência automática, e a linha da fonte diz por quê: o monitoramento
+não abre o navegador sozinho, para não surgir uma janela do nada, e não
+insiste a cada ciclo. O Início também mostra, uma vez a cada abertura do
+programa, o aviso **Monitoramento da pauta**, que diz em que fontes o
+monitoramento não entra sozinho e o que fazer: clicar em **Sincronizar**, na
+tela Pauta, quando quiser atualizar; guardar o usuário e a senha em
+**Ajustes › Acessos aos portais**; ou desligar **Conferir sozinho**. As
+outras fontes continuam sendo conferidas normalmente.
 
 Se o portal pedir um código de verificação durante a conferência automática,
 o Helestron **não fica esperando**: aparece o aviso **"Entre no portal para
@@ -774,16 +900,25 @@ os botões **Abrir a pasta** e **Copiar o caminho**.
 
 | Cartão | Botão | O que acontece |
 |---|---|---|
-| **Claude Code** | **Abrir no Claude Code** | abre o Claude Code numa janela própria, já na pasta do acervo; ele lê sozinho o `CLAUDE.md` e o índice. Se não estiver instalado, abre a página oficial que explica como instalá-lo (sem administrador). Exige plano pago do Claude. |
-| **Claude Cowork** | **Abrir no Cowork** | abre o Cowork, no app Claude Desktop, com a pasta do acervo; o Claude pede que você confirme o acesso à pasta. O pedido inicial vai copiado: é só colar (Ctrl+V). Exige o Claude Desktop e plano pago. |
-| **Claude Desktop** | **Conectar o acervo** | registra no Claude Desktop o conector **helestron**, com as ferramentas `listar_acervo`, `ler_processo`, `buscar` e `ler_transcricao`, que **só leem**. Feche o Claude Desktop pela bandeja do Windows (perto do relógio) e abra de novo para ele carregar o conector. Depois de conectado, o botão vira **Reconectar o acervo**. |
-| **ChatGPT Work** | **Abrir no ChatGPT Work** | copia o caminho do acervo e abre o app do ChatGPT. No modo **Work**, tecle **Ctrl+O** e cole o caminho: o ChatGPT passa a trabalhar na pasta e lê o `AGENTS.md`. O ChatGPT do navegador não lê pastas do computador: instale o app do ChatGPT para Windows ou use o pacote. |
-| **Codex** | **Abrir no Codex** | registra o conector do acervo para o Codex (no arquivo `%USERPROFILE%\.codex\config.toml`) e abre o agente da OpenAI numa janela própria, dentro do acervo; ele lê o `AGENTS.md`, com as mesmas regras do Claude. |
+| **Claude Code** | **Abrir no Claude Code** | abre o Claude Code numa janela própria, já na pasta do acervo; ele lê sozinho o `CLAUDE.md` e o índice. Se ele não estiver instalado, o Helestron abre no navegador a página oficial que explica como instalá-lo (sem administrador); depois de instalar, clique de novo no botão. Exige plano pago do Claude. |
+| **Claude Cowork** | **Abrir no Cowork** | copia o pedido inicial (na hora do clique) e abre o Cowork, no app Claude Desktop, com a pasta do acervo; o Claude pede que você confirme o acesso à pasta, e é só colar o pedido (Ctrl+V). Exige o Claude Desktop e plano pago. |
+| **Claude Desktop** | **Conectar o acervo** | registra no Claude Desktop o conector **helestron**, com as ferramentas `listar_acervo`, `ler_processo`, `buscar` e `ler_transcricao`, que **só leem**. Feche o Claude Desktop pela bandeja do Windows (perto do relógio) e abra de novo para ele carregar o conector. Depois de conectado, o botão vira **Reconectar o acervo**. Se o app não estiver instalado, o conector fica registrado e o Helestron abre a página de download do Claude Desktop. |
+| **ChatGPT Work** | **Abrir no ChatGPT Work** | copia o caminho do acervo (na hora do clique) e abre o app do ChatGPT. No modo **Work**, tecle **Ctrl+O** e cole o caminho: o ChatGPT passa a trabalhar na pasta e lê o `AGENTS.md`. O ChatGPT do navegador não lê pastas do computador: instale o app do ChatGPT para Windows ou use o pacote. |
+| **Codex** | **Abrir no Codex** | registra o conector do acervo para o Codex (no arquivo `%USERPROFILE%\.codex\config.toml`) e abre o agente da OpenAI numa janela própria, dentro do acervo; ele lê o `AGENTS.md`, com as mesmas regras do Claude. Sem o Codex instalado, use **Abrir no ChatGPT Work** ou, no cartão **Pacote para o ChatGPT**, **Gerar o pacote**. |
 | **Pacote para o ChatGPT** | **Gerar o pacote** | monta uma pasta e um `.zip` com os autos, os textos, as transcrições, o índice e as instruções, em `Documentos\Helestron\Pacotes para IA`, para anexar numa conversa ou num Projeto. No fim, o aviso traz o botão **Abrir pasta**. |
 | **Nuvem** | **Espelhar agora** | copia o acervo para a subpasta `Helestron - Acervo` da pasta do OneDrive ou do Google Drive escolhida na lista (ou em **Outra pasta…**), para usar a IA pela web e no celular. Só o que mudou é copiado; as gravações das audiências não vão. |
 
+Se o Windows não deixar o Helestron pôr o pedido inicial ou o caminho na área
+de transferência, a janela de resposta mostra o texto num campo, com o botão
+**Copiar**: copie dali (Ctrl+C) antes de colar. Se o navegador não abrir a
+página oficial do Claude Code (ou a de download do Claude Desktop), a janela
+traz o endereço e o botão **Abrir a página**.
+
 Para que a cópia na nuvem se atualize sozinha, ligue **Espelhar sozinho ao
 fim de cada download e de cada transcrição** em **Ajustes › Compartilhar**.
+A pasta da nuvem não pode ficar dentro do acervo nem conter o acervo (ele já
+estaria na nuvem, e o espelho só o duplicaria): o Helestron recusa essa
+escolha e explica por quê.
 
 ### Regras de sigilo
 
@@ -796,7 +931,9 @@ fim de cada download e de cada transcrição** em **Ajustes › Compartilhar**.
   **Processo sigiloso no acervo**: feche o PDF e mova-o para a pasta dos
   sigilosos.
 - O espelho na nuvem apaga a cópia de um processo que depois tenha ido para a
-  pasta dos sigilosos; fora isso, não apaga nada do que já está lá.
+  pasta dos sigilosos; fora isso, não apaga nada do que já está lá. Vale
+  também para a subpasta `Assessor Integrado - Acervo`, do espelho da versão
+  anterior, se ela ainda estiver na mesma pasta da nuvem.
 - A pauta exportada nunca fica no acervo.
 - A IA é ferramenta de apoio: resumos e minutas são sugestões para
   conferência e decisão do magistrado.
@@ -809,11 +946,11 @@ Os Ajustes são organizados em grupos (o índice fica à esquerda da tela):
 
 | Grupo | O que tem |
 |---|---|
-| **Acessos aos portais** | usuário e senha de cada portal (**Adicionar acesso**, **Testar**), e o grupo **Como entrar**: modo de entrada no e-SAJ e no eProc, **Esperar o login até (minutos)** e **Perfil do eProc** |
+| **Acessos aos portais** | usuário e senha de cada portal (**Adicionar acesso**, **Testar**, **Alterar**), e o grupo **Como entrar**: modo de entrada no e-SAJ e no eProc, **Esperar o login até (minutos)** e **Perfil do eProc** |
 | **Pastas** | **Pasta do acervo**, **Pasta dos processos sigilosos**, **Pasta da pauta exportada** e os **Atalhos** para abri-las |
 | **Unidade** | **Como o Helestron chama você** e os dados do cabeçalho das transcrições (**Magistrado(a)**, **Cargo**, **Vara**, **Comarca**, **Tribunal**) |
 | **Download** | pular os já baixados, separar os sigilosos, baixar as gravações, mostrar o navegador, **Navegador dos portais** (o padrão usa o Chrome e, sem ele, o Edge), pausa, tentativas, esperas, guardar a imagem da tela quando algo der errado e a montagem do PDF no eProc |
-| **Transcrição** | modelos ao vivo e de revisão, revisar ao encerrar, separar as vozes, guardar a gravação, horário de cada fala, participantes padrão, vocabulário, núcleos do processador, a lista **Modelos de transcrição** e a **Separação de falantes** |
+| **Transcrição** | modelos ao vivo e de revisão, revisar ao encerrar, separar as vozes, guardar a gravação, horário de cada fala, participantes padrão, vocabulário, núcleos do processador, o **Microfone** (guardado pelo nome), a lista **Modelos de transcrição** e a **Separação de falantes** |
 | **Pauta** | **Monitorar a pauta**, intervalo, dias para trás e à frente, **Mostrar as partes dos processos sigilosos na planilha** e as **Fontes da pauta** (**Adicionar fonte**, a situação de cada fonte e a lixeira para remover) |
 | **Compartilhar** | **Pasta da nuvem**, espelhar sozinho e **Gerar a versão em texto dos autos** |
 | **Sobre e diagnóstico** | versão e modo da janela, **Verificar a instalação**, **Abrir os registros**, a lista da verificação e **Encerrar o Helestron** |
@@ -827,8 +964,8 @@ deixam de ser conferidas no portal.
 
 | O quê | Onde |
 |---|---|
-| **Programa** | `%LOCALAPPDATA%\Programs\Helestron\` (ou a pasta escolhida na instalação) |
-| **Configuração e registros** | `%LOCALAPPDATA%\Helestron\`: `config.ini` (a configuração), `Logs\` (registros, `diagnostico\` e o relatório da conferência da instalação), `credenciais.json` (senhas cifradas pelo Windows), `perfis\` (perfil do navegador dos portais), `pauta.sqlite3` (a pauta e o histórico de alterações), `modelos\` (modelos de transcrição baixados depois) e `temp\` |
+| **Programa** | `%LOCALAPPDATA%\Programs\Helestron\` (ou a pasta escolhida na instalação); depois de uma atualização, pode haver ali, por pouco tempo, a pasta `.antigos` (veja [Atualizar](#atualizar)) |
+| **Configuração e registros** | `%LOCALAPPDATA%\Helestron\`: `config.ini` (a configuração), `Logs\` (registros, `diagnostico\` e o relatório da conferência da instalação), `credenciais.json` (senhas cifradas pelo Windows), `perfis\` (perfil do navegador dos portais), `pauta.sqlite3` (a pauta e o histórico de alterações), `modelos\` (modelos de transcrição baixados depois), `temp\` e, se houver, as correções feitas para o seu tribunal (`enderecos-locais.json`, `seletores.json` e `seletores-eproc.json`), que as atualizações não apagam |
 | **Acervo** (compartilhado com a IA) | `Documentos\Helestron\Acervo\`: `Processos\<nome do lote>\` (os PDFs e, em `_controle\`, o relatório), `Transcricoes\` (os DOCX e, em `_audio\`, as gravações), `_ia\` (textos para a IA; pode apagar, é refeito), `Produtos\` (o que a IA produzir), `CLAUDE.md`, `AGENTS.md` e `INDICE.md` |
 | **Sigilosos** (nunca compartilhados) | `Documentos\Helestron\Sigilosos\`: `<nome do lote>\` (processos em segredo de justiça) e `Transcricoes\` (as transcrições das audiências deles) |
 | **Pauta exportada** (fora do acervo) | `Documentos\Helestron\Pauta\` |
@@ -849,11 +986,27 @@ deixam de ser conferidas no portal.
    (<https://github.com/Helestron/Desenvolvimento-de-Aplicativos/releases>).
 2. Dê dois cliques nele e siga o assistente, como na primeira instalação.
 
-O instalador fecha o Helestron, se estiver aberto (uma audiência em gravação
-é salva antes), troca **só o programa**, na mesma pasta da instalação anterior, e
-confere a instalação no fim. Configurações, senhas, processos, transcrições e
-pauta continuam onde estavam. A versão instalada aparece em **Ajustes › Sobre
-e diagnóstico**.
+O instalador fecha o Helestron, se estiver aberto, troca **só o programa**,
+na mesma pasta da instalação anterior, e confere a instalação no fim.
+Configurações, senhas, processos, transcrições e pauta continuam onde
+estavam. A versão instalada aparece em **Ajustes › Sobre e diagnóstico**.
+
+- **Audiência em andamento.** Se houver uma audiência sendo transcrita
+  (gravando ou pausada), o instalador não fecha o Helestron: mostra "Há uma
+  audiência sendo transcrita no Helestron" e pede que você a encerre (botão
+  **Encerrar**: o documento é salvo) e clique em **Repetir**. **Cancelar**
+  deixa a atualização para depois, sem mudar nada. No modo silencioso, o
+  instalador desiste com o código 7 (veja
+  [Instalação silenciosa](#instalação-silenciosa-para-a-equipe-de-informática)).
+- **Audiência recém-encerrada.** Se o Helestron ainda estiver terminando de
+  transcrever a fila de uma audiência que acabou de ser encerrada, o
+  instalador espera ele terminar e fechar sozinho.
+- **Claude Desktop ou Codex abertos.** Não é preciso fechá-los: os arquivos
+  do programa que o conector do acervo mantém abertos são renomeados para a
+  pasta `.antigos`, dentro da pasta do programa, e apagados no próximo logon
+  do Windows ou na próxima abertura do Helestron. O conector aberto continua
+  funcionando; quando o Claude Desktop (ou o Codex) for aberto de novo, ele
+  passa a usar a versão nova.
 
 ---
 
@@ -864,13 +1017,16 @@ e diagnóstico**.
 - **Windows 10:** **Configurações › Aplicativos › Aplicativos e recursos ›
   Helestron › Desinstalar**.
 
-O desinstalador fecha o Helestron, remove o programa e os atalhos e retira o
-conector do acervo do Claude Desktop (que, sem o programa, só daria erro).
-Depois, ele **pergunta** se você quer apagar também as configurações e as
-senhas guardadas (`%LOCALAPPDATA%\Helestron`: configurações, registros,
-senhas dos portais, perfis do navegador e a pauta monitorada). A resposta
-já vem em **Não**, que é o que convém se você pretende instalar o Helestron
-de novo.
+O desinstalador fecha o Helestron (com uma audiência sendo transcrita, ele
+pede, como o instalador, que você a encerre antes), remove o programa e os
+atalhos e retira os **dois conectores do acervo**: o do Claude Desktop e o do
+Codex/ChatGPT Work (no arquivo `%USERPROFILE%\.codex\config.toml`), que, sem
+o programa, só dariam erro. Um não depende do outro: se a retirada de um
+falhar, a do outro acontece assim mesmo. Depois, ele **pergunta** se você
+quer apagar também as configurações e as senhas guardadas
+(`%LOCALAPPDATA%\Helestron`: configurações, registros, senhas dos portais,
+perfis do navegador e a pauta monitorada). A resposta já vem em **Não**, que
+é o que convém se você pretende instalar o Helestron de novo.
 
 A pasta **`Documentos\Helestron`** (processos, transcrições, sigilosos e
 pauta exportada) **nunca é apagada**, em nenhum caso.
@@ -881,7 +1037,9 @@ Para a equipe de informática, a desinstalação silenciosa é:
 "%LOCALAPPDATA%\Programs\Helestron\Desinstalar.exe" /S
 ```
 
-No modo silencioso, as configurações e as senhas são mantidas.
+No modo silencioso, as configurações e as senhas são mantidas. Se houver uma
+audiência sendo transcrita, a desinstalação silenciosa desiste com o código
+7, sem mudar nada.
 
 ---
 
@@ -894,12 +1052,18 @@ dos arquivos que faltam ou foram alterados, quase sempre o antivírus pôs um
 arquivo do programa em quarentena logo depois da instalação, ou a instalação
 foi interrompida no meio. **Os seus dados não foram afetados.**
 
-- Clique em **Reparar**: o Helestron procura o instalador
-  (`Helestron-Setup-….exe`) na pasta **Downloads** e o abre. Siga o
-  assistente: ele conserta a instalação sem apagar nada. Se o instalador não
-  estiver lá, a tela explica como baixá-lo de novo na página de versões. (O
-  instalador não deixa cópia de si no computador; por isso vale guardá-lo em
-  Downloads.)
+- Clique em **Reparar**: o Helestron procura o instalador na pasta
+  **Downloads** do Windows (também quando a informática a levou para outro
+  lugar). Ele só aceita o arquivo com o nome publicado
+  (`Helestron-Setup-1.0.0.exe`, ou `Helestron-Setup-1.0.0 (1).exe`, quando
+  baixado de novo), confere que é mesmo o instalador do Helestron (e, se o
+  arquivo `.sha256` estiver ao lado, a impressão digital dele) e nunca
+  escolhe uma versão mais antiga que a instalada. Antes de abrir, a tela
+  mostra o nome, o tamanho, a data e a pasta do arquivo encontrado: confira e
+  clique em **Abrir o instalador**. Siga o assistente: ele fecha esta tela e
+  conserta a instalação sem apagar nada. Se o instalador não estiver lá, a
+  tela explica como baixá-lo de novo na página de versões. (O instalador não
+  deixa cópia de si no computador; por isso vale guardá-lo em Downloads.)
 - **Abrir os registros** abre a pasta com o histórico do programa, útil para
   o suporte.
 - Se o problema voltar, peça à equipe de informática que libere, no
@@ -911,13 +1075,18 @@ Windows com a mesma orientação.
 
 ### A janela abriu no Microsoft Edge
 
-O Helestron usa o componente **WebView2** da Microsoft para desenhar a
-própria janela. Se ele faltar ou estiver danificado (Windows 10 sem
-atualizações, ou bloqueado pela política da empresa), o Helestron abre no
-**Microsoft Edge em modo aplicativo**: uma janela sem barra de endereço,
-quase igual. Se nem o Edge abrir, ele usa o navegador padrão, numa aba.
+O Helestron usa o componente **WebView2** da Microsoft (versão 101 ou mais
+recente) para desenhar a própria janela. Se ele faltar, for de uma versão
+mais antiga ou estiver danificado (Windows 10 sem atualizações, ou bloqueado
+pela política da empresa), o Helestron abre no **Microsoft Edge em modo
+aplicativo**: uma janela sem barra de endereço, quase igual. Isso vale
+também quando a janela própria abre, mas fica vazia: depois de 30 segundos
+sem a página carregar (ou assim que você fechar a janela vazia), o Helestron
+passa para o Edge. Se nem o Edge abrir, ele usa o navegador padrão, numa aba,
+mas nunca o Internet Explorer nem o Edge antigo, que não desenham a
+interface.
 
-Tudo funciona, com três diferenças:
+No Edge ou no navegador, tudo funciona, com três diferenças:
 
 - para escolher um arquivo, aparece a janela de escolha de arquivo do
   navegador;
@@ -928,8 +1097,17 @@ Tudo funciona, com três diferenças:
 
 O modo em uso aparece em **Ajustes › Sobre e diagnóstico** (por exemplo,
 "Microsoft Edge em modo aplicativo"). Para voltar à janela própria, peça à
-equipe de informática que instale ou repare o **Microsoft Edge WebView2
-Runtime** (gratuito, da Microsoft).
+equipe de informática que instale, atualize ou repare o **Microsoft Edge
+WebView2 Runtime** (gratuito, da Microsoft).
+
+Se nada disso for possível (sem o WebView2, sem o Edge e com o Internet
+Explorer como navegador padrão), o Helestron não some sem explicação: uma
+caixa de mensagem, "O Helestron não pôde abrir", diz o que falta e pede que a
+equipe de informática instale o **Microsoft Edge WebView2 Runtime**
+(gratuito, da Microsoft; não precisa de administrador). Outra saída é
+instalar o Google Chrome e defini-lo como navegador padrão. Nesse
+computador, a instalação já termina avisando disso (no modo silencioso, com
+o código 9).
 
 ### O portal recusou o usuário ou a senha
 
@@ -946,7 +1124,10 @@ Download**). Envie esses arquivos ao suporte.
 
 Se o **endereço** do eProc do seu tribunal mudou, a mensagem de erro diz onde
 corrigi-lo; a equipe de informática pode ajustá-lo no arquivo
-`%LOCALAPPDATA%\Helestron\enderecos-locais.json`.
+`%LOCALAPPDATA%\Helestron\enderecos-locais.json`. Se o suporte mandar uma
+correção dos campos da tela do portal (`seletores.json`, ou
+`seletores-eproc.json` para o eProc), ela também vai para
+`%LOCALAPPDATA%\Helestron`, que as atualizações do programa não apagam.
 
 Na **pauta**, se a sincronização deixar de achar a tela, use **Capturar no
 portal** ou **Importar relatório** (veja [O que esperar](#o-que-esperar-limites)).
@@ -961,7 +1142,13 @@ paradas:
   Privacidade e segurança › Microfone** (no Windows 10, **Configurações ›
   Privacidade › Microfone**), ligue o acesso ao microfone e a opção que
   permite aos **aplicativos da área de trabalho** acessar o microfone;
-- se aparecer "Nenhum microfone encontrado", confira se ele está conectado.
+- se aparecer "Nenhum microfone encontrado", confira se ele está conectado;
+- se aparecer "O microfone «…» não foi encontrado", o microfone guardado não
+  está ligado neste computador: ligue-o ou escolha outro em **Audiências** ou
+  em **Ajustes › Transcrição**;
+- se aparecer "Não consegui abrir o microfone", outro programa (Teams, Zoom,
+  o gravador da sala) pode estar usando-o: feche o outro programa e clique em
+  **Testar** de novo.
 
 ### A transcrição atrasa muito
 

@@ -72,7 +72,7 @@
   ];
 
   const PERGUNTAS = [
-    { p: "O portal pediu um código. Onde eu digito?", r: ["Numa janela do próprio Helestron, que aparece sozinha: o código enviado por e-mail, no e-SAJ, ou o código do aplicativo autenticador, no eProc. No e-SAJ, se o código não chegar, use “Pedir novo código”."] },
+    { p: "O portal pediu um código. Onde eu digito?", r: ["Numa janela do próprio Helestron, que aparece sozinha: o código enviado por e-mail, no e-SAJ, ou o código do aplicativo autenticador, no eProc. Se você estiver em outro programa, o Helestron pisca na barra de tarefas; aberto no Edge ou no navegador, o título da aba alterna até você responder. No e-SAJ, se o código não chegar, use “Pedir novo código”."] },
     { p: "Posso fechar a janela durante o download?", r: ["Melhor não: fechar a janela encerra o Helestron e interrompe o download. O que já foi baixado fica na pasta; o que faltou é baixado quando você usar a mesma relação de novo — o que já existe é pulado."] },
     { p: "O download parou num processo. E agora?", r: ["Confira a situação na lista do andamento: “Sem acesso” e “Não encontrado” costumam ser senha errada ou processo de outro sistema. Se o portal mudou, o Helestron guarda uma imagem e o HTML da tela em Logs\\diagnostico — envie-os ao suporte.", "Senha trocada no portal? Atualize em Ajustes › Acessos aos portais."] },
     { p: "O que acontece com os processos em segredo de justiça?", r: ["Ficam na pasta dos sigilosos, fora do acervo. Nunca vão para a IA, para o pacote do ChatGPT, para o espelho na nuvem nem para o índice. A transcrição de audiência sigilosa também vai para lá, com a gravação."] },

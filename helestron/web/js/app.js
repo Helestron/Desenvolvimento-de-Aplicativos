@@ -299,6 +299,12 @@
       if ((this.atual && this.atual.p.id === p.id) || this.fila.some((x) => x.id === p.id)) return;
       this.fila.push(p);
       this.proxima();
+      atencao.ligar();
+    },
+
+    /** Há pergunta à espera de resposta (à vista ou na fila)? */
+    pendente() {
+      return !!(this.atual && !this.atual.respondida) || this.fila.length > 0;
     },
 
     fechada({ id, motivo }) {
@@ -312,6 +318,7 @@
         const frase = { prazo: "O prazo para responder acabou.", tarefa_parada: "A tarefa foi interrompida." }[motivo];
         if (frase) aviso({ titulo: "Pergunta encerrada", mensagem: frase, tipo: "info" });
       }
+      atencao.conferir();
     },
 
     proxima() {
@@ -323,11 +330,64 @@
       estado.folha.resultado.then(() => {
         clearInterval(estado.relogio);
         if (this.atual === estado) this.atual = null;
+        atencao.conferir();
         setTimeout(() => this.proxima(), 220);
       });
     },
   };
   H.perguntas = perguntas;
+
+  /**
+   * Chamar a atenção para a pergunta quando a página não está à vista. Na
+   * janela do aplicativo (WebView2), o lado nativo restaura a janela e a faz
+   * piscar na barra de tarefas; no Edge e no navegador (modos de reserva),
+   * a página não alcança a janela: o título da aba alterna até a pergunta
+   * ser respondida (ou fechada pelo programa). Com a página em foco, o
+   * título volta ao normal.
+   */
+  const atencao = {
+    titulo: document.title || "Helestron",   // o título da seção aberta
+    alternado: false,                         // agora mostra o aviso no lugar do título?
+    relogio: null,
+
+    necessaria() {
+      return (loja.estado || {}).modo !== "janela";
+    },
+
+    semFoco() {
+      return document.hidden || !document.hasFocus();
+    },
+
+    aviso() {
+      const p = perguntas.atual ? perguntas.atual.p : perguntas.fila[0];
+      return p && p.tipo === "codigo" ? "Código pedido — Helestron" : "Pergunta à espera — Helestron";
+    },
+
+    ligar() {
+      if (this.relogio || !perguntas.pendente() || !this.necessaria() || !this.semFoco()) return;
+      this.relogio = setInterval(() => this.conferir(), 1000);
+      this.conferir();
+    },
+
+    conferir() {
+      if (!this.relogio) return;
+      if (!perguntas.pendente()) { this.desligar(); return; }
+      this.alternado = this.semFoco() ? !this.alternado : false;
+      document.title = this.alternado ? this.aviso() : this.titulo;
+    },
+
+    desligar() {
+      clearInterval(this.relogio);
+      this.relogio = null;
+      this.alternado = false;
+      document.title = this.titulo;
+    },
+  };
+  H.atencao = atencao;
+  // A página perdeu o foco com a pergunta ainda aberta: começa a alternar.
+  window.addEventListener("blur", () => atencao.ligar());
+  document.addEventListener("visibilitychange", () => (document.hidden ? atencao.ligar() : atencao.conferir()));
+  window.addEventListener("focus", () => atencao.conferir());
 
   function abrirPergunta(p, estado) {
     const tipo = p.tipo || "texto";
@@ -550,7 +610,8 @@
     H.ui.trocar(pagina, raiz);
     document.getElementById("conteudo").scrollTop = 0;
     const info = SECOES.find((s) => s.id === rota.secao);
-    document.title = info && rota.secao !== "inicio" ? `${info.rotulo} — Helestron` : "Helestron";
+    atencao.titulo = info && rota.secao !== "inicio" ? `${info.rotulo} — Helestron` : "Helestron";
+    if (!atencao.alternado) document.title = atencao.titulo;
     atual = { id: rota.secao, secao: def, ctx };
     if (!def) {
       mostrarErroDeSecao(raiz, new Error("Esta parte do programa não foi encontrada."), rota);
