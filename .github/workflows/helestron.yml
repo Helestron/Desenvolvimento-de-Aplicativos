@@ -254,6 +254,33 @@ jobs:
           Get-ChildItem -LiteralPath $pasta -Filter 'captura-*.png' -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.Name }
           if ($p.ExitCode -ne 0) { throw "O autoteste terminou com o codigo $($p.ExitCode)" }
 
+      # As capturas da janela real tambem vao para o registro, reduzidas e em
+      # base64 entre marcas: quem revisa sem acesso aos artefatos (rede
+      # restrita) ainda consegue ver como o WebView2 desenhou a interface.
+      - name: Capturas da janela real no registro (JPEG reduzido, base64)
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $pasta = Join-Path $env:RUNNER_TEMP 'autoteste'
+          $py = Join-Path $env:PASTA 'python.exe'
+          $codigo = @'
+          import base64, io, pathlib, sys
+          from PIL import Image
+          for png in sorted(pathlib.Path(sys.argv[1]).glob("captura-*.png")):
+              im = Image.open(png).convert("RGB")
+              im.thumbnail((1100, 1100))
+              buf = io.BytesIO()
+              im.save(buf, "JPEG", quality=72, optimize=True)
+              texto = base64.b64encode(buf.getvalue()).decode("ascii")
+              print("===CAPTURA " + png.name + " " + str(im.size) + "===")
+              for i in range(0, len(texto), 4000):
+                  print(texto[i:i + 4000])
+              print("===FIM===")
+          '@
+          $script = Join-Path $env:RUNNER_TEMP 'capturas_b64.py'
+          [IO.File]::WriteAllText($script, ($codigo -replace '(?m)^          ', ''))
+          & $py -I $script $pasta
+
       - name: Gerar fala sintetizada (System.Speech, WAV 16 kHz mono)
         shell: powershell
         run: |
