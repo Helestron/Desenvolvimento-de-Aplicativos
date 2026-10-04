@@ -116,23 +116,50 @@ jobs:
           key: construir-${{ hashFiles('construir/requisitos-windows.txt', 'construir/construir.py') }}
           restore-keys: construir-
 
-      - name: Modelo de transcrição (faster-whisper-small, Hugging Face)
+      # O programa carrega o modelo sempre em int8 (compute_type="int8"):
+      # gravado ja em int8, ele fica com metade do tamanho e da exatamente o
+      # mesmo resultado. Convertido do whisper-small oficial com o mesmo
+      # CTranslate2 que vai no instalador (4.8.2; o conversor dele usa o
+      # parametro dtype=, que pede transformers 4.56 ou mais novo). Com o
+      # modelo em float16 o instalador passava de 500 MB, o limite para
+      # entrega por anexo.
+      - name: Modelo de transcrição (whisper-small convertido para int8)
         run: |
-          python - <<'FIM'
-          import os
-          from huggingface_hub import snapshot_download
-          destino = os.path.join(os.environ["RUNNER_TEMP"], "faster-whisper-small")
-          snapshot_download("Systran/faster-whisper-small", local_dir=destino,
-                            allow_patterns=["config.json", "preprocessor_config.json", "model.bin",
-                                            "tokenizer.json", "vocabulary.*"])
-          for nome in sorted(os.listdir(destino)):
-              caminho = os.path.join(destino, nome)
-              if os.path.isfile(caminho):
-                  print(nome, os.path.getsize(caminho))
+          python -m venv "$RUNNER_TEMP/conversao"
+          PYC="$RUNNER_TEMP/conversao/bin/python"
+          "$PYC" -m pip install --disable-pip-version-check --quiet --index-url https://download.pytorch.org/whl/cpu torch==2.7.1
+          "$PYC" -m pip install --disable-pip-version-check --quiet ctranslate2==4.8.2 transformers==4.57.6
+          "$RUNNER_TEMP/conversao/bin/ct2-transformers-converter" --model openai/whisper-small \
+            --output_dir "$RUNNER_TEMP/faster-whisper-small" \
+            --copy_files tokenizer.json preprocessor_config.json --quantization int8
+          ls -l "$RUNNER_TEMP/faster-whisper-small"
+          "$PYC" - <<'FIM'
+          import json, os
+          pasta = os.path.join(os.environ["RUNNER_TEMP"], "faster-whisper-small")
+          for nome in ("model.bin", "config.json", "tokenizer.json", "preprocessor_config.json"):
+              assert os.path.isfile(os.path.join(pasta, nome)), nome
+          assert any(n.startswith("vocabulary.") for n in os.listdir(pasta)), "vocabulario"
+          tam = os.path.getsize(os.path.join(pasta, "model.bin"))
+          print("model.bin:", tam, "bytes")
+          assert 150_000_000 < tam < 350_000_000, "model.bin com tamanho inesperado para int8"
+          import ctranslate2
+          modelo = ctranslate2.models.Whisper(pasta, device="cpu", compute_type="int8")
+          print("Modelo carregado:", modelo.is_multilingual)
           FIM
 
       - name: Construir (construir/construir.py)
         run: python construir/construir.py --modelo "$RUNNER_TEMP/faster-whisper-small" --saida dist
+
+      - name: Tamanho do instalador (cabe no limite de 500 MiB para anexo)
+        run: |
+          for f in dist/Helestron-Setup-*.exe; do
+            TAM=$(stat -c %s "$f")
+            echo "$f: $TAM bytes"
+            if [ "$TAM" -gt 524288000 ]; then
+              echo "O instalador passou de 500 MiB e nao cabe como anexo."
+              exit 1
+            fi
+          done
 
       - name: Publicar o instalador
         uses: actions/upload-artifact@v4
