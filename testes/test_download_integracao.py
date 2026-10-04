@@ -413,6 +413,7 @@ class TestPortaADentro(apoio.PastaTemporaria):
         canal, exe = navegador_de_teste()
         return Navegador(self.tmp / "perfis" / nome, visivel=False, canal=canal,
                          executavel=exe, espera_s=20,
+                         dominios=motor.hosts_do_tribunal(self.tribunal),
                          pasta_downloads=self.tmp / "downloads",
                          pasta_diagnostico=self.tmp / "diagnostico")
 

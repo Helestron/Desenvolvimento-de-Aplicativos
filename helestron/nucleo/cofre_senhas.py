@@ -47,8 +47,8 @@ if sys.platform == "win32":  # pragma: no cover - exercitado no CI do Windows
         finally:
             _kernel32.LocalFree(b.pbData)
 
-    def _cifrar(dados: bytes) -> str:
-        entrada, entropia, saida = _blob(dados), _blob(_ENTROPIA), _BLOB()
+    def _cifrar(dados: bytes, extra: bytes = _ENTROPIA) -> str:
+        entrada, entropia, saida = _blob(dados), _blob(extra), _BLOB()
         ok = _crypt32.CryptProtectData(
             ctypes.byref(entrada), "Helestron", ctypes.byref(entropia),
             None, None, _CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(saida))
@@ -56,11 +56,11 @@ if sys.platform == "win32":  # pragma: no cover - exercitado no CI do Windows
             raise OSError(ctypes.GetLastError(), "CryptProtectData falhou")
         return "dpapi:" + base64.b64encode(_ler_blob(saida)).decode("ascii")
 
-    def _decifrar(texto: str) -> bytes:
+    def _decifrar(texto: str, extra: bytes = _ENTROPIA) -> bytes:
         if texto.startswith("b64:"):
             return base64.b64decode(texto[4:])
         bruto = base64.b64decode(texto.removeprefix("dpapi:"))
-        entrada, entropia, saida = _blob(bruto), _blob(_ENTROPIA), _BLOB()
+        entrada, entropia, saida = _blob(bruto), _blob(extra), _BLOB()
         ok = _crypt32.CryptUnprotectData(
             ctypes.byref(entrada), None, ctypes.byref(entropia),
             None, None, _CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(saida))
@@ -68,13 +68,43 @@ if sys.platform == "win32":  # pragma: no cover - exercitado no CI do Windows
             raise OSError(ctypes.GetLastError(), "CryptUnprotectData falhou")
         return _ler_blob(saida)
 else:
-    def _cifrar(dados: bytes) -> str:
+    def _cifrar(dados: bytes, extra: bytes = _ENTROPIA) -> str:
         return "b64:" + base64.b64encode(dados).decode("ascii")
 
-    def _decifrar(texto: str) -> bytes:
+    def _decifrar(texto: str, extra: bytes = _ENTROPIA) -> bytes:
         if texto.startswith("dpapi:"):
             raise OSError("credencial cifrada no Windows; não dá para ler aqui")
         return base64.b64decode(texto.removeprefix("b64:"))
+
+
+def cifrar(dados: bytes, finalidade: str) -> str:
+    """Cifra para ESTA conta do Windows (DPAPI), com uma entropia por
+    finalidade: o que se cifrou para a sessão do navegador não se decifra
+    como senha, e vice-versa."""
+    return _cifrar(dados, b"Helestron/" + finalidade.encode("utf-8"))
+
+
+def decifrar(texto: str, finalidade: str) -> bytes:
+    return _decifrar(texto, b"Helestron/" + finalidade.encode("utf-8"))
+
+
+def gravar_privado(arquivo: Path, texto: str) -> None:
+    """Grava por inteiro (temporário + troca) e só para o dono: 0600 fora do
+    Windows; no Windows, a pasta em %LOCALAPPDATA% já é só do usuário."""
+    arquivo = Path(arquivo)
+    arquivo.parent.mkdir(parents=True, exist_ok=True)
+    tmp = arquivo.with_name(arquivo.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(texto)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    os.replace(tmp, arquivo)
 
 
 class CofreSenhas:
@@ -98,11 +128,7 @@ class CofreSenhas:
             return {}
 
     def _gravar(self, dados: dict[str, str]) -> None:
-        self.arquivo.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.arquivo.with_suffix(".tmp")
-        tmp.write_text(json.dumps(dados, indent=1, ensure_ascii=False),
-                       encoding="utf-8")
-        os.replace(tmp, self.arquivo)
+        gravar_privado(self.arquivo, json.dumps(dados, indent=1, ensure_ascii=False))
 
     def obter(self, portal: str) -> tuple[str, str]:
         """(usuario, senha) do portal, ou ('', '') se não houver."""

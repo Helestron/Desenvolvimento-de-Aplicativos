@@ -153,42 +153,169 @@ class TestMensagens(unittest.TestCase):
 
 
 class TestPerfilDoCertificado(apoio.PastaTemporaria):
+    OUTRA = "nngceckbapebfimnlniiiahkandclblb"      # outra extensão qualquer
+    CREDENCIAIS = ("Login Data", "Login Data For Account", "Web Data", "Account Web Data",
+                   "Cookies", "History", "Bookmarks", "Top Sites", "Shortcuts", "Favicons",
+                   "Visited Links", "Extension Cookies", "Affiliation Database")
+
+    def _prefs(self, nome):
+        ext = navegador.EXT_WEB_SIGNER
+        return {"account_info": [{"email": "juiz@exemplo.com"}],
+                "profile": {"name": nome, "content_settings": {"exceptions": {
+                    "site_engagement": {"https://banco.com.br:443,*": {}}}}},
+                "download": {"default_directory": "C:\\Users\\juiz\\Downloads"},
+                "extensions": {"settings": {ext: {"location": 1, "from_webstore": True},
+                                            self.OUTRA: {"location": 1}},
+                               "install_signature": {"ids": [ext, self.OUTRA]}},
+                "protection": {"macs": {"extensions": {"settings": {ext: "MAC-WS",
+                                                                    self.OUTRA: "MAC-OUTRA"}},
+                                        "homepage": "MAC-HOME"},
+                               "super_mac": "SUPER"},
+                "homepage": "https://webmail.exemplo.com"}
+
     def _chrome(self, com_extensao=("Profile 2",), ultimo="Profile 2"):
         user = self.tmp / "User Data"
+        ext = navegador.EXT_WEB_SIGNER
         for nome in ("Default", "Profile 2"):
-            (user / nome / "Cache").mkdir(parents=True)
-            (user / nome / "Cache" / "lixo").write_text("x")
-            (user / nome / "Preferences").write_text(nome)
-            (user / nome / "Sessions").mkdir()
+            pasta = user / nome
+            (pasta / "Cache").mkdir(parents=True)
+            (pasta / "Cache" / "lixo").write_text("x")
+            (pasta / "Sessions").mkdir()
+            for arq in self.CREDENCIAIS:
+                (pasta / arq).write_text("SEGREDO")
+            (pasta / "Network").mkdir()
+            (pasta / "Network" / "Cookies").write_text("SEGREDO")
+            (pasta / "Local Storage" / "leveldb").mkdir(parents=True)
+            (pasta / "Extensions" / self.OUTRA / "9.9").mkdir(parents=True)
+            (pasta / "Local Extension Settings" / self.OUTRA).mkdir(parents=True)
+            (pasta / "Local Extension Settings" / self.OUTRA / "000003.log").write_text("cofre")
+            prefs = self._prefs(nome)
             if nome in com_extensao:
-                (user / nome / "Extensions" / navegador.EXT_WEB_SIGNER / "1.0").mkdir(parents=True)
-        (user / "Local State").write_text(json.dumps({"profile": {"last_used": ultimo}}))
+                (pasta / "Extensions" / ext / "1.0").mkdir(parents=True)
+                (pasta / "Extensions" / ext / "1.0" / "manifest.json").write_text("{}")
+                (pasta / "Local Extension Settings" / ext).mkdir(parents=True)
+                (pasta / "Local Extension Settings" / ext / "000003.log").write_text("dominios")
+                (pasta / "Local Extension Settings" / ext / "LOCK").write_text("")
+            else:
+                del prefs["extensions"]["settings"][ext]
+            (pasta / "Secure Preferences").write_text(json.dumps(prefs))
+            (pasta / "Preferences").write_text(json.dumps({"profile": {"name": nome},
+                                                           "account_info": prefs["account_info"]}))
+        (user / "Local State").write_text(json.dumps({"profile": {"last_used": ultimo},
+                                                      "os_crypt": {"encrypted_key": "DPAPI"}}))
         return user
 
-    def test_copia_o_perfil_que_tem_o_web_signer(self):
+    def _arquivos(self, destino):
+        return sorted(str(p.relative_to(destino)).replace(os.sep, "/")
+                      for p in destino.rglob("*") if p.is_file())
+
+    def test_copia_so_o_web_signer(self):
         user = self._chrome()
         destino = self.tmp / "perfis" / "esaj-TJAL-certificado"
         navegador.preparar_perfil_certificado(destino, user)
+        ext = navegador.EXT_WEB_SIGNER
         self.assertTrue(navegador.tem_web_signer(destino))
-        self.assertEqual((destino / "Default" / "Preferences").read_text(), "Profile 2")
-        self.assertFalse((destino / "Default" / "Cache").exists(), "cache não se copia")
-        self.assertFalse((destino / "Default" / "Sessions").exists(), "abas abertas não se copiam")
-        self.assertTrue((destino / "Local State").exists())
+        self.assertEqual(self._arquivos(destino), sorted([
+            f"Default/Extensions/{ext}/1.0/manifest.json",
+            f"Default/Local Extension Settings/{ext}/000003.log",
+            "Default/Secure Preferences",
+            navegador.MARCA_PERFIL_CERT]))
+        self.assertFalse((destino / "Local State").exists(), "a chave do Chrome não vem")
+
+    def test_preferencias_reduzidas_ao_registro_da_extensao(self):
+        user = self._chrome()
+        destino = self.tmp / "cert"
+        navegador.preparar_perfil_certificado(destino, user)
+        ext = navegador.EXT_WEB_SIGNER
+        prefs = json.loads((destino / "Default" / "Secure Preferences").read_text())
+        self.assertEqual(prefs, {
+            "extensions": {"settings": {ext: {"location": 1, "from_webstore": True}},
+                           "install_signature": {"ids": [ext, self.OUTRA]}},
+            "protection": {"macs": {"extensions": {"settings": {ext: "MAC-WS"}}}}})
+        texto = (destino / "Default" / "Secure Preferences").read_text()
+        for vazamento in ("juiz@exemplo.com", "banco.com.br", "webmail", "Downloads",
+                          "MAC-OUTRA", "SUPER"):
+            self.assertNotIn(vazamento, texto)
 
     def test_copia_uma_vez_so(self):
         user = self._chrome()
         destino = self.tmp / "cert"
         navegador.preparar_perfil_certificado(destino, user)
-        (destino / "Default" / "Preferences").write_text("mexido pelo programa")
+        (destino / "Default" / "Secure Preferences").write_text("mexido pelo Chrome")
         navegador.preparar_perfil_certificado(destino, user)
-        self.assertEqual((destino / "Default" / "Preferences").read_text(), "mexido pelo programa")
+        self.assertEqual((destino / "Default" / "Secure Preferences").read_text(),
+                         "mexido pelo Chrome")
 
-    def test_sem_web_signer_usa_o_ultimo_perfil_usado(self):
+    def test_web_signer_atualizado_no_chrome_atualiza_a_copia(self):
+        """O navegador do programa não atualiza extensões sozinho
+        (--disable-background-networking do Playwright)."""
+        user = self._chrome()
+        destino = self.tmp / "cert"
+        navegador.preparar_perfil_certificado(destino, user)
+        ext = user / "Profile 2" / "Extensions" / navegador.EXT_WEB_SIGNER
+        (ext / "1.0").rename(ext / "1.10.2_0")
+        navegador.preparar_perfil_certificado(destino, user)
+        self.assertEqual(navegador.versao_do_web_signer(destino / "Default"), (1, 10, 2, 0))
+        self.assertEqual(len(list((destino / "Default" / "Extensions" /
+                                   navegador.EXT_WEB_SIGNER).iterdir())), 1)
+
+    def test_sem_web_signer_no_chrome_o_perfil_abre_limpo(self):
         user = self._chrome(com_extensao=(), ultimo="Profile 2")
         destino = self.tmp / "cert"
         navegador.preparar_perfil_certificado(destino, user)
         self.assertFalse(navegador.tem_web_signer(destino))
-        self.assertEqual((destino / "Default" / "Preferences").read_text(), "Profile 2")
+        self.assertEqual(self._arquivos(destino), [navegador.MARCA_PERFIL_CERT])
+
+    def test_copia_antiga_do_perfil_inteiro_e_apagada(self):
+        """Até a 1.0.1 vinha o perfil inteiro, com senhas, cookies e Local State."""
+        user = self._chrome()
+        destino = self.tmp / "perfis" / "esaj-TJAL-certificado"
+        (destino / "Default" / "Extensions" / navegador.EXT_WEB_SIGNER / "0.9").mkdir(parents=True)
+        for arq in self.CREDENCIAIS:
+            (destino / "Default" / arq).write_text("SEGREDO")
+        (destino / "Local State").write_text("{}")
+        self.assertTrue(navegador.copia_antiga(destino))
+        navegador.preparar_perfil_certificado(destino, user)
+        self.assertFalse(navegador.copia_antiga(destino))
+        self.assertNotIn("Default/Login Data", self._arquivos(destino))
+        self.assertFalse((destino / "Local State").exists())
+        self.assertTrue(navegador.tem_web_signer(destino))
+        self.assertEqual([p.name for p in destino.parent.iterdir()], [destino.name],
+                         "nada de pasta de lixo sobrando")
+
+    def test_copia_antiga_aberta_fica_para_depois(self):
+        destino = self.tmp / "perfis" / "esaj-TJAL-certificado"
+        (destino / "Default").mkdir(parents=True)
+        (destino / "Default" / "Login Data").write_text("SEGREDO")
+        with mock.patch.object(navegador, "perfil_aberto", return_value=True):
+            self.assertFalse(navegador.limpar_copia_antiga(destino))
+        self.assertTrue((destino / "Default" / "Login Data").exists())
+        self.assertTrue(navegador.limpar_copia_antiga(destino))
+        self.assertFalse(destino.exists())
+
+    def test_limpeza_na_abertura(self):
+        perfis = self.tmp / "perfis"
+        antiga = perfis / "eproc-TJSC-certificado" / "Default"
+        antiga.mkdir(parents=True)
+        (antiga / "Login Data").write_text("SEGREDO")
+        (perfis / "esaj-TJAL-certificado.apagar-1-2").mkdir()
+        sessao = perfis / "esaj-TJAL" / "sessao.json"
+        sessao.parent.mkdir()
+        sessao.write_text(json.dumps({"cookies": [
+            {"name": "SID", "value": "g", "domain": ".google.com", "path": "/"},
+            {"name": "JSESSIONID", "value": "j", "domain": "www2.tjal.jus.br", "path": "/"}],
+            "origins": [{"origin": "https://www2.tjal.jus.br", "localStorage": []}]}))
+        hora = time.time() - 3600
+        os.utime(sessao, (hora, hora))
+        self.assertEqual(navegador.limpar_perfis_antigos(perfis), 3)
+        self.assertEqual(sorted(p.name for p in perfis.iterdir()), ["esaj-TJAL"])
+        dados = json.loads(sessao.read_text())
+        self.assertEqual(dados["versao"], navegador.VERSAO_SESSAO)
+        self.assertAlmostEqual(dados["gravado_em"], hora, delta=2, msg="a validade não renova")
+        self.assertNotIn("google", sessao.read_text())
+        self.assertNotIn("JSESSIONID", sessao.read_text(), "cifrada (b64 fora do Windows)")
+        self.assertEqual([c["name"] for c in navegador.ler_sessao(sessao)], ["JSESSIONID"])
+        self.assertEqual(navegador.limpar_perfis_antigos(perfis), 0, "uma vez só")
 
     def test_sem_chrome_nenhum(self):
         destino = self.tmp / "cert"
@@ -248,8 +375,16 @@ class ContextoFalso:
     def __init__(self, paginas):
         self.pages = list(paginas)
         self.cookies = []
-        self.estado = {"cookies": [{"name": "JSESSIONID", "value": "abc", "domain": "x",
-                                    "path": "/"}], "origins": []}
+        self.limpos = []
+        self.estado = {"cookies": [{"name": "JSESSIONID", "value": "abc",
+                                    "domain": "esaj.tjal.jus.br", "path": "/"},
+                                   {"name": "SID", "value": "conta-google",
+                                    "domain": ".google.com", "path": "/"}],
+                       "origins": [{"origin": "https://esaj.tjal.jus.br",
+                                    "localStorage": [{"name": "k", "value": "v"}]}]}
+
+    def clear_cookies(self, domain=None):
+        self.limpos.append(domain)
 
     def new_page(self):
         p = PaginaFalsa()
@@ -309,12 +444,68 @@ class TestNavegadorSemAbrir(apoio.PastaTemporaria):
         outro._restaurar_sessao()
         self.assertEqual(outro._contexto.cookies[0]["name"], "JSESSIONID")
 
+    def test_sessao_so_dos_portais_cifrada_e_so_do_dono(self):
+        n = self.nav()
+        n._contexto = ContextoFalso([PaginaFalsa()])
+        n._guardar_sessao()
+        texto = n.arquivo_sessao.read_text()
+        for vazamento in ("conta-google", "google.com", "JSESSIONID", "localStorage"):
+            self.assertNotIn(vazamento, texto)
+        self.assertEqual([c["name"] for c in navegador.ler_sessao(n.arquivo_sessao)],
+                         ["JSESSIONID"])
+        if os.name == "posix":
+            self.assertEqual(os.stat(n.arquivo_sessao).st_mode & 0o777, 0o600)
+
+    def test_cookie_do_portal(self):
+        self.assertTrue(navegador.cookie_do_portal({"domain": ".tjal.jus.br"}))
+        self.assertTrue(navegador.cookie_do_portal({"domain": "eproc1g.tjsc.jus.br"}))
+        self.assertFalse(navegador.cookie_do_portal({"domain": ".google.com"}))
+        self.assertFalse(navegador.cookie_do_portal({"domain": "jus.br.golpe.com"}))
+        self.assertFalse(navegador.cookie_do_portal({"domain": ""}))
+        # endereço corrigido pelo usuário, fora de .jus.br
+        self.assertTrue(navegador.cookie_do_portal({"domain": "esaj.exemplo.org"},
+                                                   ("esaj.exemplo.org",)))
+        self.assertTrue(navegador.cookie_do_portal({"domain": ".exemplo.org"},
+                                                   ("esaj.exemplo.org",)))
+
+    def test_cookies_alheios_saem_do_navegador_ao_abrir(self):
+        n = self.nav()
+        n._contexto = ContextoFalso([])
+        n._contexto.cookies = lambda: n._contexto.estado["cookies"]
+        n._higienizar_cookies()
+        self.assertEqual(n._contexto.limpos, [".google.com"])
+
+    def test_esquecer_portal_apaga_sessao_e_perfis(self):
+        perfis = self.tmp / "perfis"
+        n = self.nav()
+        n._contexto = ContextoFalso([PaginaFalsa()])
+        n._guardar_sessao()
+        (perfis / "esaj-TJAL" / "chrome" / "Default").mkdir(parents=True)
+        (perfis / "esaj-TJAL-certificado" / "Default").mkdir(parents=True)
+        self.assertTrue(navegador.esquecer_portal("esaj:tjal", perfis))
+        self.assertEqual(list(perfis.iterdir()), [])
+        with self.assertRaises(ValueError):
+            navegador.esquecer_portal("esaj:../../x", perfis)
+
+    def test_navegador_aberto_antes_do_esquecer_nao_regrava(self):
+        """'Apagar acesso' com um download em andamento: o fechar() desse
+        navegador regravava a sessão (da pessoa cujo acesso foi apagado)."""
+        perfis = self.tmp / "perfis"
+        n = self.nav()
+        n._aberto_em = time.time() - 5
+        n._contexto = ContextoFalso([PaginaFalsa()])
+        n._contexto.close = lambda: None
+        navegador.esquecer_portal("esaj:TJAL", perfis)
+        n.fechar()
+        self.assertFalse(n.arquivo_sessao.exists())
+
     def test_sessao_velha_nao_volta(self):
         n = self.nav()
         n._contexto = ContextoFalso([PaginaFalsa()])
         n._guardar_sessao()
-        velho = time.time() - 13 * 3600
-        os.utime(n.arquivo_sessao, (velho, velho))
+        dados = json.loads(n.arquivo_sessao.read_text())
+        dados["gravado_em"] = time.time() - 13 * 3600
+        n.arquivo_sessao.write_text(json.dumps(dados))
         outro = self.nav()
         outro._contexto = ContextoFalso([])
         outro._restaurar_sessao()

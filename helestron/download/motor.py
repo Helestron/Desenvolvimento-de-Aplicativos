@@ -121,7 +121,25 @@ def fabrica_navegador_padrao(tribunal, opcoes: OpcoesDownload):
         pasta_diagnostico=opcoes.pasta_diagnostico,
         certificado=opcoes.modo_login(sistema) == "certificado",
         salvar_diagnostico=opcoes.salvar_diagnostico,
+        dominios=hosts_do_tribunal(tribunal),
     )
+
+
+def hosts_do_tribunal(tribunal) -> tuple[str, ...]:
+    """Os hosts dos endereços do tribunal (catálogo e correções do usuário,
+    dos dois sistemas): os cookies que a sessão guardada pode levar."""
+    from urllib.parse import urlsplit
+    hosts = set()
+    for t in (tribunal, getattr(tribunal, "alternativo", None)):
+        for valor in (getattr(t, "urls", None) or {}).values():
+            for url in ([valor] if isinstance(valor, str) else (valor or [])):
+                try:
+                    host = urlsplit(str(url)).hostname
+                except ValueError:
+                    host = None
+                if host:
+                    hosts.add(host.lower())
+    return tuple(sorted(hosts))
 
 
 # ---------------------------------------------------------------- senhas

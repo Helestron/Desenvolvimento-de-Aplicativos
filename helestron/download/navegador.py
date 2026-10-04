@@ -38,13 +38,16 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
 import unicodedata
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from ..nucleo import caminhos, sistema
+from ..nucleo import caminhos, cofre_senhas, sistema
+from ..nucleo.registro import censurar
 from .modelos import AJUSTES_ACESSOS, ENTRAR_MANUALMENTE, PortalIndisponivel
 
 log = logging.getLogger("download.navegador")
@@ -67,18 +70,33 @@ CANDIDATOS_EDGE = (
 USER_DATA_CHROME = Path(os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data"))
 EXT_WEB_SIGNER = "bbafmabaelnnkondpfpjmdklbmfnbmol"
 
-# Pastas do perfil que não vale a pena copiar (cache) ou que NÃO podem vir
-# (abas abertas e downloads pendentes, que o Chrome retomaria sozinho).
-_NAO_COPIAR = {
-    "Cache", "Code Cache", "GPUCache", "DawnCache", "DawnGraphiteCache",
-    "DawnWebGPUCache", "GrShaderCache", "ShaderCache", "Service Worker",
-    "Media Cache", "Application Cache", "File System", "IndexedDB",
-    "Crashpad", "BrowserMetrics", "component_crx_cache",
-    "extensions_crx_cache", "optimization_guide_model_store",
-    "Safe Browsing", "segmentation_platform", "AutofillStates",
-    "Sessions", "Session Storage", "Download Service", "DownloadMetadata",
-    "Current Session", "Current Tabs", "Last Session", "Last Tabs",
-}
+# O que vem do perfil do Chrome do usuário para o modo certificado: SÓ o que
+# é do Web Signer (lista de permissão). Até a 1.0.1 copiava-se o perfil
+# inteiro, menos os caches: vinham as senhas salvas (Login Data), os cookies
+# de todos os sites (Cookies, Network\Cookies), o autopreenchimento e os
+# tokens da conta Google (Web Data), o histórico, as outras extensões (que
+# passavam a ver as telas dos processos sigilosos) e o Local State, com a
+# chave que decifra tudo isso nesta conta do Windows.
+PASTAS_DA_EXTENSAO = ("Extensions", "Local Extension Settings",
+                      "Sync Extension Settings", "Managed Extension Settings")
+# Nas preferências, só estes ramos (com o MAC que o Chrome confere):
+RAMOS_DA_EXTENSAO = (("extensions", "settings", EXT_WEB_SIGNER),
+                     ("extensions", "install_signature"))
+ARQUIVOS_DE_PREFERENCIAS = ("Preferences", "Secure Preferences")
+VERSAO_PERFIL_CERT = 2
+MARCA_PERFIL_CERT = "helestron-perfil.json"
+SUFIXO_LIXO = ".apagar-"
+_TRAVA_PERFIS = threading.Lock()
+
+# Cookies que a sessão guardada pode levar: os dos portais (todos em .jus.br)
+# e os dos endereços do tribunal (o catálogo, ou a correção do usuário).
+SUFIXOS_DOS_PORTAIS = ("jus.br",)
+FINALIDADE_SESSAO = "sessao/v1"
+# perfil_base (texto) -> instante em que o portal foi "esquecido" (Apagar
+# acesso, troca de usuário): um navegador aberto ANTES disso não regrava a
+# sessão ao fechar, e apaga o próprio perfil.
+_ESQUECIDOS: dict[str, float] = {}
+VERSAO_SESSAO = 2
 
 SESSAO_VALIDA_S = 12 * 3600
 ARGS_PADRAO = ["--disable-blink-features=AutomationControlled",
@@ -144,7 +162,9 @@ def explicar_erro(mensagem: str) -> str:
         if marca.lower() in (mensagem or "").lower():
             return frase
     primeira = (mensagem or "").strip().splitlines()[0] if (mensagem or "").strip() else ""
-    return primeira[:200] or "erro desconhecido"
+    # a mensagem vai para a tela e para o relatorio.csv do acervo: sem o
+    # jsessionid nem o hash de sessão do eProc que a URL do erro carrega
+    return censurar(primeira)[:200] or "erro desconhecido"
 
 
 def perfil_em_uso(mensagem: str) -> bool:
@@ -289,43 +309,336 @@ def _perfis_do_chrome(user_data: Path) -> list[Path]:
     return [user_data / n for n in nomes if (user_data / n).is_dir()]
 
 
+def _ler_json(arquivo: Path) -> dict:
+    try:
+        dados = json.loads(Path(arquivo).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return dados if isinstance(dados, dict) else {}
+
+
+def _ramo(dados, chaves):
+    for c in chaves:
+        dados = dados.get(c) if isinstance(dados, dict) else None
+    return dados
+
+
+def _pendurar(dados: dict, chaves, valor) -> None:
+    for c in chaves[:-1]:
+        dados = dados.setdefault(c, {})
+    dados[chaves[-1]] = valor
+
+
+def so_da_extensao(prefs: dict) -> dict:
+    """De um arquivo de preferências do Chrome, só o registro do Web Signer
+    e o MAC dele (protection.macs.<mesmo caminho>), que o Chrome confere -
+    sem a conta Google, a página inicial, os sites visitados, a pasta de
+    downloads nem as outras extensões."""
+    saida: dict = {}
+    for chaves in RAMOS_DA_EXTENSAO:
+        valor = _ramo(prefs, chaves)
+        if valor is None:
+            continue
+        _pendurar(saida, chaves, valor)
+        mac = _ramo(prefs, ("protection", "macs") + chaves)
+        if isinstance(mac, str):
+            _pendurar(saida, ("protection", "macs") + chaves, mac)
+    return saida
+
+
+def _versao_da_copia(destino: Path) -> int:
+    try:
+        return int(_ler_json(Path(destino) / MARCA_PERFIL_CERT).get("versao") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def copia_antiga(destino: Path) -> bool:
+    """A pasta é uma cópia do perfil INTEIRO, das versões até a 1.0.1?"""
+    destino = Path(destino)
+    if _versao_da_copia(destino) >= VERSAO_PERFIL_CERT:
+        return False
+    return (destino / "Default").is_dir() or (destino / "Local State").exists()
+
+
+def perfil_aberto(pasta: Path) -> bool:
+    """Há um Chrome usando esta pasta agora? No Windows, o Chrome aberto
+    segura o 'lockfile' (o Windows recusa apagá-lo); fora dele, há o
+    SingletonLock."""
+    pasta = Path(pasta)
+    if sys.platform == "win32":  # pragma: no cover - exercitado no CI do Windows
+        for p in (pasta, *_subpastas(pasta)):
+            try:
+                (p / "lockfile").unlink()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return True
+        return False
+    for p in (pasta, *(q for q in _subpastas(pasta))):
+        trava = p / "SingletonLock"
+        if trava.is_symlink() or trava.exists():
+            return True
+    return False
+
+
+def _subpastas(pasta: Path) -> list[Path]:
+    """As pastas de cada navegador (chrome, msedge, chromium) do perfil."""
+    try:
+        return [p for p in Path(pasta).iterdir() if p.is_dir()]
+    except OSError:
+        return []
+
+
+def _apagar_pasta(pasta: Path) -> bool:
+    """Tira a pasta do caminho (renomeando: no Windows, falha se houver
+    arquivo aberto nela) e a apaga. False: em uso, nada mudou."""
+    pasta = Path(pasta)
+    if not pasta.exists():
+        return True
+    if perfil_aberto(pasta):
+        return False
+    lixo = pasta.with_name(f"{pasta.name}{SUFIXO_LIXO}{os.getpid()}-{time.time_ns()}")
+    try:
+        pasta.rename(lixo)
+    except OSError:
+        return False
+    shutil.rmtree(lixo, ignore_errors=True)
+    return True
+
+
+def limpar_copia_antiga(destino: Path) -> bool:
+    """Apaga a cópia do perfil inteiro do Chrome feita até a 1.0.1 (senhas,
+    cookies, autopreenchimento, histórico, Local State). True: não há (mais)
+    cópia antiga; False: ela está aberta agora, e fica para a próxima vez."""
+    destino = Path(destino)
+    if not copia_antiga(destino):
+        return True
+    if not _apagar_pasta(destino):
+        log.warning("A cópia antiga do perfil do Chrome em %s está em uso; apago-a quando "
+                    "o navegador do programa fechar.", destino.name)
+        return False
+    log.info("Apaguei a cópia antiga do perfil do Chrome (%s): ela levava as senhas e os "
+             "cookies do Chrome, e o modo certificado só precisa do Web Signer.", destino.name)
+    return True
+
+
+def _copiar_extensao(origem: Path, default: Path, so_codigo: bool = False) -> int:
+    """As pastas do Web Signer e as preferências reduzidas a ele. Devolve
+    quantos arquivos não puderam ser copiados (Chrome aberto). 'so_codigo'
+    (atualização da extensão): os dados dela (LevelDB) já são os do perfil
+    do programa e não se misturam com os do Chrome."""
+    falhas = 0
+    for pasta in PASTAS_DA_EXTENSAO[:1] if so_codigo else PASTAS_DA_EXTENSAO:
+        de = origem / pasta / EXT_WEB_SIGNER
+        if not de.is_dir():
+            continue
+        try:
+            # LOCK é a trava do LevelDB, presa pelo Chrome aberto; recria-se
+            shutil.copytree(de, default / pasta / EXT_WEB_SIGNER, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("LOCK"))
+        except shutil.Error as erro:
+            lista = erro.args[0] if erro.args else []
+            falhas += len(lista) if isinstance(lista, list) else 1
+    for nome in ARQUIVOS_DE_PREFERENCIAS:
+        reduzidas = so_da_extensao(_ler_json(origem / nome))
+        if reduzidas:
+            alvo = default / nome
+            tmp = alvo.with_name(alvo.name + ".tmp")
+            tmp.write_text(json.dumps(reduzidas, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, alvo)
+    return falhas
+
+
+def versao_do_web_signer(default: Path) -> tuple[int, ...]:
+    """A versão mais nova do Web Signer numa pasta de perfil ('1.2.3_0' ->
+    (1, 2, 3, 0)); () se não houver."""
+    try:
+        nomes = [p.name for p in (Path(default) / "Extensions" / EXT_WEB_SIGNER).iterdir()
+                 if p.is_dir()]
+    except OSError:
+        return ()
+    versoes = [tuple(int(n) for n in re.findall(r"\d+", nome)) for nome in nomes]
+    return max((v for v in versoes if v), default=())
+
+
 def preparar_perfil_certificado(destino: Path, user_data: Path | None = None) -> Path:
-    """Copia o perfil do Chrome do usuário para o perfil do programa, uma vez.
+    """Prepara o perfil do modo certificado: o Web Signer do Chrome do
+    usuário, e mais nada.
 
     O Chrome recusa o modo automatizado na pasta de perfil padrão; por isso
-    trabalha-se numa cópia. Prefere-se o perfil que tem o Web Signer (o
-    último usado, se for ele). Arquivo travado (Chrome aberto) não aborta a
-    cópia: o essencial - a extensão - quase sempre vem, e o resto o Chrome
-    refaz.
+    trabalha-se noutra pasta, com uma cópia SÓ da extensão (os arquivos dela
+    e o registro dela nas preferências). Sem o Web Signer no Chrome, o
+    perfil abre limpo, e a tela de login ensina a instalá-lo pela Chrome Web
+    Store (fica neste perfil). A cópia antiga, do perfil inteiro, é apagada
+    antes.
     """
     destino = Path(destino)
     user_data = Path(user_data or USER_DATA_CHROME)
-    if tem_web_signer(destino):
-        return destino
-    perfis = _perfis_do_chrome(user_data)
-    origem = next((p for p in perfis if (p / "Extensions" / EXT_WEB_SIGNER).exists()), None)
-    if origem is None and perfis:
-        origem = perfis[0]
-    destino.mkdir(parents=True, exist_ok=True)
-    if origem is None:
-        return destino
-
-    log.info("Copiando o perfil '%s' do Chrome para o programa (só desta vez)...", origem.name)
-    try:
-        shutil.copytree(origem, destino / "Default", dirs_exist_ok=True,
-                        ignore=lambda _d, nomes: [n for n in nomes if n in _NAO_COPIAR])
-    except shutil.Error as erro:
-        falhas = erro.args[0] if erro.args else []
-        log.warning("  %d arquivo(s) do perfil não puderam ser copiados (o Chrome "
-                    "estava aberto?). Se o login por certificado não funcionar, "
-                    "feche o Chrome e tente de novo.", len(falhas) if isinstance(falhas, list) else 1)
-    estado = user_data / "Local State"
-    if estado.exists():
-        try:
-            shutil.copy2(estado, destino / "Local State")
-        except OSError:
-            pass
+    with _TRAVA_PERFIS:
+        if not limpar_copia_antiga(destino):
+            return destino          # aberta: o lançamento acusa "perfil em uso"
+        perfis = _perfis_do_chrome(user_data)
+        origem = next((p for p in perfis if (p / "Extensions" / EXT_WEB_SIGNER).is_dir()), None)
+        if tem_web_signer(destino):
+            # O navegador do programa não atualiza extensões (o Playwright
+            # liga --disable-background-networking): a atualização vem do
+            # Chrome do usuário, quando ele tiver uma versão mais nova.
+            if origem is None or (versao_do_web_signer(origem)
+                                  <= versao_do_web_signer(destino / "Default")):
+                return destino
+            log.info("O Web Signer do Chrome foi atualizado; atualizo a cópia do programa.")
+            shutil.rmtree(destino / "Default" / "Extensions" / EXT_WEB_SIGNER, ignore_errors=True)
+            _copiar_extensao(origem, destino / "Default", so_codigo=True)
+            return destino
+        (destino / "Default").mkdir(parents=True, exist_ok=True)
+        if origem is not None:
+            log.info("Copiando o Web Signer do perfil '%s' do Chrome (só a extensão)...",
+                     origem.name)
+            falhas = _copiar_extensao(origem, destino / "Default")
+            if falhas:
+                log.warning("  %d arquivo(s) do Web Signer não puderam ser copiados (o Chrome "
+                            "estava aberto?). Se o login por certificado não funcionar, feche "
+                            "o Chrome e tente de novo.", falhas)
+        marca = {"versao": VERSAO_PERFIL_CERT, "origem": origem.name if origem else "",
+                 "copiado_em": datetime.now().isoformat(timespec="seconds")}
+        (destino / MARCA_PERFIL_CERT).write_text(json.dumps(marca), encoding="utf-8")
     return destino
+
+
+def limpar_perfis_antigos(pasta: Path | None = None) -> int:
+    """Na abertura do programa: as cópias antigas do perfil do Chrome (de
+    todos os portais), as sessões guardadas no formato antigo (texto puro,
+    com cookies de qualquer site) e os restos de limpezas interrompidas.
+    Devolve quantas coisas foram limpas."""
+    pasta = Path(pasta or caminhos.PERFIS)
+    try:
+        itens = list(pasta.iterdir())
+    except OSError:
+        return 0
+    limpos = 0
+    with _TRAVA_PERFIS:
+        for item in itens:
+            if SUFIXO_LIXO in item.name:
+                shutil.rmtree(item, ignore_errors=True)
+                limpos += 0 if item.exists() else 1
+            elif item.name.endswith("-certificado") and copia_antiga(item):
+                limpos += 1 if limpar_copia_antiga(item) else 0
+            elif (item / "sessao.json").is_file():
+                limpos += 1 if migrar_sessao(item / "sessao.json") else 0
+    return limpos
+
+
+# ------------------------------------------------------------ sessão no disco
+def cookie_do_portal(cookie: dict, hosts=()) -> bool:
+    """O cookie é de um portal (.jus.br, ou um endereço do tribunal)?"""
+    dominio = str((cookie or {}).get("domain") or "").lstrip(".").lower()
+    if not dominio:
+        return False
+    if any(dominio == s or dominio.endswith("." + s) for s in SUFIXOS_DOS_PORTAIS):
+        return True
+    return any(h == dominio or h.endswith("." + dominio) for h in hosts or ())
+
+
+def gravar_sessao(arquivo: Path, cookies: list[dict], gravado_em: float | None = None,
+                  hosts=()) -> None:
+    """Cifrada para esta conta do Windows (DPAPI) e só para o dono. 'hosts':
+    os do login fora de .jus.br (Keycloak, gov.br), que valem na volta."""
+    corpo = json.dumps({"cookies": cookies, "hosts": sorted(set(hosts or ()))},
+                       ensure_ascii=False).encode("utf-8")
+    envelope = {"versao": VERSAO_SESSAO,
+                "gravado_em": time.time() if gravado_em is None else gravado_em,
+                "dados": cofre_senhas.cifrar(corpo, FINALIDADE_SESSAO)}
+    cofre_senhas.gravar_privado(Path(arquivo), json.dumps(envelope))
+
+
+def abrir_sessao(arquivo: Path, hosts=(), agora: float | None = None
+                 ) -> tuple[list[dict], tuple[str, ...]]:
+    """(cookies dos portais, hosts do login) guardados há menos de
+    SESSAO_VALIDA_S - ([], ()) se não houver, se venceu ou se não decifra.
+    Lê também o formato antigo (texto puro, validade pelo mtime)."""
+    arquivo = Path(arquivo)
+    agora = time.time() if agora is None else agora
+    if not arquivo.is_file():
+        return [], ()
+    dados = json.loads(arquivo.read_text(encoding="utf-8"))
+    if not isinstance(dados, dict):
+        return [], ()
+    salvos: tuple[str, ...] = ()
+    if dados.get("versao") == VERSAO_SESSAO:
+        gravado = float(dados.get("gravado_em") or 0)
+        if not 0 <= agora - gravado <= SESSAO_VALIDA_S:
+            return [], ()
+        corpo = json.loads(cofre_senhas.decifrar(str(dados.get("dados") or ""),
+                                                 FINALIDADE_SESSAO).decode("utf-8"))
+        corpo = corpo if isinstance(corpo, dict) else {}
+        cookies = corpo.get("cookies")
+        salvos = tuple(str(h).lower() for h in corpo.get("hosts") or () if h)
+    else:
+        if agora - arquivo.stat().st_mtime > SESSAO_VALIDA_S:
+            return [], ()
+        cookies = dados.get("cookies")
+    todos = tuple(hosts or ()) + salvos
+    return ([c for c in (cookies or []) if isinstance(c, dict) and cookie_do_portal(c, todos)],
+            salvos)
+
+
+def ler_sessao(arquivo: Path, hosts=(), agora: float | None = None) -> list[dict]:
+    return abrir_sessao(arquivo, hosts, agora)[0]
+
+
+def migrar_sessao(arquivo: Path) -> bool:
+    """Regrava no formato novo (cifrado, só .jus.br) a sessão guardada pela
+    1.0.1, mantendo a hora em que foi gravada. True se mudou algo."""
+    arquivo = Path(arquivo)
+    dados = _ler_json(arquivo)
+    if dados.get("versao") == VERSAO_SESSAO:
+        return False
+    try:
+        gravado = arquivo.stat().st_mtime
+        cookies = ler_sessao(arquivo)
+        if cookies:
+            gravar_sessao(arquivo, cookies, gravado_em=gravado)
+        else:
+            arquivo.unlink()
+    except (OSError, ValueError):
+        try:
+            arquivo.unlink()
+        except OSError:
+            return False
+    return True
+
+
+def pastas_do_portal(portal: str, perfis: Path | None = None) -> list[Path]:
+    """As pastas do navegador de um portal ('esaj:TJAL'): a do login por
+    senha (com a sessão guardada) e a do certificado."""
+    m = re.fullmatch(r"(esaj|eproc):([A-Za-z0-9]{2,12})", (portal or "").strip())
+    if not m:
+        raise ValueError(f"portal inválido: {portal!r}")
+    base = Path(perfis or caminhos.PERFIS)
+    nome = f"{m.group(1)}-{m.group(2).upper()}"
+    return [base / nome, base / f"{nome}-certificado"]
+
+
+def esquecer_portal(portal: str, perfis: Path | None = None) -> bool:
+    """'Apagar acesso' e troca de usuário: a sessão guardada e os perfis do
+    navegador do portal saem - sem isso, a sessão anterior (de outra pessoa,
+    talvez) seguia valendo por até 12 horas. False: algum perfil está aberto
+    agora (a sessão guardada sai assim mesmo)."""
+    tudo = True
+    pastas = pastas_do_portal(portal, perfis)
+    _ESQUECIDOS[os.path.normcase(str(pastas[0]))] = time.time()
+    with _TRAVA_PERFIS:
+        for pasta in pastas:
+            try:
+                (pasta / "sessao.json").unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                tudo = False
+            if not _apagar_pasta(pasta):
+                tudo = False
+    return tudo
 
 
 # ------------------------------------------------------------- localizar
@@ -390,8 +703,14 @@ class Navegador:
     def __init__(self, perfil: Path, *, visivel: bool = False, canal: str = "auto",
                  espera_s: int = 60, pasta_downloads: Path | None = None,
                  pasta_diagnostico: Path | None = None, certificado: bool = False,
-                 salvar_diagnostico: bool = True, executavel: str | Path | None = None):
+                 salvar_diagnostico: bool = True, executavel: str | Path | None = None,
+                 dominios=()):
         self.perfil_base = Path(perfil)
+        # Os endereços do tribunal: além de .jus.br, os únicos cujos cookies
+        # a sessão guardada leva (e que ficam no navegador do programa).
+        self.dominios = tuple(sorted({str(d).lower() for d in dominios or () if d}))
+        # e os hosts por onde as abas passaram (CAS, Keycloak, gov.br do login)
+        self._hosts_visitados: set[str] = set()
         # O perfil do certificado é uma cópia do Chrome do usuário: fica ao
         # lado, para nunca misturar com o perfil do login por senha.
         self.perfil = (self.perfil_base.with_name(self.perfil_base.name + "-certificado")
@@ -414,6 +733,7 @@ class Navegador:
         self._contexto = None
         self._pagina = None
         self._esquecer = False
+        self._aberto_em = 0.0
 
     # ----------------------------------------------------------- atributos
     @property
@@ -486,6 +806,7 @@ class Navegador:
         except OSError:
             pass
 
+        self._aberto_em = time.time()
         try:
             self._pw = sync_playwright().start()
         except Exception as erro:
@@ -515,9 +836,12 @@ class Navegador:
             # clique, e podem nascer em qualquer aba - inclusive nas que o
             # portal abre sozinho
             self._contexto.on("page", self._preparar_aba)
+            self._contexto.on("page", self._vigiar_hosts)
             for aba in list(self._contexto.pages):
                 self._preparar_aba(aba)
+                self._vigiar_hosts(aba)
             self._restaurar_sessao()
+            self._higienizar_cookies()
             self._pagina = (self._contexto.pages[0] if self._contexto.pages
                             else self._contexto.new_page())
         except Exception as erro:
@@ -579,7 +903,14 @@ class Navegador:
                 log.warning("  o %s não abriu (%s): %s", nome_do_canal(canal), modo, resumo)
         return False
 
+    def _foi_esquecido(self) -> bool:
+        quando = _ESQUECIDOS.get(os.path.normcase(str(self.perfil_base)), 0.0)
+        return bool(quando) and quando >= self._aberto_em
+
     def fechar(self) -> None:
+        esquecido = self._foi_esquecido()
+        if esquecido:
+            self._esquecer = True
         if self._contexto is not None:
             self._guardar_sessao()
             try:
@@ -594,6 +925,10 @@ class Navegador:
         self._contexto = None
         self._pw = None
         self._pagina = None
+        if esquecido:
+            with _TRAVA_PERFIS:
+                for pasta in (self.perfil_base, self.perfil):
+                    _apagar_pasta(pasta)
 
     def __enter__(self) -> "Navegador":
         return self.abrir()
@@ -620,33 +955,75 @@ class Navegador:
         except Exception:
             pass
 
-    # ------------------------------------------------- sessão entre execuções
-    def _restaurar_sessao(self) -> None:
-        alvo = self.arquivo_sessao
+    @property
+    def hosts_da_sessao(self) -> tuple[str, ...]:
+        return tuple(sorted(set(self.dominios) | self._hosts_visitados))
+
+    def _vigiar_hosts(self, aba) -> None:
+        """Anota os hosts por onde a PÁGINA passa (não os dos anúncios e
+        contadores que ela carrega): o CAS, o Keycloak e o gov.br do login,
+        que podem estar fora de .jus.br e do catálogo."""
+        def anotar(quadro):
+            try:
+                if quadro.parent_frame is None:
+                    partes = urlsplit(quadro.url or "")
+                    if partes.scheme in ("http", "https") and partes.hostname:
+                        self._hosts_visitados.add(partes.hostname.lower())
+            except Exception:
+                pass
         try:
-            if not alvo.exists():
-                return
-            if time.time() - alvo.stat().st_mtime > SESSAO_VALIDA_S:
-                return
-            dados = json.loads(alvo.read_text(encoding="utf-8"))
-            cookies = dados.get("cookies") or []
+            aba.on("framenavigated", anotar)
+        except Exception:
+            pass
+
+    # ------------------------------------------------- sessão entre execuções
+    def _higienizar_cookies(self) -> None:
+        """Tira do navegador do programa os cookies que não são dos portais.
+
+        Até a 1.0.1, a sessão do modo certificado levava os cookies de TODOS
+        os sites do Chrome do usuário (Google, e-mail, banco), e o login por
+        senha os devolvia ao seu próprio perfil, onde ficavam.
+        """
+        try:
+            hosts = self.hosts_da_sessao
+            alheios = sorted({str(c.get("domain") or "") for c in self._contexto.cookies()
+                              if not cookie_do_portal(c, hosts)})
+            for dominio in alheios:
+                self._contexto.clear_cookies(domain=dominio)
+            if alheios:
+                log.info("  tirei do navegador do programa os cookies de %d site(s) que não "
+                         "são dos portais.", len(alheios))
+        except Exception as erro:
+            log.debug("  higienização dos cookies: %s", type(erro).__name__)
+
+    def _restaurar_sessao(self) -> None:
+        try:
+            cookies, salvos = abrir_sessao(self.arquivo_sessao, self.dominios)
+            self._hosts_visitados.update(salvos)
             if cookies:
                 self._contexto.add_cookies(cookies)
                 log.debug("  %d cookie(s) da sessão anterior restaurados.", len(cookies))
         except Exception as erro:
-            log.debug("  não restaurei a sessão anterior: %s", str(erro)[:120])
+            # sem o texto do erro: ele pode trazer o conteúdo do arquivo
+            log.debug("  não restaurei a sessão anterior (%s)", type(erro).__name__)
 
     def _guardar_sessao(self) -> None:
+        """Só os cookies dos portais (nada de localStorage, nada de outros
+        sites), cifrados pela DPAPI."""
         if self._contexto is None or self._esquecer:
             return
         try:
             estado = self._contexto.storage_state()
-            self.arquivo_sessao.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.arquivo_sessao.with_name(self.arquivo_sessao.name + ".tmp")
-            tmp.write_text(json.dumps(estado, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, self.arquivo_sessao)
+            hosts = self.hosts_da_sessao
+            cookies = [c for c in (estado.get("cookies") or [])
+                       if isinstance(c, dict) and cookie_do_portal(c, hosts)]
+            if cookies:
+                gravar_sessao(self.arquivo_sessao, cookies,
+                              hosts=[h for h in hosts if not cookie_do_portal({"domain": h})])
+            else:
+                self.arquivo_sessao.unlink(missing_ok=True)
         except Exception as erro:
-            log.debug("  não guardei a sessão: %s", str(erro)[:120])
+            log.debug("  não guardei a sessão (%s)", type(erro).__name__)
 
     def esquecer_sessao(self) -> None:
         """Apaga a sessão guardada (ex.: depois de um login recusado).
@@ -660,6 +1037,26 @@ class Navegador:
         except OSError:
             pass
 
+    def web_signer_ativo(self) -> bool:
+        """O Web Signer está instalado E ativo neste navegador? Pergunta ao
+        próprio Chrome (a página da extensão só abre se ela estiver
+        carregada) - a pasta da extensão no perfil não prova nada: sem o
+        registro nas preferências, o Chrome a ignora (e apaga)."""
+        if self._contexto is None:
+            return False
+        alvo = f"chrome-extension://{EXT_WEB_SIGNER}/"
+        try:
+            if any((w.url or "").startswith(alvo) for w in self._contexto.service_workers):
+                return True
+        except Exception:
+            pass
+        try:
+            with self.nova_aba() as aba:
+                resposta = aba.goto(alvo + "manifest.json", wait_until="commit", timeout=5000)
+                return bool(resposta is not None and resposta.ok)
+        except Exception:
+            return False
+
     # ------------------------------------------------------------ navegação
     def ir(self, url: str, pagina=None, espera: str = "domcontentloaded",
            timeout_ms: int | None = None):
@@ -668,7 +1065,7 @@ class Navegador:
             return pagina.goto(url, wait_until=espera, timeout=timeout_ms or self.espera_ms)
         except Exception as erro:
             raise PortalIndisponivel(
-                f"não consegui abrir {url}: {explicar_erro(str(erro))}") from erro
+                f"não consegui abrir {censurar(url)}: {explicar_erro(str(erro))}") from erro
 
     def abas(self) -> list:
         """As abas abertas, com a de trabalho na frente."""

@@ -1044,7 +1044,8 @@ class PortalESAJ:
         mensagem = (f"Na janela do Chrome que se abriu, entre no {self.nome} com o "
                     "certificado digital: aba 'Certificado digital', escolha o certificado "
                     "e digite o PIN do token.")
-        if not tem_web_signer(self.nav.perfil):
+        ativo = getattr(self.nav, "web_signer_ativo", None)
+        if not (ativo() if callable(ativo) else tem_web_signer(self.nav.perfil)):
             mensagem = ("Falta a extensão Web Signer no navegador do programa: instale-a "
                         "pela Chrome Web Store na janela que se abriu (procure "
                         "'Web Signer'). " + mensagem)

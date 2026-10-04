@@ -163,6 +163,33 @@ class TestTribunaisEAcessos(ServidorDeTeste):
         self.cliente.dados("DELETE", "/api/acessos/esaj:TJAL")
         self.assertEqual(self.cofre.obter("esaj:TJAL"), ("", ""))
 
+    def _sessao_guardada(self):
+        from helestron.nucleo import caminhos
+        sessao = caminhos.PERFIS / "esaj-TJAL" / "sessao.json"
+        sessao.parent.mkdir(parents=True, exist_ok=True)
+        sessao.write_text("{}")
+        (caminhos.PERFIS / "esaj-TJAL-certificado" / "Default").mkdir(parents=True, exist_ok=True)
+        return sessao
+
+    def test_apagar_acesso_apaga_a_sessao_e_os_perfis(self):
+        """Sem isto, o login apagado seguia valendo por até 12 horas."""
+        sessao = self._sessao_guardada()
+        self.cliente.dados("POST", "/api/acessos", {"portal": "esaj:TJAL",
+                                                    "usuario": "123", "senha": "s3"})
+        self.assertTrue(sessao.exists(), "a primeira gravação não é troca de usuário")
+        self.cliente.dados("DELETE", "/api/acessos/esaj:TJAL")
+        self.assertFalse(sessao.parent.exists())
+        self.assertFalse(sessao.parent.with_name("esaj-TJAL-certificado").exists())
+
+    def test_troca_de_usuario_apaga_a_sessao_do_anterior(self):
+        self.cliente.dados("POST", "/api/acessos", {"portal": "esaj:TJAL",
+                                                    "usuario": "123", "senha": "s3"})
+        sessao = self._sessao_guardada()
+        self.cliente.dados("POST", "/api/acessos", {"portal": "esaj:TJAL", "senha": "nova"})
+        self.assertTrue(sessao.exists(), "mesmo usuário, senha nova: a sessão fica")
+        self.cliente.dados("POST", "/api/acessos", {"portal": "esaj:TJAL", "usuario": "456"})
+        self.assertFalse(sessao.exists())
+
     def test_so_por_agora_nao_vai_para_o_disco(self):
         dados = self.cliente.dados("POST", "/api/acessos", {"portal": "eproc:TJAL", "usuario": "u",
                                                             "senha": "p", "lembrar": False})
