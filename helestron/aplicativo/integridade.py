@@ -3,14 +3,14 @@
 A causa do "No module named 'app.interface.pagina_config'" da versão
 anterior foi um arquivo do programa que sumiu depois da instalação
 (antivírus que põe em quarentena um arquivo que lida com senhas, extração
-interrompida). Aqui o instalador grava o manifesto.json - a versão e, de
-cada arquivo, o tamanho e o SHA-256 - e o programa o confere:
+interrompida). Aqui o instalador grava o manifesto.json — a versão e, de
+cada arquivo, o tamanho e o SHA-256 — e o programa o confere:
 
   * ao abrir (conferir_rapido): só existência e tamanho do pacote
     helestron e do núcleo do Python (python312.dll, DLLs, biblioteca
     padrão). É uma chamada de stat por arquivo: leva uma fração de segundo,
     e o que falta vira a tela de erro própria, com o arquivo que falta e o
-    botão Reparar - em vez de um erro de importação no meio do uso;
+    botão Reparar — em vez de um erro de importação no meio do uso;
   * na verificação (conferir_completo, python -m helestron
     --verificar-instalacao, que o instalador roda ao final): o hash de
     todos os arquivos.
@@ -223,8 +223,8 @@ def descrever(problemas: list[Problema], limite: int = 10) -> str:
 # ============================================================ o instalador
 # O nome que a construção publica (e o que o navegador acrescenta quando o
 # arquivo é baixado de novo: "Helestron-Setup-1.0.0 (1).exe"). Outro nome
-# qualquer - "Helestron-Setup (atualização).exe", vindo de um anexo ou de um
-# site - nunca é aberto pelo botão Reparar.
+# qualquer — "Helestron-Setup (atualização).exe", vindo de um anexo ou de um
+# site — nunca é aberto pelo botão Reparar.
 PADRAO_INSTALADOR = re.compile(r"^Helestron-Setup-(\d+)\.(\d+)\.(\d+)(?: \(\d+\))?\.exe$",
                                re.IGNORECASE)
 # O cabeçalho que todo instalador NSIS tem (firstheader: flags, 0xDEADBEEF,
@@ -254,10 +254,10 @@ def versao_do_instalador(arquivo: Path) -> tuple[int, int, int] | None:
     return int(achado.group(1)), int(achado.group(2)), int(achado.group(3))
 
 
-def _downloads_windows() -> Path | None:  # pragma: no cover - só no Windows
+def _downloads_windows() -> Path | None:  # pragma: no cover — só no Windows
     """A pasta Downloads de verdade (SHGetKnownFolderPath): com o
     redirecionamento de pastas da TI (GPO) ou a pasta movida pelo usuário,
-    ela não é %USERPROFILE%\\Downloads - e é onde o navegador salva."""
+    ela não é %USERPROFILE%\\Downloads — e é onde o navegador salva."""
     import ctypes
     from ctypes import wintypes
 
@@ -355,7 +355,7 @@ def procurar_instalador(conferir: bool = True) -> Path | None:
     """O Helestron-Setup que estiver no computador, para o botão Reparar.
 
     O instalador não deixa cópia de si (seriam centenas de MB a mais): quem
-    o baixou costuma tê-lo em Downloads - a pasta Downloads registrada no
+    o baixou costuma tê-lo em Downloads — a pasta Downloads registrada no
     Windows, que a TI pode ter redirecionado. Procura ali e, por garantia,
     em LOCAL e na pasta do programa (onde a TI pode tê-lo deixado). Só vale
     o nome publicado, e (conferir=True) um instalador do Helestron de

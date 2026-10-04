@@ -218,7 +218,7 @@ class AplicacaoErro:
 
     def _reparar(self, p: Pedido) -> dict:
         """Primeiro clique: acha e confere o instalador e pede confirmação
-        (nome, tamanho, data). Segundo clique ({arquivo}): abre - só se ainda
+        (nome, tamanho, data). Segundo clique ({arquivo}): abre — só se ainda
         for o mesmo arquivo que a busca acha agora."""
         pasta = integridade.pasta_instalada() or caminhos.LOCAL
         if not NO_WINDOWS:
@@ -327,7 +327,7 @@ def _mesmo_arquivo(a: Path, b: Path) -> bool:
         return False
 
 
-def _executar(arquivo: Path) -> None:  # pragma: no cover - só no Windows
+def _executar(arquivo: Path) -> None:  # pragma: no cover — só no Windows
     os.startfile(str(arquivo))                     # type: ignore[attr-defined]
 
 
@@ -335,7 +335,7 @@ def mostrar(problemas: list[integridade.Problema], registrar: bool = True) -> in
     """Mostra a tela de erro e espera ela fechar. Código de saída: 1.
 
     registrar: grava o instancia.json (quem chama tem a trava da instância
-    única e o apaga no fim) - sem ele, o --encerrar do instalador não acha
+    única e o apaga no fim) — sem ele, o --encerrar do instalador não acha
     esta tela e a segunda abertura diz que o programa "não respondeu".
     """
     from . import instancia, janela

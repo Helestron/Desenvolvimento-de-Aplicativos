@@ -16,11 +16,13 @@ Justiça"). Daí em diante a regra é uma só (seção 8.5 da especificação):
   cabeçalho ou na legenda) NÃO é pauta - o título da página não basta: a
   tela da pauta do portal costuma ter, ao lado, o painel de intimações. A
   exceção é a tabela com a cara da pauta (data com hora, processo, tipo e
-  situação) e uma coluna "Documento", "Intimação das partes", "Mandados"...
-  ao lado: na página da pauta, ela é a pauta. No portal, a tabela só com
-  data e processo (sem hora, tipo ou situação) também precisa de "audiência"
-  ou "pauta" por perto: a fila de processos não é pauta. Ler a lista de
-  intimações como pauta encheria a tela de audiências que não existem;
+  situação, com tipos de audiência na coluna Tipo) e uma coluna
+  "Documento", "Intimação das partes", "Mandados"... ao lado: na página da
+  pauta, e sem legenda própria de intimações ou prazos, ela é a pauta. No
+  portal, a tabela só com data e processo (sem hora, tipo ou situação)
+  também precisa de "audiência" ou "pauta" por perto: a fila de processos
+  não é pauta. Ler a lista de intimações como pauta encheria a tela de
+  audiências que não existem;
 * o cabeçalho é procurado nas primeiras linhas, passando por cima do
   preâmbulo do relatório ("Data: 03/10/2026 | Hora: 10:15" da emissão,
   título, vara, período) e juntando o cabeçalho em duas linhas
@@ -28,7 +30,9 @@ Justiça"). Daí em diante a regra é uma só (seção 8.5 da especificação):
 * células mescladas na vertical (rowspan) valem para todas as linhas que
   cobrem, marcadas como herdadas: a linha cuja data, hora e processo são só
   os herdados (a audiência em duas linhas, com as partes embaixo) completa a
-  de cima e não vira outra; data e hora na mesma célula são separadas;
+  de cima e não vira outra - a menos que traga o tipo ou a situação dela
+  (outra audiência do mesmo processo no mesmo horário); data e hora na mesma
+  célula são separadas;
   linhas de grupo ("Segunda-feira, 05/10/2026", com ou sem a contagem ao
   lado) dão a data às linhas de baixo, e a célula de data vazia repete a da
   linha de cima (relatório com a data só na primeira audiência do dia) se a
@@ -477,6 +481,27 @@ def _data_com_hora(mapa: dict[str, int], linha: list[Celula],
     return com_data > 0 and com_hora * 2 >= com_data
 
 
+def _tipos_de_audiencia(mapa: dict[str, int], dados: list[list[Celula]] | None,
+                       regras) -> bool:
+    """Ao menos metade da coluna Tipo traz um tipo de audiência das regras
+    ("Conciliação", "Audiência de Instrução"), e não "Intimação eletrônica",
+    "Citação" ou "Intimação para a audiência": é o Tipo da pauta, não o do
+    painel de intimações."""
+    i = mapa.get("tipo")
+    if i is None:
+        return False
+    cheias = tipos = 0
+    for d in (dados or [])[:60]:
+        if i >= len(d) or not d[i].texto:
+            continue
+        alvo = normalizar_texto(d[i].texto)
+        cheias += 1
+        if any(n in alvo for n in regras.negativos):
+            continue
+        tipos += alvo.startswith("audiencia") or any(p.search(alvo) for _, p in regras.tipos)
+    return cheias > 0 and tipos * 2 >= cheias
+
+
 def _eh_pauta(mapa: dict[str, int], linha: list[Celula], contexto: str, regras,
               contexto_pagina: str = "", estrito: bool = False,
               dados: list[list[Celula]] | None = None) -> bool:
@@ -485,13 +510,15 @@ def _eh_pauta(mapa: dict[str, int], linha: list[Celula], contexto: str, regras,
     O título da página ('contexto_pagina') não desfaz um cabeçalho de
     intimações ou prazos: a página da pauta tem, muitas vezes, o painel de
     intimações ao lado. A única exceção é a tabela que já tem a cara da
-    pauta - data com hora, processo, tipo e situação - e, ao lado, uma coluna
-    "Documento" (a ata), "Intimação das partes", "Mandados"...: na página da
-    pauta, ela é a pauta ('dados': as linhas de baixo, para ver se as datas
-    vêm com hora). No portal ('estrito'), a tabela só com data e processo
-    (sem hora, tipo nem situação) precisa de "audiência" ou "pauta" na
-    própria tabela ou na página - uma fila de processos tem data e número
-    também.
+    pauta - data com hora, processo, tipo e situação, com tipos de audiência
+    na coluna Tipo - e, ao lado, uma coluna "Documento" (a ata), "Intimação
+    das partes", "Mandados"...: na página da pauta, ela é a pauta, a menos
+    que a legenda ou o nome da própria tabela fale de intimações, prazos...
+    (o painel "Intimações" com Tipo e Situação). 'dados': as linhas de baixo,
+    para ver se as datas vêm com hora e o que a coluna Tipo traz. No portal
+    ('estrito'), a tabela só com data e processo (sem hora, tipo nem
+    situação) precisa de "audiência" ou "pauta" na própria tabela ou na
+    página - uma fila de processos tem data e número também.
     """
     if "data" not in mapa or not ({"processo", "tipo"} & set(mapa)):
         return False
@@ -507,7 +534,9 @@ def _eh_pauta(mapa: dict[str, int], linha: list[Celula], contexto: str, regras,
         # expedientes (sem hora) não passam por aqui
         return ({"processo", "tipo", "situacao"} <= set(mapa)
                 and bool(regras.contexto_audiencia.search(contexto_pagina))
-                and _data_com_hora(mapa, linha, dados))
+                and not any(n in contexto for n in regras.negativos)
+                and _data_com_hora(mapa, linha, dados)
+                and _tipos_de_audiencia(mapa, dados, regras))
     if {"tipo", "situacao"} & set(mapa) or not estrito:
         return True
     return bool(regras.contexto_audiencia.search(contexto_pagina))
@@ -648,9 +677,12 @@ class Reconhecedor:
                 processo_proprio = bool(cnj.extrair_todos(
                     " ".join(c.texto for c in linha if not c.herdada)))
             herdou = any(c is not None and c.herdada and c.cheia for c in (c_data, c_hora, c_proc))
-            if herdou and not (data_propria or hora_propria or hora_na_data or processo_proprio):
+            if herdou and not (data_propria or hora_propria or hora_na_data or processo_proprio
+                               or self._tipo_ou_situacao_proprios(linha, mapa)):
                 # Data, Hora e Processo mesclados na vertical sobre a linha de baixo (as
-                # partes, um detalhe): é a MESMA audiência, que ela completa - não outra
+                # partes, um detalhe): é a MESMA audiência, que ela completa - não outra.
+                # Com tipo ou situação dela (a Conciliação cancelada e, embaixo, a
+                # Instrução designada do mesmo processo no mesmo horário), é outra.
                 if ultima is not None:
                     self._continuar(ultima, linha, mapa)
                 continue
@@ -686,6 +718,45 @@ class Reconhecedor:
             data_corrente = a.data
             ultima = a
             r.audiencias.append(a)
+
+    def _parece_detalhe(self, texto: str) -> bool:
+        """O texto é o detalhe de uma audiência (as partes, o selo de sigilo, o
+        processo apensado, uma observação longa), não um tipo nem uma situação."""
+        alvo = normalizar_texto(texto)
+        return (not alvo or len(alvo) > 80 or bool(_PARECE_PARTES.search(texto))
+                or bool(_ROTULO_PARTES.match(texto)) or bool(cnj.extrair_todos(texto))
+                or self._diz_sigilo(alvo))
+
+    def _eh_tipo(self, texto: str) -> bool:
+        """Um tipo de audiência das regras ("Instrução", "Audiência de ..."), não "Outra"."""
+        if self._parece_detalhe(texto):
+            return False
+        alvo = normalizar_texto(texto)
+        return alvo.startswith("audiencia") or any(p.search(alvo) for _, p in self.regras.tipos)
+
+    def _eh_situacao(self, texto: str) -> bool:
+        """Uma situação das regras ("Designada", "Cancelada"), curta como um rótulo."""
+        return (not self._parece_detalhe(texto) and len(normalizar_texto(texto)) <= 30
+                and bool(modelos.situacao_reconhecida(texto, self.regras)))
+
+    def _tipo_ou_situacao_proprios(self, linha, mapa) -> bool:
+        """A linha cuja Data, Hora e Processo são os herdados da mescla de cima traz o
+        tipo ou a situação DELA: é outra audiência do mesmo processo no mesmo horário
+        (a Conciliação cancelada e a Instrução designada), não o detalhe da de cima.
+
+        As partes numa célula larga sobre o Tipo e a Situação ("Partes: Fulano x
+        Banco"), o selo de sigilo ou o processo apensado continuam detalhe.
+        """
+        c_tipo = self._celula(linha, mapa, "tipo")
+        c_sit = self._celula(linha, mapa, "situacao")
+        tipo = limpar(c_tipo.texto) if _propria(c_tipo) else ""
+        situacao = limpar(c_sit.texto) if _propria(c_sit) else ""
+        if (tipo and self._eh_tipo(tipo)) or (situacao and self._eh_situacao(situacao)):
+            return True
+        # tipo e situação em colunas separadas, cada um na sua célula: não é a
+        # célula larga do detalhe, mesmo com um tipo ou uma situação fora das regras
+        return bool(tipo and situacao and c_tipo is not c_sit
+                    and not self._parece_detalhe(tipo) and not self._parece_detalhe(situacao))
 
     def _continuar(self, a: Audiencia, linha, mapa) -> None:
         """A linha de baixo da MESMA audiência (Data, Hora e Processo mesclados na
@@ -888,8 +959,9 @@ class Reconhecedor:
         As linhas antes do primeiro dado (título, vara, período, "emitido
         por") não contam. Moldura de layout (célula com tabela dentro, ou
         com vários números) não conta: a tabela de dentro é lida por si. A
-        linha cuja data e cujo número são só os herdados da mescla de cima é
-        a continuação da audiência de cima (Reconhecedor._continuar).
+        linha cuja data e cujo número são só os herdados da mescla de cima,
+        sem tipo nem situação próprios, é a continuação da audiência de cima
+        (Reconhecedor._continuar).
         """
         ctx_tabela = ctx if ctx_tabela is None else ctx_tabela
         cheias = [linha for linha in linhas
@@ -902,8 +974,12 @@ class Reconhecedor:
                        for c in linha):
                 return False
             proprias = [c for c in linha if not c.herdada and c.cheia]
+            # o tipo ou a situação DELA ("Audiência de Instrução", "Designada") embaixo
+            # da data e do processo mesclados: é outra audiência no mesmo horário
             return not (cnj.extrair_todos(" ".join(c.texto for c in proprias))
-                        or any(modelos.ler_data(c.bruto) or _tem_hora(c) for c in proprias))
+                        or any(modelos.ler_data(c.bruto) or _tem_hora(c) for c in proprias)
+                        or any(self._eh_tipo(c.texto) or self._eh_situacao(c.texto)
+                               for c in proprias))
 
         def boa(linha) -> bool:
             juntas = " ".join(c.texto for c in linha)

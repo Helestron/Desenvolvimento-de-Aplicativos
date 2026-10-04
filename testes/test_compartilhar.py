@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from helestron.compartilhar import chatgpt, claude, mcp_servidor, nuvem, preparo, textos
-from helestron.nucleo import config
+from helestron.nucleo import caminhos, cnj, config, sigilo
 
 NUM = "0800072-12.2024.8.02.0056"
 INCIDENTE = f"{NUM}-01"          # o mesmo número com /01, como o programa o grava
@@ -337,6 +337,141 @@ class TestSigilo(BaseAcervo):
         self.assertEqual(set(ac.transcricoes()), {NUM})
         with self.assertRaises(LookupError):
             ac.ler_processo(SIGILOSO)
+
+
+class TestSigiloUnico(BaseAcervo):
+    """Uma regra só de processo sigiloso para todo o compartilhamento: autos,
+    transcrição ou gravação na pasta de sigilosos, OU a pauta marcando o
+    segredo de justiça. Antes, só o PDF na pasta de sigilosos contava: o
+    processo que a pauta dava como sigiloso (o segredo decretado depois do
+    download) e o que tinha a audiência transcrita como sigilosa continuavam
+    no INDICE.md, no MCP, em _ia/texto, no pacote e na nuvem."""
+
+    def setUp(self):
+        super().setUp()
+        base = Path(self.dir.name)
+        self.sigilosos = base / "Sigilosos"
+        self.pauta = base / "local" / "pauta.sqlite3"
+        p = mock.patch.object(caminhos, "ARQUIVO_PAUTA", self.pauta)
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(sigilo.esquecer_pauta)
+        self.cfg = config.Config(base / "config.ini")
+        self.cfg.definir("geral", "pasta_acervo", str(self.raiz))
+        self.cfg.definir("geral", "pasta_sigilosos", str(self.sigilosos))
+        self.lote = self.raiz / "Processos" / "Lote 1"
+        self.pdf = _pdf(self.lote / f"{SIGILOSO}.pdf", ["DEPOIMENTO DA VÍTIMA - SEGREDO"])
+        (self.lote / "_controle").mkdir(exist_ok=True)
+        (self.lote / "_controle" / f"{SIGILOSO}_capa.txt").write_text("capa", encoding="utf-8")
+        self.trans = _docx(self.raiz / "Transcricoes" / f"{SIGILOSO}.docx", ["AUDIÊNCIA EM SEGREDO"])
+        # o texto e o espelho de quando ele ainda era público
+        texto = self.raiz / "_ia" / "texto" / f"{SIGILOSO}.txt"
+        texto.parent.mkdir(parents=True)
+        texto.write_text("=== [fl. 1] ===\nSEGREDO\n", encoding="utf-8")
+        self.nuvem_dir = base / "Nuvem"
+        _pdf(self.nuvem_dir / nuvem.SUBPASTA / "Processos" / "Lote 1" / f"{SIGILOSO}.pdf",
+             ["SEGREDO"])
+
+    def marcar_na_pauta(self, numero=SIGILOSO):
+        from testes.test_nucleo import pauta_com_sigiloso
+
+        self.pauta.parent.mkdir(parents=True, exist_ok=True)
+        pauta_com_sigiloso(self.pauta, cnj.ler(numero))
+
+    def assert_fora_da_ia(self):
+        ac = mcp_servidor.Acervo(self.raiz, sigilosos=self.sigilosos)
+        self.assertEqual(set(ac.pdfs()), {NUM}, "o MCP serve os autos do sigiloso")
+        self.assertEqual(set(ac.transcricoes()), {NUM})
+        with self.assertRaises(LookupError):
+            ac.ler_processo(SIGILOSO)
+        self.assertNotIn(SIGILOSO, ac.listar_acervo())
+        self.assertEqual(ac.buscar("SEGREDO"), "Nenhuma ocorrência de 'SEGREDO'.")
+        preparo.atualizar_contexto(self.cfg, extrair_texto=True)
+        self.assertNotIn(SIGILOSO, (self.raiz / "INDICE.md").read_text(encoding="utf-8"))
+        self.assertFalse((self.raiz / "_ia" / "texto" / f"{SIGILOSO}.txt").exists())
+        nuvem.espelhar(self.raiz, self.nuvem_dir, sigilosos=self.sigilosos)
+        self.assertEqual(list(self.nuvem_dir.rglob(f"{SIGILOSO}*")), [])
+        self.assertTrue(list(self.nuvem_dir.rglob(f"{NUM}.pdf")))
+        _pasta, arq_zip = chatgpt.gerar_pacote(self.raiz, Path(self.dir.name) / "saida",
+                                               cfg=self.cfg)
+        nomes = zipfile.ZipFile(arq_zip).namelist()
+        self.assertFalse([n for n in nomes if SIGILOSO in n], nomes)
+        indice = zipfile.ZipFile(arq_zip).read("INDICE.md").decode("utf-8")
+        self.assertNotIn(SIGILOSO, indice)
+
+    def test_sigilo_da_pauta_tira_o_processo_da_ia_e_do_acervo(self):
+        self.marcar_na_pauta()
+        self.assert_fora_da_ia()
+        # E, com a separação ligada (o padrão), a cópia sai do acervo, como no
+        # download: o Claude Code e o Cowork abrem a pasta inteira, e o
+        # CLAUDE.md lhes diz que os sigilosos "não estão nesta pasta".
+        self.assertEqual(sorted(p.name for p in self.raiz.rglob(f"{SIGILOSO}*")), [])
+        self.assertTrue((self.sigilosos / "Lote 1" / f"{SIGILOSO}.pdf").exists())
+        self.assertTrue((self.sigilosos / "Lote 1" / "_controle" / f"{SIGILOSO}_capa.txt").exists())
+        self.assertTrue((self.sigilosos / "Transcricoes" / f"{SIGILOSO}.docx").exists())
+        self.assertIn("não estão nesta pasta", (self.raiz / "CLAUDE.md").read_text(encoding="utf-8"))
+        self.assertTrue((self.lote / f"{NUM}.pdf").exists(), "o público continua no acervo")
+
+    def test_preparo_diz_quantos_sigilosos_levou(self):
+        self.marcar_na_pauta()
+        rel = preparo.atualizar_contexto(self.cfg, extrair_texto=False)
+        self.assertEqual((rel.sigilosos_levados, rel.sigilosos_no_acervo), (1, []))
+        self.assertIn("1 processo sigiloso levado para a pasta dos sigilosos", rel.resumo)
+        self.assertEqual(rel.processos, 1)
+
+    def test_transcricao_sigilosa_tira_os_autos_da_ia(self):
+        # A audiência foi transcrita como sigilosa (pela pauta ou pelo
+        # interruptor): os autos que ficaram no acervo também são sigilosos.
+        self.trans.unlink()
+        _docx(self.sigilosos / "Transcricoes" / f"{SIGILOSO}.docx", ["AUDIÊNCIA EM SEGREDO"])
+        self.assert_fora_da_ia()
+        self.assertFalse(self.pdf.exists())
+
+    def test_com_a_separacao_desligada_fica_no_acervo_mas_nao_vai_para_a_ia(self):
+        self.cfg.definir("download", "separar_sigilosos", False)
+        self.marcar_na_pauta()
+        self.assert_fora_da_ia()
+        self.assertTrue(self.pdf.exists())
+        self.assertIn("pode conter processos em segredo de justiça",
+                      (self.raiz / "CLAUDE.md").read_text(encoding="utf-8"))
+
+    def test_copia_presa_no_acervo_trava_o_compartilhamento(self):
+        from helestron.download import motor
+
+        self.marcar_na_pauta()
+        original = motor._mover
+
+        def preso(origem, destino, *a):
+            if Path(origem) == self.pdf:
+                raise PermissionError(13, "O arquivo está aberto em outro programa")
+            return original(origem, destino, *a)
+
+        with mock.patch.object(motor, "_mover", preso), self.assertLogs("compartilhar", "ERROR"):
+            rel = preparo.atualizar_contexto(self.cfg, extrair_texto=False)
+            self.assertEqual(rel.sigilosos_no_acervo, [self.pdf])
+            self.assertTrue(any(SIGILOSO in e for e in rel.erros))
+            # o índice não o lista, mas o pacote recusa: nada se compartilha
+            self.assertNotIn(SIGILOSO, (self.raiz / "INDICE.md").read_text(encoding="utf-8"))
+            with self.assertRaises(preparo.SigilosoNoAcervo) as caso:
+                chatgpt.gerar_pacote(self.raiz, Path(self.dir.name) / "saida", cfg=self.cfg)
+        self.assertIn(f"{SIGILOSO}.pdf", str(caso.exception))
+        self.assertIn("mova-o para a pasta dos sigilosos", str(caso.exception))
+        self.assertTrue(self.pdf.exists())
+        self.assertFalse((self.raiz / "Transcricoes" / f"{SIGILOSO}.docx").exists())
+        # fechado o arquivo, o próximo preparo o leva
+        rel = preparo.atualizar_contexto(self.cfg, extrair_texto=False)
+        self.assertEqual(rel.sigilosos_no_acervo, [])
+        self.assertFalse(self.pdf.exists())
+
+    def test_servidor_mcp_le_a_pauta_sem_alterar_nada(self):
+        """O MCP roda em outro processo, a pedido do Claude Desktop: consulta a
+        pauta do programa (só leitura) e nunca move nem apaga arquivo."""
+        self.marcar_na_pauta()
+        ac = mcp_servidor.Acervo(self.raiz, sigilosos=self.sigilosos)
+        self.assertNotIn(SIGILOSO, ac.pdfs())
+        self.assertTrue(self.pdf.exists())
+        self.assertNotIn(SIGILOSO, mcp_servidor.Acervo(self.raiz, sigilosos=None).pdfs())
+        self.assertIn(SIGILOSO, mcp_servidor.Acervo(self.raiz, sigilosos=None, pauta=None).pdfs())
 
 
 class TestRecorte(BaseAcervo):

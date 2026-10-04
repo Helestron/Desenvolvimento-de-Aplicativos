@@ -1280,6 +1280,62 @@ class InterfaceNoNavegador(unittest.TestCase):
                         return r.top >= 0 && r.bottom <= innerHeight; }""", timeout=5000)
                     self.sem_problemas(pagina)
 
+    def test_fim_do_monitoramento_nao_mexe_na_rolagem_da_pauta(self):
+        """A tela adota a sincronização do monitoramento automático (mesmo
+        tipo de tarefa): no fim, o resultado vai para a faixa, mas quem está
+        lendo a lista lá embaixo não é levado ao topo a cada ciclo. Só o que
+        a pessoa clicou nesta tela (Sincronizar, Importar, Capturar) vem à vista."""
+        rolante = ("(() => { const c = document.getElementById('conteudo'); "
+                   "return c && c.scrollHeight > c.clientHeight ? c : document.scrollingElement; })()")
+        topo_da_faixa = "document.querySelector('#resultado-pauta').getBoundingClientRect().top"
+        pagina = self.abrir(1100, 720, secao="pauta")
+        pagina.evaluate("document.getElementById('conteudo').style.scrollBehavior = 'auto'")
+        pagina.locator("#acao-importar").scroll_into_view_if_needed()
+        self.assertGreater(pagina.evaluate(f"{rolante}.scrollTop"), 200, "a lista não rola: o teste não prova nada")
+        self.assertLess(pagina.evaluate(topo_da_faixa), 0)
+        # O que a pessoa lê fica no mesmo lugar da janela (a faixa que cresce
+        # lá em cima é compensada pela ancoragem da rolagem do navegador).
+        lido = "document.querySelector('#acao-importar').getBoundingClientRect().top"
+        antes = pagina.evaluate(lido)
+        pagina.evaluate("""() => {
+            const t = { id: 'monitor-1', tipo: 'pauta_sincronizar', titulo: 'Monitoramento da pauta', estado: 'rodando', progresso: {} };
+            Helestron.api.emitir('tarefa', t);
+            Helestron.api.emitir('tarefa', Object.assign({}, t, { estado: 'concluida', status: 'Pauta atualizada.',
+              resultado: { novas: 0, atualizadas: 0, removidas: 0, erros: [], avisos: [] } })); }""")
+        pagina.wait_for_function("() => document.querySelector('#resultado-pauta').textContent.includes('Pauta sincronizada')",
+                                 timeout=5000)
+        pagina.wait_for_timeout(900)          # a rolagem suave, se houvesse, já teria andado
+        self.assertAlmostEqual(pagina.evaluate(lido), antes, delta=2)
+        self.assertLess(pagina.evaluate(topo_da_faixa), 0)
+        # A sincronização que a pessoa pediu (o evento da tarefa chega antes da
+        # resposta do pedido e a tela a adota primeiro): o resultado vem à vista.
+        pagina.evaluate(f"{rolante}.scrollTop = 0")
+        pagina.click("#botao-sincronizar")
+        pagina.wait_for_function("() => [...Helestron.loja.tarefas.values()].some(t => t.tipo === 'pauta_sincronizar' "
+                                 "&& t.id !== 'monitor-1' && t.estado === 'rodando')")
+        pagina.locator("#acao-importar").scroll_into_view_if_needed()
+        self.assertLess(pagina.evaluate(topo_da_faixa), 0)
+        pagina.wait_for_function("""() => { const f = document.querySelector('#resultado-pauta .faixa');
+            if (!f || !f.textContent.includes('Pauta sincronizada')) return false;
+            const r = f.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }""", timeout=30000)
+        # A que termina antes da resposta do pedido (os eventos chegam
+        # primeiro): o resultado já mostrado não é apagado pela tela.
+        pagina.evaluate("""() => { const responder = Helestron.demo.responder;
+            Helestron.demo.responder = async (r, p) => {
+              if (r !== 'POST /api/pauta/sincronizar') return responder(r, p);
+              const t = { id: 'rapida-1', tipo: 'pauta_sincronizar', titulo: 'Sincronizar a pauta', estado: 'rodando', progresso: {} };
+              Helestron.api.emitir('tarefa', t);
+              Helestron.api.emitir('tarefa', Object.assign({}, t, { estado: 'falhou', erro: 'O portal recusou o acesso.' }));
+              return { tarefa: t.id }; }; }""")
+        pagina.evaluate(f"{rolante}.scrollTop = 0")
+        pagina.click("#botao-sincronizar")
+        pagina.wait_for_function("() => document.querySelector('#resultado-pauta').textContent.includes('O portal recusou o acesso.')",
+                                 timeout=5000)
+        pagina.wait_for_timeout(500)
+        self.assertIn("Não consegui sincronizar a pauta", pagina.inner_text("#resultado-pauta"))
+        self.assertFalse(pagina.is_disabled("#botao-sincronizar"))
+        self.sem_problemas(pagina)
+
     def test_hoje_na_pauta_sem_fonte_nao_fala_de_fonte(self):
         """Pauta configurada só por um relatório importado (C5), sem audiência
         futura: o Início dizia “A fonte está cadastrada” sem fonte nenhuma."""

@@ -654,17 +654,21 @@ def conflito_da_nuvem(nuvem, acervo) -> str | None:
     return None
 
 
-def atualizar_indice(cfg) -> None:
+def atualizar_indice(cfg):
     """INDICE.md (e CLAUDE.md/AGENTS.md, se faltarem) em dia, sem extrair o
     texto dos PDFs - é rápido. Chamado depois de cada transcrição: o índice
     é o que a IA lê primeiro, e sem isto a audiência recém-transcrita não
-    aparecia nele (nem no espelho da nuvem). Nunca levanta."""
+    aparecia nele (nem no espelho da nuvem). O preparo também tira do acervo
+    o processo que o programa já sabe sigiloso (a transcrição sigilosa
+    recém-gravada, a pauta). Devolve o RelatorioPreparo (None se falhou:
+    nunca levanta)."""
     try:
         from .compartilhar import preparo
 
-        preparo.atualizar_contexto(cfg, extrair_texto=False)
+        return preparo.atualizar_contexto(cfg, extrair_texto=False)
     except Exception as erro:
         log.warning("não consegui atualizar o INDICE.md do acervo: %s", str(erro)[:200])
+        return None
 
 
 # ============================================================ compartilhar
@@ -821,7 +825,8 @@ def resumo_acervo(cfg) -> dict:
 
     raiz = cfg.pasta_acervo
     try:
-        ac = Acervo(raiz)
+        # Sem os sigilosos (a regra única), como o índice e o MCP os contam
+        ac = Acervo(raiz, sigilosos=cfg.pasta_sigilosos)
         pdfs = ac.pdfs()
         trans = ac.transcricoes()
     except Exception:

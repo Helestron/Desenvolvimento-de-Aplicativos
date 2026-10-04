@@ -207,6 +207,25 @@ class TestSigiloPelaPasta(unittest.TestCase):
         self.assertEqual(documento.pasta_das_transcricoes(self.cfg, outro),
                          self.cfg.pasta_transcricoes)
 
+    def test_pauta_tambem_decide_onde_fica_a_transcricao(self):
+        """A regra única do sigilo: o processo que a pauta marca em segredo de
+        justiça é transcrito na pasta dos sigilosos - pela tela, pela linha de
+        comando ou pela recuperação. processo_sigiloso continua sendo só a
+        parte da pasta (a tela distingue os dois motivos)."""
+        from helestron.nucleo import caminhos, sigilo
+        from testes.test_nucleo import pauta_com_sigiloso
+
+        pauta = self.pasta.raiz / "local" / "pauta.sqlite3"
+        pauta.parent.mkdir(parents=True)
+        pauta_com_sigiloso(pauta, self.numero)
+        self.addCleanup(sigilo.esquecer_pauta)
+        with mock.patch.object(caminhos, "ARQUIVO_PAUTA", pauta):
+            self.assertFalse(documento.processo_sigiloso(self.cfg, self.numero))
+            self.assertEqual(documento.pasta_das_transcricoes(self.cfg, self.numero),
+                             self.sig / "Transcricoes")
+        self.assertEqual(documento.pasta_das_transcricoes(self.cfg, self.numero),
+                         self.cfg.pasta_transcricoes)
+
 
 if __name__ == "__main__":
     unittest.main()

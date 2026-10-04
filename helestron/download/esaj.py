@@ -53,7 +53,8 @@ from .modelos import (AJUSTES_ACESSOS, CAMPO_PRAZO_LOGIN, ENTRAR_MANUALMENTE,
                       LoginFalhou, NAO_ENCONTRADO, PortalIndisponivel, ProcessoNaoEncontrado,
                       ResultadoProcesso, SEM_ACESSO, SemAcesso, SessaoPerdida,
                       SIGILOSO_SEM_SENHA, SigilosoSemSenha)
-from .navegador import (explicar_erro, primeiro_visivel, recusou_credenciais, sem_acento,
+from .navegador import (DICA_DIAGNOSTICO, DICA_SEM_DIAGNOSTICO, diagnosticar_processo,
+                        explicar_erro, primeiro_visivel, recusou_credenciais, sem_acento,
                         tem_web_signer)
 
 log = logging.getLogger("download.esaj")
@@ -556,6 +557,8 @@ class PortalESAJ:
         # Depois de liberado pela senha, o modal pode não voltar na tentativa
         # seguinte: sem esta memória, ela gravaria o processo como público.
         self.sigilosos_apurados: set[str] = set()
+        # o processo que baixar() está buscando agora, e o resultado dele
+        self._em_curso: tuple[Numero, ResultadoProcesso] | None = None
 
     # ----------------------------------------------------------- atalhos
     @property
@@ -1061,12 +1064,36 @@ class PortalESAJ:
             "código por e-mail ou certificado, como de costume).",
             "esaj-manual-prazo")
 
+    # ------------------------------------------------------- diagnóstico
+    def _tela_sigilosa(self, numero: Numero | None = None,
+                       r: ResultadoProcesso | None = None) -> bool:
+        """A tela em curso é de processo em segredo de justiça - apurado
+        agora, numa tentativa anterior, ou já sabido pelo motor (pasta de
+        sigilosos, pauta)?"""
+        em_curso = getattr(self, "_em_curso", None)
+        if em_curso is not None:
+            numero = numero or em_curso[0]
+            r = r or em_curso[1]
+        return bool(getattr(self.nav, "sigiloso_em_curso", False)
+                    or (r is not None and r.sigiloso)
+                    or (numero is not None and numero.nome_arquivo in self.sigilosos_apurados))
+
+    def _diagnosticar_processo(self, rotulo: str, numero: Numero | None = None,
+                               r: ResultadoProcesso | None = None) -> str:
+        """Guarda a tela do processo em Logs\\diagnostico - menos a de processo
+        sigiloso, que traz as partes (o registro diz por quê). Devolve a dica
+        para a mensagem de erro: onde ver a tela, ou que ela não foi guardada."""
+        sigiloso = self._tela_sigilosa(numero, r)
+        diagnosticar_processo(self.nav, rotulo, sigiloso)
+        return DICA_SEM_DIAGNOSTICO if sigiloso else DICA_DIAGNOSTICO
+
     # ======================================================== download
     def baixar(self, numero: Numero, destino_pdf: Path, senha: str | None = None) -> ResultadoProcesso:
         destino_pdf = Path(destino_pdf)
         r = ResultadoProcesso(ordem=0, numero=numero.formatado, tribunal=self.tribunal.sigla,
                               sistema=self.sistema)
         inicio = time.monotonic()
+        self._em_curso = (numero, r)
         try:
             self._baixar(numero, destino_pdf, senha, r)
             r.situacao = OK
@@ -1089,11 +1116,12 @@ class PortalESAJ:
             if cheira_a_sessao(msg) and not self.sessao_ativa():
                 raise SessaoPerdida(f"a sessão do {self.nome} caiu ({msg[:160]})") from erro
             if not erro_transitorio(msg):
-                self.nav.diagnosticar(f"esaj-falha-{numero.nome_arquivo}")
+                self._diagnosticar_processo(f"esaj-falha-{numero.nome_arquivo}", numero, r)
             self.limpar_estado()
             raise
         finally:
             r.segundos = round(time.monotonic() - inicio, 1)
+            self._em_curso = None
             # uma vez sigiloso, sempre sigiloso (também na tentativa que falhou)
             if numero.nome_arquivo in self.sigilosos_apurados:
                 r.sigiloso = True
@@ -1327,7 +1355,7 @@ class PortalESAJ:
             raise ProcessoNaoEncontrado(
                 f"não encontrado no 1º grau do {self.nome}. Confira o número; se o "
                 "processo estiver no 2º grau ou em outro sistema, baixe-o pelo portal.")
-        self.nav.diagnosticar(f"esaj-consulta-{numero.nome_arquivo}")
+        self._diagnosticar_processo(f"esaj-consulta-{numero.nome_arquivo}", numero)
         raise RuntimeError("não consegui identificar o processo na consulta "
                            "(sem acesso, ou sessão expirada?)")
 

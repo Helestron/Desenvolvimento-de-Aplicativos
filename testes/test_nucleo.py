@@ -13,7 +13,8 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from helestron.nucleo import caminhos, cnj, config, cofre_senhas, listas, sistema, tribunais
+from helestron.nucleo import (caminhos, cnj, cofre_senhas, config, listas, sigilo, sistema,
+                             tribunais)
 
 REPOSITORIO = Path(caminhos.__file__).resolve().parents[2]
 
@@ -561,6 +562,118 @@ class TestSistema(unittest.TestCase):
             self.assertNotIn("ANTHROPIC_API_KEY", sistema.ambiente_sem_chaves())
         finally:
             del os.environ["ANTHROPIC_API_KEY"]
+
+
+
+def _numero(seq: str, tr: str = "02", dependente: str = "") -> cnj.Numero:
+    corpo = f"{seq}20248{tr}0001"
+    dv = 98 - int(corpo + "00") % 97
+    texto = f"{seq}-{dv:02d}.2024.8.{tr}.0001"
+    return cnj.ler(f"{texto}/{dependente}" if dependente else texto)
+
+
+def pauta_com_sigiloso(arquivo: Path, *numeros: cnj.Numero, sigiloso: bool = True) -> None:
+    """Grava no banco da pauta uma audiência de cada processo (sigilosa ou não)."""
+    from datetime import date
+
+    from helestron.pauta import modelos as pm
+    from helestron.pauta.armazem import Armazem
+
+    armazem = Armazem(arquivo)
+    try:
+        armazem.gravar([pm.nova(sistema="esaj", tribunal="TJAL", data_=date(2026, 10, 8),
+                                processo=n.formatado, hora=f"{9 + i:02d}:30",
+                                tipo_original="Conciliação", situacao_original="Designada",
+                                partes="M. A. S. x J. R. S.", sigiloso=sigiloso)
+                        for i, n in enumerate(numeros)], "esaj-tjal", None)
+    finally:
+        armazem.fechar()
+
+
+class TestSigilo(unittest.TestCase):
+    """A regra única do processo sigiloso: autos, transcrição, gravação ou
+    diário na pasta dos sigilosos, ou a pauta marcando o segredo de justiça.
+    Antes, o compartilhamento e o download só olhavam os PDFs da pasta: o
+    processo que a pauta (ou a transcrição sigilosa) dava como sigiloso ia
+    para a IA, para a nuvem e para o acervo."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.sigilosos = self.tmp / "Sigilosos"
+        self.pauta = self.tmp / "local" / "pauta.sqlite3"
+        p = mock.patch.object(caminhos, "ARQUIVO_PAUTA", self.pauta)
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(sigilo.esquecer_pauta)
+        self.cfg = mock.Mock(pasta_sigilosos=self.sigilosos)
+
+    def _arquivo(self, rel: str) -> Path:
+        caminho = self.sigilosos / rel
+        caminho.parent.mkdir(parents=True, exist_ok=True)
+        caminho.write_bytes(b"x")
+        return caminho
+
+    def test_pasta_conta_autos_transcricao_gravacao_e_diario(self):
+        autos, lote, docx, diario, gravacao = (_numero(s) for s in (
+            "0700101", "0700102", "0700103", "0700104", "0700105"))
+        incidente = _numero("0700106", dependente="01")
+        fundo = _numero("0700107")
+        self._arquivo(f"{autos.nome_arquivo}.pdf")
+        self._arquivo(f"Lote 1/{lote.nome_arquivo}.pdf")
+        self._arquivo(f"Transcricoes/{docx.nome_arquivo} (2).docx")
+        self._arquivo(f"Transcricoes/_audio/{diario.nome_arquivo} 2026-09-16 14h00.jsonl")
+        self._arquivo(f"Transcricoes/_audio/{gravacao.nome_arquivo} 2026-09-16 15h00.flac")
+        self._arquivo(f"Lote 1/{incidente.nome_arquivo}.pdf")
+        # três níveis abaixo não conta: a pasta pode ter sido apontada para os Documentos
+        self._arquivo(f"a/b/{fundo.nome_arquivo}.pdf")
+        esperado = {n.nome_arquivo for n in (autos, lote, docx, diario, gravacao, incidente)}
+        self.assertEqual(sigilo.chaves_na_pasta(self.sigilosos), esperado)
+        for n in (autos, lote, docx, diario, gravacao, incidente):
+            self.assertTrue(sigilo.na_pasta(self.sigilosos, n), n)
+            self.assertEqual(sigilo.motivo(self.cfg, n), sigilo.MOTIVO_PASTA)
+        # o incidente não torna sigiloso o principal (nem o contrário)
+        self.assertFalse(sigilo.na_pasta(self.sigilosos, _numero("0700106")))
+        self.assertFalse(sigilo.na_pasta(self.sigilosos, fundo))
+        self.assertFalse(sigilo.processo_sigiloso(self.cfg, fundo))
+        # acervo (por engano) dentro da pasta de sigilosos: o que é dele não vira sigiloso
+        self.assertEqual(sigilo.chaves_na_pasta(self.sigilosos, self.sigilosos / "Lote 1"),
+                         esperado - {lote.nome_arquivo, incidente.nome_arquivo})
+
+    def test_pauta_marca_o_processo_e_a_consulta_nao_cria_o_banco(self):
+        x, y, publico = _numero("0700777"), _numero("0700778"), _numero("0700779")
+        incidente = _numero("0700777", dependente="01")
+        self.assertEqual(sigilo.chaves_da_pauta(), set())
+        self.assertFalse(self.pauta.exists(), "a consulta criou o banco da pauta")
+        self.pauta.parent.mkdir(parents=True)
+        pauta_com_sigiloso(self.pauta, x, incidente)
+        pauta_com_sigiloso(self.pauta, publico, sigiloso=False)
+        self.assertEqual(sigilo.chaves_da_pauta(), {x.nome_arquivo, incidente.nome_arquivo})
+        self.assertEqual(sigilo.motivo(self.cfg, x), sigilo.MOTIVO_PAUTA)
+        self.assertTrue(sigilo.na_pauta(x.formatado))
+        self.assertFalse(sigilo.processo_sigiloso(self.cfg, publico))
+        self.assertFalse(sigilo.na_pauta(y, pauta=None))
+        self.assertEqual(sigilo.chaves_sigilosas(self.sigilosos, pauta=None), set())
+        # O segredo decretado depois: a pauta passa a marcar o processo, e a
+        # regra vale na hora (o que se guardou da leitura anterior não serve).
+        pauta_com_sigiloso(self.pauta, y)
+        self.assertIn(y.nome_arquivo, sigilo.chaves_sigilosas(self.sigilosos))
+        self.assertTrue(sigilo.processo_sigiloso(self.cfg, y))
+
+    def test_pauta_ilegivel_vale_o_que_ja_se_sabia(self):
+        x = _numero("0700777")
+        self.pauta.parent.mkdir(parents=True)
+        pauta_com_sigiloso(self.pauta, x)
+        self.assertTrue(sigilo.na_pauta(x))
+        pauta_com_sigiloso(self.pauta, _numero("0700778"))      # o banco mudou
+        with mock.patch("helestron.pauta.armazem.Armazem", side_effect=OSError("ocupado")), \
+                self.assertLogs("nucleo.sigilo", "WARNING"):
+            self.assertTrue(sigilo.na_pauta(x))
+        sigilo.esquecer_pauta()
+        with mock.patch("helestron.pauta.armazem.Armazem", side_effect=OSError("ocupado")), \
+                self.assertLogs("nucleo.sigilo", "WARNING"):
+            self.assertFalse(sigilo.na_pauta(x))                 # nunca levanta
 
 
 if __name__ == "__main__":

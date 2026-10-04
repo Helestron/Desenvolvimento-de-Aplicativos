@@ -160,6 +160,11 @@
       let alteracoes = [];
       let fontes = [];
       let tarefaSinc = null;      // id da sincronização/captura acompanhada
+      // A pessoa começou a tarefa acompanhada com um clique nesta tela? Só
+      // então o resultado é trazido à vista: a do monitoramento automático
+      // (mesmo tipo) termina sem mexer na rolagem de quem está lendo a lista.
+      let trazerResultado = false;
+      let ultimaMostrada = null;  // a tarefa cujo resultado já foi para a faixa
 
       // ---------------------------------------------- cabeçalho
       const botaoSincronizar = botao({ rotulo: "Sincronizar", icone: "sincronizar", tipo: "primario", acao: () => sincronizar() });
@@ -260,7 +265,7 @@
           await api.pauta.salvarFonte(escolha);
         }
         const r = await api.pauta.sincronizar({});
-        acompanhar(r.tarefa);
+        acompanhar(r.tarefa, true);
       }
 
       async function capturar() {
@@ -270,7 +275,7 @@
         });
         if (!escolha) return;
         const r = await api.pauta.capturar(escolha.tribunal, escolha.sistema);
-        acompanhar(r.tarefa);
+        acompanhar(r.tarefa, true);
       }
 
       async function importar() {
@@ -288,6 +293,7 @@
           texto: total ? resumo : (r.arquivo ? r.arquivo + ": " : "") + "o Helestron não reconheceu nenhuma audiência neste arquivo. Confira se é o relatório da pauta (com as colunas de data e processo).",
           lista: avisos,
           tituloLista: avisos.length === 1 ? "Um aviso" : `${avisos.length} avisos`,
+          trazer: true,
         });
         await carregar();
       }
@@ -355,7 +361,7 @@
       }
 
       // ---------------------------------------------- resultado (fica à vista até fechar)
-      function mostrarResultado({ tipo, icone: nomeIcone, titulo, texto, lista, tituloLista, acoes }) {
+      function mostrarResultado({ tipo, icone: nomeIcone, titulo, texto, lista, tituloLista, acoes, trazer }) {
         const itens = (lista || []).filter(Boolean);
         const corpo = el("div", {},
           texto ? el("span", { estilo: { display: "block" }, texto }) : null,
@@ -365,14 +371,16 @@
         const fechar = botao({ icone: "x", titulo: "Fechar este aviso", tamanho: "pequeno", tipo: "texto", acao: () => trocar(faixaResultado) });
         trocar(faixaResultado, el("div", { estilo: { marginBottom: "14px" } },
           faixa({ tipo, icone: nomeIcone, titulo, texto: corpo, acoes: (acoes || []).concat([fechar]) })));
-        trazerAVista(faixaResultado);
+        if (trazer) trazerAVista(faixaResultado);
       }
 
       /**
        * A faixa fica no topo da página, e "Importar relatório" e "Capturar no
        * portal" (cartão "Mais ações") ficam no pé: sem rolar até ela, o
-       * resultado aparecia mil pixels acima de onde a pessoa olhava - e, com a
-       * Pauta aberta, o aviso do canto não se repete.
+       * resultado aparecia mil pixels acima de onde a pessoa olhava — e, com a
+       * Pauta aberta, o aviso do canto não se repete. Só para o que a pessoa
+       * pediu nesta tela: o fim do monitoramento automático não a tira do
+       * lugar onde ela está lendo.
        */
       function trazerAVista(no) {
         if (!no.isConnected || !no.firstChild) return;
@@ -393,17 +401,18 @@
       ];
 
       /** O que a sincronização ou a captura trouxe (ou por que não trouxe). */
-      function resultadoDaTarefa(t) {
+      function resultadoDaTarefa(t, trazer) {
         const r = (t.resultado && typeof t.resultado === "object") ? t.resultado : {};
+        ultimaMostrada = t.id;
         if (t.estado === "parada") {
-          mostrarResultado({ tipo: "", icone: "info", titulo: t.tipo === "pauta_capturar" ? "Captura cancelada" : "Sincronização interrompida", texto: "Nada foi perdido: o que já estava na pauta continua aqui." });
+          mostrarResultado({ tipo: "", icone: "info", titulo: t.tipo === "pauta_capturar" ? "Captura cancelada" : "Sincronização interrompida", texto: "Nada foi perdido: o que já estava na pauta continua aqui.", trazer });
           return;
         }
         if (t.estado === "falhou") {
           mostrarResultado({
             tipo: "erro", titulo: t.tipo === "pauta_capturar" ? "A captura não deu certo" : "Não consegui sincronizar a pauta",
             texto: t.erro || t.status || "O portal não respondeu como esperado.",
-            acoes: acoesDeSaida(),
+            acoes: acoesDeSaida(), trazer,
           });
           return;
         }
@@ -426,6 +435,7 @@
             tipo: n ? "ok" : "aviso", icone: "capturar",
             titulo: n ? `Captura concluída: ${fmt.plural(n, "audiência", "audiências")}${telas}` : "Nenhuma audiência capturada",
             texto: [motivo, n ? lembrou : "Na barra do Helestron, no topo do portal, clique em “Capturar esta tela” com a pauta à vista e, no fim, em “Concluir”."].filter(Boolean).join(" "),
+            trazer,
           });
           return;
         }
@@ -438,13 +448,25 @@
           texto: t.status || "Pauta atualizada.",
           lista,
           tituloLista: erros.length ? fmt.plural(erros.length, "fonte com problema", "fontes com problema") + (avisos.length ? " e " + fmt.plural(avisos.length, "aviso", "avisos") : "") : fmt.plural(avisos.length, "aviso", "avisos"),
-          acoes: erros.length ? acoesDeSaida() : [],
+          acoes: erros.length ? acoesDeSaida() : [], trazer,
         });
       }
 
       // ---------------------------------------------- tarefa de sincronização/captura
-      function acompanhar(id) {
+      /** trazer: a pessoa começou a tarefa agora, com um clique nesta tela. */
+      function acompanhar(id, trazer) {
+        const t = H.loja.tarefas.get(id);
+        if (t && t.estado !== "rodando") {
+          // Terminou antes da resposta do pedido (os eventos chegam primeiro):
+          // o resultado fica na faixa (sem apagá-lo), e à vista se foi a pessoa.
+          if (tarefaSinc === id) tarefaSinc = null;
+          if (ultimaMostrada !== id) terminou(t, !!trazer);
+          else if (trazer) trazerAVista(faixaResultado);
+          desenharTarefa();
+          return;
+        }
         tarefaSinc = id;
+        trazerResultado = !!trazer;
         trocar(faixaResultado);
         desenharTarefa();
       }
@@ -465,17 +487,24 @@
       }
       ctx.on("tarefa", (t) => {
         if (t.tipo === "pauta_sincronizar" || t.tipo === "pauta_capturar") {
-          if (t.estado === "rodando" && !tarefaSinc) tarefaSinc = t.id;
+          // Adotada (o monitoramento automático, ou a de outra tela): o
+          // resultado aparece na faixa, mas a rolagem fica onde está.
+          if (t.estado === "rodando" && !tarefaSinc) { tarefaSinc = t.id; trazerResultado = false; }
           if (t.id === tarefaSinc) {
             desenharTarefa();
             if (t.estado !== "rodando") {
+              const trazer = trazerResultado;
               tarefaSinc = null;
-              resultadoDaTarefa(t);
-              Promise.all([carregarFontes(), carregarAlteracoes()]).then(() => { carregar(); desenharAlteracoes(); });
+              trazerResultado = false;
+              terminou(t, trazer);
             }
           }
         }
       });
+      function terminou(t, trazer) {
+        resultadoDaTarefa(t, trazer);
+        Promise.all([carregarFontes(), carregarAlteracoes()]).then(() => { carregar(); desenharAlteracoes(); });
+      }
       const emCurso = Array.from(H.loja.tarefas.values()).find((t) => (t.tipo === "pauta_sincronizar" || t.tipo === "pauta_capturar") && t.estado === "rodando");
       if (emCurso) acompanhar(emCurso.id);
 

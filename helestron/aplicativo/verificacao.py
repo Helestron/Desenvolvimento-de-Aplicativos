@@ -6,7 +6,7 @@ Sem janela. O instalador roda isto ao final e, se o código de saída não for
   1. o manifesto: existência, tamanho e SHA-256 de TODOS os arquivos
      instalados (o arquivo que o antivírus levou aparece aqui, pelo nome);
   2. os módulos: importa TODOS os módulos do pacote helestron (listados
-     sem importar nada, pelo sistema de arquivos), num processo à parte - um
+     sem importar nada, pelo sistema de arquivos), num processo à parte — um
      módulo que falte ou não carregue aparece aqui, e não no meio do uso,
      como o "No module named 'app.interface.pagina_config'" da versão
      anterior;
@@ -31,7 +31,7 @@ não terminou.
 Relatório em texto UTF-8 (padrão: LOCAL\\Logs\\verificacao-instalacao.txt).
 Código de saída: 0 = pronto (talvez com avisos); 1 = falha; 9 = os arquivos
 estão certos, mas o computador não tem como abrir a janela (sem WebView2,
-sem Edge e com o Internet Explorer de navegador padrão) - o instalador
+sem Edge e com o Internet Explorer de navegador padrão) — o instalador
 explica como instalar o WebView2, em vez de dizer "tudo certo".
 """
 
@@ -172,7 +172,7 @@ TESTE_TRANSCRICAO = "Teste de transcrição"
 FORA_DO_MOTOR = ("WebView2 (janela do programa)",)
 # Tempo total das checagens do motor, e quanto o processo delas pode ficar
 # calado (sem começar nem terminar uma checagem) antes de ser dado como
-# travado - o teste do modelo pode levar uns minutos num computador lento.
+# travado — o teste do modelo pode levar uns minutos num computador lento.
 LIMITE_MOTOR_S = 900.0
 SEM_NOVIDADE_MOTOR_S = 360.0
 # A importação de todos os módulos (num processo à parte).
@@ -230,7 +230,7 @@ def motor_no_filho(argv: list[str]) -> int:
 
     if paralelo:
         # Várias ao mesmo tempo (as que esperam processos-filhos andam juntas);
-        # cada uma sai assim que fica pronta - quem chama põe na ordem do
+        # cada uma sai assim que fica pronta — quem chama põe na ordem do
         # relatório. Sair na hora também mostra ao vigia que o processo não
         # travou enquanto uma checagem lenta ainda corre.
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="verificar") as pool:
@@ -277,7 +277,7 @@ def conferir_motor(cfg=None, ao_resultado: Callable[[Resultado], None] | None = 
         if ao_resultado is not None:
             try:
                 ao_resultado(r)
-            except Exception:                       # noqa: BLE001 - o relatório nunca derruba
+            except Exception:                       # noqa: BLE001 — o relatório nunca derruba
                 log.exception("falha ao registrar o resultado %s", nome)
 
     pendentes, paralelo = list(nomes), True
@@ -458,7 +458,7 @@ def executar(relatorio: Path | None = None, saida: Callable[[str], None] | None 
     for passo in passos:
         try:
             r = passo()
-        except Exception as erro:                   # noqa: BLE001 - vira falha no relatório
+        except Exception as erro:                   # noqa: BLE001 — vira falha no relatório
             log.exception("falha inesperada na verificação")
             r = Resultado(NOMES_DOS_PASSOS.get(getattr(passo, "__name__", ""), "Verificação"),
                           FALHA, f"Erro inesperado: {type(erro).__name__}: {erro}", REINSTALAR)

@@ -7,17 +7,28 @@ a cada uma já desenhada, avisa o servidor (POST /api/autoteste/passo
 do Windows usa para provar que cada tela abre e desenha sem erro.
 
 A captura usa o retângulo da janela (PIL.ImageGrab) e só existe no
-Windows; fora dele o percurso é feito e registrado, sem as imagens. Se a
-página não terminar no prazo, o autoteste falha sozinho - o CI nunca fica
+Windows; fora dele o percurso é feito e registrado, sem as imagens. Sem o
+retângulo (a interface numa aba do navegador padrão), nada é capturado: a
+tela inteira mostraria o que estiver aberto em outros programas. Se a
+página não terminar no prazo, o autoteste falha sozinho — o CI nunca fica
 esperando para sempre.
+
+As capturas saem do computador (o CI as publica; o comando também roda em
+qualquer instalação): o autoteste usa pastas de dados novas e vazias
+(PastasDoAutoteste), nunca a configuração, a pauta e o acervo de quem o
+roda — as partes dos processos sigilosos apareceriam na Pauta e no Início.
 """
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
+import os
 import platform
+import shutil
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -30,6 +41,80 @@ log = logging.getLogger("aplicativo.autoteste")
 PRAZO_S = 240.0
 ASSENTAR_S = 0.5
 NO_WINDOWS = sys.platform == "win32"
+SEM_RETANGULO = ("a janela não informou onde está na tela; sem esse retângulo, nada é capturado "
+                 "(a tela inteira mostraria outros programas)")
+
+
+class PastasDoAutoteste:
+    """As pastas de dados do --autoteste: novas, vazias e apagadas no fim.
+
+    HELESTRON_LOCAL e HELESTRON_DADOS passam a apontar para uma pasta
+    temporária, e helestron.nucleo.caminhos (que o __main__ já importou, com
+    as pastas de verdade) é lido de novo, antes do registro, da instância e
+    do servidor. Os processos-filhos herdam as variáveis. O registro (Logs)
+    da rodada vai para a pasta das capturas, para o diagnóstico; o resto é
+    apagado. desfazer() devolve as variáveis e as constantes de antes.
+    """
+
+    VARIAVEIS = ("HELESTRON_LOCAL", "HELESTRON_DADOS")
+
+    def __init__(self, saida: Path):
+        self.saida = Path(saida)
+        self.raiz: Path | None = None
+        self._ambiente: dict[str, str | None] = {}
+        self._constantes: dict[str, object] = {}
+
+    def isolar(self) -> "PastasDoAutoteste":
+        from ..nucleo import caminhos
+
+        self.raiz = Path(tempfile.mkdtemp(prefix="helestron-autoteste-"))
+        local, documentos = self.raiz / "local", self.raiz / "documentos"
+        local.mkdir()
+        documentos.mkdir()
+        self._ambiente = {nome: os.environ.get(nome) for nome in self.VARIAVEIS}
+        self._constantes = {nome: valor for nome, valor in vars(caminhos).items() if nome.isupper()}
+        os.environ["HELESTRON_LOCAL"] = str(local)
+        os.environ["HELESTRON_DADOS"] = str(documentos)
+        importlib.reload(caminhos)
+        return self
+
+    def desfazer(self) -> None:
+        if self.raiz is None:
+            return
+        from ..nucleo import caminhos
+
+        raiz, self.raiz = self.raiz, None
+        self._soltar_registro(raiz)
+        logs = raiz / "local" / "Logs"
+        if logs.is_dir():
+            try:
+                shutil.copytree(logs, self.saida / "Logs", dirs_exist_ok=True)
+            except OSError as erro:
+                log.warning("autoteste: o registro não foi copiado: %s", erro)
+        for nome, valor in self._ambiente.items():
+            if valor is None:
+                os.environ.pop(nome, None)
+            else:
+                os.environ[nome] = valor
+        for nome, valor in self._constantes.items():
+            setattr(caminhos, nome, valor)
+        # O WebView2 pode segurar a pasta do perfil por um instante depois de fechar.
+        for tentativa in range(5):
+            shutil.rmtree(raiz, ignore_errors=True)
+            if not raiz.exists():
+                break
+            time.sleep(0.5 * (tentativa + 1))
+
+    @staticmethod
+    def _soltar_registro(raiz: Path) -> None:
+        """Fecha os arquivos de registro abertos dentro da pasta temporária
+        (no Windows, arquivo aberto não sai)."""
+        principal = logging.getLogger()
+        for h in list(principal.handlers):
+            arquivo = getattr(h, "baseFilename", "")
+            if arquivo and Path(arquivo).is_relative_to(raiz):
+                principal.removeHandler(h)
+                h.close()
 
 
 class Autoteste:
@@ -81,6 +166,8 @@ class Autoteste:
         if self.capturar_telas:
             try:
                 registro["captura"] = self._capturar(secao)
+                if registro["captura"] is None:
+                    registro["erro_captura"] = SEM_RETANGULO
             except Exception as erro:
                 registro["erro_captura"] = f"{type(erro).__name__}: {erro}"
                 log.warning("autoteste: captura de %s falhou: %s", secao, erro)
@@ -91,16 +178,18 @@ class Autoteste:
         return {"captura": registro["captura"]}
 
     def _capturar(self, secao: str) -> str | None:
-        from PIL import ImageGrab
-
+        """Captura só o retângulo da janela; sem ele, nada (None)."""
         janela = self.app.janela
         retangulo = janela.retangulo() if janela is not None else None
+        if retangulo is None or retangulo[2] <= 10 or retangulo[3] <= 10:
+            log.warning("autoteste: %s sem captura: %s", secao, SEM_RETANGULO)
+            return None
+        from PIL import ImageGrab
+
+        # all_screens: a janela pode estar num segundo monitor (coordenadas negativas).
         extra = {"all_screens": True} if NO_WINDOWS else {}
-        if retangulo is not None and retangulo[2] > 10 and retangulo[3] > 10:
-            x, y, largura, altura = retangulo
-            imagem = ImageGrab.grab(bbox=(x, y, x + largura, y + altura), **extra)
-        else:
-            imagem = ImageGrab.grab(**extra)
+        x, y, largura, altura = retangulo
+        imagem = ImageGrab.grab(bbox=(x, y, x + largura, y + altura), **extra)
         nome = f"captura-{secao}.png"
         imagem.save(self.pasta / nome)
         return nome

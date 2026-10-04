@@ -29,6 +29,7 @@ As pastas `Acervo`, `Sigilosos` e `Pauta` ficam em `Documentos\Helestron`
 - [2. Transcrever audiência](#2-transcrever-audiência)
 - [3. Pauta de audiências](#3-pauta-de-audiências)
 - [4. Compartilhar com IA](#4-compartilhar-com-ia)
+- [Segredo de justiça](#segredo-de-justiça)
 - [Ajustes](#ajustes)
 - [Onde ficam os arquivos](#onde-ficam-os-arquivos)
 - [Atualizar](#atualizar)
@@ -49,7 +50,7 @@ A janela tem, à esquerda, a barra lateral com as seções:
 
 | Seção | Para quê | Atalho |
 |---|---|---|
-| **Início** | saudação, as quatro funções, "Hoje na pauta", "Atividade recente" e "Primeiros passos" | Ctrl+1 |
+| **Início** | saudação, as quatro funções, “Hoje na pauta”, “Atividade recente” e “Primeiros passos” | Ctrl+1 |
 | **Processos** | baixar os autos de uma relação | Ctrl+2 |
 | **Audiências** | transcrever a audiência | Ctrl+3 |
 | **Pauta** | a pauta de audiências | Ctrl+4 |
@@ -60,7 +61,7 @@ A janela tem, à esquerda, a barra lateral com as seções:
 No rodapé da barra lateral aparecem os trabalhos em andamento (um download,
 uma sincronização da pauta, o preparo do acervo), cada um com um anel de
 progresso; clique neles para ir à tela que os acompanha. Ali também ficam a
-versão do programa e a indicação "ligado" (ou "sem conexão").
+versão do programa e a indicação “ligado” (ou “sem conexão”).
 
 ### Para quem usava o Assessor Integrado
 
@@ -106,12 +107,12 @@ O Helestron substitui o antigo Assessor Integrado. O que mudou:
    **Downloads**: é lá que o botão **Reparar** o procura, se um dia for
    preciso (veja [Problemas comuns](#o-helestron-não-pôde-abrir-antivírus)).
 
-   O navegador pode avisar que o arquivo "não é baixado com frequência". No
+   O navegador pode avisar que o arquivo “não é baixado com frequência”. No
    Edge, clique nos três pontos ao lado do aviso, em **Manter** e, se ele
    perguntar de novo, confirme que deseja manter o arquivo.
 
 2. **Dê dois cliques no arquivo baixado.** Na primeira vez, o Windows mostra
-   a tela azul **"O Windows protegeu o computador"**. Clique em
+   a tela azul **“O Windows protegeu o computador”**. Clique em
    **Mais informações** e depois em **Executar assim mesmo**.
 
    > O aviso do SmartScreen aparece porque o instalador ainda não tem
@@ -136,6 +137,12 @@ fecha antes de copiar. Uma audiência sendo transcrita **não é interrompida**:
 o instalador pede que você a encerre no Helestron (botão **Encerrar**: o
 documento é salvo) e clique em **Repetir**; **Cancelar** deixa a instalação
 para depois, sem mudar nada (veja [Atualizar](#atualizar)).
+
+Se, durante a cópia, aparecer **“Não foi possível gravar o arquivo”**, há
+duas causas possíveis: o Helestron (ou o Claude Desktop) ainda está aberto
+— feche-o e clique em **Repetir** — ou a pasta escolhida exige
+administrador — clique em **Anular** e instale na pasta sugerida. **Ignorar**
+pula aquele arquivo, e a conferência final vai acusar a falta dele.
 
 ### Onde o Helestron é instalado
 
@@ -172,7 +179,7 @@ No fim da instalação, o assistente roda a **conferência da instalação**:
 - confere se o componente da janela (WebView2, versão 101 ou mais recente)
   ou, na falta dele, o Edge está disponível.
 
-Se tudo estiver em ordem, aparece "Instalação conferida: tudo certo." Se algo
+Se tudo estiver em ordem, aparece “Instalação conferida: tudo certo.” Se algo
 faltar (quase sempre, um arquivo que o antivírus pôs em quarentena), o
 assistente diz o que aconteceu e onde está o relatório:
 
@@ -256,6 +263,13 @@ ordem aparece marcado, e o quadro sai da tela quando tudo estiver feito. A
 pauta só conta como configurada depois que você cadastra uma fonte,
 sincroniza ou importa um relatório: abrir a tela da Pauta não basta.
 
+O quadro **Hoje na pauta**, no Início, mostra as audiências do dia (um
+clique abre Audiências com o número, o tipo e o sigilo já preenchidos).
+Sem audiências, ele diz o que falta: “A pauta ainda não foi configurada”
+(com o botão **Configurar a pauta**), “A pauta ainda não foi sincronizada”
+(a fonte está cadastrada, mas ainda não foi sincronizada) ou “Nenhuma
+audiência hoje”, com a próxima.
+
 Nos **Ajustes**, as opções valem na hora, sem botão para salvar: ao lado do
 campo alterado aparece **Salvo**. O que o programa recusa (por exemplo, uma pasta
 que poria os processos sigilosos ao alcance da IA) volta ao valor anterior, e
@@ -280,13 +294,13 @@ Em **Ajustes › Acessos aos portais**:
    monitoramento automático, que só usa a senha guardada.
 5. Clique em **Salvar**.
 
-Cada portal aparece na lista com a situação da senha ("Senha guardada",
-"Senha só até fechar o Helestron" ou "Sem senha guardada") e, ao lado, os
+Cada portal aparece na lista com a situação da senha (“Senha guardada”,
+“Senha só até fechar o Helestron” ou “Sem senha guardada”) e, ao lado, os
 botões **Testar** (quando há senha) e **Alterar** (ou **Cadastrar**, se o
 acesso ainda não foi cadastrado). **Testar** entra exatamente no portal
 daquela linha (no TJAL, no TJSP e no TJAC, o e-SAJ e o eProc são testados
-cada um no seu botão) e mostra o resultado na própria linha: "Testando o
-acesso…", "Acesso confirmado às 14:32." ou "O teste falhou.", com o motivo.
+cada um no seu botão) e mostra o resultado na própria linha: “Testando o
+acesso…”, “Acesso confirmado às 14:32.” ou “O teste falhou.”, com o motivo.
 Para trocar a senha, clique em **Alterar**; para apagar o acesso, clique em
 **Alterar** e, na janela que se abre, em **Apagar**.
 
@@ -332,7 +346,7 @@ transcrições, da pauta exportada e dos registros do programa.
 Em **Ajustes › Unidade**:
 
 - **Como o Helestron chama você**: o nome que aparece na saudação do Início
-  ("Boa tarde, …");
+  (“Boa tarde, …”);
 - **Magistrado(a)**, **Cargo**, **Vara**, **Comarca** e **Tribunal**: vão no
   cabeçalho das transcrições. O **Tribunal** (sigla, como TJAL) também é o
   sugerido quando você escolhe o portal da pauta.
@@ -343,11 +357,11 @@ Em **Ajustes › Unidade**:
   e-mail, no e-SAJ, ou gerado no aplicativo autenticador, no eProc), uma
   janela aparece no meio da tela, com um campo grande. Digite o código: com
   seis dígitos, ele é enviado sozinho. Se o código por e-mail não chegar, use
-  **Pedir novo código**. A janela mostra o prazo ("Responda em até 4:59",
+  **Pedir novo código**. A janela mostra o prazo (“Responda em até 4:59”,
   por exemplo). Se o Helestron estiver minimizado ou atrás de outro
   programa, a janela dele volta para a frente e pisca na barra de tarefas,
   para o pedido não passar despercebido. No Edge em modo aplicativo ou no
-  navegador, o título da janela alterna com "Código pedido — Helestron" até
+  navegador, o título da janela alterna com “Código pedido — Helestron” até
   você responder.
 - **Avisos.** Os avisos (um lote que terminou, uma planilha pronta) aparecem
   no canto superior direito, logo abaixo dos botões da tela, sem cobri-los,
@@ -360,7 +374,7 @@ Em **Ajustes › Unidade**:
 - **Fechar.** Se você fechar a janela com trabalho em andamento, o Helestron
   pergunta antes (**Fechar mesmo assim** ou **Continuar**). Ao fechar, a
   transcrição de uma audiência em curso é salva antes.
-- **Sem conexão.** Se a faixa "Sem conexão com o Helestron. Tentando de novo…"
+- **Sem conexão.** Se a faixa “Sem conexão com o Helestron. Tentando de novo…”
   aparecer, a janela perdeu contato com o programa por um instante; ela
   volta sozinha.
 
@@ -372,16 +386,16 @@ Em **Ajustes › Unidade**:
 
 1. Abra **Processos** (ou clique em **Baixar processos**, no Início).
 2. **Traga a relação**, de um destes jeitos:
-   - **arraste** o arquivo para a área "Arraste a relação de processos para
-     cá" (planilha do Excel, documento do Word, PDF, CSV ou texto, inclusive
-     o ".xls" exportado pelo SAJ e pelo eProc);
+   - **arraste** o arquivo para a área “Arraste a relação de processos para
+     cá” (planilha do Excel, documento do Word, PDF, CSV ou texto, inclusive
+     o “.xls” exportado pelo SAJ e pelo eProc);
    - clique em **Escolher arquivo**;
    - clique em **Colar lista** e cole os números, um ou vários por linha (do
      Excel, do e-mail ou do SAJ; o que não for número de processo é
      ignorado). Também dá para teclar **Ctrl+V** direto na tela;
    - clique em **Link** e cole o link de uma planilha ou documento do Google
      Planilhas, Google Docs, Google Drive, OneDrive ou SharePoint,
-     compartilhado como "qualquer pessoa com o link".
+     compartilhado como “qualquer pessoa com o link”.
 3. **Confira a revisão.** A tabela mostra cada processo reconhecido, com o
    **tribunal** e o **sistema** (eles saem do próprio número). À parte
    aparecem os avisos, os **Números que o Excel corrompeu** (formate a
@@ -399,8 +413,8 @@ Em **Ajustes › Unidade**:
      o portal pede alguma confirmação).
 
    Em **Acesso aos portais**, logo abaixo, aparece cada portal da relação:
-   "Senha guardada" ou "Sem senha guardada: o navegador abre para você
-   entrar". Use **Cadastrar** ou **Alterar** para resolver ali mesmo.
+   “Senha guardada” ou “Sem senha guardada: o navegador abre para você
+   entrar”. Use **Cadastrar** ou **Alterar** para resolver ali mesmo.
 5. Clique em **Baixar N processos** (o botão mostra quantos são).
 6. **Acompanhe o andamento.** O anel mostra o progresso, e a lista
    **Processos do lote** mostra a situação de cada um:
@@ -415,7 +429,7 @@ Em **Ajustes › Unidade**:
    | Não encontrado | o portal não achou o processo (número errado, ou processo de outro sistema) |
    | Sem acesso | o portal recusou o acesso (senha, perfil ou permissão) |
    | Tribunal não suportado | tribunal ou sistema que o Helestron não atende |
-   | Falhou | outro problema; o detalhe aparece na linha |
+   | Falhou | outro problema; o detalhe aparece na linha (em telas estreitas, logo abaixo da situação) |
    | Interrompido | o lote foi parado antes |
 
    **Parar** interrompe depois do processo atual. No fim, o título resume o
@@ -444,7 +458,7 @@ ao lado `relatorio (atualizado).csv`.
   baixar outra vez.
 - Processo dependente (incidente) sai com o sufixo: `...0001-01.pdf`.
 - Se a relação trouxer a **senha do processo** (`número ; senha`, ou uma
-  coluna "senha"), ela é usada, e a linha mostra **Senha na relação**.
+  coluna “senha”), ela é usada, e a linha mostra **Senha na relação**.
 - **Tribunais em transição** do e-SAJ para o eProc (TJAL, TJSP e TJAC): o
   Helestron procura primeiro no e-SAJ e, não achando, no eProc.
 - No eProc, os autos são montados documento a documento, na ordem dos
@@ -453,10 +467,10 @@ ao lado `relatorio (atualizado).csv`.
   gravações de audiência** e a **Pausa entre processos (segundos)**. Não
   zere a pausa em listas grandes: uma rajada de acessos pode ser lida pelo
   portal como abuso.
-- Um lote também pode começar pela **Pauta** ("Baixar os autos"); o
+- Um lote também pode começar pela **Pauta** (“Baixar os autos”); o
   andamento aparece aqui do mesmo jeito.
 
-### Segredo de justiça
+### Segredo de justiça no download
 
 Com **Separar os sigilosos** ligado (o padrão):
 
@@ -465,10 +479,17 @@ Com **Separar os sigilosos** ligado (o padrão):
   tenha alguma **peça sigilosa** (no e-SAJ, a peça marcada como sigilosa na
   Pasta Digital), porque o PDF a traz inteira;
 - o relatório do lote que fica no acervo **não identifica** os sigilosos: no
-  lugar do número, a linha diz "(processo sigiloso)". O relatório completo,
+  lugar do número, a linha diz “(processo sigiloso)”. O relatório completo,
   com os números, fica em `Sigilosos\<nome do lote>\_controle\relatorio.csv`;
 - a transcrição de audiência que já estava no acervo quando o download
-  descobriu o sigilo é levada para `Sigilosos\Transcricoes`, com a gravação.
+  descobriu o sigilo é levada para `Sigilosos\Transcricoes`, com a gravação;
+- o processo que o Helestron **já sabe sigiloso** (os autos, uma transcrição
+  ou uma gravação dele na pasta dos sigilosos, ou a pauta de audiências
+  indicando segredo de justiça) vai para a pasta dos sigilosos mesmo que a
+  página do portal não mostre o selo; e o que um lote já deu como sigiloso
+  continua sigiloso quando você usa **Tentar de novo**.
+
+A regra completa está em [Segredo de justiça](#segredo-de-justiça).
 
 ---
 
@@ -482,9 +503,9 @@ audiência não sai da máquina.
 Em **Audiências**, no cartão **Nova audiência**:
 
 1. **Número do processo**: é ele que dá nome ao documento. O Helestron
-   confere o dígito verificador ("Número válido · TJAL", ou "O dígito
-   verificador não confere"). Se houver audiências de hoje na pauta, elas
-   aparecem logo abaixo ("Hoje na pauta:"): um clique preenche o número e o
+   confere o dígito verificador (“Número válido · TJAL”, ou “O dígito
+   verificador não confere”). Se houver audiências de hoje na pauta, elas
+   aparecem logo abaixo (“Hoje na pauta:”): um clique preenche o número e o
    tipo e, se a audiência for sigilosa, liga o **Segredo de justiça**.
 2. **Tipo de audiência**: Conciliação, Instrução e julgamento, Una,
    Custódia, Justificação, Mediação ou Outra.
@@ -493,19 +514,22 @@ Em **Audiências**, no cartão **Nova audiência**:
    Helestron liga o interruptor sozinho e diz por quê (veja abaixo).
 4. **Microfone**: escolha o microfone (ou **Padrão do Windows**) e clique em
    **Testar**; fale algo, e as barras do medidor devem se mexer. Clique em
-   **Parar teste** quando terminar. A escolha fica guardada pelo **nome** do
-   microfone, e não pela posição na lista: ligar o fone USB em outra porta
-   não troca o microfone. Se o microfone guardado não estiver ligado, ele
-   aparece na lista como "(não encontrado)", com um aviso em vermelho, e o
-   Helestron não grava por outro aparelho sem avisar: ligue-o ou escolha
-   outro.
+   **Parar teste** quando terminar. Enquanto a lista mostra “Carregando os
+   microfones…”, **Gravar** e **Testar** ficam desativados por um instante.
+   A escolha fica guardada pelo **nome** do microfone, e não pela posição na
+   lista: ligar o fone USB em outra porta não troca o microfone. Se o
+   microfone guardado não estiver ligado, ele aparece na lista como “Não
+   encontrado: …”, seguido do nome dele, com o aviso em vermelho “O
+   microfone ‘…’ não foi encontrado neste computador. Ligue-o ou escolha
+   outro.”, e o Helestron não grava por outro aparelho sem avisar: ligue-o
+   ou escolha outro.
 5. **Participantes**: os nomes dos botões de quem está falando, um para cada
    tecla de **F1 a F8**. O padrão é Juiz(a), Promotor(a), Defensor(a),
    Advogado(a) do autor, Advogado(a) do réu, Testemunha, Parte e Outro.
    Edite à vontade: os nomes ficam guardados para as próximas audiências.
 
 Abaixo do botão de gravar, o Helestron diz se o modelo de transcrição está
-pronto ("Modelo … pronto").
+pronto (“Modelo … pronto”).
 
 ### Durante a audiência
 
@@ -514,19 +538,28 @@ pronto ("Modelo … pronto").
    nome de quem falou.
 3. Indique **quem está falando** com os botões ou com as teclas **F1 a F8**.
 4. **Pausar** suspende a gravação (num intervalo, por exemplo): pausada,
-   nada é captado, e o "Ouvindo…" some da tela. **Retomar** continua.
+   nada é captado, e o “Ouvindo…” some da tela. **Retomar** continua.
 5. Se você subir o texto para reler um trecho, a rolagem automática fica
    suspensa; o botão **Ir para o fim** volta ao ponto atual.
 6. Para terminar, clique em **Encerrar** e confirme em **Encerrar e salvar**.
    O que ainda estiver na fila é transcrito antes de salvar.
 
 No alto da tela ficam o cronômetro e a situação (**Gravando**, **Pausado**).
-Se o computador ficar para trás, aparece "Atraso de N s": nada se perde, o
-áudio está gravado e a fila é transcrita. No rodapé, "Salvo automaticamente
-às …" mostra o último salvamento. Se o microfone escolhido deixar de abrir
+Se o computador ficar para trás, aparece “Atraso de N s”: nada se perde, o
+áudio está gravado e a fila é transcrita. No rodapé, “Salvo automaticamente
+às …” mostra o último salvamento. Se o microfone escolhido deixar de abrir
 no meio da audiência (desligado, ou tomado por outro programa) e outro
-aparelho continuar a gravação, o Helestron avisa na hora: confira o
-microfone.
+aparelho continuar a gravação, o Helestron avisa na hora (“O microfone ‘…’
+não abriu (desligado, ou em uso por outro programa); a gravação segue pelo
+‘…’. Confira o microfone em Audiências.”): confira o microfone.
+
+Se a gravação nem chegar a começar (sem microfone, por exemplo), aparece a
+janela **A gravação não começou**, com o motivo, e a tela volta à
+preparação. Se a audiência cair no meio, a janela é **A audiência foi
+interrompida**: o áudio gravado até ali fica guardado, e o botão
+**Recuperar**, na faixa “Uma transcrição foi interrompida”, gera o
+documento (veja [Recuperar uma transcrição
+interrompida](#recuperar-uma-transcrição-interrompida)).
 
 Você pode sair da tela de Audiências durante a gravação: ela continua, e uma
 bolinha vermelha em **Audiências**, na barra lateral, indica que a audiência
@@ -556,7 +589,7 @@ automaticamente.
 > A transcrição é automática: confira o texto antes de usá-lo em qualquer
 > ato, especialmente nas passagens decisivas, com a gravação.
 
-### Segredo de justiça
+### Segredo de justiça na transcrição
 
 Com **Segredo de justiça** ligado, a transcrição e a gravação vão para
 `Sigilosos\Transcricoes` (e `Sigilosos\Transcricoes\_audio`), **fora** do
@@ -570,11 +603,13 @@ audiência de um processo que ele já sabe ser sigiloso:
 - a pauta de audiências indica segredo de justiça em alguma audiência desse
   processo (vinda do portal ou de um relatório importado).
 
-Nesses casos, o interruptor se liga sozinho (pela pauta, logo que o número
-é digitado; nos outros casos, ao começar a gravação) e a tela mostra o motivo
-(por exemplo, "A pauta de audiências indica que este processo corre em
-segredo de justiça."). O Helestron nunca desliga o sigilo que você ligou; o que ele
-ligou sozinho volta a ficar desligado se você trocar o número do processo.
+É a regra única do Helestron, descrita em [Segredo de
+justiça](#segredo-de-justiça). Nesses casos, o interruptor se liga sozinho
+(pela pauta, logo que o número é digitado; nos outros casos, ao começar a
+gravação), e a tela mostra o motivo (por exemplo, “A pauta de audiências
+indica que este processo corre em segredo de justiça.”). O Helestron nunca
+desliga o sigilo que você ligou; o que ele ligou sozinho volta a ficar
+desligado se você trocar o número do processo.
 
 ### Transcrever uma gravação
 
@@ -592,7 +627,7 @@ minutos; acompanhe na barra lateral.
 
 O documento é salvo sozinho a cada poucos segundos. Se o computador desligar
 ou o programa fechar no meio, ao abrir **Audiências** de novo aparece o aviso
-"Uma transcrição foi interrompida", com o botão **Recuperar**: o que já tinha
+“Uma transcrição foi interrompida”, com o botão **Recuperar**: o que já tinha
 sido transcrito volta para o documento, e a gravação é reparada. Como no fim
 de uma audiência, o índice do acervo é atualizado e, se o espelho automático
 estiver ligado, a cópia na nuvem também.
@@ -646,13 +681,13 @@ portais** (veja [Primeiro uso](#acessos-aos-portais)).
 1. Na **Pauta**, clique em **Sincronizar**.
 2. Na primeira vez, a janela **De onde vem a sua pauta?** pede o **Portal**
    (tribunal e sistema) e, se quiser, um **Nome para reconhecer (opcional)**,
-   como "2ª Vara Cível da Capital". Clique em **Sincronizar**.
+   como “2ª Vara Cível da Capital”. Clique em **Sincronizar**.
 3. O Helestron entra no portal e procura a pauta de audiências. Se o portal
    pedir código, a janela de sempre pede que você o digite. Uma faixa no alto
    da tela mostra o andamento, com **Parar**.
 4. No fim, uma faixa que fica à vista até você fechá-la resume o que mudou,
-   por exemplo: "8 audiências conferidas · 1 nova, 2 alteradas, 1 saiu da
-   pauta.", com as fontes que tiveram problema e os avisos. (Se você estiver
+   por exemplo: “8 audiências conferidas · 1 nova, 2 alteradas, 1 saiu da
+   pauta.”, com as fontes que tiveram problema e os avisos. (Se você estiver
    em outra tela, o resultado chega num aviso.)
 
 O endereço da pauta que funcionou fica **lembrado** na fonte e é usado nas
@@ -667,8 +702,8 @@ pauta** quando o Helestron leu a pauta do portal inteira. Se a leitura ficar
 incompleta (a página seguinte não abriu a tempo ou não mostrou a tabela, o
 portal voltou a uma página já lida, a pauta passou de 50 páginas, ou o
 portal informou mais audiências do que vieram), o resultado avisa que a
-leitura "ficou incompleta" e que "nenhuma audiência foi dada como fora da
-pauta": as novas e as alteradas são gravadas, e nenhuma é dada como
+leitura “ficou incompleta” e que “nenhuma audiência foi dada como fora da
+pauta”: as novas e as alteradas são gravadas, e nenhuma é dada como
 removida. Sincronize de novo mais tarde (ou escolha um período menor). Se a
 sessão cair no meio da leitura, o Helestron entra de novo e relê tudo. E, se
 o portal não aceitar o período pedido (ou mostrar outro), só as datas que
@@ -689,14 +724,18 @@ numa tela própria:
 
 4. Navegue até a pauta de audiências, como faria normalmente, com a lista na
    tela, e clique em **Capturar esta tela**. A barra diz quantas audiências
-   reconheceu ("12 audiências reconhecidas nesta tela. Total: 12. …").
+   reconheceu (“12 audiências reconhecidas nesta tela. Total: 12. …”).
 5. Se a pauta tiver mais de uma página, vá à próxima e capture de novo. As
    repetidas não contam duas vezes.
-6. No fim, clique em **Concluir**. A barra confirma ("Pronto: 25 audiências
-   gravadas no Helestron. Pode fechar esta janela."), e o endereço fica
-   lembrado para o monitoramento.
+6. No fim, clique em **Concluir**. A barra confirma (“Pronto: 25 audiências
+   gravadas no Helestron. Pode fechar esta janela.”), e o endereço fica
+   lembrado para o monitoramento. Na tela Pauta, a faixa **Captura
+   concluída** diz quantas audiências vieram e de quantas telas, com “O
+   endereço ficou lembrado: a fonte entra no monitoramento automático.” (se
+   a entrada nesse portal exigir você à frente, a faixa diz que o
+   monitoramento não entra sozinho nele).
 
-Se a barra disser "Não encontrei a tabela de audiências nesta tela", abra a
+Se a barra disser “Não encontrei a tabela de audiências nesta tela”, abra a
 pauta com a lista à vista e clique de novo. O botão **–** recolhe a barra,
 se ela atrapalhar. Para desistir, use **Cancelar a captura**, na faixa do
 alto da tela Pauta. Sem **Concluir**, o que já foi capturado é gravado quando
@@ -708,7 +747,7 @@ Se você exporta o relatório de audiências no portal (ou no SAJ instalado no
 computador), clique em **Importar relatório** e escolha o arquivo. O
 Helestron lê:
 
-- planilhas `.xlsx`, `.xls` (inclusive o ".xls" que, na verdade, é uma página
+- planilhas `.xlsx`, `.xls` (inclusive o “.xls” que, na verdade, é uma página
   HTML), `.ods` e `.csv`;
 - páginas `.html`;
 - `.pdf` (a tabela é lida pelo texto da página);
@@ -718,8 +757,8 @@ O relatório pode vir como o sistema o gera: com título, vara, período e a
 data de emissão no alto (o cabeçalho das colunas é procurado nas primeiras
 15 linhas), com o cabeçalho em duas linhas, com células mescladas (a data
 escrita uma vez para todas as audiências do dia, inclusive nas planilhas
-`.xlsx`, `.xls` e `.ods`) e com linhas de grupo por dia ("Segunda-feira,
-05/10/2026", com ou sem a contagem ao lado). Tabelas que não são de
+`.xlsx`, `.xls` e `.ods`) e com linhas de grupo por dia (“Segunda-feira,
+05/10/2026”, com ou sem a contagem ao lado). Tabelas que não são de
 audiências (intimações, prazos, movimentações, fila de processos) são
 deixadas de lado.
 
@@ -742,7 +781,7 @@ relatório sabia, como o sigilo, continua valendo.
   período**, **hoje**, **nos próximos 7 dias** (hoje e os seis dias
   seguintes, os mesmos da visão **Semana**) e **canceladas ou
   redesignadas**.
-- **Lista por dia** ("Segunda-feira, 5 de outubro"), com a hora, o número do
+- **Lista por dia** (“Segunda-feira, 5 de outubro”), com a hora, o número do
   processo (clique nele para **copiar**), o tipo, o sistema e o tribunal, o
   selo **Sigiloso**, as partes, o local e a situação. Em cada audiência:
   - **Baixar os autos** (o ícone de documento): baixa o processo, num lote
@@ -757,7 +796,7 @@ relatório sabia, como o sigilo, continua valendo.
 
 O quadro **Alterações recentes**, à direita, mostra o que mudou desde a
 última conferência: **Nova audiência**, **Audiência alterada** (com o campo
-de antes e o de depois, por exemplo "Hora: 09:00 → 14:30"), **Audiência
+de antes e o de depois, por exemplo “Hora: 09:00 → 14:30”), **Audiência
 cancelada** e **Saiu da pauta** (a audiência que sumiu do portal não é
 apagada: fica marcada; e só é dada como fora da pauta depois de uma leitura
 completa, veja [Sincronizar](#sincronizar)). O número de alterações não
@@ -778,7 +817,7 @@ como alteração.
 
 A planilha `Pauta de audiências AAAA-MM-DD a AAAA-MM-DD.xlsx` vai para a
 pasta da pauta (`Documentos\Helestron\Pauta`), **fora do acervo da IA**. Se o
-nome já existir (ou o arquivo estiver aberto no Excel), sai com "(2)". Ela tem
+nome já existir (ou o arquivo estiver aberto no Excel), sai com “(2)”. Ela tem
 três abas:
 
 - **Pauta**: data, dia da semana, hora, processo, classe, partes, tipo de
@@ -789,7 +828,7 @@ três abas:
 - **Alterações**: o histórico do período.
 
 **Partes dos processos sigilosos**: por padrão, a coluna Partes dos
-processos em segredo de justiça sai como "(segredo de justiça)", também na
+processos em segredo de justiça sai como “(segredo de justiça)”, também na
 aba Alterações. Para mostrá-las, ligue **Incluir as partes dos sigilosos** na
 janela de exportação; a escolha feita ali vale para aquela planilha, nos dois
 sentidos: desligado, as partes saem mascaradas mesmo que o ajuste esteja
@@ -801,19 +840,24 @@ O sigilo é do **processo**, e não de uma linha só: vale quando o portal ou um
 relatório importado indica segredo de justiça em **qualquer** audiência
 daquele processo, **ou** quando os autos do processo estão na pasta dos
 sigilosos. Com as partes mascaradas e algum processo sigiloso no resultado,
-o texto de uma busca não é escrito no alto da planilha (aparece "busca por
-texto (omitido por causa do segredo de justiça)"), porque poderia ser o nome
-de uma parte. E um texto que começa com "=" (num nome de parte ou numa
+o texto de uma busca não é escrito no alto da planilha (aparece “busca por
+texto (omitido por causa do segredo de justiça)”), porque poderia ser o nome
+de uma parte. E um texto que começa com “=” (num nome de parte ou numa
 observação) vai para a planilha como texto, nunca como fórmula.
 
 ### Monitoramento automático
 
-No quadro **Monitoramento**, o interruptor **Conferir sozinho** ("e avisar o
-que mudar"), ligado por padrão, faz o Helestron sincronizar a pauta sozinho, na
-**Frequência** escolhida (de "a cada hora" a "a cada 24 horas"; o padrão é a
+No quadro **Monitoramento**, o interruptor **Conferir sozinho** (“e avisar o
+que mudar”), ligado por padrão, faz o Helestron sincronizar a pauta sozinho, na
+**Frequência** escolhida (de “a cada hora” a “a cada 24 horas”; o padrão é a
 cada 6 horas), e também ao abrir o programa, se a última conferência já
-passou do intervalo. O quadro mostra a **Última sincronização** e a
-**Próxima**.
+passou do intervalo. O quadro mostra a **Última sincronização** e, quando
+alguma fonte entra no portal sozinha, a **Próxima**. Se nenhuma entra
+sozinha (todas são “só com você” ou ainda não têm o endereço salvo), não há
+conferência automática a anunciar, e a linha **Próxima** não aparece, nem
+depois de uma sincronização feita por você. Logo abaixo, o quadro lista as
+fontes, com “(só com você)” ou “(sem endereço salvo)” ao lado das que o
+monitoramento não confere.
 
 Para o monitoramento funcionar, é preciso:
 
@@ -826,11 +870,11 @@ Para o monitoramento funcionar, é preciso:
 
 Em **Ajustes › Pauta**, cada fonte mostra se entra no monitoramento:
 **Monitorada** (o endereço está lembrado, e o Helestron entra no portal
-sozinho), **Sem rota** (a pauta ainda não foi encontrada: sincronize ou
-capture uma vez) ou **Só com você**. Este último é o caso da fonte que só
-abre com você à frente: entrada por **Certificado digital** ou **Entrar
-manualmente**, ou sem a senha guardada (inclusive quando a senha foi
-digitada com **Lembrar neste computador** desligado). Ela **fica de fora**
+sozinho), **Sem endereço salvo** (a pauta ainda não foi encontrada:
+sincronize ou capture uma vez) ou **Só com você**. Este último é o caso
+da fonte que só abre com você à frente: entrada por **Certificado digital**
+ou **Entrar manualmente**, ou sem a senha guardada (inclusive quando a
+senha foi digitada com **Lembrar neste computador** desligado). Ela **fica de fora**
 da conferência automática, e a linha da fonte diz por quê: o monitoramento
 não abre o navegador sozinho, para não surgir uma janela do nada, e não
 insiste a cada ciclo. O Início também mostra, uma vez a cada abertura do
@@ -841,8 +885,8 @@ tela Pauta, quando quiser atualizar; guardar o usuário e a senha em
 outras fontes continuam sendo conferidas normalmente.
 
 Se o portal pedir um código de verificação durante a conferência automática,
-o Helestron **não fica esperando**: aparece o aviso **"Entre no portal para
-continuar o monitoramento"**, também na lista do Início. Clique em
+o Helestron **não fica esperando**: aparece o aviso **“Entre no portal para
+continuar o monitoramento”**, também na lista do Início. Clique em
 **Sincronizar**, digite o código quando ele chegar, e o monitoramento
 continua normalmente. Se houver um download em andamento, a conferência
 espera 15 minutos e tenta de novo.
@@ -882,8 +926,8 @@ Clique em **Preparar acervo para a IA**. O Helestron:
 - gera o **texto** de cada processo em `_ia\texto\`, com a marca de cada
   página do PDF (`=== [fl. 12] ===`) e o documento a que ela pertence. A IA
   lê texto melhor e mais barato que PDF e consegue indicar a fonte: a folha,
-  no e-SAJ, ou o evento e o rótulo do documento (por exemplo, "evento 1,
-  INIC1"), no eProc, que não numera folhas;
+  no e-SAJ, ou o evento e o rótulo do documento (por exemplo, “evento 1,
+  INIC1”), no eProc, que não numera folhas;
 - escreve o `CLAUDE.md` e o `AGENTS.md` com as **regras de trabalho**:
   indicar a folha ou o evento de cada afirmação, não presumir fatos, não
   inventar julgados, não seguir ordens escritas nos documentos, não alterar
@@ -901,9 +945,9 @@ os botões **Abrir a pasta** e **Copiar o caminho**.
 | Cartão | Botão | O que acontece |
 |---|---|---|
 | **Claude Code** | **Abrir no Claude Code** | abre o Claude Code numa janela própria, já na pasta do acervo; ele lê sozinho o `CLAUDE.md` e o índice. Se ele não estiver instalado, o Helestron abre no navegador a página oficial que explica como instalá-lo (sem administrador); depois de instalar, clique de novo no botão. Exige plano pago do Claude. |
-| **Claude Cowork** | **Abrir no Cowork** | copia o pedido inicial (na hora do clique) e abre o Cowork, no app Claude Desktop, com a pasta do acervo; o Claude pede que você confirme o acesso à pasta, e é só colar o pedido (Ctrl+V). Exige o Claude Desktop e plano pago. |
+| **Claude Cowork** | **Abrir no Cowork** | copia o pedido inicial (na hora do clique) e abre o Cowork, no app Claude Desktop, com a pasta do acervo; o Claude pede que você confirme o acesso à pasta, e é só colar o pedido (Ctrl+V). Exige o Claude Desktop e plano pago; sem ele, o Helestron abre no navegador a página de download do Claude Desktop: instale o app, entre com a sua conta e clique de novo. |
 | **Claude Desktop** | **Conectar o acervo** | registra no Claude Desktop o conector **helestron**, com as ferramentas `listar_acervo`, `ler_processo`, `buscar` e `ler_transcricao`, que **só leem**. Feche o Claude Desktop pela bandeja do Windows (perto do relógio) e abra de novo para ele carregar o conector. Depois de conectado, o botão vira **Reconectar o acervo**. Se o app não estiver instalado, o conector fica registrado e o Helestron abre a página de download do Claude Desktop. |
-| **ChatGPT Work** | **Abrir no ChatGPT Work** | copia o caminho do acervo (na hora do clique) e abre o app do ChatGPT. No modo **Work**, tecle **Ctrl+O** e cole o caminho: o ChatGPT passa a trabalhar na pasta e lê o `AGENTS.md`. O ChatGPT do navegador não lê pastas do computador: instale o app do ChatGPT para Windows ou use o pacote. |
+| **ChatGPT Work** | **Abrir no ChatGPT Work** | copia o caminho do acervo (na hora do clique) e abre o app do ChatGPT. No modo **Work**, tecle **Ctrl+O** e cole o caminho: o ChatGPT passa a trabalhar na pasta e lê o `AGENTS.md`. Sem o app, o Helestron abre o ChatGPT no navegador, que não lê pastas do computador: instale o app do ChatGPT para Windows ou, no cartão **Pacote para o ChatGPT**, use **Gerar o pacote**. |
 | **Codex** | **Abrir no Codex** | registra o conector do acervo para o Codex (no arquivo `%USERPROFILE%\.codex\config.toml`) e abre o agente da OpenAI numa janela própria, dentro do acervo; ele lê o `AGENTS.md`, com as mesmas regras do Claude. Sem o Codex instalado, use **Abrir no ChatGPT Work** ou, no cartão **Pacote para o ChatGPT**, **Gerar o pacote**. |
 | **Pacote para o ChatGPT** | **Gerar o pacote** | monta uma pasta e um `.zip` com os autos, os textos, as transcrições, o índice e as instruções, em `Documentos\Helestron\Pacotes para IA`, para anexar numa conversa ou num Projeto. No fim, o aviso traz o botão **Abrir pasta**. |
 | **Nuvem** | **Espelhar agora** | copia o acervo para a subpasta `Helestron - Acervo` da pasta do OneDrive ou do Google Drive escolhida na lista (ou em **Outra pasta…**), para usar a IA pela web e no celular. Só o que mudou é copiado; as gravações das audiências não vão. |
@@ -911,8 +955,11 @@ os botões **Abrir a pasta** e **Copiar o caminho**.
 Se o Windows não deixar o Helestron pôr o pedido inicial ou o caminho na área
 de transferência, a janela de resposta mostra o texto num campo, com o botão
 **Copiar**: copie dali (Ctrl+C) antes de colar. Se o navegador não abrir a
-página oficial do Claude Code (ou a de download do Claude Desktop), a janela
-traz o endereço e o botão **Abrir a página**.
+página que o Helestron precisou abrir (a oficial do Claude Code, a de
+download do Claude Desktop ou o ChatGPT), a janela de resposta traz o
+endereço e os botões **Abrir a página** e **Copiar o endereço**. Se o
+navegador também não abrir pelo botão, aparece a janela **O navegador não
+abriu**, com o endereço: use **Copiar o endereço** e cole-o no navegador.
 
 Para que a cópia na nuvem se atualize sozinha, ligue **Espelhar sozinho ao
 fim de cada download e de cada transcrição** em **Ajustes › Compartilhar**.
@@ -922,21 +969,90 @@ escolha e explica por quê.
 
 ### Regras de sigilo
 
-- O que está na pasta dos sigilosos **nunca** vai para a IA, para o pacote,
-  para a nuvem, para o conector ou para o índice.
-- Se um processo em segredo de justiça **ficar preso no acervo** (por
-  exemplo, o PDF estava aberto quando o download tentou levá-lo para a pasta
-  dos sigilosos), o Helestron **suspende** o preparo, o pacote, os botões das
-  ferramentas e o espelho na nuvem até ele sair. O Início mostra o aviso
-  **Processo sigiloso no acervo**: feche o PDF e mova-o para a pasta dos
-  sigilosos.
-- O espelho na nuvem apaga a cópia de um processo que depois tenha ido para a
-  pasta dos sigilosos; fora isso, não apaga nada do que já está lá. Vale
+- O processo em segredo de justiça **nunca** vai para a IA, para o pacote,
+  para a nuvem, para o conector ou para o índice, seja qual for a ferramenta.
+  Quem decide o que é sigiloso é a regra única descrita em
+  [Segredo de justiça](#segredo-de-justiça): os autos, a transcrição ou a
+  gravação na pasta dos sigilosos, ou a pauta de audiências.
+- Antes de entregar o acervo a qualquer ferramenta (e antes de espelhá-lo na
+  nuvem), o Helestron confere o acervo e, com **Separar os processos
+  sigilosos** ligado (o padrão), leva para a pasta dos sigilosos a cópia de
+  processo sigiloso que ainda estiver nele. O conector do Claude Desktop e
+  do Codex aplica a mesma regra a cada consulta da IA.
+- Se essa cópia **ficar presa no acervo** (o PDF estava aberto, por
+  exemplo), o Helestron **suspende** o preparo, o pacote, os botões das
+  ferramentas e o espelho na nuvem até ela sair, e diz qual é o arquivo. O
+  Início mostra o aviso **Processo sigiloso no acervo**: feche o PDF e
+  clique de novo (o Helestron tenta levá-lo outra vez) ou mova-o você mesmo
+  para a pasta dos sigilosos.
+- O espelho na nuvem apaga a cópia de um processo que depois tenha se
+  revelado sigiloso; fora isso, não apaga nada do que já está lá. Vale
   também para a subpasta `Assessor Integrado - Acervo`, do espelho da versão
   anterior, se ela ainda estiver na mesma pasta da nuvem.
 - A pauta exportada nunca fica no acervo.
 - A IA é ferramenta de apoio: resumos e minutas são sugestões para
   conferência e decisão do magistrado.
+
+---
+
+## Segredo de justiça
+
+Processo em segredo de justiça **nunca vai para a IA nem para a nuvem**. Para
+garantir isso, o Helestron segue **uma regra só**, a mesma ao baixar os
+autos, ao transcrever a audiência, ao compartilhar o acervo e ao montar a
+pauta.
+
+### Quando o processo é sigiloso para o Helestron
+
+Basta uma destas três situações:
+
+1. **os autos** do processo estão na pasta dos sigilosos
+   (`Sigilosos\<nome do lote>\` ou soltos em `Sigilosos\`);
+2. há **transcrição ou gravação** de audiência dele em
+   `Sigilosos\Transcricoes`: a audiência que foi sigilosa uma vez continua
+   sigilosa nas próximas;
+3. a **pauta de audiências** indica segredo de justiça em **qualquer**
+   audiência desse processo, vinda do portal ou de um relatório importado,
+   mesmo que ela já tenha saído da pauta: o sigilo é do processo, e não de
+   uma audiência só. Na pauta, o sigilo, uma vez apurado, não se desfaz.
+
+### O que muda para o processo sigiloso
+
+- **Baixar processos**: os autos vão para a pasta dos sigilosos, fora do
+  acervo, inclusive quando a página do processo no portal não mostra o selo
+  de segredo de justiça (o segredo decretado depois, por exemplo): basta
+  que o Helestron já o saiba sigiloso, pela pasta ou pela pauta. Veja
+  [Segredo de justiça no download](#segredo-de-justiça-no-download).
+- **Transcrever audiência**: a transcrição e a gravação vão para
+  `Sigilosos\Transcricoes`, mesmo com o interruptor **Segredo de justiça**
+  desligado, e a tela diz por quê. Veja [Segredo de justiça na
+  transcrição](#segredo-de-justiça-na-transcrição).
+- **Compartilhar com IA**: o processo fica fora do índice, do texto para a
+  IA, do conector, do pacote e da nuvem. A cópia que ainda estiver no
+  acervo (baixada antes de o segredo ser decretado, por exemplo, quando só
+  a pauta o mostra) é levada para a pasta dos sigilosos, com as
+  transcrições do processo, antes de o acervo ser entregue a qualquer
+  ferramenta, e o texto dela para a IA é apagado. Veja [Regras de
+  sigilo](#regras-de-sigilo).
+- **Pauta exportada**: as partes do processo saem como “(segredo de
+  justiça)”, e a planilha fica fora do acervo (veja [Exportar para o
+  Excel](#exportar-para-o-excel)).
+- **Registros do programa**: a tela de um processo sigiloso nunca é guardada
+  em `Logs\diagnostico` (ela traz os nomes das partes, e o diagnóstico é o
+  que se envia ao suporte). Os registros também não guardam os nomes
+  digitados nos botões dos participantes: só a tecla do falante (F1 a F8).
+- **Teste automático da janela** (`--autoteste`, usado pela equipe de
+  desenvolvimento e pela informática): roda em pastas temporárias e vazias,
+  nunca nas suas, e só fotografa a janela do Helestron; as imagens que ele
+  gera não mostram a sua pauta, o seu acervo nem outros programas abertos.
+
+> **Separar os sigilosos desligado.** Com **Separar os processos
+> sigilosos** desligado (em **Ajustes › Download**), o processo sigiloso
+> baixado fica no acervo. Ele continua fora do índice, do texto para a IA,
+> do conector, do pacote e da nuvem, e o `CLAUDE.md` avisa a IA de que a
+> pasta pode conter processo em segredo de justiça; mas o Claude Code, o
+> Cowork e o ChatGPT abrem a pasta inteira e poderiam lê-lo. Deixe a opção
+> ligada (o padrão).
 
 ---
 
@@ -946,7 +1062,7 @@ Os Ajustes são organizados em grupos (o índice fica à esquerda da tela):
 
 | Grupo | O que tem |
 |---|---|
-| **Acessos aos portais** | usuário e senha de cada portal (**Adicionar acesso**, **Testar**, **Alterar**), e o grupo **Como entrar**: modo de entrada no e-SAJ e no eProc, **Esperar o login até (minutos)** e **Perfil do eProc** |
+| **Acessos aos portais** | usuário e senha de cada portal (**Adicionar acesso**, **Testar**, **Alterar**), o grupo **Como entrar** (modo de entrada no e-SAJ e no eProc, **Esperar o login até (minutos)** e **Perfil do eProc**) e o grupo **Endereço do portal** (**Corrigir o endereço de um portal**, raramente necessário) |
 | **Pastas** | **Pasta do acervo**, **Pasta dos processos sigilosos**, **Pasta da pauta exportada** e os **Atalhos** para abri-las |
 | **Unidade** | **Como o Helestron chama você** e os dados do cabeçalho das transcrições (**Magistrado(a)**, **Cargo**, **Vara**, **Comarca**, **Tribunal**) |
 | **Download** | pular os já baixados, separar os sigilosos, baixar as gravações, mostrar o navegador, **Navegador dos portais** (o padrão usa o Chrome e, sem ele, o Edge), pausa, tentativas, esperas, guardar a imagem da tela quando algo der errado e a montagem do PDF no eProc |
@@ -992,8 +1108,8 @@ Configurações, senhas, processos, transcrições e pauta continuam onde
 estavam. A versão instalada aparece em **Ajustes › Sobre e diagnóstico**.
 
 - **Audiência em andamento.** Se houver uma audiência sendo transcrita
-  (gravando ou pausada), o instalador não fecha o Helestron: mostra "Há uma
-  audiência sendo transcrita no Helestron" e pede que você a encerre (botão
+  (gravando ou pausada), o instalador não fecha o Helestron: mostra “Há uma
+  audiência sendo transcrita no Helestron” e pede que você a encerre (botão
   **Encerrar**: o documento é salvo) e clique em **Repetir**. **Cancelar**
   deixa a atualização para depois, sem mudar nada. No modo silencioso, o
   instalador desiste com o código 7 (veja
@@ -1045,9 +1161,9 @@ audiência sendo transcrita, a desinstalação silenciosa desiste com o código
 
 ## Problemas comuns
 
-### "O Helestron não pôde abrir" (antivírus)
+### “O Helestron não pôde abrir” (antivírus)
 
-Se, ao abrir, aparecer a tela **"O Helestron não pôde abrir"**, com a lista
+Se, ao abrir, aparecer a tela **“O Helestron não pôde abrir”**, com a lista
 dos arquivos que faltam ou foram alterados, quase sempre o antivírus pôs um
 arquivo do programa em quarentena logo depois da instalação, ou a instalação
 foi interrompida no meio. **Os seus dados não foram afetados.**
@@ -1096,13 +1212,13 @@ No Edge ou no navegador, tudo funciona, com três diferenças:
   máximo, cerca de um minuto).
 
 O modo em uso aparece em **Ajustes › Sobre e diagnóstico** (por exemplo,
-"Microsoft Edge em modo aplicativo"). Para voltar à janela própria, peça à
+“Microsoft Edge em modo aplicativo”). Para voltar à janela própria, peça à
 equipe de informática que instale, atualize ou repare o **Microsoft Edge
 WebView2 Runtime** (gratuito, da Microsoft).
 
 Se nada disso for possível (sem o WebView2, sem o Edge e com o Internet
 Explorer como navegador padrão), o Helestron não some sem explicação: uma
-caixa de mensagem, "O Helestron não pôde abrir", diz o que falta e pede que a
+caixa de mensagem, “O Helestron não pôde abrir”, diz o que falta e pede que a
 equipe de informática instale o **Microsoft Edge WebView2 Runtime**
 (gratuito, da Microsoft; não precisa de administrador). Outra saída é
 instalar o Google Chrome e defini-lo como navegador padrão. Nesse
@@ -1120,10 +1236,16 @@ Os portais mudam de tempos em tempos. Quando algo dá errado numa tela do
 portal, o Helestron guarda uma imagem e o HTML da tela em
 `%LOCALAPPDATA%\Helestron\Logs\diagnostico` (é o padrão; a opção é
 **Guardar imagem da tela quando algo der errado**, em **Ajustes ›
-Download**). Envie esses arquivos ao suporte.
+Download**). Envie esses arquivos ao suporte. A tela de um processo em
+segredo de justiça **não** é guardada, porque traz os nomes das partes: a
+mensagem de erro avisa disso, e, para o suporte, vale o diagnóstico de um
+processo público com o mesmo problema.
 
-Se o **endereço** do eProc do seu tribunal mudou, a mensagem de erro diz onde
-corrigi-lo; a equipe de informática pode ajustá-lo no arquivo
+Se o **endereço** do e-SAJ ou do eProc do seu tribunal mudou, a mensagem de
+erro diz onde corrigi-lo: em **Ajustes › Acessos aos portais**, no grupo
+**Endereço do portal**, clique em **Corrigir o endereço de um portal**,
+escolha o portal e cole o endereço novo (em branco, volta o que vem com o
+programa; **Restaurar** desfaz a correção). A correção fica no arquivo
 `%LOCALAPPDATA%\Helestron\enderecos-locais.json`. Se o suporte mandar uma
 correção dos campos da tela do portal (`seletores.json`, ou
 `seletores-eproc.json` para o eProc), ela também vai para
@@ -1142,11 +1264,13 @@ paradas:
   Privacidade e segurança › Microfone** (no Windows 10, **Configurações ›
   Privacidade › Microfone**), ligue o acesso ao microfone e a opção que
   permite aos **aplicativos da área de trabalho** acessar o microfone;
-- se aparecer "Nenhum microfone encontrado", confira se ele está conectado;
-- se aparecer "O microfone «…» não foi encontrado", o microfone guardado não
-  está ligado neste computador: ligue-o ou escolha outro em **Audiências** ou
-  em **Ajustes › Transcrição**;
-- se aparecer "Não consegui abrir o microfone", outro programa (Teams, Zoom,
+- se aparecer “Nenhum microfone encontrado” (ou, ao gravar, “Nenhum
+  microfone foi encontrado”), confira se ele está conectado e, no Windows,
+  em **Configurações › Sistema › Som › Entrada**;
+- se a lista mostrar “Não encontrado: …”, ou aparecer “O microfone ‘…’ não
+  foi encontrado”, o microfone guardado não está ligado neste computador:
+  ligue-o ou escolha outro em **Audiências** ou em **Ajustes › Transcrição**;
+- se aparecer “Não consegui abrir o microfone”, outro programa (Teams, Zoom,
   o gravador da sala) pode estar usando-o: feche o outro programa e clique em
   **Testar** de novo.
 
@@ -1169,15 +1293,15 @@ programas pesados durante a audiência.
 - A janela do Helestron conversa com o programa por um endereço interno do
   próprio computador (127.0.0.1); nada fica exposto na rede.
 
-### "Esta tela não abriu"
+### “Esta tela não abriu”
 
-Se uma seção mostrar "Esta tela não abriu", clique em **Tentar de novo**. Se
+Se uma seção mostrar “Esta tela não abriu”, clique em **Tentar de novo**. Se
 continuar, clique em **Verificar a instalação**.
 
 ### Algo parou de funcionar depois de uma atualização do Windows
 
 Abra **Ajustes › Sobre e diagnóstico** e clique em **Verificar a
-instalação**: a lista mostra cada item ("Em ordem", "Aviso" ou "Falha") e o
+instalação**: a lista mostra cada item (“Em ordem”, “Aviso” ou “Falha”) e o
 que fazer. Se apontar falha, instale o Helestron de novo com o
 `Helestron-Setup`: ele refaz o programa sem tocar nos seus arquivos nem nas
 suas configurações.

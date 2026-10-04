@@ -9,8 +9,10 @@ O acervo de trabalho NÃO mora na pasta sincronizada - a sincronização
 atrapalha arquivo em uso (lição do Assessor SAJ). O que se faz é uma CÓPIA
 de mão única, ao fim de cada lote ou quando o usuário pede: só o que é novo
 ou mudou é copiado, e nada é apagado no destino - com uma exceção, de
-propósito: a cópia de um processo que hoje está na pasta de sigilosos
-(segredo de justiça) é retirada do espelho.
+propósito: a cópia de um processo que o programa hoje sabe sigiloso (segredo
+de justiça: autos, transcrição ou gravação na pasta de sigilosos, ou a pauta
+de audiências marcando o sigilo - a regra única de nucleo/sigilo.py) é
+retirada do espelho.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ import shutil
 import string
 from pathlib import Path
 
-from ..nucleo import cnj
+from ..nucleo import cnj, sigilo
 from .mcp_servidor import _DO_CONFIG, Recorte, chaves_sigilosas, pasta_sigilosos_configurada
 
 log = logging.getLogger("compartilhar.nuvem")
@@ -87,12 +89,14 @@ def _chave(nome: str) -> str | None:
 
 
 def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None,
-             sigilosos=_DO_CONFIG) -> tuple[int, int]:
+             sigilosos=_DO_CONFIG, pauta=sigilo.PAUTA_DO_PROGRAMA) -> tuple[int, int]:
     """Copia o acervo para '<destino_raiz>/Helestron - Acervo'.
 
     Devolve (copiados, iguais). Não apaga nada no destino, exceto a cópia de
-    processo que está na pasta de sigilosos ('sigilosos'; por padrão, a do
-    config.ini): PDF, texto extraído, transcrição ou minuta com o número dele.
+    processo sigiloso pela regra única - na pasta de sigilosos ('sigilosos';
+    por padrão, a do config.ini) ou marcado na pauta ('pauta'; por padrão, o
+    banco do programa): PDF, texto extraído, transcrição ou minuta com o
+    número dele. O processo sigiloso também não é copiado.
     """
     origem = Path(origem)
     destino = Path(destino_raiz) / SUBPASTA
@@ -105,7 +109,7 @@ def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None,
     # Pasta de sigilosos e pastas do programa postas (por engano) dentro do
     # acervo, e link ou junção para fora dele: ficam de fora
     recorte = Recorte(origem, sigilosos)
-    sigilosas = chaves_sigilosas(sigilosos, origem)
+    sigilosas = chaves_sigilosas(sigilosos, origem, pauta)
     arquivos = []
     for p in origem.rglob("*"):
         if not p.is_file():
@@ -163,10 +167,11 @@ def _dentro_ou_igual(filho: Path, pai: Path) -> bool:
 
 
 def _retirar_sigilosos(destino: Path, sigilosas: set[str]) -> None:
-    """Apaga do espelho as cópias dos processos que estão na pasta de sigilosos.
+    """Apaga do espelho as cópias dos processos sigilosos (a regra única).
 
-    Elas chegaram lá antes da separação (que falhou e foi refeita à mão, por
-    exemplo); segredo de justiça não pode continuar na nuvem.
+    Elas chegaram lá antes de se saber do sigilo (a separação falhou e foi
+    refeita à mão, ou o segredo foi decretado depois e a pauta o mostrou);
+    segredo de justiça não pode continuar na nuvem.
     """
     if not sigilosas or not destino.is_dir():
         return
@@ -174,8 +179,8 @@ def _retirar_sigilosos(destino: Path, sigilosas: set[str]) -> None:
         try:
             if p.is_file() and _chave(p.name) in sigilosas:
                 p.unlink()
-                log.warning("Retirei do espelho na nuvem %s: o processo está na pasta de "
-                            "sigilosos.", p.relative_to(destino))
+                log.warning("Retirei do espelho na nuvem %s: o processo é sigiloso (segredo "
+                            "de justiça).", p.relative_to(destino))
         except OSError as erro:
             log.warning("ATENÇÃO: não consegui retirar do espelho na nuvem %s, de processo "
                         "sigiloso (%s). Apague-o à mão.", p.name, erro)

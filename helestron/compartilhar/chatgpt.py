@@ -264,7 +264,12 @@ def gerar_pacote(acervo: Path, destino: Path, numeros: list[str] | None = None,
         cfg = _config()
     if incluir_texto is None:
         incluir_texto = cfg.flag("compartilhar", "incluir_texto") if cfg is not None else True
-    preparo.atualizar_contexto(cfg, raiz=acervo, extrair_texto=incluir_texto)
+    rel = preparo.atualizar_contexto(cfg, raiz=acervo, extrair_texto=incluir_texto)
+    presos = getattr(rel, "sigilosos_no_acervo", None)
+    if isinstance(presos, list) and presos:
+        # O pacote nunca levaria o sigiloso (o Acervo o tira), mas a regra é
+        # uma só: com sigiloso preso no acervo, nada se compartilha.
+        raise preparo.SigilosoNoAcervo(presos)
     ac = Acervo(acervo) if cfg is None else Acervo(acervo, sigilosos=cfg.pasta_sigilosos)
     pdfs = ac.pdfs()
     trans = ac.transcricoes()

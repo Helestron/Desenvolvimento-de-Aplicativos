@@ -14,7 +14,6 @@ Word não derruba nada: o Word tranca o arquivo, então gravamos ao lado, em
 
 from __future__ import annotations
 
-import glob
 import io
 import logging
 import re
@@ -23,11 +22,11 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from ..nucleo import cnj, sistema
+from ..nucleo import sigilo, sistema
 
 log = logging.getLogger("transcricao.documento")
 
-SUBPASTA_TRANSCRICOES = "Transcricoes"   # dentro da pasta de sigilosos
+SUBPASTA_TRANSCRICOES = sigilo.SUBPASTA_TRANSCRICOES   # dentro da pasta de sigilosos
 PAUSA_AGRUPAR_S = 3.0
 RE_AUTOMATICO = re.compile(r"^FALANTE \d+$")
 
@@ -192,36 +191,27 @@ def processo_sigiloso(cfg, numero) -> bool:
     continua sigilosa - na retranscrição, no envio da gravação pela página
     (que perde a pasta de origem) e numa nova audiência do mesmo processo. O
     que vale para os autos vale para a transcrição, a gravação e o diário.
+    (É a parte "pasta" da regra única do sigilo, nucleo/sigilo.py; a pauta é
+    a outra.)
     """
     try:
-        nome = numero.nome_arquivo
-        pasta = Path(cfg.pasta_sigilosos)
-        prefixo = glob.escape(nome)
-        transcricoes = pasta / SUBPASTA_TRANSCRICOES
-        candidatos = [*pasta.glob(f"{prefixo}*.pdf"), *pasta.glob(f"*/{prefixo}*.pdf"),
-                      *transcricoes.glob(f"{prefixo}*.docx"),
-                      *(transcricoes / "_audio").glob(f"{prefixo}*")]
-    except (AttributeError, OSError, ValueError):
+        pasta = cfg.pasta_sigilosos
+    except Exception:
         return False
-    for p in candidatos:
-        try:
-            # "...0001-01.pdf" é o incidente, não o principal "...0001"
-            if cnj.ler_nome_arquivo(p.stem).nome_arquivo == nome:
-                return True
-        except cnj.NumeroInvalido:
-            continue
-    return False
+    return sigilo.na_pasta(pasta, numero)
 
 
 def pasta_das_transcricoes(cfg, numero=None, sigiloso: bool = False) -> Path:
     """Onde vão o DOCX (e, em _audio, a gravação e o diário) do processo.
 
-    Processo em segredo de justiça - informado (`sigiloso`) ou com os autos
-    na pasta de sigilosos - fica em <sigilosos>/Transcricoes, FORA do acervo:
-    tudo o que está no acervo é lido pela IA (Cowork, Claude Code, ChatGPT) e
-    espelhado na nuvem. A informação só acrescenta sigilo, nunca o tira.
+    Processo em segredo de justiça - informado (`sigiloso`) ou que o
+    programa já sabe sigiloso pela regra única (autos, transcrição ou
+    gravação na pasta de sigilosos, ou a pauta de audiências) - fica em
+    <sigilosos>/Transcricoes, FORA do acervo: tudo o que está no acervo é
+    lido pela IA (Cowork, Claude Code, ChatGPT) e espelhado na nuvem. A
+    informação só acrescenta sigilo, nunca o tira.
     """
-    if sigiloso or (numero is not None and processo_sigiloso(cfg, numero)):
+    if sigiloso or (numero is not None and sigilo.processo_sigiloso(cfg, numero)):
         return Path(cfg.pasta_sigilosos) / SUBPASTA_TRANSCRICOES
     return cfg.pasta_transcricoes
 

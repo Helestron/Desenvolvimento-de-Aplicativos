@@ -465,6 +465,38 @@ class TestPortalSemNavegador(apoio.PastaTemporaria):
         self.portal(visivel, mostrar_navegador=True)._minimizar()
         self.assertEqual(visivel.enviados, [])
 
+    def test_tela_de_processo_sigiloso_nao_vai_para_o_diagnostico(self):
+        """Processo em segredo cujo eProc mostra eventos sem documentos (o caso
+        típico do sigilo com acesso restrito): a página, com as partes, ia
+        para Logs\\diagnostico - o que o manual manda enviar ao suporte."""
+        from helestron.download.navegador import DICA_SEM_DIAGNOSTICO
+
+        nav = _NavJanela()
+        portal = self.portal(nav)
+        n = apoio.numero("5001234", tr="21")
+        r = modelos.ResultadoProcesso(ordem=1, numero=n.formatado, tribunal="TJRS",
+                                      sistema="eproc")
+        r.sigiloso = True
+        evento = eproc.Evento(1, "01/01/2026", "10:00", "Distribuído")
+        with self.assertRaises(modelos.SemAcesso) as caso, \
+                self.assertLogs("download", "WARNING"):
+            portal._montar_documentos(n, self.tmp / "x.pdf", r, {"texto": ""}, [evento])
+        self.assertEqual(nav.diagnosticos, [])
+        self.assertIn(DICA_SEM_DIAGNOSTICO, str(caso.exception))
+        self.assertNotIn("Logs\\diagnostico", str(caso.exception))
+        # o sigilo apurado numa tentativa anterior também vale
+        portal.sigilosos_apurados.add(n.nome_arquivo)
+        with self.assertLogs("download", "WARNING"):
+            dica = portal._diagnosticar_processo(f"eproc-abrir-{n.nome_arquivo}", n)
+        self.assertEqual((nav.diagnosticos, dica), ([], DICA_SEM_DIAGNOSTICO))
+        # o processo público continua com o diagnóstico de sempre
+        r.sigiloso = False
+        publico = apoio.numero("5001235", tr="21")
+        with self.assertRaises(modelos.SemAcesso) as caso:
+            portal._montar_documentos(publico, self.tmp / "x.pdf", r, {"texto": ""}, [evento])
+        self.assertEqual(nav.diagnosticos, [f"eproc-sem-documentos-{publico.nome_arquivo}"])
+        self.assertIn("Logs\\diagnostico", str(caso.exception))
+
     def test_incidente_com_barra_nao_existe_no_eproc(self):
         portal = self.portal(_NavJanela())
         r = portal.baixar(apoio.numero("5001234", tr="21", dependente="01"), self.tmp / "x.pdf")

@@ -75,7 +75,8 @@ from .modelos import (AJUSTES_ACESSOS, CAMPO_PRAZO_LOGIN, ENTRAR_MANUALMENTE,
                       ONDE_CORRIGIR_ENDERECO, PERFIL_EPROC, SEM_ACESSO, SIGILOSO_SEM_SENHA,
                       TENTAR_DE_NOVO, Cancelado, LoginFalhou, PortalIndisponivel, ProcessoNaoEncontrado,
                       ResultadoProcesso, SemAcesso, SessaoPerdida, SigilosoSemSenha)
-from .navegador import explicar_erro, primeiro_visivel, recusou_credenciais, sem_acento
+from .navegador import (DICA_DIAGNOSTICO, DICA_SEM_DIAGNOSTICO, diagnosticar_processo,
+                        explicar_erro, primeiro_visivel, recusou_credenciais, sem_acento)
 
 log = logging.getLogger("download.eproc")
 
@@ -1483,6 +1484,8 @@ class PortalEProc:
         self._notas: list[str] = []
         # processos cujo sigilo esta sessão já apurou (Numero.nome_arquivo)
         self.sigilosos_apurados: set[str] = set()
+        # o processo que baixar() está buscando agora, e o resultado dele
+        self._em_curso: tuple[Numero, ResultadoProcesso] | None = None
 
     # ----------------------------------------------------------- atalhos
     @property
@@ -2254,6 +2257,29 @@ class PortalEProc:
                 return resp
         raise RuntimeError(f"não consegui falar com o eProc ({explicar_erro(str(ultimo))})")
 
+    # ------------------------------------------------------- diagnóstico
+    def _tela_sigilosa(self, numero: Numero | None = None,
+                       r: ResultadoProcesso | None = None) -> bool:
+        """A tela em curso é de processo em segredo de justiça - apurado
+        agora, numa tentativa anterior, ou já sabido pelo motor (pasta de
+        sigilosos, pauta)?"""
+        em_curso = getattr(self, "_em_curso", None)
+        if em_curso is not None:
+            numero = numero or em_curso[0]
+            r = r or em_curso[1]
+        return bool(getattr(self.nav, "sigiloso_em_curso", False)
+                    or (r is not None and r.sigiloso)
+                    or (numero is not None and numero.nome_arquivo in self.sigilosos_apurados))
+
+    def _diagnosticar_processo(self, rotulo: str, numero: Numero | None = None,
+                               r: ResultadoProcesso | None = None) -> str:
+        """Guarda a tela do processo em Logs\\diagnostico - menos a de processo
+        sigiloso, que traz as partes (o registro diz por quê). Devolve a dica
+        para a mensagem de erro: onde ver a tela, ou que ela não foi guardada."""
+        sigiloso = self._tela_sigilosa(numero, r)
+        diagnosticar_processo(self.nav, rotulo, sigiloso)
+        return DICA_SEM_DIAGNOSTICO if sigiloso else DICA_DIAGNOSTICO
+
     # ======================================================== download
     def baixar(self, numero: Numero, destino_pdf: Path,
                senha: str | None = None) -> ResultadoProcesso:
@@ -2267,6 +2293,7 @@ class PortalEProc:
                               sistema=self.sistema)
         inicio = time.monotonic()
         self._notas = []
+        self._em_curso = (numero, r)
         try:
             if numero.e_dependente:
                 raise ProcessoNaoEncontrado(
@@ -2291,10 +2318,11 @@ class PortalEProc:
             if self._estado_sessao() is False:
                 raise self._perdeu_sessao(msg[:160]) from erro
             if not _erro_transitorio(msg):
-                self.nav.diagnosticar(f"eproc-falha-{numero.nome_arquivo}")
+                self._diagnosticar_processo(f"eproc-falha-{numero.nome_arquivo}", numero, r)
             raise
         finally:
             r.segundos = round(time.monotonic() - inicio, 1)
+            self._em_curso = None
             if numero.nome_arquivo in self.sigilosos_apurados:
                 r.sigiloso = True
             elif r.sigiloso:
@@ -2344,7 +2372,7 @@ class PortalEProc:
                             "(acesso sem procuração, com verificação). Peça vista no portal")
         if diz_sem_acesso(texto):
             raise SemAcesso("o eProc não liberou os autos deste processo para o seu usuário")
-        self.nav.diagnosticar("eproc-sem-eventos")
+        self._diagnosticar_processo("eproc-sem-eventos", r=r)
         raise RuntimeError("a página do processo abriu, mas a lista de eventos não apareceu")
 
     # ------------------------------------------------------ abrir processo
@@ -2377,12 +2405,12 @@ class PortalEProc:
             raise ProcessoNaoEncontrado(
                 f"não encontrado no {grau} do {self.nome}. Confira o número; se o processo "
                 "estiver em outro grau ou sistema, baixe-o pelo portal.")
-        self.nav.diagnosticar(f"eproc-abrir-{numero.nome_arquivo}")
+        dica = self._diagnosticar_processo(f"eproc-abrir-{numero.nome_arquivo}", numero)
         if rapida == "nao_encontrado":
             raise RuntimeError("a pesquisa rápida não achou o processo, e a consulta processual "
-                               "não respondeu para confirmar (veja Logs\\diagnostico)")
+                               f"não respondeu para confirmar ({dica})")
         raise RuntimeError("não consegui abrir o processo nem pela pesquisa rápida nem pela "
-                           "consulta processual (o portal pode ter mudado: veja Logs\\diagnostico)")
+                           f"consulta processual (o portal pode ter mudado: {dica})")
 
     def _campo_pesquisa(self):
         campo = self._visivel("pesquisa_rapida", espera_ms=1500)
@@ -2666,7 +2694,7 @@ class PortalEProc:
             mudou = self._mudar_pagina(valor)
             self._conferir_sessao_na_pagina()
             if not mudou:
-                self.nav.diagnosticar("eproc-paginacao")
+                self._diagnosticar_processo("eproc-paginacao")
                 raise RuntimeError(f"a página {n} dos eventos não abriu (paginação do eProc)")
             coletados.append(ler_eventos(ler_html(self._html()), self.sel))
         return juntar_paginas(*coletados)
@@ -2742,10 +2770,11 @@ class PortalEProc:
         rotulo = numero.formatado
         docs = ordenar_documentos(eventos)
         if not docs:
-            self.nav.diagnosticar(f"eproc-sem-documentos-{numero.nome_arquivo}")
+            dica = self._diagnosticar_processo(f"eproc-sem-documentos-{numero.nome_arquivo}",
+                                               numero, r)
             raise SemAcesso(f"o eProc mostrou {plural(len(eventos), 'evento', 'eventos')}, mas "
                             "nenhum documento com link (sem acesso aos documentos, ou o portal "
-                            "mudou: veja Logs\\diagnostico)")
+                            f"mudou: {dica})")
         log.info("    %s, %s.", plural(len(eventos), "evento", "eventos"),
                  plural(len(docs), "documento", "documentos"))
         r.documentos = len(docs)

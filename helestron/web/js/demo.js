@@ -577,7 +577,7 @@
     sessao.inicio = Date.now();
     sessao.sigiloso = !!pedido.sigiloso;
     let i = 0;
-    emitirTranscricao("estado", { texto: "Carregando o modelo small...", estado: "iniciando" });
+    emitirTranscricao("estado", { texto: "Carregando o modelo small…", estado: "iniciando" });
     setTimeout(() => emitirTranscricao("estado", { texto: "Gravando", estado: "gravando" }), 600);
     if (pedido.sigiloso) {
       setTimeout(() => emitirTranscricao("aviso", { texto: "Processo em segredo de justiça: a transcrição e a gravação ficam na pasta dos sigilosos, fora do acervo." }), 900);
@@ -949,7 +949,7 @@
       if (corpo && corpo.tipo) sessao.tipo = corpo.tipo;
       sessao.acumulado = tempoSessao();
       sessao.estado = "encerrando";
-      emitirTranscricao("estado", { texto: "Concluindo a transcrição: 1 trecho na fila...", estado: "encerrando" });
+      emitirTranscricao("estado", { texto: "Concluindo a transcrição: 1 trecho na fila…", estado: "encerrando" });
       await pausa(1400);
       pararTimers();
       const pasta = sessao.sigiloso ? PASTAS.sigilosos + "\\Transcricoes" : PASTAS.transcricoes;

@@ -326,6 +326,50 @@ class TestImportarNoServico(apoio.PastaTemporaria):
                     ("esaj", "Conciliação", "Sala 1"),
                     ("esaj", "Instrução e julgamento", "Sala 2")])
 
+    def test_as_duas_do_mesmo_horario_com_data_hora_e_processo_mesclados(self):
+        """O relatório mescla Data, Hora e Processo das duas audiências do mesmo
+        processo no mesmo horário: as duas entram (ou completam as do portal), e a
+        de baixo não vira observação da de cima."""
+        from openpyxl import Workbook
+        from helestron.pauta import modelos
+
+        livro = Workbook()
+        aba = livro.active
+        aba.append(["Data", "Hora", "Processo", "Tipo de audiência", "Situação", "Local"])
+        aba.append([datetime(2026, 10, 5), "09:00", N1, "Conciliação", "Cancelada", "Sala 1"])
+        aba.append([None, None, None, "Instrução", "Designada", "Sala 2"])
+        aba.append([datetime(2026, 10, 5), "10:00", N2, "Instrução", "Designada", "Sala 1"])
+        for coluna in "ABC":
+            aba.merge_cells(f"{coluna}2:{coluna}3")
+        livro.save(self.tmp / "mesclado.xlsx")
+
+        r = self.servico.importar(self.tmp / "mesclado.xlsx")
+        self.assertEqual((r["total"], r["novas"], r["atualizadas"]), (3, 3, 0))
+        lista = self.servico.listar(date(2026, 10, 1), date(2026, 10, 31))["audiencias"]
+        self.assertEqual(sorted((a["hora"], a["tipo"], a["situacao"], a["local"],
+                                 a["observacoes"]) for a in lista), [
+            ("09:00", "Conciliação", "Cancelada", "Sala 1", ""),
+            ("09:00", "Instrução e julgamento", "Designada", "Sala 2", ""),
+            ("10:00", "Instrução e julgamento", "Designada", "Sala 1", "")])
+
+        # com as duas já trazidas do portal, cada uma é completada pela do seu tipo
+        servico = ServicoPauta(self.amb.cfg, self.tmp / "com_portal.sqlite3")
+        self.addCleanup(servico.fechar)
+        servico.armazem.gravar([
+            modelos.nova(sistema="esaj", tribunal="TJAL", data_=date(2026, 10, 5), processo=N1,
+                         hora="09:00", tipo_original=tipo, situacao_original=situacao,
+                         fonte="esaj-tjal")
+            for tipo, situacao in (("Conciliação", "Cancelada"), ("Instrução", "Designada"))],
+            "esaj-tjal", None, registrar_novas=False)
+        r = servico.importar(self.tmp / "mesclado.xlsx")
+        self.assertEqual((r["novas"], r["atualizadas"]), (1, 2))
+        lista = servico.listar(date(2026, 10, 1), date(2026, 10, 31))["audiencias"]
+        self.assertEqual(sorted((a["sistema"], a["hora"], a["tipo"], a["local"])
+                                for a in lista), [
+            ("arquivo", "10:00", "Instrução e julgamento", "Sala 1"),
+            ("esaj", "09:00", "Conciliação", "Sala 1"),
+            ("esaj", "09:00", "Instrução e julgamento", "Sala 2")])
+
     def test_a_do_relatorio_sem_par_no_portal_fica_na_pauta(self):
         """Pareada na importação com a do mesmo tipo, a outra audiência do relatório
         no mesmo horário fica como está - também na sincronização seguinte."""
@@ -454,6 +498,42 @@ class TestRelatoriosDoMundoReal(apoio.PastaTemporaria):
             aba.merge_cells(f"D{linha + 1}:E{linha + 1}")
         livro.save(self.tmp / "duas.xlsx")
         self.confere_duas_linhas(self.ler("duas.xlsx"))
+
+    # Data, Hora e Processo mesclados porque são iguais, e embaixo o tipo e a
+    # situação de OUTRA audiência do mesmo processo no mesmo horário
+    def confere_mesmo_horario(self, r):
+        self.assertEqual([(a.data, a.hora, a.processo, a.tipo, a.situacao, a.local,
+                           a.observacoes) for a in r.audiencias], [
+            (date(2026, 10, 5), "09:00", N1, "Conciliação", "Cancelada", "Sala 1", ""),
+            (date(2026, 10, 5), "09:00", N1, "Instrução e julgamento", "Designada", "Sala 2", ""),
+            (date(2026, 10, 5), "10:00", N2, "Instrução e julgamento", "Designada", "Sala 1", "")])
+        self.assertEqual((r.ignoradas, r.avisos), (0, []))
+
+    def test_xlsx_com_duas_audiencias_do_mesmo_processo_no_mesmo_horario(self):
+        from openpyxl import Workbook
+
+        livro = Workbook()
+        aba = livro.active
+        aba.append(["Data", "Hora", "Processo", "Tipo de audiência", "Situação", "Local"])
+        aba.append([datetime(2026, 10, 5), "09:00", N1, "Conciliação", "Cancelada", "Sala 1"])
+        aba.append([None, None, None, "Instrução", "Designada", "Sala 2"])
+        aba.append([datetime(2026, 10, 5), "10:00", N2, "Instrução", "Designada", "Sala 1"])
+        for coluna in "ABC":
+            aba.merge_cells(f"{coluna}2:{coluna}3")
+        livro.save(self.tmp / "mesmo_horario.xlsx")
+        self.confere_mesmo_horario(self.ler("mesmo_horario.xlsx"))
+
+    def test_html_com_duas_audiencias_do_mesmo_processo_no_mesmo_horario(self):
+        (self.tmp / "mesmo_horario.html").write_text(
+            "<html><head><title>Pauta de audiências</title></head><body><table>"
+            "<tr><th>Data</th><th>Hora</th><th>Processo</th><th>Tipo</th><th>Situação</th>"
+            "<th>Local</th></tr>"
+            f"<tr><td rowspan=2>05/10/2026</td><td rowspan=2>09:00</td><td rowspan=2>{N1}</td>"
+            "<td>Conciliação</td><td>Cancelada</td><td>Sala 1</td></tr>"
+            "<tr><td>Instrução</td><td>Designada</td><td>Sala 2</td></tr>"
+            f"<tr><td>05/10/2026</td><td>10:00</td><td>{N2}</td><td>Instrução</td>"
+            "<td>Designada</td><td>Sala 1</td></tr></table></body></html>", encoding="utf-8")
+        self.confere_mesmo_horario(self.ler("mesmo_horario.html"))
 
     def test_xls_com_a_audiencia_em_duas_linhas(self):
         import xlrd

@@ -14,6 +14,16 @@ Três coisas, todas idempotentes e baratas quando nada mudou:
 
 Arquivo só é regravado quando o conteúdo muda: assim o espelhamento para o
 OneDrive/Google Drive não reenvia tudo a cada lote.
+
+Processo sigiloso pela regra única (nucleo/sigilo.py: autos, transcrição ou
+gravação na pasta de sigilosos, ou a pauta de audiências marcando o segredo
+de justiça) não entra no índice, no texto nem em nada que a IA leia. E, com
+a separação dos sigilosos ligada (o padrão), a cópia que ainda estiver no
+acervo - baixada antes de o segredo ser decretado, por exemplo - é levada
+para a pasta dos sigilosos, como faz o download: as ferramentas que abrem a
+pasta inteira (Claude Code, Cowork, ChatGPT) não a encontram, e o CLAUDE.md
+continua dizendo a verdade. O que não puder sair (arquivo aberto) volta em
+'sigilosos_no_acervo', e quem chamou não compartilha o acervo até ele sair.
 """
 
 from __future__ import annotations
@@ -42,6 +52,11 @@ class RelatorioPreparo:
     textos_novos: int = 0
     arquivos: list[Path] = field(default_factory=list)
     erros: list[str] = field(default_factory=list)
+    # Processos sigilosos cujas cópias saíram agora do acervo para a pasta dos
+    # sigilosos, e as cópias que NÃO puderam sair (arquivo aberto, audiência
+    # sendo gravada): com estas, o acervo não pode ser compartilhado.
+    sigilosos_levados: int = 0
+    sigilosos_no_acervo: list[Path] = field(default_factory=list)
 
     @property
     def resumo(self) -> str:
@@ -50,10 +65,31 @@ class RelatorioPreparo:
         if self.textos_novos:
             partes.append(_plural(self.textos_novos, "texto extraído", "textos extraídos")
                           + " agora")
+        if self.sigilosos_levados:
+            partes.append(_plural(self.sigilosos_levados, "processo sigiloso levado",
+                                  "processos sigilosos levados") + " para a pasta dos sigilosos")
         if self.erros:
             partes.append(_plural(len(self.erros), "arquivo com problema",
                                   "arquivos com problema"))
         return ", ".join(partes)
+
+
+class SigilosoNoAcervo(RuntimeError):
+    """Processo sigiloso ficou no acervo (arquivo aberto): nada se compartilha
+    até ele sair. A frase é a mesma da tela Compartilhar."""
+
+    def __init__(self, arquivos: list[Path]):
+        self.arquivos = [Path(a) for a in arquivos]
+        super().__init__(frase_sigilosos_no_acervo(self.arquivos))
+
+
+def frase_sigilosos_no_acervo(arquivos: list[Path]) -> str:
+    um = len(arquivos) == 1
+    return (("Um processo em segredo de justiça ficou no acervo" if um else
+             f"{len(arquivos)} arquivos de processos em segredo de justiça ficaram no acervo")
+            + ": " + ", ".join(Path(a).name for a in arquivos[:5])
+            + (". Feche o arquivo e mova-o" if um else ". Feche-os e mova-os")
+            + " para a pasta dos sigilosos antes de compartilhar.")
 
 
 def _plural(n: int, um: str, varios: str) -> str:
@@ -263,6 +299,62 @@ def _indice(acervo: Acervo, pdfs: dict[str, Path], trans: dict[str, list[Path]])
     return "\n".join(linhas)
 
 
+def _retirar_sigilosos(cfg, acervo: Acervo, sigilosas: set[str]) -> tuple[int, list[Path]]:
+    """Leva para a pasta dos sigilosos o que ainda está no acervo de processo
+    sigiloso: os autos de Processos/<lote>/ (para Sigilosos/<lote>/, com capa
+    e gravações) e as transcrições (para Sigilosos/Transcricoes), como o
+    download faz ao descobrir o sigilo. Só com a separação dos sigilosos
+    ligada; desligada, eles ficam (o CLAUDE.md avisa a IA) - mas nunca vão
+    para o índice, o texto, o MCP, o pacote ou a nuvem.
+
+    Devolve (quantos processos saíram, o que não pôde sair). Autos fora de
+    Processos/<lote>/ (postos à mão em outra pasta do acervo) também contam
+    como presos: o programa não adivinha para onde levá-los.
+    """
+    if cfg is None or not sigilosas or not cfg.flag("download", "separar_sigilosos"):
+        return 0, []
+    try:
+        # Outra pasta que não o acervo da configuração (uso avulso): só o
+        # recorte vale - o programa não sabe onde ficam os lotes dela.
+        if Path(cfg.pasta_acervo).resolve() != acervo.raiz.resolve():
+            return 0, []
+    except (OSError, RuntimeError, AttributeError, TypeError):
+        return 0, []
+    no_acervo: dict[str, list[Path]] = {}
+    for sufixo in (".pdf", ".docx"):
+        for chave, p in acervo.numerados(sufixo):
+            if chave in sigilosas:
+                no_acervo.setdefault(chave, []).append(p)
+    if not no_acervo:
+        return 0, []
+    try:
+        from ..download.motor import retirar_do_acervo
+    except ImportError as erro:            # instalação sem o download: nada sai
+        log.warning("não consegui tirar do acervo os processos sigilosos (%s)", erro)
+        return 0, [p for lista in no_acervo.values() for p in lista]
+    levados = 0
+    presos: list[Path] = []
+    for chave, arquivos in sorted(no_acervo.items()):
+        try:
+            ret = retirar_do_acervo(cfg, chave)
+        except Exception as erro:          # um processo não impede os outros
+            log.warning("não consegui tirar %s do acervo (%s)", chave, erro)
+            presos += arquivos
+            continue
+        if ret.levou:
+            levados += 1
+            log.warning("Processo sigiloso %s: cópia no acervo levada para a pasta dos "
+                        "sigilosos.", chave)
+        presos += ret.presos
+        presos += [p for p in arquivos if p not in ret.presos]
+    # Só o que continua lá (outro preparo, ao mesmo tempo, pode tê-lo levado)
+    presos = [p for p in dict.fromkeys(presos) if p.exists()]
+    if presos:
+        log.error("ATENÇÃO: processo sigiloso no acervo que não pôde ser levado para a pasta "
+                  "dos sigilosos (arquivo aberto?): %s", ", ".join(str(p) for p in presos))
+    return levados, presos
+
+
 def _limpar_textos_orfaos(acervo: Acervo, pdfs: dict[str, Path]) -> None:
     """Apaga de _ia/texto o texto de processo que saiu do acervo.
 
@@ -298,6 +390,11 @@ def atualizar_contexto(cfg=None, raiz: Path | None = None, extrair_texto: bool |
     raiz.mkdir(parents=True, exist_ok=True)
     rel = RelatorioPreparo()
     acervo = Acervo(raiz) if cfg is None else Acervo(raiz, sigilosos=cfg.pasta_sigilosos)
+    rel.sigilosos_levados, rel.sigilosos_no_acervo = _retirar_sigilosos(
+        cfg, acervo, acervo.sigilosas())
+    for p in rel.sigilosos_no_acervo:
+        rel.erros.append(f"{p.name}: processo em segredo de justiça que não pôde ser levado "
+                         "para a pasta dos sigilosos (arquivo aberto?)")
     pdfs = acervo.pdfs()
     trans = acervo.transcricoes()
     rel.processos = len(pdfs)

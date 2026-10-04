@@ -896,6 +896,22 @@ class TestBaixar(apoio.PastaTemporaria):
             PortalDeDownload(achar=erro, sessao=True).baixar(N, self.destino())
         self.assertNotIsInstance(caso.exception, modelos.SessaoPerdida)
 
+    def test_falha_de_processo_sigiloso_nao_vai_para_o_diagnostico(self):
+        """A tela do processo em segredo de justiça (apurado numa tentativa
+        anterior, ou já sabido pelo motor: pauta, pasta de sigilosos) traz as
+        partes: não vai para Logs\\diagnostico, que se envia ao suporte."""
+        p = PortalDeDownload(servidor="falha", pecas_ok=())
+        p.sigilosos_apurados.add(N.nome_arquivo)
+        with self.assertRaises(RuntimeError), self.assertLogs("download", "WARNING") as reg:
+            p.baixar(N, self.destino())
+        self.assertEqual(p.nav.diagnosticos, [])
+        self.assertTrue(any("segredo de justiça" in linha for linha in reg.output))
+        p = PortalDeDownload(servidor="falha", pecas_ok=())
+        p.nav.sigiloso_em_curso = True               # o motor avisou o navegador
+        with self.assertRaises(RuntimeError), self.assertLogs("download", "WARNING"):
+            p.baixar(N, self.destino())
+        self.assertEqual(p.nav.diagnosticos, [])
+
     def test_erro_transitorio_nao_gera_diagnostico(self):
         p = PortalDeDownload(achar=RuntimeError("Target page, context or browser has been closed"))
         with self.assertRaises(RuntimeError):

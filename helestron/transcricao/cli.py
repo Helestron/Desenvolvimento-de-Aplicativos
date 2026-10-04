@@ -88,7 +88,8 @@ def cmd_transcrever(argv: list[str]) -> int:
     p.add_argument("--sem-falantes", action="store_true", help="arquivo: não separar as vozes")
     p.add_argument("--sigiloso", action="store_true",
                    help="processo em segredo de justiça: grava na pasta dos sigilosos, fora do "
-                        "acervo (automático se os autos já estiverem lá)")
+                        "acervo (automático se o programa já o souber sigiloso: autos, "
+                        "transcrição ou gravação na pasta dos sigilosos, ou a pauta)")
     p.add_argument("--config", help="config.ini alternativo")
     try:
         args = p.parse_args(argv)
@@ -120,11 +121,47 @@ def cmd_transcrever(argv: list[str]) -> int:
         if numero is None:
             _imprimir("Informe o número do processo: --processo NNNNNNN-DD.AAAA.J.TR.OOOO")
             return USO
+        args.sigiloso = _sigilo(args, numero, cfg)
         return _ao_vivo(args, numero, cfg)
     if not args.arquivo:
         _imprimir("Informe a gravação a transcrever (ou use --ao-vivo).")
         return USO
+    args.sigiloso = _sigilo(args, numero, cfg)
     return _arquivo(args, numero, cfg)
+
+
+MOTIVO_GRAVACAO = "a gravação está guardada na pasta dos sigilosos"
+
+
+def _sigilo(args, numero, cfg) -> bool:
+    """A mesma regra da tela (servidor/audiencia.sigilo_da_audiencia): o
+    --sigiloso só ACRESCENTA sigilo; o que o programa já sabe - autos,
+    transcrição ou gravação na pasta dos sigilosos, a pauta de audiências, a
+    gravação guardada na pasta dos sigilosos - vale mesmo sem ele, e a saída
+    diz o motivo."""
+    if args.sigiloso:
+        return True
+    from ..nucleo import sigilo
+
+    if numero is None and args.arquivo and not args.ao_vivo:
+        from .arquivo import numero_do_caminho     # o número que a transcrição vai usar
+        try:
+            numero = numero_do_caminho(args.arquivo)
+        except Exception:
+            numero = None
+    motivo = sigilo.motivo(cfg, numero) if numero is not None else ""
+    if not motivo and args.arquivo and not args.ao_vivo:
+        try:
+            pasta = Path(cfg.pasta_sigilosos).resolve()
+            if Path(args.arquivo).resolve().is_relative_to(pasta):
+                motivo = MOTIVO_GRAVACAO
+        except Exception:
+            pass
+    if not motivo:
+        return False
+    _imprimir(f"Processo em segredo de justiça ({motivo}): a transcrição vai para a pasta dos "
+              "sigilosos, fora do acervo compartilhado com a IA e a nuvem.")
+    return True
 
 
 def _arquivo(args, numero, cfg) -> int:
@@ -134,6 +171,11 @@ def _arquivo(args, numero, cfg) -> int:
     if not origem.exists():
         _imprimir(f"Arquivo não encontrado: {origem}")
         return FALHOU
+    if args.sigiloso and args.destino and _no_acervo(Path(args.destino), cfg):
+        _imprimir("Processo em segredo de justiça: a transcrição não pode ser gravada no acervo, "
+                  "que é compartilhado com a IA e a nuvem. Tire o --destino (ela vai para a "
+                  "pasta dos sigilosos) ou escolha uma pasta fora do acervo.")
+        return USO
     try:
         caminho = arquivo.transcrever_arquivo(
             origem, numero, cfg, progresso=_Progresso(), cancelado=lambda: False,
@@ -154,6 +196,13 @@ def _arquivo(args, numero, cfg) -> int:
         return INTERROMPIDO
     _imprimir(f"Transcrição gravada em: {caminho}")
     return OK
+
+
+def _no_acervo(caminho: Path, cfg) -> bool:
+    try:
+        return caminho.resolve().is_relative_to(Path(cfg.pasta_acervo).resolve())
+    except Exception:
+        return False
 
 
 def _ler_trocas(texto: str) -> list[tuple[float, str]]:

@@ -20,8 +20,14 @@ as tarefas que mais tomam tempo do magistrado e da equipe:
 
 Processos em **segredo de justiça** ficam numa pasta própria, **fora** do
 acervo, e nunca vão para a IA, para o pacote, para a nuvem nem para o
-conector. O Helestron é a reconstrução do antigo **Assessor Integrado**, com
-instalador de um só arquivo, interface nova e a pauta de audiências.
+conector. A regra é uma só, no download, na transcrição e no
+compartilhamento: é sigiloso o processo com autos, transcrição ou gravação
+na pasta dos sigilosos, ou que a pauta de audiências marca em segredo de
+justiça; com a separação dos sigilosos ligada (o padrão), a cópia que ainda
+estiver no acervo é levada para a pasta dos sigilosos antes de o acervo ser
+entregue a qualquer ferramenta. O Helestron é a reconstrução do antigo
+**Assessor Integrado**, com instalador de um só arquivo, interface nova e a
+pauta de audiências.
 
 > O Helestron é ferramenta de apoio: autos, transcrições, pautas e o que a IA
 > produzir são material de trabalho para conferência e decisão do magistrado
@@ -32,8 +38,8 @@ instalador de um só arquivo, interface nova e a pauta de audiências.
 1. Baixe o **`Helestron-Setup-1.0.0.exe`** na
    [página de versões](https://github.com/Helestron/Desenvolvimento-de-Aplicativos/releases)
    (a versão mais recente, em **Assets**).
-2. Dê dois cliques no arquivo. Se o Windows mostrar "O Windows protegeu o
-   computador", clique em **Mais informações** e em **Executar assim
+2. Dê dois cliques no arquivo. Se o Windows mostrar “O Windows protegeu o
+   computador”, clique em **Mais informações** e em **Executar assim
    mesmo**: o aviso aparece porque o instalador ainda não é assinado
    digitalmente.
 3. Siga o assistente (**Próximo**, **Instalar**, **Concluir**) e abra o
@@ -83,7 +89,7 @@ helestron/                        o pacote Python (vai inteiro para o instalador
   aplicativo/                     abertura, janela (WebView2), instância única, integridade, autoteste
   servidor/                       servidor HTTP local (127.0.0.1), API, eventos e perguntas
   servicos.py  tarefas.py         ponte entre a API e o motor
-  nucleo/                         caminhos, configuração, cofre de senhas, tribunais, listas
+  nucleo/                         caminhos, configuração, cofre de senhas, tribunais, listas, sigilo
   download/                       download no e-SAJ e no eProc (Playwright, Chrome ou Edge)
   transcricao/                    transcrição ao vivo e de gravações (faster-whisper)
   compartilhar/                   preparo do acervo, Claude, ChatGPT, conector MCP, nuvem
@@ -128,7 +134,8 @@ Para ver a interface:
 python -m http.server -d helestron/web 8000
 #   http://127.0.0.1:8000/?demo=1
 #   variantes: &pauta=vazia, &sem_dialogo=1, &lote=falhas,
-#              &claude_code=ausente, &microfone=<nome>
+#              &claude_code=ausente, &microfone=<nome>, &presenca=certificado,
+#              &modo=edge (ou navegador), &falantes=ausentes
 
 # o servidor de verdade, sem janela: imprime URL=... para abrir no navegador
 python -m helestron --servidor --sem-janela
@@ -136,12 +143,15 @@ python -m helestron --servidor --sem-janela
 
 Outros comandos úteis: `python -m helestron --ajuda` lista a linha de
 comando inteira (`baixar`, `transcrever`, `pauta sincronizar|exportar|importar`,
-`mcp`, `verificar`, `--verificar-instalacao`, `--autoteste`…).
+`mcp`, `verificar`, `--verificar-instalacao`, `--autoteste`…). O
+`--autoteste PASTA` abre a janela de verdade, percorre as telas e salva as
+capturas em `PASTA`, sempre em pastas de dados temporárias e vazias: as
+imagens nunca mostram a configuração, a pauta ou o acervo de quem o roda.
 
 Regras do projeto (detalhes em [docs/ESPECIFICACAO.md](docs/ESPECIFICACAO.md)):
 código, comentários e textos em português do Brasil correto; nenhuma
 dependência nova sem necessidade; imports estáticos nas partes essenciais;
-os invariantes de sigilo não podem regredir.
+os invariantes de sigilo (seção 12 da especificação) não podem regredir.
 
 ## Construir o instalador
 

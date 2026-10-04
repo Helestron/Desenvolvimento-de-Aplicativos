@@ -13,7 +13,7 @@
        registro da instância.
 
 Sem AppUserModelID explícito: o Windows usa o implícito do Helestron.exe,
-o mesmo dos atalhos que o instalador cria - o Helestron fixado na barra de
+o mesmo dos atalhos que o instalador cria — o Helestron fixado na barra de
 tarefas reconhece a janela aberta (com um ID só no processo, ela aparecia
 como um segundo botão). O ícone vem do próprio Helestron.exe.
 """
@@ -137,23 +137,37 @@ def _instancia_unica(trava: instancia.Trava) -> int | None:
 
 
 def main(autoteste: Path | None = None) -> int:
-    """Abre o programa e espera ele fechar. Devolve o código de saída."""
+    """Abre o programa e espera ele fechar. Devolve o código de saída.
+
+    Com 'autoteste', tudo roda em pastas de dados novas e vazias (antes do
+    registro, da instância e do servidor): as capturas nunca mostram a
+    configuração, a pauta ou o acervo de quem roda o comando.
+    """
     registro.preparar_saidas()
+    pastas = None
+    if autoteste is not None:
+        from .autoteste import PastasDoAutoteste
+
+        pastas = PastasDoAutoteste(autoteste).isolar()
     try:
-        registro.configurar(console=autoteste is not None)
-    except Exception:                               # sem log, o programa abre mesmo assim
-        pass
-    trava = instancia.Trava()
-    if autoteste is None:
-        codigo = _instancia_unica(trava)
-        if codigo is not None:
-            return codigo
-    try:
-        return _abrir(autoteste)
+        try:
+            registro.configurar(console=autoteste is not None)
+        except Exception:                           # sem log, o programa abre mesmo assim
+            pass
+        trava = instancia.Trava()
+        if autoteste is None:
+            codigo = _instancia_unica(trava)
+            if codigo is not None:
+                return codigo
+        try:
+            return _abrir(autoteste)
+        finally:
+            if trava.presa:
+                instancia.apagar_registro(os.getpid())
+                trava.soltar()
     finally:
-        if trava.presa:
-            instancia.apagar_registro(os.getpid())
-            trava.soltar()
+        if pastas is not None:
+            pastas.desfazer()
 
 
 def _abrir(autoteste: Path | None) -> int:
@@ -202,7 +216,10 @@ def _abrir(autoteste: Path | None) -> int:
             log.warning("não consegui gravar o registro da instância: %s", erro)
     threading.Thread(target=limpar_temporarios, name="limpar-temp", daemon=True).start()
     threading.Thread(target=limpar_antigos, name="limpar-antigos", daemon=True).start()
-    app.monitor = MonitorPauta(app).iniciar()
+    if teste is None:
+        # No autoteste, nada de sincronizar com os portais: a pauta é a das
+        # pastas vazias, e o percurso não espera rede nem navegador.
+        app.monitor = MonitorPauta(app).iniciar()
     url = app.url + ("&autoteste=1" if teste is not None else "")
     try:
         modo = janela.abrir(app, url)
@@ -211,7 +228,7 @@ def _abrir(autoteste: Path | None) -> int:
     finally:
         app.encerrar()
         # Se o encerramento começou em outra thread (o "Fechar mesmo assim?"
-        # da janela, o --encerrar), espera ele acabar - inclusive a audiência
+        # da janela, o --encerrar), espera ele acabar — inclusive a audiência
         # terminando de transcrever: o processo não pode sair no meio.
         app.esperar(_espera_encerrar_s())
     if teste is not None:

@@ -380,6 +380,28 @@ class TestNavegadorSemAbrir(apoio.PastaTemporaria):
         n = self.nav(salvar_diagnostico=False)
         self.assertIsNone(n.diagnosticar("x", PaginaFalsa()))
 
+    def test_tela_de_processo_sigiloso_nao_vai_para_os_registros(self):
+        """Logs\\diagnostico é o que o manual manda enviar ao suporte: a tela de
+        processo em segredo de justiça (com os nomes das partes) não é guardada,
+        e o registro diz por quê."""
+        n = self.nav()
+        pagina = PaginaFalsa(html="<html>AUTOR: MARIA DA SILVA - Segredo de Justiça</html>")
+        n._pagina = pagina                     # a aba aberta no portal
+        n.sigiloso_em_curso = True
+        with self.assertLogs("download.navegador", "WARNING") as registro:
+            self.assertIsNone(n.diagnosticar("eproc-falha-x", pagina))
+            self.assertIsNone(navegador.diagnosticar_processo(n, "eproc-falha-x", False))
+        self.assertFalse((self.tmp / "diag").exists() and list((self.tmp / "diag").iterdir()))
+        self.assertEqual(pagina.capturas, [])
+        self.assertIn("segredo de justiça", registro.output[0])
+        self.assertNotIn("MARIA", "".join(registro.output))
+        n.sigiloso_em_curso = False
+        with self.assertLogs("download.navegador", "WARNING"):
+            self.assertIsNone(navegador.diagnosticar_processo(n, "eproc-falha-x", True))
+        self.assertEqual(pagina.capturas, [])
+        self.assertIsNotNone(navegador.diagnosticar_processo(n, "eproc-falha-y", False))
+        self.assertEqual(len(pagina.capturas), 1)
+
     def test_pasta_de_diagnostico_nao_cresce_sem_fim(self):
         pasta = self.tmp / "diag"
         pasta.mkdir()

@@ -4,10 +4,10 @@ Duas cópias abertas brigariam pelo microfone, pelos perfis do navegador (o
 Chrome não abre o mesmo perfil duas vezes) e pelo banco da pauta. Dois
 marcadores, em LOCAL:
 
-  * instancia.trava - um arquivo com trava exclusiva do sistema, presa
+  * instancia.trava — um arquivo com trava exclusiva do sistema, presa
     enquanto o programa estiver aberto. O sistema a solta quando o processo
     termina, mesmo numa queda: não há trava "esquecida";
-  * instancia.json - {pid, porta, token} do servidor aberto, para a segunda
+  * instancia.json — {pid, porta, token} do servidor aberto, para a segunda
     abertura pedir à primeira que apareça (POST /api/janela/mostrar) e para
     o instalador pedir que feche (--encerrar).
 
@@ -23,7 +23,7 @@ arquivos) NÃO fecha o programa no meio de uma audiência sendo transcrita:
 sai com o código AUDIENCIA_EM_ANDAMENTO (10), sem tocar em nada. O
 instalador então pede ao usuário que encerre a audiência (o documento é
 salvo) e clique em Repetir; no modo silencioso (/S, a atualização empurrada
-pela TI), ele desiste com o código 7 e a audiência segue - melhor uma
+pela TI), ele desiste com o código 7 e a audiência segue — melhor uma
 atualização adiada que a transcrição cortada no meio da sessão. Fora disso,
 pede que feche e espera: enquanto a instância responder que está fechando
 (a fila da audiência recém-encerrada sendo transcrita leva minutos num
@@ -170,7 +170,7 @@ def ler_registro() -> dict | None:
 
 
 def apagar_registro(pid: int | None = None) -> None:
-    """Apaga o instancia.json - só se ainda for deste processo."""
+    """Apaga o instancia.json — só se ainda for deste processo."""
     dados = ler_registro()
     if dados is not None and pid is not None and int(dados.get("pid") or 0) != pid:
         return
@@ -221,7 +221,7 @@ def chamar_a_aberta(espera_s: float = 20.0) -> str:
     """A outra instância está com a trava: pede que ela apareça.
 
     Devolve "mostrou" (pode sair), "fechou" (a outra saiu: pode abrir) ou
-    "muda" (a outra não responde nem sai - travada).
+    "muda" (a outra não responde nem sai — travada).
     """
     limite = time.monotonic() + espera_s
     while time.monotonic() < limite:
@@ -256,7 +256,7 @@ def encerrar_aberta(espera_s: float = 60.0, recusar_audiencia: bool = True,
     """--encerrar: pede à instância aberta que feche e espera ela sair.
 
     0 = fechou (ou não havia nenhuma); 1 = continua aberta (não respondeu
-    ou demorou demais - o instalador avisa o usuário); 10 = há uma audiência
+    ou demorou demais — o instalador avisa o usuário); 10 = há uma audiência
     sendo transcrita, e nada foi fechado (recusar_audiencia).
     """
     if not outra_aberta():
@@ -271,7 +271,7 @@ def encerrar_aberta(espera_s: float = 60.0, recusar_audiencia: bool = True,
     if not outra_aberta(espera_s):
         return ENCERROU
     # Ainda aberta: se ela responde que está fechando (salvando a audiência,
-    # parando as tarefas), espera mais - ela sai sozinha quando terminar.
+    # parando as tarefas), espera mais — ela sai sozinha quando terminar.
     limite = time.monotonic() + max(0.0, espera_fechando_s - espera_s)
     while registro is not None and time.monotonic() < limite:
         ping = responde(registro)

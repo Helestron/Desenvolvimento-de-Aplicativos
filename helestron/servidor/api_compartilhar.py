@@ -1,9 +1,13 @@
 """API de Compartilhar com IA: preparar o acervo e entregá-lo a cada ferramenta.
 
 A regra do sigilo vale aqui por inteiro: com processo sigiloso preso no
-acervo (o motor não conseguiu tirá-lo de lá), nada de preparo, pacote ou
-espelho na nuvem até o PDF sair - a IA leria o texto dele, e a nuvem
-levaria a cópia.
+acervo (o motor ou o preparo não conseguiu tirá-lo de lá), nada de preparo,
+pacote ou espelho na nuvem até o PDF sair - a IA leria o texto dele, e a
+nuvem levaria a cópia. Antes de recusar, o programa tenta de novo levá-lo
+para a pasta dos sigilosos (o arquivo pode ter sido fechado). E todo
+compartilhamento começa pelo preparo (nucleo/sigilo.py: o processo que o
+programa já sabe sigiloso - pela pasta dos sigilosos ou pela pauta - sai do
+acervo e do índice antes de a ferramenta abrir ou de a nuvem receber a cópia).
 """
 
 from __future__ import annotations
@@ -44,8 +48,52 @@ def presos(app) -> list[Path]:
     return ficam
 
 
+def registrar_presos(app, arquivos) -> list[Path]:
+    """Guarda os sigilosos que ficaram no acervo (o preparo não conseguiu
+    levá-los): até saírem, nada se compartilha. Devolve a lista recebida."""
+    lista = [Path(p) for p in arquivos] if isinstance(arquivos, (list, tuple)) else []
+    for p in lista:
+        if p not in app.sigilosos_presos:
+            app.sigilosos_presos.append(p)
+    return lista
+
+
+def _tentar_de_novo(app, lista: list[Path]) -> None:
+    """Leva de novo para a pasta dos sigilosos os arquivos presos de processo
+    que a regra única dá como sigiloso (pasta dos sigilosos, pauta) - os que
+    o preparo não conseguiu levar: o PDF que estava aberto pode ter sido
+    fechado. O que sair deixa de ser preso. O sigilo que só o portal apurou
+    no download continua com o caminho do download ("Tentar de novo", ou
+    mover à mão)."""
+    try:
+        from ..download.motor import retirar_do_acervo
+        from ..nucleo import cnj, sigilo
+
+        cfg = app.cfg
+        sigilosas = sigilo.chaves_sigilosas(cfg.pasta_sigilosos, cfg.pasta_acervo)
+    except Exception as erro:
+        log.debug("presos: a regra do sigilo não pôde ser lida (%s)", erro)
+        return
+    vistos: set[str] = set()
+    for p in lista:
+        try:
+            chave = cnj.ler_nome_arquivo(p.stem).nome_arquivo
+        except cnj.NumeroInvalido:
+            continue
+        if chave in vistos or chave not in sigilosas:
+            continue
+        vistos.add(chave)
+        try:
+            retirar_do_acervo(app.cfg, chave)
+        except Exception as erro:          # continua preso; a recusa explica
+            log.warning("não consegui levar %s para a pasta dos sigilosos: %s", p.name, erro)
+
+
 def exigir_sem_sigiloso(app) -> None:
     lista = presos(app)
+    if lista:
+        _tentar_de_novo(app, lista)
+        lista = presos(app)
     if lista:
         um = len(lista) == 1
         raise ErroApi(409, "sigiloso_no_acervo",
@@ -53,6 +101,19 @@ def exigir_sem_sigiloso(app) -> None:
                        f"{len(lista)} processos em segredo de justiça ficaram no acervo")
                       + ": " + ", ".join(p.name for p in lista[:5])
                       + ". Feche o PDF e mova-o para a pasta dos sigilosos antes de compartilhar.")
+
+
+def preparar_e_conferir(app, **opcoes):
+    """O preparo do acervo (preparo.atualizar_contexto(app.cfg, **opcoes)) e,
+    se um processo sigiloso não pôde sair do acervo, a recusa (SigilosoNoAcervo,
+    com a frase da tela; o arquivo fica entre os presos)."""
+    from ..compartilhar import preparo
+
+    rel = preparo.atualizar_contexto(app.cfg, **opcoes)
+    ficaram = registrar_presos(app, getattr(rel, "sigilosos_no_acervo", None))
+    if ficaram:
+        raise preparo.SigilosoNoAcervo(ficaram)
+    return rel
 
 
 def pasta_pacotes() -> Path:
@@ -78,7 +139,11 @@ def depois_de_salvar(app, documento: Path | None = None) -> None:
         from ..compartilhar import nuvem
 
         def alvo(tw):
-            servicos.atualizar_indice(cfg)
+            _atualizar_indice(app)
+            if presos(app):
+                # O índice já não lista o sigiloso preso, mas a nuvem espera.
+                from ..compartilhar.preparo import SigilosoNoAcervo
+                raise SigilosoNoAcervo(presos(app))
             if tw.cancelado():
                 return {"copiados": 0, "iguais": 0}
             copiados, iguais = nuvem.espelhar(cfg.pasta_acervo, Path(destino),
@@ -92,7 +157,7 @@ def depois_de_salvar(app, documento: Path | None = None) -> None:
             return
         except Exception as erro:
             log.info("espelho na nuvem adiado: %s", erro)
-    _indice_em_segundo_plano(cfg)
+    _indice_em_segundo_plano(app)
 
 
 def nuvem_sem_conflito(cfg, destino) -> bool:
@@ -106,8 +171,15 @@ def nuvem_sem_conflito(cfg, destino) -> bool:
     return True
 
 
-def _indice_em_segundo_plano(cfg) -> None:
-    threading.Thread(target=servicos.atualizar_indice, args=(cfg,), name="indice-acervo",
+def _atualizar_indice(app) -> None:
+    """INDICE.md em dia (servicos.atualizar_indice) e, se o preparo não
+    conseguiu tirar do acervo um processo sigiloso, o arquivo entre os presos."""
+    rel = servicos.atualizar_indice(app.cfg)
+    registrar_presos(app, getattr(rel, "sigilosos_no_acervo", None))
+
+
+def _indice_em_segundo_plano(app) -> None:
+    threading.Thread(target=_atualizar_indice, args=(app,), name="indice-acervo",
                      daemon=True).start()
 
 
@@ -127,25 +199,27 @@ def prompt(p: Pedido) -> dict:
     return {"texto": f"Pasta do acervo: {p.app.cfg.pasta_acervo}\n\n{texto}"}
 
 
-def _preparo_rapido(cfg) -> None:
+def _preparo_rapido(app) -> None:
     """CLAUDE.md, AGENTS.md e INDICE.md antes de abrir uma ferramenta (sem
-    extrair o texto dos PDFs, que é o que demora)."""
+    extrair o texto dos PDFs, que é o que demora). O processo sigiloso que
+    ainda estivesse no acervo sai dele aqui; se não puder sair, a ferramenta
+    não abre (409)."""
     from ..compartilhar import preparo
 
-    preparo.atualizar_contexto(cfg, extrair_texto=False)
+    try:
+        preparar_e_conferir(app, extrair_texto=False)
+    except preparo.SigilosoNoAcervo:
+        exigir_sem_sigiloso(app)    # a recusa (409), salvo se o arquivo saiu agora
 
 
 # =================================================================== preparar
 def preparar(p: Pedido) -> dict:
     app = p.app
     exigir_sem_sigiloso(app)
-    cfg = app.cfg
 
     def alvo(tw):
-        from ..compartilhar import preparo
-
         tw.definir_status("Preparando o acervo para a IA…")
-        rel = preparo.atualizar_contexto(cfg, progresso=lambda f, t, d: tw.definir_progresso(
+        rel = preparar_e_conferir(app, progresso=lambda f, t, d: tw.definir_progresso(
             f, t, d), cancelado=tw.cancelado)
         resumo = maiuscula(getattr(rel, "resumo", "") or "Acervo preparado")
         tw.definir_status(resumo + ".")
@@ -189,7 +263,7 @@ def cowork(p: Pedido) -> dict:
     app = p.app
     exigir_sem_sigiloso(app)
     acervo = app.cfg.pasta_acervo
-    _preparo_rapido(app.cfg)
+    _preparo_rapido(app)
     pedido = f"Pasta do acervo: {acervo}\n\n{servicos.prompt_inicial()}"
     if not claude.claude_desktop_instalado():
         # Como o Claude Desktop ausente (C6): a página de download abre aqui,
@@ -239,7 +313,7 @@ def claude_code(p: Pedido) -> dict:
 
     app = p.app
     exigir_sem_sigiloso(app)
-    _preparo_rapido(app.cfg)
+    _preparo_rapido(app)
     try:
         claude.abrir_claude_code(app.cfg.pasta_acervo)
     except FileNotFoundError:
@@ -274,7 +348,7 @@ def chatgpt_work(p: Pedido) -> dict:
     app = p.app
     exigir_sem_sigiloso(app)
     acervo = app.cfg.pasta_acervo
-    _preparo_rapido(app.cfg)
+    _preparo_rapido(app)
     if _app_chatgpt():
         resultado = servicos.abrir_chatgpt_work(acervo)
         aberta = True       # sem o app no fim das contas, a web foi pedida por lá
@@ -304,7 +378,7 @@ def codex(p: Pedido) -> dict:
     app = p.app
     exigir_sem_sigiloso(app)
     acervo = app.cfg.pasta_acervo
-    _preparo_rapido(app.cfg)
+    _preparo_rapido(app)
     partes = []
     try:
         arquivo = servicos.registrar_mcp_codex(acervo)
@@ -335,10 +409,16 @@ def pacote(p: Pedido) -> dict:
     destino = pasta_pacotes()
 
     def alvo(tw):
+        from ..compartilhar.preparo import SigilosoNoAcervo
+
         tw.definir_status("Copiando os autos e os textos…")
-        pasta, arquivo = chatgpt.gerar_pacote(
-            cfg.pasta_acervo, destino, numeros=[str(n) for n in numeros] if numeros else None,
-            cfg=cfg, progresso=lambda f, t, d="": tw.definir_progresso(f, t, d))
+        try:
+            pasta, arquivo = chatgpt.gerar_pacote(
+                cfg.pasta_acervo, destino, numeros=[str(n) for n in numeros] if numeros else None,
+                cfg=cfg, progresso=lambda f, t, d="": tw.definir_progresso(f, t, d))
+        except SigilosoNoAcervo as erro:
+            registrar_presos(app, erro.arquivos)
+            raise
         tw.definir_status("Pacote pronto.")
         return {"pasta": str(pasta), "arquivo": str(arquivo),
                 "mensagem": f"{Path(arquivo).name}. Arraste o .zip para uma conversa ou um "
@@ -387,6 +467,12 @@ def espelhar(p: Pedido) -> dict:
         cfg.definir("compartilhar", "pasta_nuvem", novo)
 
     def alvo(tw):
+        # O índice antes da cópia: sem isto, o INDICE.md da nuvem continuava
+        # listando o processo que foi para a pasta dos sigilosos (ou que a
+        # pauta passou a dar como sigiloso) - e o preparo tira do acervo a
+        # cópia que ainda estivesse lá.
+        tw.definir_status("Atualizando o índice do acervo…")
+        preparar_e_conferir(app, extrair_texto=False)
         tw.definir_status("Copiando o acervo para a nuvem…")
         copiados, iguais = nuvem.espelhar(acervo, Path(destino),
                                           lambda f, t, n: tw.definir_progresso(f, t, n),

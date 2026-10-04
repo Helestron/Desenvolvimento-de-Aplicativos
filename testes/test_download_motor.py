@@ -19,7 +19,7 @@ from pathlib import Path
 from unittest import mock
 
 from helestron.download import modelos, motor
-from helestron.nucleo import config
+from helestron.nucleo import caminhos, config, sigilo
 
 from testes import apoio_download as apoio
 
@@ -381,6 +381,91 @@ class TestSigiloForaDoAcervo(BaseMotor):
                                 fabrica_portal=fp, fabrica_navegador=fn)
         self.assertEqual(resumo.itens[0].situacao, modelos.ERRO)
         self.assertTrue(resumo.itens[0].sigiloso)
+
+
+class TestSigiloSabidoPeloPrograma(BaseMotor):
+    """O que o programa já sabe sigiloso - pela pauta (o segredo decretado
+    depois, o selo visto só na pauta) ou pela transcrição na pasta dos
+    sigilosos - é baixado como sigiloso mesmo que a página do processo não
+    mostre o selo. Antes, o motor só olhava os relatórios do lote, os PDFs da
+    pasta de sigilosos e a capa: o "Baixar autos" da Pauta gravava no acervo
+    o processo que a própria pauta marcava em segredo de justiça."""
+
+    def setUp(self):
+        super().setUp()
+        self.pauta = self.tmp / "local" / "pauta.sqlite3"
+        p = mock.patch.object(caminhos, "ARQUIVO_PAUTA", self.pauta)
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(sigilo.esquecer_pauta)
+        self.sig = self.tmp / "Sigilosos" / self.destino.name
+        self.nome = TJAL1.nome_arquivo
+
+    def marcar_na_pauta(self, *numeros):
+        from testes.test_nucleo import pauta_com_sigiloso
+
+        self.pauta.parent.mkdir(parents=True, exist_ok=True)
+        pauta_com_sigiloso(self.pauta, *numeros)
+
+    def no_acervo(self):
+        return sorted(p.name for p in (self.tmp / "Acervo").rglob(f"{self.nome}*")
+                      if p.suffix != ".csv")
+
+    def conferir_sigiloso(self, resumo, motivo):
+        r = self.item(resumo, TJAL1)
+        self.assertEqual(r.situacao, modelos.OK)
+        self.assertTrue(r.sigiloso)
+        self.assertEqual(r.arquivo, str(self.sig / f"{self.nome}.pdf"))
+        self.assertIn(f"tratado como sigiloso: {motivo}", r.detalhe)
+        self.assertEqual(self.no_acervo(), [])
+        # o relatório do acervo (que a IA lê) não identifica o sigiloso
+        linhas = ler_relatorio(self.destino / "_controle" / "relatorio.csv")
+        self.assertFalse([l for l in linhas if TJAL1.formatado in ";".join(l)])
+        self.assertIn(motor.MASCARA_SIGILOSO, [l[1] for l in linhas])
+        # o público continua no acervo
+        self.assertTrue((self.destino / f"{TJAL2.nome_arquivo}.pdf").exists())
+        self.assertFalse(self.item(resumo, TJAL2).sigiloso)
+
+    def test_pauta_marca_o_sigilo_que_a_pagina_nao_mostra(self):
+        self.marcar_na_pauta(TJAL1)
+        resumo = self.rodar([TJAL1, TJAL2])         # o portal responde "ok", sem selo
+        self.conferir_sigiloso(resumo, sigilo.MOTIVO_PAUTA)
+
+    def test_transcricao_na_pasta_dos_sigilosos_marca_o_sigilo(self):
+        trans = self.tmp / "Sigilosos" / "Transcricoes"
+        trans.mkdir(parents=True)
+        (trans / f"{self.nome}.docx").write_bytes(b"PK")
+        resumo = self.rodar([TJAL1, TJAL2])
+        self.conferir_sigiloso(resumo, sigilo.MOTIVO_PASTA)
+
+    def test_copia_de_quando_era_publico_sai_do_acervo(self):
+        # Baixado antes do segredo; agora a pauta mostra o selo.
+        self.destino.mkdir(parents=True)
+        (self.destino / f"{self.nome}.pdf").write_bytes(apoio.pdf_bytes(2))
+        self.marcar_na_pauta(TJAL1)
+        resumo = self.rodar([TJAL1])
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.JA_BAIXADO)
+        self.assertTrue(r.sigiloso)
+        self.assertEqual(r.arquivo, str(self.sig / f"{self.nome}.pdf"))
+        self.assertEqual(self.no_acervo(), [])
+        self.assertEqual(apoio.PortalFalso.todos[0].chamadas, [])
+
+    def test_tela_do_sigiloso_sabido_nao_vai_para_o_diagnostico(self):
+        """O navegador fica sabendo que a tela é de processo sigiloso enquanto
+        o portal o busca: o diagnóstico dela (com as partes) não é guardado."""
+        self.marcar_na_pauta(TJAL1)
+        vistos = {}
+        original = apoio.PortalFalso.baixar
+
+        def espiao(portal, numero, destino_pdf, senha=None):
+            vistos[numero.formatado] = getattr(portal.nav, "sigiloso_em_curso", None)
+            return original(portal, numero, destino_pdf, senha)
+
+        with mock.patch.object(apoio.PortalFalso, "baixar", espiao):
+            self.rodar([TJAL1, TJAL2])
+        self.assertEqual(vistos, {TJAL1.formatado: True, TJAL2.formatado: False})
+        self.assertFalse(apoio.NavegadorFalso.instancias[0].sigiloso_em_curso)
 
 
 class TestTranscricoesDoSigiloso(BaseMotor):

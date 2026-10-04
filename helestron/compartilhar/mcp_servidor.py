@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 from .. import __version__
-from ..nucleo import caminhos, cnj
+from ..nucleo import caminhos, cnj, sigilo
 from . import textos
 
 log = logging.getLogger("mcp")
@@ -132,37 +132,19 @@ class Recorte:
         return not self._excluida(real.parts[:-1])
 
 
-def chaves_sigilosas(sigilosos: Path | None, raiz: Path | None = None) -> set[str]:
-    """Os processos que têm PDF na pasta de sigilosos.
+def chaves_sigilosas(sigilosos: Path | None, raiz: Path | None = None,
+                     pauta=sigilo.PAUTA_DO_PROGRAMA) -> set[str]:
+    """Os processos sigilosos que o programa conhece, pela regra única
+    (nucleo/sigilo.py): autos, transcrição, gravação ou diário na pasta de
+    sigilosos, ou a pauta de audiências marcando o segredo de justiça.
 
-    Um processo que está lá é sigiloso, mesmo que uma cópia tenha ficado no
-    acervo (a separação falhou no meio, ou foi feita à mão depois): essa
-    cópia, o texto extraído dela e a transcrição da audiência não vão para a
-    IA nem para a nuvem. Só dois níveis (Sigilosos/<lote>/<número>.pdf, como
-    o programa grava, ou o PDF solto na pasta): a pasta pode ter sido
-    apontada para algo grande, como os Documentos.
+    Um processo assim é sigiloso mesmo que uma cópia esteja no acervo (a
+    separação falhou no meio, foi feita à mão depois, ou o segredo foi
+    decretado depois do download e só a pauta o mostra): essa cópia, o texto
+    extraído dela e a transcrição da audiência não vão para a IA nem para a
+    nuvem. 'pauta': o banco da pauta (padrão: o do programa; None, nenhum).
     """
-    if not sigilosos:
-        return set()
-    sigilosos = Path(sigilosos)
-    dentro_dela = _partes_relativas(raiz, sigilosos) if raiz is not None else None
-    achados: set[str] = set()
-    try:
-        candidatos = list(sigilosos.glob("*.pdf")) + list(sigilosos.glob("*/*.pdf"))
-    except OSError:
-        return achados
-    for p in candidatos:
-        # Acervo dentro da pasta de sigilosos (configuração errada): o que é
-        # do acervo não vira sigiloso por isso.
-        if dentro_dela is not None and \
-                tuple(q.lower() for q in p.relative_to(sigilosos).parts[:len(dentro_dela)]) \
-                == dentro_dela:
-            continue
-        try:
-            achados.add(cnj.ler_nome_arquivo(p.stem).nome_arquivo)
-        except cnj.NumeroInvalido:
-            continue
-    return achados
+    return sigilo.chaves_sigilosas(sigilosos, raiz, pauta)
 
 
 class Acervo:
@@ -171,18 +153,25 @@ class Acervo:
     'sigilosos' é a pasta dos processos em segredo de justiça; por padrão, a
     do config.ini do programa (lida a cada consulta: a troca na tela vale sem
     reiniciar o Claude Desktop). Nada dela é servido, mesmo que esteja (por
-    engano de configuração) dentro do acervo.
+    engano de configuração) dentro do acervo. Nem o que a regra única do
+    sigilo dá como sigiloso (chaves_sigilosas): 'pauta' é o banco da pauta
+    de audiências (padrão: o do programa; None, nenhum).
     """
 
-    def __init__(self, raiz: Path, sigilosos=_DO_CONFIG):
+    def __init__(self, raiz: Path, sigilosos=_DO_CONFIG, pauta=sigilo.PAUTA_DO_PROGRAMA):
         self.raiz = Path(raiz)
         self.cache = self.raiz / "_ia" / "texto"
         self._sigilosos = sigilosos
+        self.pauta = pauta
 
     def pasta_sigilosos(self) -> Path | None:
         if self._sigilosos is _DO_CONFIG:
             return pasta_sigilosos_configurada()
         return Path(self._sigilosos) if self._sigilosos else None
+
+    def sigilosas(self) -> set[str]:
+        """As chaves dos processos sigilosos (a regra única), lidas agora."""
+        return chaves_sigilosas(self.pasta_sigilosos(), self.raiz, self.pauta)
 
     # ------------------------------------------------------------ descoberta
     def _arquivos(self, sufixo: str) -> list[Path]:
@@ -205,17 +194,22 @@ class Acervo:
             saida.append(p)
         return sorted(saida)
 
-    def _numeros(self, sufixo: str):
+    def numerados(self, sufixo: str):
         """(chave, arquivo) de cada arquivo do acervo nomeado com um número,
-        sem os processos que estão na pasta de sigilosos."""
-        sigilosas = chaves_sigilosas(self.pasta_sigilosos(), self.raiz)
+        SEM tirar os sigilosos (o preparo os procura para tirá-los do acervo)."""
         for p in self._arquivos(sufixo):
             try:
                 # Lê o "-NN" do dependente: "...0001-01.pdf" é o incidente,
                 # não o principal.
-                chave = cnj.ler_nome_arquivo(p.stem).nome_arquivo
+                yield cnj.ler_nome_arquivo(p.stem).nome_arquivo, p
             except cnj.NumeroInvalido:
                 continue
+
+    def _numeros(self, sufixo: str):
+        """(chave, arquivo) de cada arquivo do acervo nomeado com um número,
+        sem os processos sigilosos (a regra única: pasta de sigilosos e pauta)."""
+        sigilosas = self.sigilosas()
+        for chave, p in self.numerados(sufixo):
             if chave not in sigilosas:
                 yield chave, p
 

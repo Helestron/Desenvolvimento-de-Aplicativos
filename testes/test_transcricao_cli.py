@@ -7,6 +7,7 @@ import io
 import unittest
 from unittest import mock
 
+from helestron.nucleo import caminhos, cnj, sigilo
 from helestron.transcricao import cli, falantes, modelos
 from testes.apoio_transcricao import (NUMERO, NUMERO_CI, ModeloDuble, PastaTemporaria, ficha,
                                      gravar_wav, ler_docx, roteiro_audiencia)
@@ -62,6 +63,48 @@ class TestCli(unittest.TestCase):
         self.assertEqual(codigo, 0, saida)
         self.assertIn("100%", saida)
         self.assertTrue((self.cfg.pasta_transcricoes / f"{NUMERO}.docx").exists())
+
+    def test_segue_a_regra_de_sigilo_da_tela(self):
+        """O processo que a pauta marca em segredo de justiça é transcrito como
+        sigiloso também pela linha de comando, sem o --sigiloso (antes, só a
+        tela consultava a pauta, e a CLI gravava no acervo); a saída diz o
+        motivo."""
+        from testes.test_nucleo import pauta_com_sigiloso
+
+        pauta = self.tmp.raiz / "local" / "pauta.sqlite3"
+        pauta.parent.mkdir(parents=True)
+        pauta_com_sigiloso(pauta, cnj.ler(NUMERO))
+        with mock.patch.object(caminhos, "ARQUIVO_PAUTA", pauta):
+            self.addCleanup(sigilo.esquecer_pauta)
+            codigo, saida = rodar(["transcrever", str(self.wav), "--processo", NUMERO,
+                                   "--config", str(self.tmp.ini), "--sem-falantes"])
+            self.assertEqual(codigo, 0, saida)
+            self.assertIn(f"Processo em segredo de justiça ({sigilo.MOTIVO_PAUTA})", saida)
+            self.assertFalse((self.cfg.pasta_transcricoes / f"{NUMERO}.docx").exists())
+            self.assertTrue((self.cfg.pasta_sigilosos / "Transcricoes" / f"{NUMERO}.docx").exists())
+            # ao vivo também (agora já há transcrição dele na pasta dos sigilosos)
+            codigo, saida = rodar(["transcrever", "--ao-vivo", "--processo", NUMERO,
+                                   "--wav", str(self.wav), "--config", str(self.tmp.ini)])
+            self.assertEqual(codigo, 0, saida)
+            self.assertIn(f"Processo em segredo de justiça ({sigilo.MOTIVO_PASTA})", saida)
+            self.assertFalse(list(self.cfg.pasta_transcricoes.rglob(f"{NUMERO}*")))
+            # e o --destino não leva a transcrição do sigiloso para o acervo
+            codigo, saida = rodar(["transcrever", str(self.wav), "--processo", NUMERO,
+                                   "--config", str(self.tmp.ini), "--sem-falantes", "--destino",
+                                   str(self.cfg.pasta_acervo / "x.docx")])
+            self.assertEqual(codigo, 2, saida)
+            self.assertIn("não pode ser gravada no acervo", saida)
+            self.assertFalse((self.cfg.pasta_acervo / "x.docx").exists())
+
+    def test_gravacao_na_pasta_dos_sigilosos_e_sigilosa(self):
+        guardada = self.cfg.pasta_sigilosos / "Lote 1" / "audiencia.wav"
+        guardada.parent.mkdir(parents=True)
+        guardada.write_bytes(self.wav.read_bytes())
+        codigo, saida = rodar(["transcrever", str(guardada), "--processo", NUMERO,
+                               "--config", str(self.tmp.ini), "--sem-falantes"])
+        self.assertEqual(codigo, 0, saida)
+        self.assertIn(cli.MOTIVO_GRAVACAO, saida)
+        self.assertTrue((self.cfg.pasta_sigilosos / "Transcricoes" / f"{NUMERO}.docx").exists())
 
     def test_transcrever_arquivo_sem_numero(self):
         codigo, saida = rodar(["transcrever", str(self.wav), "--config", str(self.tmp.ini)])

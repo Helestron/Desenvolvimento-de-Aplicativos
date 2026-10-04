@@ -259,5 +259,94 @@ class TestCompartilhar(ServidorDeTeste):
         self.assertEqual(self.cfg.texto("compartilhar", "pasta_nuvem"), str(nuvem))
 
 
+class TestSigiloAoCompartilhar(ServidorDeTeste):
+    """A regra única do sigilo vale também pela API: o espelho refaz o índice
+    antes de copiar, e o processo que a pauta dá como sigiloso sai do acervo
+    antes de a ferramenta abrir - ou, se não puder sair, ela não abre."""
+
+    def setUp(self):
+        super().setUp()
+        from helestron.nucleo import cnj, sigilo
+        from testes.apoio_download import numero, pdf_bytes
+
+        self.addCleanup(sigilo.esquecer_pauta)
+        self.x = numero("0700777", tr="02")
+        self.y = numero("0700778", tr="02")
+        self.cnj = cnj
+        self.acervo = self.amb.dados / "Acervo"
+        self.lote = self.acervo / "Processos" / "Lote 1"
+        self.lote.mkdir(parents=True)
+        for n in (self.x, self.y):
+            (self.lote / f"{n.nome_arquivo}.pdf").write_bytes(pdf_bytes(2))
+        self.nuvem = self.amb.raiz / "OneDrive"
+        self.nuvem.mkdir()
+
+    def espelhar(self) -> dict:
+        tarefa = self.esperar_tarefa(self.cliente.dados(
+            "POST", "/api/compartilhar/nuvem/espelhar", {"destino": str(self.nuvem)})["tarefa"])
+        self.assertEqual(tarefa["estado"], "concluida", tarefa)
+        return tarefa
+
+    def indice_da_nuvem(self) -> str:
+        from helestron.compartilhar import nuvem
+
+        return (self.nuvem / nuvem.SUBPASTA / "INDICE.md").read_text(encoding="utf-8")
+
+    def test_espelhar_agora_refaz_o_indice(self):
+        """Antes, o "Espelhar agora" copiava o INDICE.md como estava: o processo
+        levado à mão para a pasta dos sigilosos sumia da nuvem, mas o índice
+        dela continuava com o número, o lote, as páginas e os links."""
+        self.espelhar()
+        self.assertIn(self.x.nome_arquivo, self.indice_da_nuvem())
+        sig = self.amb.dados / "Sigilosos" / "Lote 1"
+        sig.mkdir(parents=True)
+        (self.lote / f"{self.x.nome_arquivo}.pdf").replace(sig / f"{self.x.nome_arquivo}.pdf")
+        self.espelhar()
+        self.assertNotIn(self.x.nome_arquivo, self.indice_da_nuvem())
+        self.assertIn(self.y.nome_arquivo, self.indice_da_nuvem())
+        self.assertNotIn(self.x.nome_arquivo,
+                         (self.acervo / "INDICE.md").read_text(encoding="utf-8"))
+        self.assertEqual(list(self.nuvem.rglob(f"{self.x.nome_arquivo}*")), [])
+
+    def test_sigilo_da_pauta_sai_do_acervo_antes_de_abrir_a_ferramenta(self):
+        from helestron.download import motor
+        from testes.test_nucleo import pauta_com_sigiloso
+
+        pauta_com_sigiloso(self.amb.local / "pauta.sqlite3", self.x)
+        pdf = self.lote / f"{self.x.nome_arquivo}.pdf"
+        original = motor._mover
+
+        def preso(origem, destino, *a):
+            if Path(origem) == pdf:
+                raise PermissionError(13, "O arquivo está aberto em outro programa")
+            return original(origem, destino, *a)
+
+        with mock.patch.object(motor, "_mover", preso), \
+                mock.patch("helestron.compartilhar.claude.abrir_claude_code") as abrir, \
+                self.assertLogs("compartilhar", "ERROR"):
+            status, env = self.cliente.post("/api/compartilhar/claude-code")
+            self.assertEqual(status, 409, env)
+            self.assertEqual(env["erro"]["codigo"], "sigiloso_no_acervo")
+            self.assertIn(pdf.name, env["erro"]["mensagem"])
+            abrir.assert_not_called()
+            estado = self.cliente.dados("GET", "/api/compartilhar/estado")
+            self.assertEqual(estado["sigilosos_no_acervo"], [str(pdf)])
+            # o espelho também espera
+            status, env = self.cliente.post("/api/compartilhar/nuvem/espelhar",
+                                            {"destino": str(self.nuvem)})
+            self.assertEqual(status, 409, env)
+        # fechado o PDF, o próximo pedido o leva para a pasta dos sigilosos e segue
+        with mock.patch("helestron.compartilhar.claude.abrir_claude_code") as abrir:
+            dados = self.cliente.dados("POST", "/api/compartilhar/claude-code")
+        self.assertTrue(dados["abriu"])
+        abrir.assert_called_once()
+        self.assertFalse(pdf.exists())
+        self.assertTrue((self.amb.dados / "Sigilosos" / "Lote 1" / pdf.name).exists())
+        self.assertNotIn(self.x.nome_arquivo,
+                         (self.acervo / "INDICE.md").read_text(encoding="utf-8"))
+        self.assertEqual(self.cliente.dados("GET", "/api/compartilhar/estado")
+                         ["sigilosos_no_acervo"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

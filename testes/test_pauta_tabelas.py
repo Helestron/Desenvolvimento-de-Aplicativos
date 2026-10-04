@@ -603,6 +603,126 @@ class TestAudienciaEmDuasLinhas(unittest.TestCase):
                          [(n[0], "Conciliação", "Fulano x Banco")])
 
 
+class TestDuasAudienciasDoMesmoProcessoNoMesmoHorario(unittest.TestCase):
+    """Data, Hora e Processo mesclados porque são iguais, e embaixo o tipo e a
+    situação DA OUTRA audiência (a Conciliação cancelada e a Instrução
+    designada): são duas audiências, e a de baixo não vira observação da de cima."""
+
+    N = [ap.numero(f"070098{i}") for i in range(1, 3)]
+
+    def esperado(self):
+        n = self.N
+        return [(date(2026, 10, 5), "09:00", n[0], "Conciliação", "Cancelada", "Sala 1", ""),
+                (date(2026, 10, 5), "09:00", n[0], "Instrução e julgamento", "Designada",
+                 "Sala 2", ""),
+                (date(2026, 10, 5), "10:00", n[1], "Instrução e julgamento", "Designada",
+                 "Sala 1", "")]
+
+    @staticmethod
+    def campos(r):
+        return [(a.data, a.hora, a.processo, a.tipo, a.situacao, a.local, a.observacoes)
+                for a in r.audiencias]
+
+    def html(self, tipo2="Instrução", situacao2="Designada") -> str:
+        n = self.N
+        return ("<table><caption>Pauta de audiências</caption>"
+                "<tr><th>Data</th><th>Hora</th><th>Processo</th><th>Tipo</th><th>Situação</th>"
+                "<th>Local</th></tr>"
+                f"<tr><td rowspan=2>05/10/2026</td><td rowspan=2>09:00</td>"
+                f"<td rowspan=2>{n[0]}</td><td>Conciliação</td><td>Cancelada</td>"
+                "<td>Sala 1</td></tr>"
+                f"<tr><td>{tipo2}</td><td>{situacao2}</td><td>Sala 2</td></tr>"
+                f"<tr><td>05/10/2026</td><td>10:00</td><td>{n[1]}</td><td>Instrução</td>"
+                "<td>Designada</td><td>Sala 1</td></tr></table>")
+
+    def test_rowspan_no_html_e_no_portal(self):
+        for estrito in (True, False):
+            with self.subTest(estrito=estrito):
+                r = reconhecer_html(self.html(), "esaj", estrito=estrito)
+                self.assertEqual(self.campos(r), self.esperado())
+                self.assertEqual((r.ignoradas, r.avisos), (0, []))
+
+    def test_so_o_tipo_ou_so_a_situacao_de_baixo(self):
+        """Basta o tipo (das regras) ou a situação própria para ser outra audiência."""
+        n = self.N
+        for tipo2, situacao2, esperado in (
+                ("Instrução", "", ("Instrução e julgamento", "Designada")),
+                ("", "Designada", ("Outra", "Designada")),
+                ("Audiência de saneamento", "", ("Outra", "Designada")),
+                ("Saneamento", "Em pauta", ("Outra", "Designada"))):
+            with self.subTest(tipo=tipo2, situacao=situacao2):
+                r = reconhecer_html(self.html(tipo2, situacao2), "esaj")
+                self.assertEqual([(a.hora, a.processo, a.tipo, a.situacao, a.local)
+                                  for a in r.audiencias], [
+                    ("09:00", n[0], "Conciliação", "Cancelada", "Sala 1"),
+                    ("09:00", n[0], *esperado, "Sala 2"),
+                    ("10:00", n[1], "Instrução e julgamento", "Designada", "Sala 1")])
+                self.assertEqual(r.audiencias[0].observacoes, "")
+
+    def test_vindo_do_navegador(self):
+        n = self.N
+        dados = {"linhas": [
+            [{"texto": "Data"}, {"texto": "Hora"}, {"texto": "Processo"}, {"texto": "Tipo"},
+             {"texto": "Situação"}, {"texto": "Local"}],
+            [{"texto": "05/10/2026", "rowspan": 2}, {"texto": "09:00", "rowspan": 2},
+             {"texto": n[0], "rowspan": 2}, {"texto": "Conciliação"}, {"texto": "Cancelada"},
+             {"texto": "Sala 1"}],
+            [{"texto": "Instrução"}, {"texto": "Designada"}, {"texto": "Sala 2"}],
+            [{"texto": "05/10/2026"}, {"texto": "10:00"}, {"texto": n[1]},
+             {"texto": "Instrução"}, {"texto": "Designada"}, {"texto": "Sala 1"}]]}
+        r = Reconhecedor(R, "esaj", "TJAL", agora=datetime(2026, 10, 3, 9, 0)).reconhecer(
+            [Tabela.de_js(dados)])
+        self.assertEqual(self.campos(r), self.esperado())
+
+    def test_planilha_mesclada(self):
+        n = self.N
+        t = _tabela(["Data", "Hora", "Processo", "Tipo de audiência", "Situação", "Local"],
+                    [datetime(2026, 10, 5), "09:00", n[0], "Conciliação", "Cancelada", "Sala 1"],
+                    [Celula(texto="05/10/2026", valor=datetime(2026, 10, 5), herdada=True),
+                     Celula(texto="09:00", herdada=True), Celula(texto=n[0], herdada=True),
+                     "Instrução", "Designada", "Sala 2"],
+                    [datetime(2026, 10, 5), "10:00", n[1], "Instrução", "Designada", "Sala 1"])
+        r = _relatorio(t)
+        self.assertEqual(self.campos(r), self.esperado())
+
+    def test_sem_cabecalho(self):
+        n = self.N
+        html = ("<table>"
+                f"<tr><td rowspan=2>05/10/2026 09:00</td><td rowspan=2>{n[0]}</td>"
+                "<td>Audiência de Conciliação</td></tr>"
+                "<tr><td>Audiência de Instrução</td></tr>"
+                f"<tr><td>05/10/2026 10:00</td><td>{n[1]}</td><td>Audiência de Instrução</td>"
+                "</tr></table>")
+        for estrito in (True, False):
+            with self.subTest(estrito=estrito):
+                r = reconhecer_html(html, "esaj", estrito=estrito)
+                self.assertEqual([(a.hora, a.processo, a.tipo, a.observacoes)
+                                  for a in r.audiencias], [
+                    ("09:00", n[0], "Conciliação", ""),
+                    ("09:00", n[0], "Instrução e julgamento", ""),
+                    ("10:00", n[1], "Instrução e julgamento", "")])
+
+    def test_o_detalhe_embaixo_continua_detalhe(self):
+        """As partes, o selo e o processo apensado sob o Tipo e a Situação (célula larga
+        ou só na coluna Tipo) completam a audiência de cima, como antes."""
+        n = self.N
+        for detalhe in ("<td colspan=2>Partes: Fulano x Banco</td><td></td>",
+                        "<td>Fulano de Tal x Banco XYZ</td><td></td><td></td>",
+                        "<td>(Segredo de Justiça)</td><td></td><td></td>",
+                        f"<td colspan=3>Apensado ao processo {n[1]}</td>",
+                        "<td colspan=2>Testemunhas: Fulano e Beltrano</td><td></td>"):
+            with self.subTest(detalhe=detalhe):
+                html = ("<table><tr><th>Data</th><th>Hora</th><th>Processo</th><th>Tipo</th>"
+                        "<th>Situação</th><th>Local</th></tr>"
+                        f"<tr><td rowspan=2>05/10/2026</td><td rowspan=2>09:00</td>"
+                        f"<td rowspan=2>{n[0]}</td><td>Conciliação</td><td>Designada</td>"
+                        f"<td>Sala 1</td></tr><tr>{detalhe}</tr></table>")
+                r = reconhecer_html(html, "esaj")
+                self.assertEqual([(a.processo, a.tipo) for a in r.audiencias],
+                                 [(n[0], "Conciliação")])
+                self.assertEqual((r.ignoradas, r.avisos), (0, []))
+
+
 class TestDataDeCimaSoParaOutraAudiencia(unittest.TestCase):
     """A célula de data vazia só repete a de cima se a linha tem hora própria (ou,
     sem coluna de hora, o número na coluna Processo): a linha "Aguardando
@@ -719,6 +839,45 @@ class TestColunaNegativaNaPautaComTipoESituacao(unittest.TestCase):
 
     def test_intimacoes_continuam_fora(self):
         self.assertFalse(reconhecer_html(ap.html_intimacoes(), "esaj",
+                                         contexto="Pauta de Audiências").reconhecida)
+
+    def painel(self, titulo="<h2>Intimações</h2>") -> str:
+        """O painel de intimações com Tipo, Situação e a data e hora da expedição."""
+        n = self.N
+        return (f"{titulo}<table><tr><th>Data</th><th>Processo</th><th>Tipo</th>"
+                "<th>Situação</th><th>Prazo</th></tr>"
+                f"<tr><td>02/10/2026 14:33</td><td>{n[1]}</td><td>Intimação eletrônica</td>"
+                "<td>Pendente</td><td>15 dias</td></tr>"
+                f"<tr><td>01/10/2026 08:10</td><td>{n[1]}</td><td>Citação</td>"
+                "<td>Aberta</td><td>5 dias</td></tr></table>")
+
+    def test_painel_de_intimacoes_com_tipo_e_situacao_ao_lado_da_pauta(self):
+        """Na página da pauta, o painel "Intimações" (Data com hora, Processo, Tipo,
+        Situação, Prazo) não vira audiência "Outra": a legenda dele fala em intimação
+        e a coluna Tipo não traz tipos de audiência."""
+        n = self.N
+        pauta = ("<table><tr><th>Data</th><th>Hora</th><th>Processo</th><th>Tipo</th>"
+                 "<th>Situação</th></tr>"
+                 f"<tr><td>05/10/2026</td><td>09:00</td><td>{n[0]}</td><td>Conciliação</td>"
+                 "<td>Designada</td></tr></table>")
+        for titulo in ("<h2>Intimações</h2>", "<h2>Expedientes</h2>",
+                       "<p>Prazos em aberto</p>", ""):
+            with self.subTest(titulo=titulo):
+                html = ap.pagina("<h1>Pauta de audiências</h1>" + pauta + self.painel(titulo),
+                                 "Pauta de Audiências")
+                for estrito in (True, False):
+                    r = reconhecer_html(html, "esaj", estrito=estrito,
+                                        contexto="Pauta de Audiências - e-SAJ")
+                    self.assertEqual([(a.data, a.hora, a.processo, a.tipo)
+                                      for a in r.audiencias],
+                                     [(date(2026, 10, 5), "09:00", n[0], "Conciliação")])
+                    self.assertEqual(r.tabelas, 1)
+
+    def test_a_pauta_com_documento_e_legenda_de_intimacoes(self):
+        """A legenda da PRÓPRIA tabela falando em intimações desfaz a exceção."""
+        html = self.html("Documento").replace(
+            "<table class='resultTable'>", "<table><caption>Intimações expedidas</caption>")
+        self.assertFalse(reconhecer_html(html, "esaj",
                                          contexto="Pauta de Audiências").reconhecida)
 
 

@@ -3,10 +3,10 @@
 Com [pauta] monitorar ligado, uma thread do programa sincroniza as fontes
 que já têm rota (a URL que funcionou na última sincronização ou captura) a
 cada 'intervalo_horas' e logo ao abrir o programa, se a última passou do
-intervalo - no período de 'dias_atras' a 'dias_a_frente'.
+intervalo — no período de 'dias_atras' a 'dias_a_frente'.
 
 Ninguém está olhando: se o portal pedir código (e-mail, dois fatores), o
-monitor NÃO bloqueia esperando - o Contexto de fundo recusa a pergunta, o
+monitor NÃO bloqueia esperando — o Contexto de fundo recusa a pergunta, o
 portal desiste do login, e fica o aviso "Entre no portal para continuar o
 monitoramento" (evento 'aviso' e pendência na tela Início). A próxima
 sincronização feita pelo usuário (que responde ao código) limpa a pendência.
@@ -17,13 +17,14 @@ nenhum código chega a ser pedido. Essas fontes ficam de fora da
 sincronização automática (nada de tarefa que falha e de aviso "não deu
 certo" a cada ciclo); a pendência diz o que de fato acontece e o que fazer
 (MENSAGEM_PRESENCA), uma vez por execução do programa. Sem nenhuma fonte que
-entre sozinha, o monitor também não anuncia a "Próxima" sincronização
-(proxima = None, como ServicoPauta.monitoramento()): a tela Pauta mostraria
-uma conferência que não vai acontecer. O que cada fonte faz vem da API
-pública da pauta: ServicoPauta.fontes() ('exige_presenca', 'monitorada').
+entre sozinha, o monitor também não anuncia a próxima sincronização
+(proxima = None, como ServicoPauta.monitoramento()): o quadro do
+monitoramento, na tela Pauta, mostraria a data de uma conferência que não
+vai acontecer. O que cada fonte faz vem da API pública da pauta:
+ServicoPauta.fontes() ('exige_presenca', 'monitorada').
 
 Se o navegador dos portais estiver ocupado (um download em andamento), o
-monitor tenta de novo em ADIAR_S - não disputa o perfil do navegador.
+monitor tenta de novo em ADIAR_S — não disputa o perfil do navegador.
 """
 
 from __future__ import annotations
@@ -163,13 +164,13 @@ class MonitorPauta:
         automaticas, presenciais = self.separar_fontes(servico)
         if ultima is not None and agora - ultima < intervalo:
             devida = ultima + intervalo
-            # Sem fonte que entre sozinha, não há "próxima" a anunciar (quem
-            # entra por certificado e sincronizou à mão, por exemplo).
+            # Sem fonte que entre sozinha, não há próxima sincronização a
+            # anunciar (quem entra por certificado e sincronizou à mão, por exemplo).
             self.proxima = devida if automaticas else None
             return max(1.0, (devida - agora).total_seconds())
         if not automaticas:
-            # Nada entra sozinho: sem tarefa (que só falharia) e sem "próxima"
-            # sincronização; só a pendência. O monitor reavalia no intervalo.
+            # Nada entra sozinho: sem tarefa (que só falharia) e sem próxima
+            # sincronização anunciada; só a pendência. O monitor reavalia no intervalo.
             self.proxima = None
             if presenciais:
                 self._avisar_presenca(presenciais)
@@ -214,7 +215,7 @@ class MonitorPauta:
             return False
 
     def _avisar_presenca(self, presenciais: list[dict]) -> None:
-        """A pendência das fontes que exigem a pessoa - uma vez por execução
+        """A pendência das fontes que exigem a pessoa — uma vez por execução
         (a sincronização feita à mão a limpa, e ela não volta a cada ciclo)."""
         chaves = {str(f.get("id") or rotulo_fonte(f)) for f in presenciais}
         if not chaves or chaves <= self._avisadas_presenca:

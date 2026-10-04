@@ -3,10 +3,10 @@
     1. pywebview com o motor "edgechromium" (WebView2, presente no Windows 10
        atualizado e no 11): janela nativa, título "Helestron", ícone do H,
        diálogos nativos de arquivo e pasta;
-    2. reserva 1 - o Edge em modo aplicativo (msedge --app=URL, perfil
+    2. reserva 1 — o Edge em modo aplicativo (msedge --app=URL, perfil
        próprio em LOCAL\\edge-app): janela sem barra de endereço, quase
        igual; sem diálogos nativos (a página usa o envio de arquivo);
-    3. reserva 2 - o navegador padrão, numa aba. Nunca o Internet Explorer
+    3. reserva 2 — o navegador padrão, numa aba. Nunca o Internet Explorer
        nem o Edge antigo (EdgeHTML): eles não rodam a interface (ES2020), e
        a página ficaria em branco. Sem nenhuma das três, o programa explica
        numa caixa de mensagem como instalar o WebView2 (motivo_sem_janela).
@@ -38,7 +38,7 @@ SEM_SINAL_S segundos.
 
 O tamanho inicial cabe na área útil do monitor (sem a barra de tarefas):
 num notebook Full HD a 150 % (1280×672 DIP úteis), a janela padrão de
-1280×820 passaria da tela e esconderia o rodapé atrás da barra de tarefas -
+1280×820 passaria da tela e esconderia o rodapé atrás da barra de tarefas —
 lá ela abre maximizada.
 
 HELESTRON_JANELA=webview|edge|navegador|nenhuma força o modo (diagnóstico
@@ -105,7 +105,7 @@ def versao_suficiente(texto) -> bool:
 
 
 def versao_webview2() -> str | None:
-    """A versão ("pv") do WebView2 Runtime instalada - a maior das chaves que
+    """A versão ("pv") do WebView2 Runtime instalada — a maior das chaves que
     a pywebview lê -, ou None se ele não estiver instalado."""
     if not NO_WINDOWS:
         return None
@@ -185,7 +185,7 @@ def navegador_inadequado(progid: str | None, comando: str | None = None) -> bool
     return "iexplore.exe" in (comando or "").lower()
 
 
-def _navegador_padrao() -> tuple[str | None, str | None]:  # pragma: no cover - só no Windows
+def _navegador_padrao() -> tuple[str | None, str | None]:  # pragma: no cover — só no Windows
     """(ProgId escolhido pelo usuário, comando do http no sistema)."""
     import winreg
 
@@ -245,7 +245,7 @@ def motivo_sem_janela() -> str:
             return (inicio + "\n\nPeça ao suporte de informática que instale o “Microsoft Edge "
                     "WebView2 Runtime” (gratuito, da Microsoft; não precisa de administrador) e "
                     f"abra o {NOME} de novo: {URL_WEBVIEW2}\n\nOutra saída: instalar o Google "
-                    f"Chrome e defini-lo como navegador padrão - o {NOME} também abre nele.")
+                    f"Chrome e defini-lo como navegador padrão — o {NOME} também abre nele.")
     return (f"Não consegui abrir a janela do {NOME}: nem o WebView2, nem o Microsoft Edge, nem o "
             "navegador padrão responderam.")
 
@@ -265,7 +265,7 @@ def _escolher_modo() -> list[str]:
 
 # ============================================================== o tamanho
 def area_util_dip() -> tuple[float, float] | None:
-    """(largura, altura) da área útil do monitor onde a janela abre - o do
+    """(largura, altura) da área útil do monitor onde a janela abre — o do
     ponteiro do mouse, como faz o WinForms -, em pixels lógicos (DIP).
     None fora do Windows ou se a API falhar."""
     if not NO_WINDOWS:
@@ -277,7 +277,7 @@ def area_util_dip() -> tuple[float, float] | None:
         return None
 
 
-def _area_util_windows() -> tuple[float, float] | None:  # pragma: no cover - só no Windows
+def _area_util_windows() -> tuple[float, float] | None:  # pragma: no cover — só no Windows
     import ctypes
     from ctypes import wintypes
 
@@ -316,7 +316,7 @@ def tamanho_inicial(area: tuple[float, float] | None) -> dict:
 
     Cabe 1280×820 (com folga): abre assim. Não cabe (Full HD a 150 %,
     1366×768): abre MAXIMIZADA, com o tamanho "restaurado" e o mínimo
-    cortados para caber - o rodapé nunca fica atrás da barra de tarefas.
+    cortados para caber — o rodapé nunca fica atrás da barra de tarefas.
     """
     if not area:
         return {"width": LARGURA, "height": ALTURA, "min_size": MINIMO, "maximized": False}
@@ -375,7 +375,7 @@ class Janela:
     # A espera das reservas: até o Edge fechar e a página parar de dar sinal.
     def _esperar_pagina(self, processo: subprocess.Popen | None = None) -> bool:
         """Devolve True se a página chegou a dar sinal (ou o programa foi
-        encerrado pela API); False se ela nunca carregou - um navegador que
+        encerrado pela API); False se ela nunca carregou — um navegador que
         não roda a interface: quem chama tenta a próxima reserva ou explica."""
         inicio = time.monotonic()
         hub = self.app.hub
@@ -489,7 +489,7 @@ class JanelaWebview(Janela):
 
     def _vigiar_carregamento(self) -> None:
         """A vigia: a janela apareceu, mas a página não dá sinal (o WebView2
-        falhou ao iniciar e a pywebview deixou a janela vazia) - fecha a
+        falhou ao iniciar e a pywebview deixou a janela vazia) — fecha a
         janela vazia, e abrir() passa para o Edge."""
         limite = time.monotonic() + PRAZO_APARECER_S
         while not self._apareceu():
@@ -593,7 +593,7 @@ class JanelaWebview(Janela):
     def chamar_atencao(self, *_dados, **_mais) -> None:
         """Chegou uma pergunta (o código do e-SAJ, o do autenticador do
         eProc): a janela volta da barra de tarefas, vem para a frente e
-        pisca. O magistrado pode estar em outro programa - sem resposta no
+        pisca. O magistrado pode estar em outro programa — sem resposta no
         prazo, o lote inteiro termina em "login falhou". (Aceita e ignora o
         que o servidor mandar junto, como a própria pergunta.)"""
         if self._falhou or self.janela is None or getattr(self.app, "janela", None) is not self \
@@ -875,7 +875,7 @@ def _retangulo_por_titulo(titulo: str) -> tuple[int, int, int, int] | None:
 
 def permitir_primeiro_plano(pid: int) -> None:
     """A segunda abertura (que está em primeiro plano) deixa a primeira vir
-    à frente - o Windows não deixa um processo de fundo roubar o foco."""
+    à frente — o Windows não deixa um processo de fundo roubar o foco."""
     if not NO_WINDOWS:
         return
     try:

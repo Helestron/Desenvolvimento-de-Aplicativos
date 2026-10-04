@@ -20,7 +20,8 @@ aqui é o que vale para qualquer tribunal:
   pedia login e código por e-mail de novo;
 * caixas nativas (alert/confirm) dispensadas em TODAS as abas - na base só
   a primeira aba tinha esse cuidado, e um alert numa aba nova travava o lote;
-* diagnóstico (captura da tela + HTML) em Logs\\diagnostico;
+* diagnóstico (captura da tela + HTML) em Logs\\diagnostico - menos o da tela
+  de processo em segredo de justiça, que traz as partes;
 * o modo certificado (Web Signer): cópia do perfil do Chrome do usuário,
   onde mora a extensão que fala com o token, e janela sempre visível (o PIN
   é uma caixa nativa).
@@ -85,6 +86,14 @@ ARGS_PADRAO = ["--disable-blink-features=AutomationControlled",
                "--hide-crash-restore-bubble", "--disable-session-crashed-bubble"]
 FORA_DA_TELA = "--window-position=-32000,-32000"
 MANTER_DIAGNOSTICOS = 300     # arquivos; os mais antigos saem
+AVISO_SEM_DIAGNOSTICO = (
+    "A tela deste processo NÃO foi guardada em Logs\\diagnostico: o processo está em segredo "
+    "de justiça, e a página traz os dados das partes (o diagnóstico é o que se envia ao "
+    "suporte). Para o suporte, use o diagnóstico de um processo público com o mesmo problema.")
+# Para as mensagens de erro: onde ver a tela do problema
+DICA_DIAGNOSTICO = "veja Logs\\diagnostico"
+DICA_SEM_DIAGNOSTICO = ("a tela, de processo em segredo de justiça, não foi guardada nos "
+                        "registros")
 
 
 # ------------------------------------------------------------------ texto
@@ -394,6 +403,9 @@ class Navegador:
         self.pasta_diagnostico = Path(pasta_diagnostico) if pasta_diagnostico else None
         self.certificado = certificado
         self.salvar_diagnostico = salvar_diagnostico
+        # A tela em curso é de processo em segredo de justiça (o motor e o
+        # portal avisam): o diagnóstico dela não é guardado.
+        self.sigiloso_em_curso = False
         # Caminho de um navegador Chromium qualquer (Chrome portátil, por
         # exemplo): usado no lugar do Chrome e do Edge.
         self.executavel = Path(executavel) if executavel else None
@@ -697,10 +709,15 @@ class Navegador:
     def diagnosticar(self, rotulo: str, pagina=None) -> Path | None:
         """Salva captura e HTML da tela, para descobrir o que mudou no portal.
 
-        Fica em Logs\\diagnostico, FORA do Acervo: o HTML pode conter dados
-        de processo sigiloso e não deve ir para a pasta compartilhada.
+        Fica em Logs\\diagnostico, FORA do Acervo. A tela de processo em
+        segredo de justiça (sigiloso_em_curso) não é guardada: a página traz
+        os nomes das partes, e o diagnóstico é o que o manual manda enviar ao
+        suporte. O registro diz por quê.
         """
         if not self.salvar_diagnostico or self.pasta_diagnostico is None:
+            return None
+        if getattr(self, "sigiloso_em_curso", False):
+            log.warning(AVISO_SEM_DIAGNOSTICO)
             return None
         try:
             pagina = pagina or self._pagina
@@ -729,6 +746,17 @@ class Navegador:
         _podar(destino)
         log.warning("Diagnóstico salvo em %s", destino / f"{marca}.png")
         return destino / f"{marca}.png"
+
+
+def diagnosticar_processo(nav, rotulo: str, sigiloso: bool) -> Path | None:
+    """O diagnóstico da tela de um processo: o de processo em segredo de
+    justiça não é guardado (a página traz as partes), e o registro diz por
+    quê. Devolve onde ficou a captura (None: não guardada)."""
+    if sigiloso or getattr(nav, "sigiloso_em_curso", False):
+        if getattr(nav, "salvar_diagnostico", True):
+            log.warning(AVISO_SEM_DIAGNOSTICO)
+        return None
+    return nav.diagnosticar(rotulo)
 
 
 def _podar(pasta: Path, manter: int = MANTER_DIAGNOSTICOS) -> None:

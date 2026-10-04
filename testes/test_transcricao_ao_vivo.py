@@ -267,6 +267,22 @@ class TestSessaoAoVivo(BaseSessao):
         s.definir_falante("  Perito(a) ")
         self.assertEqual(s.falante, "Perito(a)")
 
+    def test_rotulo_digitado_nao_vai_para_o_registro(self):
+        """O rótulo do falante é texto livre (até 40 caracteres), e é comum
+        digitar o nome de quem depõe: o registro (Logs, em INFO) só leva a
+        posição F1-F8 - nunca o nome, ainda mais em audiência sigilosa."""
+        s, _ = self.sessao(falante="", sigiloso=True,
+                           participantes={"F1": "Juiz(a)", "F3": "Testemunha"})
+        with self.assertLogs("transcricao", "DEBUG") as registro:
+            s.definir_falante("Testemunha Maria da Silva")
+            s.definir_falante("Testemunha")
+            s.definir_falante("")
+        texto = "\n".join(registro.output)
+        self.assertNotIn("Maria", texto)
+        self.assertIn("falante: rótulo digitado", texto)
+        self.assertIn("falante: F3", texto)
+        self.assertIn("falante: (sem rótulo)", texto)
+
 
 class TestRevisaoAoEncerrar(BaseSessao):
     def test_refinar_substitui_e_guarda_a_versao_ao_vivo(self):

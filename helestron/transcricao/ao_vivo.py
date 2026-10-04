@@ -449,7 +449,11 @@ class SessaoAoVivo:
                 for trecho in self._seg.cortar_agora():
                     self._enfileirar(trecho)
             self.falante = rotulo
-        log.info("falante: %s", rotulo or "(sem rótulo)")
+        # Só a posição (F1-F8), nunca o rótulo: é texto livre, e é comum
+        # digitar nele o nome de quem depõe - que não vai para os registros.
+        posicao = next((chave for chave, valor in self.meta.participantes.items()
+                        if valor == rotulo), "") if rotulo else ""
+        log.info("falante: %s", posicao or ("rótulo digitado" if rotulo else "(sem rótulo)"))
 
     def pausar(self) -> None:
         with self._trava:
