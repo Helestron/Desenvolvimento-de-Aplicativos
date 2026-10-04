@@ -1,0 +1,24 @@
+# Helestron - dependências do programa no Windows (fonte do requisitos-windows.txt).
+#
+# O requisitos-windows.txt sai daqui, com versões e hashes travados para
+# Windows 64 bits / Python 3.12 (o Python que vai dentro do instalador):
+#
+#   uv pip compile construir/requisitos-windows.in --python-platform x86_64-pc-windows-msvc
+#      --python-version 3.12 --generate-hashes --emit-index-url -o construir/requisitos-windows.txt
+#
+# A construção (construir.py) baixa exatamente estes arquivos, confere o
+# SHA-256 de cada um e recusa qualquer outro.
+
+# O motor: transcrição, documentos, download nos portais, rede.
+-r requisitos-base.in
+# Separação automática de falantes (sherpa-onnx, sem torch).
+-r requisitos-falantes-base.in
+
+# A janela: pywebview (WebView2 pelo .NET do Windows, via pythonnet) e as
+# dependências que ela declara para o Windows. O proxy_tools só existe em
+# código-fonte (puro Python): a construção gera a roda localmente.
+pywebview>=6,<7
+pythonnet
+bottle
+proxy_tools
+typing_extensions

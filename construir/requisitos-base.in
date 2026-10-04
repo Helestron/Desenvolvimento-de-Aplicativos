@@ -1,0 +1,35 @@
+# Helestron - dependências diretas do motor (download, transcrição,
+# documentos, pauta). Entram no requisitos-windows.in (o instalador) e no
+# requisitos-teste.in (os testes no Linux); nenhum dos dois é editado à mão:
+# veja o comando de cada um no cabeçalho do respectivo .txt.
+
+# Transcrição (traz ctranslate2, onnxruntime, av/PyAV e tokenizers)
+faster-whisper==1.2.1
+# O PyAV 19 removeu o parâmetro metadata_errors que o faster-whisper 1.2.1
+# usa ao abrir arquivo de áudio (TypeError em decode_audio). Testado: 15 a 18 ok.
+av<19
+huggingface-hub
+sounddevice
+soundfile
+numpy
+
+# Documentos e planilhas (relação de processos, pauta exportada em Excel)
+python-docx
+pymupdf
+pypdf
+openpyxl
+xlrd
+
+# Download nos portais e extração da pauta
+playwright
+
+# Imagens e rede
+pillow
+requests
+truststore
+
+# DLLs do Visual C++ dentro do próprio Python (onnxruntime e ctranslate2
+# precisam delas; sem isto, um Windows sem o "Visual C++ Redistributable"
+# daria "DLL load failed" - e instalá-lo pediria administrador). Só existe
+# para o Windows.
+msvc-runtime; sys_platform == "win32"

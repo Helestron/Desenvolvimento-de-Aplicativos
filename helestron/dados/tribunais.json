@@ -1,0 +1,337 @@
+{
+ "_leia": "Catálogo de tribunais do Helestron. A chave é o 'J.TR' do número CNJ (8.02 = TJAL). sistema: esaj, eproc ou outro. 'alternativo' é o segundo sistema do tribunal (em transição), tentado quando o processo não é achado no primeiro. Um endereço pode ser uma lista: o programa tenta um por um. Se um portal mudar, corrija aqui - ou, para a correção sobreviver às atualizações, no enderecos-locais.json da pasta de dados (%LOCALAPPDATA%\\Helestron) - e reabra o programa.",
+ "versao": 2,
+ "tribunais": [
+  {
+   "chave": "8.01",
+   "sigla": "TJAC",
+   "nome": "Tribunal de Justiça — Acre",
+   "sistema": "esaj",
+   "urls": {
+    "base": "https://esaj.tjac.jus.br"
+   },
+   "alternativo": {
+    "sistema": "eproc",
+    "urls": {
+     "1g": [
+      "https://eproc1g.tjac.jus.br/eproc/",
+      "https://eproc.tjac.jus.br/eproc/"
+     ],
+     "2g": [
+      "https://eproc2g.tjac.jus.br/eproc/"
+     ]
+    }
+   },
+   "observacao": "O TJAC está implantando o eProc: o programa procura primeiro no e-SAJ e, não achando, no eProc (endereço a confirmar)."
+  },
+  {
+   "chave": "8.02",
+   "sigla": "TJAL",
+   "nome": "Tribunal de Justiça — Alagoas",
+   "sistema": "esaj",
+   "urls": {
+    "base": "https://www2.tjal.jus.br"
+   },
+   "alternativo": {
+    "sistema": "eproc",
+    "urls": {
+     "1g": [
+      "https://eproc1g.tjal.jus.br/eproc/",
+      "https://eproc.tjal.jus.br/eproc/"
+     ],
+     "2g": [
+      "https://eproc2g.tjal.jus.br/eproc/"
+     ]
+    }
+   },
+   "observacao": "O TJAL implantou o eProc em 12/12/2025 e o amplia por comarca: o programa procura primeiro no e-SAJ e, não achando, no eProc. O endereço do eProc do TJAL ainda deve ser confirmado - se necessário, corrija-o no enderecos-locais.json da pasta de dados (%LOCALAPPDATA%\\Helestron)."
+  },
+  {
+   "chave": "8.03",
+   "sigla": "TJAP",
+   "nome": "Tribunal de Justiça — Amapá",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (em geral PJe ou Projudi)."
+  },
+  {
+   "chave": "8.04",
+   "sigla": "TJAM",
+   "nome": "Tribunal de Justiça — Amazonas",
+   "sistema": "esaj",
+   "urls": {
+    "base": "https://consultasaj.tjam.jus.br"
+   }
+  },
+  {
+   "chave": "8.05",
+   "sigla": "TJBA",
+   "nome": "Tribunal de Justiça — Bahia",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (em geral PJe ou Projudi)."
+  },
+  {
+   "chave": "8.06",
+   "sigla": "TJCE",
+   "nome": "Tribunal de Justiça — Ceará",
+   "sistema": "esaj",
+   "urls": {
+    "base": "https://esaj.tjce.jus.br"
+   }
+  },
+  {
+   "chave": "8.07",
+   "sigla": "TJDFT",
+   "nome": "Tribunal de Justiça — Distrito Federal e Territórios",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (em geral PJe ou Projudi)."
+  },
+  {
+   "chave": "8.08",
+   "sigla": "TJES",
+   "nome": "Tribunal de Justiça — Espírito Santo",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (em geral PJe ou Projudi)."
+  },
+  {
+   "chave": "8.09",
+   "sigla": "TJGO",
+   "nome": "Tribunal de Justiça — Goiás",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (em geral PJe ou Projudi)."
+  },
+  {
+   "chave": "8.10",
+   "sigla": "TJMA",
+   "nome": "Tribunal de Justiça — Maranhão",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (em geral PJe ou Projudi)."
+  },
+  {
+   "chave": "8.11",
+   "sigla": "TJMT",
+   "nome": "Tribunal de Justiça — Mato Grosso",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (em geral PJe ou Projudi)."
+  },
+  {
+   "chave": "8.12",
+   "sigla": "TJMS",
+   "nome": "Tribunal de Justiça — Mato Grosso do Sul",
+   "sistema": "esaj",
+   "urls": {
+    "base": "https://esaj.tjms.jus.br"
+   }
+  },
+  {
+   "chave": "8.13",
+   "sigla": "TJMG",
+   "nome": "Tribunal de Justiça — Minas Gerais",
+   "sistema": "eproc",
+   "urls": {
+    "1g": "https://eproc1g.tjmg.jus.br/eproc/",
+    "2g": "https://eproc2g.tjmg.jus.br/eproc/"
+   }
+  },
+  {
+   "chave": "8.14",
+   "sigla": "TJPA",
+   "nome": "Tribunal de Justiça — Pará",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (em geral PJe ou Projudi)."
+  },
+  {
+   "chave": "8.15",
+   "sigla": "TJPB",
+   "nome": "Tribunal de Justiça — Paraíba",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (em geral PJe ou Projudi)."
+  },
+  {
+   "chave": "8.16",
+   "sigla": "TJPR",
+   "nome": "Tribunal de Justiça — Paraná",
+   "sistema": "eproc",
+   "urls": {
+    "1g": "https://eproc1g.tjpr.jus.br/eproc/",
+    "2g": "https://eproc2g.tjpr.jus.br/eproc/"
+   },
+   "observacao": "O TJPR está implantando o eProc; processos do Projudi não são suportados."
+  },
+  {
+   "chave": "8.17",
+   "sigla": "TJPE",
+   "nome": "Tribunal de Justiça — Pernambuco",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (em geral PJe ou Projudi)."
+  },
+  {
+   "chave": "8.18",
+   "sigla": "TJPI",
+   "nome": "Tribunal de Justiça — Piauí",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (em geral PJe ou Projudi)."
+  },
+  {
+   "chave": "8.19",
+   "sigla": "TJRJ",
+   "nome": "Tribunal de Justiça — Rio de Janeiro",
+   "sistema": "eproc",
+   "urls": {
+    "1g": "https://eproc1g.tjrj.jus.br/eproc/",
+    "2g": "https://eproc2g.tjrj.jus.br/eproc/"
+   },
+   "observacao": "O TJRJ está migrando para o eProc; processos ainda no PJe não são suportados."
+  },
+  {
+   "chave": "8.20",
+   "sigla": "TJRN",
+   "nome": "Tribunal de Justiça — Rio Grande do Norte",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (em geral PJe ou Projudi)."
+  },
+  {
+   "chave": "8.21",
+   "sigla": "TJRS",
+   "nome": "Tribunal de Justiça — Rio Grande do Sul",
+   "sistema": "eproc",
+   "urls": {
+    "1g": "https://eproc1g.tjrs.jus.br/eproc/",
+    "2g": "https://eproc2g.tjrs.jus.br/eproc/"
+   }
+  },
+  {
+   "chave": "8.22",
+   "sigla": "TJRO",
+   "nome": "Tribunal de Justiça — Rondônia",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (em geral PJe ou Projudi)."
+  },
+  {
+   "chave": "8.23",
+   "sigla": "TJRR",
+   "nome": "Tribunal de Justiça — Roraima",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (em geral PJe ou Projudi)."
+  },
+  {
+   "chave": "8.24",
+   "sigla": "TJSC",
+   "nome": "Tribunal de Justiça — Santa Catarina",
+   "sistema": "eproc",
+   "urls": {
+    "1g": "https://eproc1g.tjsc.jus.br/eproc/",
+    "2g": "https://eproc2g.tjsc.jus.br/eproc/"
+   }
+  },
+  {
+   "chave": "8.25",
+   "sigla": "TJSE",
+   "nome": "Tribunal de Justiça — Sergipe",
+   "sistema": "eproc",
+   "urls": {
+    "1g": "https://eproc1g.tjse.jus.br/eproc/",
+    "2g": "https://eproc2g.tjse.jus.br/eproc/"
+   }
+  },
+  {
+   "chave": "8.26",
+   "sigla": "TJSP",
+   "nome": "Tribunal de Justiça — São Paulo",
+   "sistema": "esaj",
+   "urls": {
+    "base": "https://esaj.tjsp.jus.br"
+   },
+   "alternativo": {
+    "sistema": "eproc",
+    "urls": {
+     "1g": "https://eproc1g.tjsp.jus.br/eproc/",
+     "2g": "https://eproc2g.tjsp.jus.br/eproc/"
+    }
+   },
+   "observacao": "O TJSP também usa o eProc: o programa procura primeiro no e-SAJ e, não achando, no eProc."
+  },
+  {
+   "chave": "8.27",
+   "sigla": "TJTO",
+   "nome": "Tribunal de Justiça — Tocantins",
+   "sistema": "eproc",
+   "urls": {
+    "1g": "https://eproc1.tjto.jus.br/eprocV2_prod_1grau/",
+    "2g": "https://eproc2.tjto.jus.br/eprocV2_prod_2grau/"
+   }
+  },
+  {
+   "chave": "4.04",
+   "sigla": "TRF4",
+   "nome": "Tribunal Regional Federal da 4ª Região (RS, SC e PR)",
+   "sistema": "eproc",
+   "urls": {
+    "1g_70": "https://eproc.jfpr.jus.br/eprocV2/",
+    "1g_71": "https://eproc.jfrs.jus.br/eprocV2/",
+    "1g_72": "https://eproc.jfsc.jus.br/eprocV2/",
+    "2g": "https://eproc.trf4.jus.br/eproc2trf4/"
+   },
+   "observacao": "Na 1ª instância, a seção judiciária sai dos dois primeiros dígitos da origem: 70 = Paraná, 71 = Rio Grande do Sul, 72 = Santa Catarina."
+  },
+  {
+   "chave": "4.02",
+   "sigla": "TRF2",
+   "nome": "Tribunal Regional Federal da 2ª Região (RJ e ES)",
+   "sistema": "eproc",
+   "urls": {
+    "1g_50": "https://eproc.jfes.jus.br/eproc/",
+    "1g_51": "https://eproc.jfrj.jus.br/eproc/",
+    "2g": "https://eproc.trf2.jus.br/eproc/"
+   },
+   "observacao": "Na 1ª instância, a seção judiciária sai dos dois primeiros dígitos da origem: 50 = Espírito Santo, 51 = Rio de Janeiro."
+  },
+  {
+   "chave": "4.01",
+   "sigla": "TRF1",
+   "nome": "Tribunal Regional Federal da 1ª Região",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (PJe)."
+  },
+  {
+   "chave": "4.03",
+   "sigla": "TRF3",
+   "nome": "Tribunal Regional Federal da 3ª Região",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (PJe)."
+  },
+  {
+   "chave": "4.05",
+   "sigla": "TRF5",
+   "nome": "Tribunal Regional Federal da 5ª Região",
+   "sistema": "outro",
+   "urls": {},
+   "observacao": "Sistema ainda não suportado pelo programa (PJe)."
+  },
+  {
+   "chave": "4.06",
+   "sigla": "TRF6",
+   "nome": "Tribunal Regional Federal da 6ª Região",
+   "sistema": "eproc",
+   "urls": {
+    "1g": "https://eproc1g.trf6.jus.br/eproc/",
+    "2g": "https://eproc2g.trf6.jus.br/eproc/"
+   }
+  }
+ ]
+}

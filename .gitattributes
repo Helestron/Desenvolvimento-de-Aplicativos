@@ -1,0 +1,44 @@
+# ============================================================================
+#  Fim de linha e arquivos binários do Helestron
+#
+#  Texto em LF no repositório; o que o Windows lê com regras próprias vai com
+#  CRLF no checkout de qualquer sistema. Os binários (ícone, imagens do
+#  instalador, fonte) nunca passam por conversão: um BMP ou ICO com o fim de
+#  linha "corrigido" sai corrompido no instalador.
+# ============================================================================
+*               text=auto eol=lf
+
+# Windows: scripts do cmd e do PowerShell e o recurso do lançador
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+*.ps1           text eol=crlf
+*.psm1          text eol=crlf
+
+# Binários
+*.png           binary
+*.ico           binary
+*.bmp           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.webp          binary
+*.woff          binary
+*.woff2         binary
+*.ttf           binary
+*.pdf           binary
+*.docx          binary
+*.xlsx          binary
+*.xls           binary
+*.ods           binary
+*.zip           binary
+*.gz            binary
+*.bz2           binary
+*.whl           binary
+*.exe           binary
+*.dll           binary
+*.onnx          binary
+*.bin           binary
+*.wav           binary
+*.flac          binary
+*.mp3           binary
+*.sqlite3       binary

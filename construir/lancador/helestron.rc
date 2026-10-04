@@ -1,0 +1,48 @@
+// Recursos do Helestron.exe: ícone, informações de versão (Propriedades >
+// Detalhes, Gerenciador de Tarefas) e o manifesto.
+//
+// Modelo: construir.py troca @VERSAO@ (1.0.0) e @VERSAO_VIRGULAS@ (1,0,0,0)
+// e compila com o windres do MinGW, na pasta onde estão o helestron.ico e o
+// helestron.manifest já preparados.
+
+#pragma code_page(65001)
+
+#include <winver.h>
+
+#define RT_MANIFEST_HELESTRON 24
+
+// O primeiro ícone (o de menor número) é o que o Explorer mostra.
+1 ICON "helestron.ico"
+
+1 RT_MANIFEST_HELESTRON "helestron.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     @VERSAO_VIRGULAS@
+PRODUCTVERSION  @VERSAO_VIRGULAS@
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // 0416 = português (Brasil); 04B0 = Unicode
+        BLOCK "041604B0"
+        BEGIN
+            VALUE "CompanyName",      "Helestron"
+            VALUE "FileDescription",  "Helestron"
+            VALUE "FileVersion",      "@VERSAO@"
+            VALUE "InternalName",     "Helestron"
+            VALUE "LegalCopyright",   "© @ANO@ Helestron"
+            VALUE "OriginalFilename", "Helestron.exe"
+            VALUE "ProductName",      "Helestron"
+            VALUE "ProductVersion",   "@VERSAO@"
+            VALUE "Comments",         "Processos do e-SAJ e do eProc, transcrição de audiências, pauta de audiências e acervo para a IA."
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0416, 1200
+    END
+END

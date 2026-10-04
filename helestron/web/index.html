@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Helestron — download de processos, transcrição de audiências, pauta de audiências e compartilhamento com IA.">
+  <title>Helestron</title>
+  <link rel="icon" type="image/png" href="img/marca/helestron-64.png">
+  <link rel="preload" href="fontes/InterVariable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="css/helestron.css">
+</head>
+<body>
+  <div class="fundo" aria-hidden="true">
+    <div class="mancha mancha-1"></div>
+    <div class="mancha mancha-2"></div>
+    <div class="mancha mancha-3"></div>
+  </div>
+
+  <div class="aplicativo">
+    <aside class="barra-lateral" aria-label="Barra lateral">
+      <a class="marca" href="#/inicio" aria-label="Helestron — Início">
+        <img class="marca-logo" src="img/marca/helestron.svg" alt="" width="38" height="38">
+        <span class="marca-nome">Helestron</span>
+      </a>
+      <nav class="navegacao" id="navegacao" aria-label="Seções"></nav>
+      <div class="barra-rodape">
+        <div class="tarefas-lateral" id="tarefas-lateral" aria-label="Tarefas em andamento" role="region"></div>
+        <div class="versao">
+          <span id="versao">Helestron</span>
+          <span class="conexao" id="conexao" title="Ligado ao Helestron">ligado</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="conteudo" id="conteudo" tabindex="-1">
+      <div class="faixa-conexao" id="faixa-conexao" role="status" hidden>
+        <span class="girando" aria-hidden="true"></span>
+        <span>Sem conexão com o Helestron. Tentando de novo…</span>
+      </div>
+      <div id="pagina"></div>
+    </main>
+  </div>
+
+  <div class="avisos" id="avisos" aria-live="polite"></div>
+
+  <noscript>
+    <p style="padding:40px;font:16px system-ui">O Helestron precisa do JavaScript ligado para funcionar.</p>
+  </noscript>
+
+  <script src="js/icones.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/demo.js"></script>
+  <script src="js/componentes.js"></script>
+  <script src="js/secao-inicio.js"></script>
+  <script src="js/secao-processos.js"></script>
+  <script src="js/secao-audiencias.js"></script>
+  <script src="js/secao-pauta.js"></script>
+  <script src="js/secao-compartilhar.js"></script>
+  <script src="js/secao-ajustes.js"></script>
+  <script src="js/secao-ajuda.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

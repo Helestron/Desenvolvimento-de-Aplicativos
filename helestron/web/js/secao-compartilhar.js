@@ -1,0 +1,380 @@
+/* Helestron — Compartilhar com IA (especificação 7.2).
+ *
+ * O acervo é uma pasta comum do computador; daqui ele é preparado (texto dos
+ * autos, índice, regras de trabalho) e aberto no Claude Code, no Cowork, no
+ * ChatGPT Work ou no Codex; o conector do acervo é registrado no Claude
+ * Desktop; o pacote para anexar e o espelho na nuvem também saem daqui.
+ * Os processos sigilosos nunca entram em nada disso. O que deles ficou no
+ * acervo (arquivo aberto em outro programa) aparece no alto da tela, com a
+ * frase do servidor: os autos travam o compartilhamento; o resto só avisa.
+ * O que o preparo fez e quer contar (arquivo levado para a pasta dos
+ * sigilosos, número tirado do relatório de um lote, texto que não pôde ser
+ * extraído) fica numa faixa abaixo dele, até ser fechada.
+ */
+(function () {
+  "use strict";
+
+  const H = window.Helestron;
+  const { el, icone, botao, cartao, faixa, trocar, folha, aviso, blocoIcone } = H.ui;
+  const { fmt, api } = H;
+
+  /**
+   * A resposta de um destino (Claude Code, Cowork, ChatGPT Work...).
+   * 'copia': {texto, copiado, oQue} quando o clique pôs um texto na área de
+   * transferência. Se a cópia não deu certo, a folha mostra o texto para
+   * copiar à mão - a mensagem manda colar, e colaria outra coisa. Se o
+   * programa não conseguiu abrir a página oficial (pagina_aberta: false),
+   * a folha oferece o botão para abri-la.
+   */
+  function mostrarResposta(titulo, r, copia) {
+    const mensagem = (r && r.mensagem) || "Pronto.";
+    const semCopia = copia && copia.texto && !copia.copiado;
+    const pagina = r && r.url && r.pagina_aberta === false ? r.url : "";
+    if (semCopia || pagina) {
+      const conteudo = [];
+      if (semCopia) {
+        const caixa = el("textarea", { classe: "campo texto-para-copiar", id: "texto-para-copiar", rows: copia.texto.length > 120 ? "6" : "2", readonly: true, spellcheck: "false", aria: { label: copia.oQue } });
+        caixa.value = copia.texto;
+        caixa.addEventListener("focus", () => caixa.select());
+        conteudo.push(
+          el("p", { classe: "ajuda-campo erro", texto: `Não consegui pôr ${copia.oQue} na área de transferência. Copie daqui (Ctrl+C) antes de colar.` }),
+          caixa,
+          el("div", { classe: "grupo-botoes" }, botao({ rotulo: "Copiar", icone: "copiar", tamanho: "pequeno", acao: () => H.ui.copiar(copia.texto, "Copiado") })));
+      }
+      if (pagina) {
+        // Se o navegador falhar de novo, o "Abrir a página" vira folha de erro
+        // com o endereço; "Copiar o endereço" funciona sem navegador nenhum.
+        conteudo.push(el("div", { classe: "grupo-botoes" },
+          botao({ rotulo: "Abrir a página", icone: "externo", tipo: "tonal", tamanho: "pequeno", acao: () => api.abrir("url", pagina) }),
+          botao({ rotulo: "Copiar o endereço", icone: "copiar", tamanho: "pequeno", acao: () => H.ui.copiar(pagina, "Endereço copiado") })));
+      }
+      return folha.informar({ titulo, mensagem, icone: "brilho", conteudo });
+    }
+    if (mensagem.length > 110) {
+      return folha.informar({ titulo, mensagem, icone: "brilho" });
+    }
+    aviso({ titulo, mensagem, tipo: "sucesso" });
+    return null;
+  }
+
+  function estadoLinha(texto, cor) {
+    return el("span", { classe: "estado-linha" }, el("span", { classe: "ponto ponto-" + cor }), texto);
+  }
+
+  const lista = (v) => (Array.isArray(v) ? v.filter(Boolean).map(String) : []);
+  const pastaDe = (caminho) => String(caminho || "").replace(/[\\/][^\\/]*$/, "");
+  const NUMERO_CNJ = /\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/;
+
+  /** Quantos processos (pelo número no nome do arquivo) a lista tem. */
+  function quantosProcessos(arquivos) {
+    const numeros = new Set(arquivos.map((a) => (String(a).split(/[\\/]/).pop().match(NUMERO_CNJ) || [a])[0]));
+    return numeros.size;
+  }
+
+  /**
+   * A frase de reserva, se o servidor não mandar a dele ('sigilosos_mensagem',
+   * 'sigilosos_avisos_mensagem' — as mesmas das pendências do Início).
+   */
+  function fraseDeReserva(arquivos, trava, acervo) {
+    const relativo = (c) => (acervo && c.startsWith(acervo) ? c.slice(acervo.length).replace(/^[\\/]+/, "") : c);
+    const um = arquivos.length === 1;
+    let nomes = arquivos.slice(0, 5).map(relativo).join("; ");
+    if (arquivos.length > 5) nomes += `; e mais ${arquivos.length - 5}`;
+    if (trava) {
+      return (um ? `Os autos de um processo em segredo de justiça não puderam sair do acervo: ${nomes}. Feche o arquivo e tente de novo, ou mova-o para a pasta dos sigilosos. Até ele sair`
+        : `${arquivos.length} arquivos dos autos de processos em segredo de justiça não puderam sair do acervo: ${nomes}. Feche os arquivos e tente de novo, ou mova-os para a pasta dos sigilosos. Até eles saírem`)
+        + ", nada do acervo é compartilhado: os botões desta tela, o pacote e o espelho na nuvem ficam suspensos.";
+    }
+    return (um ? `Um arquivo de processo em segredo de justiça ficou no acervo: ${nomes}. Feche-o e prepare o acervo para a IA de novo, ou mova-o você mesmo para a pasta dos sigilosos.`
+      : `${arquivos.length} arquivos de processos em segredo de justiça ficaram no acervo: ${nomes}. Feche-os e prepare o acervo para a IA de novo, ou mova-os você mesmo para a pasta dos sigilosos.`)
+      + ` O compartilhamento continua: o índice, o conector, o pacote e a nuvem já ${um ? "o deixam" : "os deixam"} de fora, mas o Claude Code, o Cowork e o ChatGPT, que abrem a pasta inteira, ainda podem ${um ? "vê-lo" : "vê-los"}.`;
+  }
+
+  H.secoes = H.secoes || {};
+  H.secoes.compartilhar = {
+    async montar(ctx) {
+      const raiz = ctx.raiz;
+      const pastas = (H.loja.estado && H.loja.estado.pastas) || {};
+      // O pedido inicial fica pronto desde já: "Abrir no Cowork" o copia na
+      // hora do clique, antes de o Claude Desktop tomar o foco da janela.
+      let pedidoInicial = "";
+      const lerPedido = api.compartilhar.prompt().then((r) => { pedidoInicial = (r && r.texto) || ""; return pedidoInicial; }).catch(() => "");
+
+      // O preparo começa tentando de novo levar para a pasta dos sigilosos o
+      // que ficou preso; se os autos continuarem lá, a recusa (409) vira a
+      // folha de erro, e as faixas do alto se atualizam.
+      async function preparar() {
+        try {
+          const r = await api.compartilhar.preparar();
+          acompanharPreparo(r.tarefa);
+        } catch (erro) {
+          await carregar();
+          throw erro;
+        }
+      }
+      const botaoPreparar = botao({ rotulo: "Preparar acervo para a IA", icone: "brilho", tipo: "primario", acao: preparar });
+      botaoPreparar.id = "botao-preparar";
+      const copiarPedido = botao({ rotulo: "Copiar pedido inicial", icone: "copiar", acao: async () => {
+        const texto = pedidoInicial || await lerPedido;
+        await H.ui.copiar(texto || "", "Pedido inicial copiado");
+      } });
+      const cab = H.ui.cabecalho({
+        titulo: "Compartilhar com IA",
+        subtitulo: "O acervo é uma pasta do seu computador: a IA lê direto dela, com as regras de trabalho já escritas.",
+        acoes: [copiarPedido, botaoPreparar],
+      });
+
+      const acervo = cartao({ classe: "acervo" }, H.ui.esqueleto(1));
+      const sigilo = faixa({
+        tipo: "sigilo", icone: "cadeado", titulo: "Sigilo e responsabilidade",
+        texto: "Processos em segredo de justiça ficam na pasta dos sigilosos e nunca vão para a IA, para o pacote nem para a nuvem. A IA é ferramenta de apoio: resumos e minutas são sugestões para conferência e decisão do magistrado (Resolução CNJ nº 615/2025).",
+      });
+      const destinos = el("div", { classe: "destinos", id: "destinos" });
+      const alertas = el("div", { id: "sigilosos-no-acervo" });
+      const resultadoPreparo = el("div", { id: "resultado-preparo" });
+      raiz.append(cab, alertas, acervo, resultadoPreparo, el("div", { estilo: { height: "14px" } }), sigilo,
+        el("h2", { classe: "secao-titulo" }, "Onde usar o acervo"), destinos);
+
+      let estado = null;
+      let nuvens = [];
+      let tarefaPreparo = null;
+
+      // ------------------------------------------------ acervo
+      function desenharAcervo() {
+        const a = (estado && estado.acervo) || {};
+        const status = el("p", { classe: "cartao-sub", "aria-live": "polite" });
+        const t = tarefaPreparo ? H.loja.tarefas.get(tarefaPreparo) : null;
+        let progresso = null;
+        if (t && t.estado === "rodando") {
+          const anel = H.ui.anel({ tamanho: 22, espessura: 4.5 });
+          anel.definir(t.progresso && typeof t.progresso.percentual === "number" ? t.progresso.percentual : null);
+          progresso = el("span", { classe: "estado-linha" }, anel, t.status || "Preparando…");
+        }
+        status.append(a.preparado ? `Preparado para a IA ${fmt.relativo(a.preparado)}` : "Ainda não preparado para a IA");
+        botaoPreparar.disabled = !!(t && t.estado === "rodando");
+        trocar(acervo,
+          el("div", { classe: "acervo-topo" },
+            blocoIcone("pasta", "azul", true),
+            el("div", { classe: "linha-texto" },
+              el("h2", { classe: "cartao-titulo", texto: "Acervo" }),
+              el("p", { classe: "caminho", texto: pastas.acervo || "—" }),
+              progresso || status),
+            el("div", { classe: "acervo-numeros" },
+              el("div", { classe: "acervo-numero" }, el("strong", { texto: fmt.numero(a.processos || 0) }), el("span", { texto: a.processos === 1 ? "processo" : "processos" })),
+              el("div", { classe: "acervo-numero" }, el("strong", { texto: fmt.numero(a.transcricoes || 0) }), el("span", { texto: a.transcricoes === 1 ? "transcrição" : "transcrições" })))),
+          el("div", { classe: "grupo-botoes", estilo: { marginTop: "14px", paddingTop: "14px", borderTop: "1px solid var(--separador)" } },
+            botao({ rotulo: "Abrir a pasta", icone: "pasta", tamanho: "pequeno", acao: () => api.abrir("pasta", pastas.acervo) }),
+            botao({ rotulo: "Copiar o caminho", icone: "copiar", tamanho: "pequeno", tipo: "texto", acao: () => H.ui.copiar(pastas.acervo || "", "Caminho copiado") })));
+      }
+
+      // ------------------------------------------------ sigilosos no acervo
+      function desenharAlertas() {
+        const e = estado || {};
+        const presos = lista(e.sigilosos_no_acervo);
+        const restos = lista(e.sigilosos_avisos).filter((a) => !presos.includes(a));
+        // A frase e, embaixo dela (não ao lado: o texto é longo), o que fazer.
+        const corpo = (frase, arquivos, rotuloTentar) => {
+          const acoes = [botao({ rotulo: rotuloTentar, icone: "brilho", tipo: "tonal", tamanho: "pequeno", acao: preparar })];
+          const ondeEstao = Array.from(new Set(arquivos.map(pastaDe))).filter(Boolean);
+          if (ondeEstao.length === 1) {
+            acoes.push(botao({ rotulo: arquivos.length === 1 ? "Abrir a pasta do arquivo" : "Abrir a pasta dos arquivos", icone: "pasta", tamanho: "pequeno", acao: () => api.abrir("pasta", ondeEstao[0]) }));
+          }
+          if (pastas.sigilosos) {
+            acoes.push(botao({ rotulo: "Abrir a pasta dos sigilosos", icone: "cadeado", tamanho: "pequeno", tipo: "texto", acao: () => api.abrir("pasta", pastas.sigilosos) }));
+          }
+          return el("div", {},
+            el("span", { classe: "faixa-frase", estilo: { display: "block" }, texto: frase }),
+            el("div", { classe: "grupo-botoes", estilo: { marginTop: "10px" } }, acoes));
+        };
+        const faixas = [];
+        if (presos.length) {
+          faixas.push(faixa({
+            tipo: "erro", icone: "cadeado",
+            titulo: quantosProcessos(presos) === 1 ? "Processo sigiloso no acervo" : "Processos sigilosos no acervo",
+            texto: corpo(e.sigilosos_mensagem || fraseDeReserva(presos, true, pastas.acervo), presos, "Tentar de novo"),
+          }));
+        }
+        if (restos.length) {
+          faixas.push(faixa({
+            tipo: "aviso", icone: "cadeado",
+            titulo: restos.length === 1 ? "Arquivo de processo sigiloso no acervo" : "Arquivos de processos sigilosos no acervo",
+            texto: corpo(e.sigilosos_avisos_mensagem || fraseDeReserva(restos, false, pastas.acervo), restos, "Preparar de novo"),
+          }));
+        }
+        trocar(alertas, faixas.map((f) => el("div", { estilo: { marginBottom: "14px" } }, f)));
+      }
+
+      // ------------------------------------------------ o que o preparo contou
+      function mostrarResultadoPreparo(t) {
+        const r = (t && t.resultado) || {};
+        // A frase do que ficou no acervo já está na faixa do alto.
+        const jaNoAlto = (estado && estado.sigilosos_avisos_mensagem) || "";
+        const avisos = lista(r.avisos).filter((a) => a !== jaNoAlto);
+        const erros = lista(r.erros);
+        // Cada faixa fica à vista até ser fechada (ou até o próximo preparo).
+        const caixa = (opcoes, itens) => {
+          const envoltorio = el("div", { estilo: { marginTop: "14px" } });
+          const fechar = botao({ icone: "x", titulo: "Fechar este aviso", tamanho: "pequeno", tipo: "texto", acao: () => envoltorio.remove() });
+          envoltorio.appendChild(faixa(Object.assign({}, opcoes, {
+            texto: el("ul", { classe: "lista-avisos" }, itens.map((x) => el("li", { texto: x }))),
+            acoes: [fechar],
+          })));
+          return envoltorio;
+        };
+        trocar(resultadoPreparo,
+          avisos.length ? caixa({ tipo: "aviso", titulo: avisos.length === 1 ? "Um aviso do preparo" : `${fmt.numero(avisos.length)} avisos do preparo` }, avisos) : null,
+          erros.length ? caixa({ tipo: "erro", titulo: erros.length === 1 ? "Um arquivo com problema" : `${fmt.numero(erros.length)} arquivos com problema` }, erros) : null);
+      }
+
+      function acompanharPreparo(id) {
+        tarefaPreparo = id;
+        trocar(resultadoPreparo);
+        desenharAcervo();
+      }
+      ctx.on("tarefa", (t) => {
+        if (t.tipo === "preparo") {
+          if (!tarefaPreparo && t.estado === "rodando") tarefaPreparo = t.id;
+          if (t.id === tarefaPreparo) {
+            if (t.estado !== "rodando") {
+              tarefaPreparo = null;
+              carregar().then(() => { if (ctx.vivo && t.estado === "concluida") mostrarResultadoPreparo(t); });
+            } else desenharAcervo();
+          }
+        }
+      });
+      const emCurso = Array.from(H.loja.tarefas.values()).find((t) => t.tipo === "preparo" && t.estado === "rodando");
+      if (emCurso) tarefaPreparo = emCurso.id;
+
+      // ------------------------------------------------ destinos
+      function destino({ id, nomeIcone, cor, nome, situacao, texto, acoes, largo }) {
+        return cartao({ classe: "destino" + (largo ? " largo" : ""), id, tag: "article" },
+          el("div", { classe: "destino-topo" },
+            blocoIcone(nomeIcone, cor),
+            el("div", { classe: "linha-texto" }, el("h3", { classe: "destino-nome", texto: nome }), situacao)),
+          el("p", { classe: "destino-texto", texto }),
+          el("div", { classe: "grupo-botoes" }, acoes));
+      }
+
+      function desenharDestinos() {
+        const e = estado || {};
+        const claude = e.claude || {};
+        const chatgpt = e.chatgpt || {};
+        const appChatgpt = e.chatgpt_desktop !== undefined && e.chatgpt_desktop !== null ? e.chatgpt_desktop : chatgpt.app;
+        const conectado = !!(e.mcp_acervo || claude.mcp);
+        const executar = (titulo, fn) => async () => mostrarResposta(titulo, await fn());
+        /**
+         * Copia NA HORA DO CLIQUE (o texto já está na tela) e só depois chama
+         * o programa, que abre o app externo. Sem o texto à mão, tenta o que
+         * a resposta trouxer ('copiar'); se nada der, a folha mostra o texto.
+         */
+        const abrirCopiando = (titulo, fn, oQue, texto) => async () => {
+          const agora = texto();
+          let copiado = agora ? await H.ui.copiarTexto(agora) : false;
+          const r = await fn();
+          const reserva = (r && r.copiar) || "";
+          if (!copiado && reserva) copiado = await H.ui.copiarTexto(reserva);
+          return mostrarResposta(titulo, r, { texto: agora || reserva, copiado, oQue });
+        };
+
+        const selecaoNuvem = el("select", { classe: "campo campo-pequeno", id: "destino-nuvem", aria: { label: "Pasta na nuvem" } });
+        const salva = String(H.app.valorConfig("compartilhar", "pasta_nuvem", "") || "");
+        const opcoes = nuvens.map((n) => [n.caminho, n.rotulo]);
+        if (salva && !opcoes.some(([c]) => c === salva)) opcoes.unshift([salva, salva.split(/[\\/]/).pop() || salva]);
+        if (opcoes.length) {
+          opcoes.forEach(([caminho, rotulo]) => selecaoNuvem.appendChild(el("option", { value: caminho, texto: rotulo, title: caminho })));
+          if (salva) selecaoNuvem.value = salva;
+        } else {
+          selecaoNuvem.appendChild(el("option", { value: "", texto: "Nenhuma pasta de nuvem encontrada" }));
+          selecaoNuvem.disabled = true;
+        }
+        const escolherOutra = botao({ rotulo: "Outra pasta…", tipo: "texto", tamanho: "pequeno", acao: async () => {
+          let caminho = null;
+          try {
+            caminho = await api.escolherPasta({ titulo: "Escolha a pasta na nuvem", inicial: selecaoNuvem.value || "" });
+          } catch (erro) {
+            if (erro.codigo !== "sem_dialogo") throw erro;
+            caminho = await folha.entrada({ titulo: "Pasta na nuvem", rotulo: "Caminho da pasta", mensagem: "Cole o caminho de uma pasta do OneDrive ou do Google Drive.", placeholder: "C:\\Users\\…\\OneDrive" });
+          }
+          if (!caminho) return;
+          await api.config.gravar("compartilhar", "pasta_nuvem", caminho);
+          await H.app.carregarConfig(true);
+          desenharDestinos();
+        } });
+
+        trocar(destinos,
+          destino({
+            id: "destino-claude-code", nomeIcone: "terminal", cor: "navy", nome: "Claude Code",
+            situacao: claude.claude_code ? estadoLinha("Instalado neste computador", "verde") : estadoLinha("Não instalado · exige plano pago do Claude", "cinza"),
+            texto: "Abre um terminal já dentro do acervo. O Claude lê sozinho o CLAUDE.md, com as regras de trabalho, e o índice.",
+            acoes: [botao({ rotulo: "Abrir no Claude Code", tipo: "tonal", tamanho: "pequeno", acao: executar("Claude Code", api.compartilhar.claudeCode) })],
+          }),
+          destino({
+            id: "destino-cowork", nomeIcone: "brilho", cor: "cobalto", nome: "Claude Cowork",
+            situacao: claude.desktop ? estadoLinha("Claude Desktop instalado", "verde") : estadoLinha("Claude Desktop não instalado", "cinza"),
+            texto: "No app Claude Desktop, o Cowork trabalha na pasta do acervo. O pedido inicial vai copiado: é só colar.",
+            acoes: [botao({ rotulo: "Abrir no Cowork", tipo: "tonal", tamanho: "pequeno", acao: abrirCopiando("Claude Cowork", api.compartilhar.cowork, "o pedido inicial", () => pedidoInicial) })],
+          }),
+          destino({
+            id: "destino-claude-desktop", nomeIcone: "computador", cor: "azul", nome: "Claude Desktop",
+            situacao: conectado ? estadoLinha("Acervo conectado", "verde") : claude.desktop ? estadoLinha("Acervo ainda não conectado", "ambar") : estadoLinha("Claude Desktop não instalado", "cinza"),
+            texto: "Registra o conector do acervo: no chat e no Cowork, o Claude passa a listar, ler e buscar nos processos — só leitura.",
+            acoes: [botao({ rotulo: conectado ? "Reconectar o acervo" : "Conectar o acervo", tipo: conectado ? null : "tonal", tamanho: "pequeno", acao: async () => {
+              mostrarResposta("Claude Desktop", await api.compartilhar.claudeDesktop());
+              await carregar();
+            } })],
+          }),
+          destino({
+            id: "destino-chatgpt-work", nomeIcone: "conversa", cor: "ciano", nome: "ChatGPT Work",
+            situacao: appChatgpt === true ? estadoLinha("App do ChatGPT instalado", "verde") : appChatgpt === false ? estadoLinha("App do ChatGPT não instalado", "cinza") : estadoLinha("App do ChatGPT: não verificado", "cinza"),
+            texto: "O app do ChatGPT trabalha em pastas locais no modo Work: tecle Ctrl+O e cole o caminho do acervo, que já vai copiado.",
+            acoes: [botao({ rotulo: "Abrir no ChatGPT Work", tipo: "tonal", tamanho: "pequeno", acao: abrirCopiando("ChatGPT Work", api.compartilhar.chatgptWork, "o caminho do acervo", () => pastas.acervo || "") })],
+          }),
+          destino({
+            id: "destino-codex", nomeIcone: "codigo", cor: "ardosia", nome: "Codex",
+            situacao: chatgpt.codex ? estadoLinha("Instalado neste computador", "verde") : estadoLinha("Não instalado", "cinza"),
+            texto: "O agente da OpenAI no terminal, dentro do acervo. Lê o AGENTS.md, com as mesmas regras do Claude.",
+            acoes: [botao({ rotulo: "Abrir no Codex", tipo: "tonal", tamanho: "pequeno", acao: executar("Codex", api.compartilhar.codex) })],
+          }),
+          destino({
+            id: "destino-pacote", nomeIcone: "pacote", cor: "aco", nome: "Pacote para o ChatGPT",
+            situacao: estadoLinha("Sigilosos ficam de fora", "azul"),
+            texto: "Uma pasta e um .zip com os autos, os textos, as transcrições, o índice e as instruções, para anexar numa conversa ou num Projeto.",
+            acoes: [botao({ rotulo: "Gerar o pacote", tipo: "tonal", tamanho: "pequeno", acao: async () => {
+              await api.compartilhar.pacote();
+              aviso({ titulo: "Gerando o pacote", mensagem: "Acompanhe na barra lateral; quando terminar, o aviso traz o botão para abrir a pasta.", tipo: "info" });
+            } })],
+          }),
+          destino({
+            id: "destino-nuvem", nomeIcone: "nuvem", cor: "celeste", nome: "Nuvem", largo: true,
+            situacao: nuvens.length ? estadoLinha(nuvens.map((n) => n.rotulo).join(" · "), "verde") : estadoLinha("Nenhum OneDrive ou Google Drive encontrado", "cinza"),
+            texto: "Uma cópia do acervo no OneDrive ou no Google Drive, para usar a IA pela web e no celular. Só o que mudou é copiado; as gravações não vão.",
+            acoes: [
+              selecaoNuvem,
+              botao({ rotulo: "Espelhar agora", tipo: "tonal", tamanho: "pequeno", desativado: !opcoes.length, acao: async () => {
+                if (!selecaoNuvem.value) return;
+                await api.compartilhar.espelhar(selecaoNuvem.value);
+                aviso({ titulo: "Espelhando o acervo", mensagem: "Acompanhe na barra lateral.", tipo: "info" });
+              } }),
+              escolherOutra,
+            ],
+          }));
+      }
+
+      async function carregar() {
+        try { await H.app.carregarConfig(); } catch (_e) { /* padrões */ }
+        const [e, n] = await Promise.all([
+          api.compartilhar.estado().catch((erro) => { aviso({ titulo: "Não consegui conferir o Claude e o ChatGPT", mensagem: erro.message, tipo: "alerta" }); return {}; }),
+          api.compartilhar.nuvens().catch(() => []),
+        ]);
+        if (!ctx.vivo) return;
+        estado = e || {};
+        nuvens = Array.isArray(n) ? n : [];
+        desenharAlertas();
+        desenharAcervo();
+        desenharDestinos();
+      }
+
+      await carregar();
+    },
+  };
+})();

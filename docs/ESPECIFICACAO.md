@@ -1,0 +1,1575 @@
+# Helestron — especificação técnica (versão 1.0.0)
+
+Documento de referência para a reconstrução do antigo “Assessor Integrado” como
+**Helestron**. Tudo o que for dúvida de comportamento se decide aqui; o que não
+estiver aqui segue o código já existente do motor (download, transcrição,
+compartilhamento), que foi testado e deve ser preservado.
+
+## 1. O que o usuário pediu (literal, resumido)
+
+1. Instalação **direta no Windows**, sem executar comandos no PowerShell ou no
+   terminal.
+2. Layout **claro, intuitivo e limpo**, aparência clara, com **transparências e
+   elementos gráficos similares ao iOS**, em tons de **azul, cinza e branco**.
+3. O programa se chama **Helestron**.
+4. Nova função: **monitoramento da pauta de audiências** integrada com o **e-SAJ
+   (SAJ)** e o **eProc**, com **extração da pauta em Excel** (o sistema acessa o
+   gerenciamento/pauta de audiências dos portais).
+5. Mantidas as funções anteriores: baixar processos de uma relação (um PDF por
+   processo, nomeado pelo número), transcrição simultânea de audiências (DOCX
+   nomeado pelo número) e compartilhamento das pastas com Claude Code, Cowork e
+   ChatGPT Work.
+6. Problemas da versão anterior a eliminar: instalação deficiente (o sistema não
+   rodou) e o erro **“Esta parte do programa não abriu — No module named
+   'app.interface.pagina_config'”**.
+7. Ícone com a letra **“H”**, design moderno, cores **navy e cinza**, com
+   **efeito de transparência**.
+8. Tudo disponível para download no Claude e copiado para o GitHub, substituindo
+   todo o conteúdo do repositório.
+
+## 2. Diagnóstico da versão anterior e como o Helestron o elimina
+
+| Problema | Causa | Solução no Helestron |
+|---|---|---|
+| Instalação por `INSTALAR.bat` + PowerShell, baixando ~800 MB na hora | rede do tribunal (proxy, bloqueio de PyPI/Hugging Face), GPO que bloqueia scripts, janela de console | **Um só `Helestron-Setup-1.0.0.exe`** (NSIS, assistente gráfico em português), **offline**: Python, bibliotecas e modelo de transcrição vão dentro. Sem PowerShell, sem console, sem administrador. |
+| `No module named 'app.interface.pagina_config'` | um arquivo do programa sumiu depois da extração (antivírus que põe em quarentena arquivo que lida com senhas, extração parcial) e as telas eram importadas por nome em tempo de execução (`importlib`) | (a) interface em HTML: não há mais módulo Python por tela; (b) **imports estáticos** em todo o pacote; (c) **manifesto de integridade** conferido na abertura, com mensagem clara e botão “Reparar” (procura o `Helestron-Setup-X.Y.Z.exe` na pasta Downloads registrada no Windows, confere que é o instalador do Helestron e o abre só com a confirmação do usuário — o instalador não deixa cópia de si —, ou explica como baixá-lo de novo; seção 3.4); (d) o instalador roda `Helestron.exe --verificar-instalacao` ao final e avisa se algo faltar; (e) Python isolado (`-I`): variáveis `PYTHONPATH`/`PYTHONHOME` da máquina não interferem; (f) o lançador confere, antes de iniciar o Python, os arquivos sem os quais nem a tela de erro abre e diz qual falta (seção 10, etapa 6). |
+| Janela Tkinter datada | limitação do Tk | Interface web local (HTML/CSS/JS) numa janela nativa (WebView2), com vidro translúcido e componentes no estilo iOS. |
+
+## 3. Arquitetura
+
+```
+Helestron.exe (lançador C, ícone H)  ──►  python312.dll  ──►  python -I -m helestron
+        │
+        ▼
+helestron.aplicativo.inicio.main()
+   1. instância única (trava em %LOCALAPPDATA%\Helestron\instancia.json)
+   2. integridade (manifesto.json)            → tela de erro própria se faltar arquivo
+   3. servidor HTTP local (127.0.0.1, porta livre, token)  ← helestron.servidor
+   4. janela: pywebview (EdgeChromium/WebView2 ≥ 101.0.1210.39, com vigia de carregamento)
+        └ reserva 1: Edge em modo aplicativo (msedge --app=URL)
+        └ reserva 2: navegador padrão (nunca o Internet Explorer nem o Edge antigo)
+        └ nenhuma: caixa de mensagem com o caminho para o WebView2 (saída 1)
+   5. monitor da pauta (thread), limpeza de .antigos e demais serviços sob demanda
+```
+
+A interface (pasta `helestron/web`) conversa **só** com a API HTTP (seção 6).
+O motor (download, transcrição, compartilhamento, pauta) nunca conhece a
+interface: fala por eventos (seção 6.4) e perguntas (seção 6.5).
+
+### 3.1 Estrutura do repositório
+
+```
+README.md                      apresentação e instalação
+.gitignore  .gitattributes
+.github/workflows/helestron.yml  CI: testes, construção do instalador, instalação real no Windows, publicação
+docs/ESPECIFICACAO.md          este documento
+docs/MANUAL.md                 manual do usuário
+helestron/                     o pacote Python (vai inteiro para o instalador)
+  __init__.py  __main__.py
+  aplicativo/                  inicialização, janela, instância única, integridade, autoteste
+  servidor/                    servidor HTTP, API, eventos, perguntas, tarefas web
+  servicos.py  tarefas.py      ponte entre a API e o motor (sem interface gráfica)
+  nucleo/  download/  transcricao/  compartilhar/   o motor (já existente)
+  pauta/                       NOVO: pauta de audiências
+  verificar.py                 diagnóstico da instalação
+  dados/                       tribunais.json, pauta.json, seletores de reserva (a correção vale em LOCAL)
+  recursos/                    helestron.ico, helestron.png, imagens do instalador
+  web/                         a interface (index.html, css/, js/, fontes/, img/)
+testes/                        unittest (Linux e Windows)
+construir/                     construção do instalador (roda em Linux e no CI)
+  construir.py  requisitos-windows.in/.txt  requisitos-teste.txt
+  instalador/helestron.nsi     modelo do script NSIS
+  lancador/helestron.c  helestron.rc  helestron.manifest
+  marca.py                     gera ícone e imagens do instalador
+```
+
+### 3.2 O que fica instalado no Windows
+
+Instalação **por usuário** (sem administrador) em
+`%LOCALAPPDATA%\Programs\Helestron\` — a própria pasta do Python:
+
+```
+Helestron.exe          lançador (ícone H); roda python -I -m helestron
+python.exe pythonw.exe python312.dll python3.dll vcruntime140*.dll msvcp140*.dll
+DLLs\  Lib\  Lib\site-packages\helestron\ ...   (bibliotecas + o pacote, com .pyc pré-compilados)
+modelos\faster-whisper-small\   modelo de transcrição ao vivo (embutido)
+modelos\falantes\               modelos da separação de falantes (embutidos; numa construção
+                       --sem-falantes, Ajustes › Transcrição oferece "Baixar os modelos de voz")
+helestron.ico  manifesto.json  Desinstalar.exe
+arquivos-instalados.txt  a lista do que a instalação pôs na pasta (UTF-16; depois do cabeçalho
+                       "Helestron <versão> ...", "A <arquivo>" para cada arquivo e "P <pasta>"
+                       para cada pasta): a atualização e o desinstalador apagam só o que está nela
+.antigos\<instante>\  só depois de uma atualização: arquivos da versão anterior que estavam
+                       presos (servidor MCP aberto pelo Claude Desktop ou pelo Codex), renomeados
+                       pelo instalador; apagados no próximo logon (RunOnce) ou na próxima abertura
+```
+
+A pasta do programa é só do Helestron: o instalador nunca o põe no meio de
+outros arquivos (seção 10, item 1), e a atualização e o desinstalador apagam
+só o que a lista registra, arquivo por arquivo, e as pastas só se ficarem
+vazias. Arquivos e pastas do usuário (ou de outro programa) que estiverem lá
+ficam.
+
+Dados do usuário (nunca apagados pela desinstalação sem perguntar):
+
+| O quê | Onde |
+|---|---|
+| configuração `config.ini`, `Logs\`, `perfis\` (navegador), `credenciais.json` (DPAPI), `pauta.sqlite3`, `instancia.json`, `modelos\` baixados depois, `temp\`, `webview\` e `edge-app\` (perfis da janela), e as correções locais que a atualização não apaga: `enderecos-locais.json`, `seletores.json` e `seletores-eproc.json` (valem por cima do que vem em `dados\`, que fica de reserva) | `%LOCALAPPDATA%\Helestron\` |
+| Acervo (processos, transcrições) — compartilhado com a IA | `Documentos\Helestron\Acervo\` (`Processos\`, `Transcricoes\`) |
+| Sigilosos (segredo de justiça) — nunca compartilhado | `Documentos\Helestron\Sigilosos\` |
+| Pauta exportada (Excel) — **fora do acervo** (traz partes de processos sigilosos) | `Documentos\Helestron\Pauta\` |
+
+Se a pasta Documentos estiver dentro do OneDrive (redirecionamento de pastas
+conhecidas), a base passa a ser `%USERPROFILE%\Helestron\` — a sincronização
+trava arquivo em uso (lição do Assessor SAJ). Tudo configurável em Ajustes.
+
+### 3.3 A janela (`helestron/aplicativo/janela.py`)
+
+* **WebView2 com versão mínima.** A pywebview 6 usa uma interface do WebView2
+  (`ICoreWebView2Environment10`) que só existe a partir do runtime
+  **101.0.1210.39** (`VERSAO_MINIMA_WEBVIEW2`); vale a maior versão (“pv”)
+  das chaves que a pywebview lê. Um runtime mais antigo (86 a 100) conta
+  como ausente: a janela abriria vazia, e o programa vai direto para o
+  Edge. O diagnóstico
+  (`verificar.avaliar_webview2`) usa a mesma régua: abaixo dela, o item é
+  **aviso**, com a orientação de atualizar o runtime.
+* **Vigia de carregamento.** Mesmo aprovado, o WebView2 pode falhar ao
+  iniciar (runtime danificado, política da empresa): a pywebview só registra
+  o erro e deixa a janela cinza. Depois que a janela aparece (prazo de
+  `PRAZO_APARECER_S` = 120 s para aparecer), a página tem
+  `PRAZO_CARREGAR_S` = 30 s para dar sinal: o evento `loaded` da pywebview
+  ou a página conectada ao canal de eventos (`/api/eventos`, que só a página
+  abre: o `EventSource` de `web/js/api.js` e o da tela de erro, seção 3.4).
+  Pedidos à API não contam: a segunda abertura do programa (o duplo clique de
+  novo no atalho diante da janela cinza, que pede `/api/ping` e
+  `/api/janela/mostrar`) e o `--encerrar` do instalador também falam com o
+  servidor, e a janela vazia passaria por carregada. Sem sinal, a janela
+  vazia é fechada, `abrir()` devolve False e o programa passa para o Edge. A
+  janela vazia fechada pelo usuário também cai no Edge. (Uma página cujo
+  canal de eventos nunca se conecta, embora os pedidos à API funcionem,
+  conta como não carregada.)
+* **Reservas.** O Edge em modo aplicativo (perfil próprio em
+  `LOCAL\edge-app`) e, sem ele, o navegador padrão, numa aba. O navegador
+  padrão é lido da escolha do usuário (`UserChoice`, ProgId) ou, sem ela, do
+  comando do `http`; o Internet Explorer (`IE.*`) e o Edge antigo (EdgeHTML)
+  nunca são usados, porque não rodam a interface (ES2020). O sinal é o
+  mesmo: a página conectada ao canal de eventos. O Edge ou o navegador que
+  nunca dão sinal em `PRIMEIRO_SINAL_S` = 120 s contam como falha, e a
+  próxima reserva é tentada. Depois do sinal, o programa encerra quando o
+  processo do Edge sai e a página se desconecta, ou quando o canal fica
+  `SEM_SINAL_S` = 60 s sem contato (o ping dele vem a cada 15 s).
+* **Sem nenhuma janela.** `inicio.py` mostra uma caixa de mensagem (“O
+  Helestron não pôde abrir”) com `janela.motivo_sem_janela()`: falta o
+  Microsoft Edge WebView2 Runtime (ou ele é antigo, com a versão
+  encontrada), como instalá-lo (o endereço oficial; não precisa de
+  administrador) e a alternativa do Google Chrome como navegador padrão. O
+  processo sai com o código 1, em vez de sumir.
+* **Tamanho que cabe na tela.** `area_util_dip()` lê a área útil do monitor
+  do ponteiro (`GetMonitorInfoW.rcWork`) em pixels lógicos
+  (`GetDpiForMonitor`). `tamanho_inicial()` devolve largura, altura, mínimo
+  e `maximized`: se 1280×820 mais a folga de 16 DIP não couber (Full HD a
+  150 % dá 1280×672 úteis; 1366×768), a janela abre **maximizada**, com o
+  tamanho restaurado e o mínimo cortados para caber. O Edge recebe o
+  `--window-size` coerente e, nesse caso, `--start-maximized`.
+* **Atenção nas perguntas** (contrato C3, seção 6.6): a `JanelaWebview`
+  registra `chamar_atencao` no servidor; a cada pergunta, a janela
+  minimizada é restaurada, vem para a frente e pisca na barra de tarefas.
+* **Sem AppUserModelID explícito**: o Windows usa o implícito do
+  `Helestron.exe`, o mesmo dos atalhos do instalador (o Helestron fixado na
+  barra de tarefas reconhece a janela aberta); o ícone vem do `.exe`.
+
+### 3.4 Tela de erro e “Reparar” (`aplicativo/erro.py`, `aplicativo/integridade.py`)
+
+Arquivo do programa ausente ou alterado (manifesto): em vez de abrir, o
+programa mostra uma tela própria, no mesmo servidor local (modo de erro,
+poucas rotas) e na mesma janela, com o que falta, a hipótese mais provável
+(antivírus, instalação interrompida), a garantia de que os dados não foram
+afetados e os botões **Reparar**, **Abrir os registros** e **Fechar**. A
+tela grava o `instancia.json`, como a abertura normal: o `--encerrar` do
+instalador e a segunda abertura falam com ela. E abre o canal de eventos
+(`/api/eventos`, que no modo de erro só manda o ping): é o sinal de que ela
+carregou, para a vigia da janela (seção 3.3), e, no Edge e no navegador, o
+de que continua aberta.
+
+**Reparar** tem dois cliques. No primeiro (pedido `/api/integridade/reparar`,
+sem corpo), o programa procura o instalador e devolve
+`{confirmar: true, arquivo, mensagem}`, com o nome, o tamanho, a data e a
+pasta do arquivo encontrado; a tela mostra o botão **Abrir o instalador**. O
+segundo clique (`{arquivo}`) só abre o arquivo se ele ainda for o mesmo que
+a busca acha agora. A busca (`integridade.procurar_instalador`):
+
+* olha a pasta Downloads registrada no Windows
+  (`SHGetKnownFolderPath(FOLDERID_Downloads)`, que segue o redirecionamento
+  de pastas da TI) e, de reserva, `%USERPROFILE%\Downloads`, sem repetir;
+  também `LOCAL` e a pasta do programa;
+* só aceita o nome publicado, `Helestron-Setup-X.Y.Z.exe` (ou com “ (n)”,
+  quando baixado de novo), nunca de versão mais velha que a instalada; a
+  versão mais nova vem primeiro e, na mesma versão, o arquivo mais recente;
+* confere cada candidato (`conferir_instalador`): começa com `MZ`, tem o
+  cabeçalho NSIS (`0xDEADBEEF` + `NullsoftInst` num limite de 512 bytes), a
+  descrição “Instalador do Helestron” (UTF-16) e, se houver o `.sha256` ao
+  lado, o SHA-256 batendo. Não há conferência de assinatura Authenticode:
+  o instalador ainda não é assinado.
+
+Sem instalador aceitável, a tela explica como baixá-lo de novo na página de
+versões.
+
+## 4. Caminhos (`helestron/nucleo/caminhos.py`)
+
+```python
+PACOTE      = Path(__file__).resolve().parents[1]          # .../helestron
+INSTALADO   = (Path(sys.prefix) / "manifesto.json").exists()
+INSTALACAO  = Path(sys.prefix) if INSTALADO else PACOTE.parent   # pasta do programa (ou o repositório)
+DADOS       = PACOTE / "dados"
+RECURSOS    = PACOTE / "recursos"
+WEB         = PACOTE / "web"
+MODELOS_EMBUTIDOS = INSTALACAO / "modelos"
+LOCAL       = env HELESTRON_LOCAL  ou  %LOCALAPPDATA%\Helestron  (fora do Windows: ~/.helestron)
+ARQUIVO_CONFIG = LOCAL / "config.ini";  LOGS = LOCAL / "Logs";  PERFIS = LOCAL / "perfis"
+ARQUIVO_SENHAS = LOCAL / "credenciais.json";  TEMP = LOCAL / "temp";  MODELOS = LOCAL / "modelos"
+ARQUIVO_PAUTA  = LOCAL / "pauta.sqlite3";  ARQUIVO_INSTANCIA = LOCAL / "instancia.json"
+BASE_USUARIO   = env HELESTRON_DADOS  ou  Documentos\Helestron  (ou %USERPROFILE%\Helestron se Documentos estiver no OneDrive)
+python_exe(janela=False) -> INSTALACAO/python.exe | pythonw.exe | sys.executable
+```
+
+Os testes isolam tudo com `HELESTRON_LOCAL` e `HELESTRON_DADOS` apontando para
+pastas temporárias (ou com `mock.patch` nas constantes, como já fazem).
+
+## 5. Linha de comando (`python -m helestron`)
+
+| Comando | O que faz |
+|---|---|
+| *(sem argumentos)* | abre o programa (servidor + janela) |
+| `--verificar-instalacao [--relatorio ARQ]` | sem janela: confere o manifesto (hash de todos os arquivos), importa **todos** os módulos do pacote, roda as checagens de `helestron.verificar` (bibliotecas, componentes nativos, modelo embutido carregado de verdade, navegador, pastas, cofre, regras da pauta, conector MCP...) e confere WebView2/Edge. A importação e as checagens rodam em **processos à parte**: uma biblioteca nativa que derrube o processo vira um item de falha com o nome da checagem, e as demais seguem num processo novo. O relatório (UTF-8, em `ARQ`; padrão `LOCAL/Logs/verificacao-instalacao.txt`) é regravado a cada item, com a marca “Verificação em andamento” até o fim: o instalador sempre tem relatório. O item da janela fica em ordem com o WebView2 101 ou mais recente; sem ele, com o Edge (aviso) ou com um navegador padrão que rode a interface (aviso); sem nenhum (o padrão é o Internet Explorer ou o Edge antigo), é falha de código `sem_janela`. Código de saída 0 = ok (talvez com avisos), 1 = falha, 9 = a única falha é `sem_janela` (os arquivos estão certos, mas não há como abrir a janela). Usado pelo instalador, que nesse caso sai com o seu próprio código 9 (seção 10). Sem o registro do programa (`nucleo/registro.py`) ou outra parte de partida, grava um relatório mínimo (“FALHA  Falta uma parte do programa: <módulo>”, com o módulo inteiro, como `helestron.aplicativo.instancia`), sem caixa de mensagem: o instalador mostra o que falta. |
+| `--autoteste PASTA` | abre a janela de verdade, a interface percorre todas as telas sozinha (`?autoteste=1`), o programa salva capturas (PNG) e `autoteste.json` em `PASTA` e fecha. Roda em **pastas de dados novas e vazias** (`PastasDoAutoteste`: `HELESTRON_LOCAL` e `HELESTRON_DADOS` apontam para uma pasta temporária antes do registro, da instância e do servidor), nunca na configuração, na pauta e no acervo de quem o roda, e sem o monitor da pauta; no fim, o registro (`Logs`) da rodada vai para `PASTA\Logs`, e a pasta temporária é apagada. Só o retângulo da janela é capturado: sem ele (a interface numa aba do navegador), não há captura, e o `autoteste.json` diz por quê. Usado no CI do Windows. |
+| `--servidor [--porta N] [--sem-janela] [--token T]` | só o servidor (testes e desenvolvimento); imprime `URL=...` na saída |
+| `--encerrar` | pede à instância aberta que feche e espera ela sair (usado pelo instalador e pelo desinstalador antes de mexer nos arquivos). Antes, consulta `GET /api/transcricao/estado` da instância: com a audiência em `iniciando`, `gravando` ou `pausada`, **não fecha nada** e sai com **10**. Enquanto a instância responder que está fechando (a fila da audiência recém-encerrada sendo transcrita), espera até `ESPERA_FECHANDO_S` = 18 min. Código 0 = fechou (ou não havia nenhuma aberta), 1 = continua aberta, 10 = audiência em andamento. Atende também a tela de erro da integridade. |
+| `mcp [--pasta ACERVO]` | servidor MCP do acervo (stdio), como hoje. A cada pedido (`tools/call`), a listagem do acervo, a pasta dos sigilosos e a regra do sigilo são apuradas uma vez só (`Acervo.pedido()`; fora de um pedido, nada fica guardado), e `buscar` lista os PDFs uma vez: no acervo inteiro, com 3.000 PDFs, leva cerca de 0,3 s |
+| `baixar ...`, `transcrever ...`, `modelos ...`, `microfones`, `verificar`, `preparar`, `preparar-pastas` | como hoje |
+| `pauta sincronizar|exportar|importar|listar|fontes ...` | linha de comando da pauta (seção 8.9); em `exportar`, `--incluir-partes-sigilosos` ou `--sem-partes-sigilosos` (exclusivas); sem nenhuma das duas, vale `[pauta] incluir_partes_sigilosos`. `importar` e `sincronizar` aplicam na hora o sigilo que a pauta revelar (seção 12) e dizem o que saiu do acervo |
+
+**Em português, do uso aos erros.** Toda linha de comando do projeto
+(`__main__.py` e os subcomandos `baixar`, `transcrever`, `modelos`,
+`falantes`, `mcp` e `pauta`, e também `construir/construir.py` e
+`construir/marca.py`) usa o `ArgumentParser` de `nucleo/argumentos.py`, uma
+subclasse do `argparse.ArgumentParser` com o que o usuário lê traduzido: o
+“uso:” da primeira linha, os títulos “argumentos” e “opções”, o “-h, --help”
+(“mostra esta ajuda e sai”) e o “(padrão: …)”. As mensagens de erro do argparse
+são traduzidas por modelo de frase inteira, nunca palavra por palavra
+(argumento obrigatório que falta, argumento não reconhecido, no singular e
+no plural, escolha inválida, valor inválido com o tipo esperado, falta do
+valor…), e o subcomando desconhecido vira “comando desconhecido: 'x'
+(opções: …)”. O formato é `<prog>: erro: <mensagem>`, depois da linha de
+uso (por exemplo, “python -m helestron baixar: erro: argumento não
+reconhecido: --xyz”), e o código de saída continua 2. `traduzir()` e
+`mensagem_de_erro()` são públicos (a transcrição devolve o código em vez de
+encerrar o processo). Quem carrega o módulo pelo arquivo (a construção) tem
+o `argparse` de reserva. Na linha de comando principal:
+
+* `-h`, `--help`, `--ajuda` e `ajuda` mostram a ajuda, com a lista de
+  comandos; cada comando tem a sua (`python -m helestron <comando> -h`);
+* `--verificar-instalacao`, `--autoteste`, `--servidor` e `--encerrar` são
+  mutuamente exclusivas; `--relatorio` só vale com `--verificar-instalacao`,
+  e `--porta`, `--sem-janela` e `--token` só com `--servidor` (senão, erro
+  com o código 2, como “--relatorio só vale com --verificar-instalacao”);
+* o import do registro do programa é protegido: faltando uma parte de
+  partida, a abertura mostra a caixa “O Helestron não pôde abrir” (“Falta uma
+  parte do programa (<módulo>)”, com o módulo inteiro, e não só o pacote), e
+  o `--verificar-instalacao` grava o relatório mínimo, sem caixa;
+* um erro inesperado em `inicio.main` vai para o registro (`Logs`), que é
+  para onde aponta a caixa de saída rápida do lançador (seção 10, etapa 6).
+
+## 6. Servidor e API
+
+### 6.1 Segurança
+
+* Escuta **só em 127.0.0.1**, porta livre escolhida pelo sistema.
+* **Token** aleatório (`secrets.token_urlsafe(32)`) por execução. A janela abre
+  `http://127.0.0.1:PORTA/?t=TOKEN`; a página guarda o token em
+  `sessionStorage`, remove-o da barra (`history.replaceState`) e o envia em
+  **todo** pedido à API no cabeçalho `X-Helestron-Token` (no `EventSource`, que
+  não manda cabeçalho, vai em `?t=`). Comparação em tempo constante.
+* Recusa (403) pedido cujo `Host` não seja `127.0.0.1:PORTA` ou `localhost:PORTA`
+  (contra DNS rebinding) e pedido com `Origin` diferente da própria origem.
+  Sem CORS.
+* Arquivos estáticos (`/`, `/css`, `/js`, `/img`, `/fontes`) sem token, só de
+  dentro de `helestron/web` (normalizar caminho; recusar `..`).
+* `/api/abrir` só abre pastas/arquivos dentro das pastas do usuário (acervo,
+  sigilosos, pauta, Logs e a pasta da nuvem, mas nunca a raiz de uma
+  unidade, como `D:\`) e URLs `https://`.
+* Corpo JSON até 2 MB; envio de arquivo (relação, gravação, relatório de pauta)
+  até 500 MB, gravado em `LOCAL/temp` e apagado depois.
+
+### 6.2 Envelope
+
+Sucesso: `{"ok": true, "dados": ...}`. Erro: `{"ok": false, "erro": {"codigo":
+"texto_curto", "mensagem": "frase para o usuário, em português", "detalhe":
+"técnico, opcional"}}` com HTTP 400/403/404/409/500. A interface mostra sempre a
+`mensagem`. Datas em ISO 8601 (`2026-10-03`, `2026-10-03T14:30:00`).
+
+### 6.3 Endpoints
+
+**Geral**
+* `GET /api/estado` → `{nome, versao, modo: "janela"|"edge"|"navegador", pastas: {acervo, processos, transcricoes, sigilosos, pauta, logs}, pendencias: [{chave, titulo, mensagem, acao: "ajustes#acessos"|...}], resumo: {processos, transcricoes, ultimos_lotes: [{nome, quando, total, baixados, falhas, pasta}], transcricoes_recentes: [{numero, arquivo, quando}], pauta: {hoje, semana, proxima: Audiencia|null, ultima_sincronizacao, alteracoes_nao_vistas, fontes, configurada}}, tarefas: [Tarefa]}` (`semana` = de hoje a hoje + 6; `fontes` = quantas fontes cadastradas; `configurada`: contrato C5, seção 6.6). A `acao` de cada pendência é uma rota da interface (`pauta`, `ajustes#<grupo>`, com o grupo existente em Ajustes: a “Instalação incompleta” leva a `ajustes#sobre`); a pendência da pauta (`chave` `pauta_login`) é a do monitoramento (seção 8.7). As pendências do sigilo (seção 12) levam à tela Compartilhar (`acao` `compartilhar`) e trazem a lista `arquivos`: `sigilo` (“Processo sigiloso no acervo”, ou “Processos sigilosos no acervo”: autos presos, que travam o compartilhamento) e `sigilo-arquivos` (“Arquivo de processo sigiloso no acervo”, ou “Arquivos de processos sigilosos no acervo”: os outros arquivos presos, que só avisam).
+* `GET /api/config` → `{valores: {secao: {chave: valor}}, esquema: [{secao, chave, tipo: "texto"|"flag"|"inteiro"|"pasta"|"escolha", rotulo, ajuda, opcoes?}]}`
+* `POST /api/config` `{secao, chave, valor}` → `{valor}` (valida; pastas conflitantes → erro com a frase de `problema_nas_pastas`; a pasta da nuvem dentro do acervo ou contendo-o, e o acervo movido para dentro da nuvem já escolhida → 400 `pastas_em_conflito`, com a frase de `servicos.conflito_da_nuvem`)
+* `GET /api/tribunais` → `[{sigla, nome, sistema, alternativo}]`
+* `GET /api/acessos` → `[{portal, tribunal, sistema, rotulo, usuario, tem_senha, guardada, so_agora, modo}]` (`so_agora`: a senha foi digitada com “Lembrar neste computador” desligado e vale até fechar o programa, para o download e para a pauta); `POST /api/acessos` `{portal, usuario, senha, lembrar?, modo?}`; `DELETE /api/acessos/{portal}`; `POST /api/acessos/testar` `{tribunal, sistema?}` → `{tarefa}` (tipo `teste_login`; testa exatamente o portal pedido, contrato C1)
+* `GET /api/tribunais/enderecos` → `[{portal, grau, rotulo, url, rotulo_portal}]` (só os endereços corrigidos pelo usuário); `GET /api/tribunais/enderecos/{portal}` → `{portal, rotulo, enderecos: [{grau, rotulo, url, padrao, corrigido}]}`; `POST /api/tribunais/enderecos` `{portal, grau, url}` → o mesmo (url em branco volta ao catálogo). É o “Endereço do portal” de Ajustes › Acessos aos portais: a correção fica em `LOCAL/enderecos-locais.json` e vale por cima de `dados/tribunais.json`, para o download e a pauta; as mensagens do motor sobre endereço mudado apontam para ela.
+* `POST /api/dialogo/arquivo` `{titulo, tipos: ["Planilhas|*.xlsx;*.xls", ...]}` e `POST /api/dialogo/pasta` `{titulo, inicial}` → `{caminho|null}` (diálogo nativo pela pywebview; fora dela → erro `sem_dialogo`, e a interface usa `<input type=file>`)
+* `POST /api/abrir` `{tipo: "pasta"|"arquivo"|"url", alvo}`
+* `GET /api/verificacao` → `[{nome, situacao: "ok"|"aviso"|"falha", detalhe, acao}]`; `POST /api/verificacao/completa` → `{tarefa}`
+* `POST /api/encerrar`
+
+**Tarefas e perguntas**
+* `GET /api/tarefas`, `GET /api/tarefas/{id}` → `Tarefa = {id, tipo: "download"|"teste_login"|"transcricao_arquivo"|"modelo"|"preparo"|"pacote"|"nuvem"|"pauta_sincronizar"|"pauta_capturar"|"verificacao", titulo, estado: "rodando"|"concluida"|"falhou"|"parada", inicio, fim, progresso: {feitos, total, atual, percentual}, status, resultado, erro}`
+* `POST /api/tarefas/{id}/parar`
+* `POST /api/perguntas/{id}/responder` `{valor}`; `POST /api/perguntas/{id}/cancelar`
+
+**Processos (download)**
+* `POST /api/relacao/arquivo` — corpo `multipart/form-data` (campo `arquivo`) **ou** JSON `{caminho}` → `Leitura = {formato, origem, processos: [{numero, tribunal, sistema, tem_senha}], avisos: [], corrompidos: [], sem_suporte: [{numero, motivo}]}`
+* `POST /api/relacao/texto` `{texto}` → `Leitura`; `POST /api/relacao/link` `{url}` → `Leitura`
+* `POST /api/download/iniciar` `{processos: [numero], senhas?: {numero: senha}, nome_lote, opcoes: {separar_sigilosos, rebaixar, navegador_visivel}}` → `{tarefa}` (eventos `item` por processo)
+* `GET /api/download/lotes` → `[{nome, quando, total, baixados, falhas, pasta, relatorio}]`
+
+**Audiências (transcrição)**
+* `GET /api/transcricao/microfones` → `[{indice, nome, padrao}]` (a interface usa o `nome`: contrato C2)
+* `POST /api/transcricao/microfone/teste` `{dispositivo}` (nome, número ou `""` = padrão do Windows; sem a chave, o da configuração; eventos `microfone_nivel`; microfone que não existe mais, ocupado ou ausente → 409 `microfone_indisponivel` com a frase do motor; durante a audiência → 409 `sessao_ativa`) ; `POST /api/transcricao/microfone/parar`
+* `GET /api/transcricao/modelos` → `[{nome, rotulo, tamanho_mb, instalado, embutido, recomendado_para, descricao}]`; `POST /api/transcricao/modelos/baixar` `{nome}` → `{tarefa}`
+* `GET /api/transcricao/falantes` → `{disponivel, situacao, biblioteca, modelos, embutidos, tamanho_mb}` (separação automática de falantes); `POST /api/transcricao/falantes/baixar` → `{tarefa}` (tipo `modelo`: baixa do GitHub, uma vez, os modelos de voz que faltarem, por `servicos.instalar_falantes`; a biblioteca `sherpa-onnx` vem sempre no instalador, e sem ela a resposta é 409 pedindo a reinstalação). Os modelos de voz vão embutidos pela construção; a tela Ajustes › Transcrição mostra o botão “Baixar os modelos de voz” só quando faltarem (construção `--sem-falantes`).
+* `POST /api/transcricao/iniciar` `{processo, dispositivo, sigiloso, tipo, participantes: {"F1": "Juiz(a)", ...}, falante}` → `{sessao, processo, sigiloso, sigiloso_forcado, motivo?}` (`dispositivo` como no teste do microfone, conferido antes de gravar; `sigiloso_forcado`/`motivo`: contrato C4; já há sessão → 409 `sessao_ativa`)
+* `POST /api/transcricao/pausar` · `/retomar` · `/falante` `{falante}` · `/encerrar` `{tipo?, refinar?}` → `{documento}` (a sessão é única; o `tipo` do encerrar vai para a ficha do documento e da revisão, contrato C8)
+* `GET /api/transcricao/estado` → `{sessao|null, estado, segundos, processo, falas: [...]}`
+* `GET /api/transcricao/recuperaveis` → `[{arquivo, processo, quando}]`; `POST /api/transcricao/recuperar` `{arquivo}` → `{documento}` (como no fim da audiência, refaz o `INDICE.md` e, se ligado, o espelho na nuvem)
+* `POST /api/transcricao/gravacao` (multipart `arquivo` ou JSON `{caminho}`, mais `processo`, `sigiloso`, `tipo`, `revisao`; no multipart, também `nome_original` e `data_arquivo`) → `{tarefa, sigiloso, sigiloso_forcado, motivo?}` (contratos C4 e C8; a revisão usa o tipo do pedido ou o da sessão, e os participantes dela)
+* `GET /api/transcricao/recentes` → `[{numero, arquivo, quando, sigiloso}]`
+
+**Pauta** (seção 8)
+* `GET /api/pauta?de=&ate=&sistema=&situacao=&busca=` → `{audiencias: [Audiencia], resumo: {total, hoje, semana, por_situacao: {}, por_tipo: {}}, ultima_sincronizacao, monitoramento: {ativo, intervalo_horas, proxima}}`
+* `GET /api/pauta/fontes` → `[{id, tribunal, sistema, rotulo, modo, url, menu, monitorada, exige_presenca, motivo_presenca, ultima_sincronizacao, ultimo_erro, criada_em}]` (`monitorada` = tem rota lembrada e entra no portal sozinha, logo entra no monitoramento; `exige_presenca`/`motivo_presenca` = o login só acontece com a pessoa à frente, e por quê: seção 8.7); `POST /api/pauta/fontes` `{tribunal, sistema, rotulo, url?}`; `DELETE /api/pauta/fontes/{id}`
+* `POST /api/pauta/sincronizar` `{fontes?: [id], de?, ate?}` → `{tarefa}`; o `resultado` da tarefa é `{novas, atualizadas, canceladas, removidas, total, alteracoes, fontes: [...], erros: [{fonte, rotulo, mensagem}], avisos: [texto], periodo}` (cada item de `fontes` traz também `paginas`, `url`, `periodo_aplicado` e `incompleta`, o motivo de a leitura ter parado antes do fim, `""` se leu tudo: seção 8.3) e o `status` final, a frase pronta (“8 audiências conferidas · 1 nova…”). Quando a sincronização revela processos em segredo de justiça que o programa ainda não tratava como sigilosos, o `resultado` traz também `sigilosos_novos` (os números, como a pauta os mostra), e o servidor tira do acervo o que houver deles (seção 12). Uma fonte que falha não derruba as outras (e, se outras deram certo, vira também um aviso com o motivo); só quando todas falham a tarefa termina como `falhou`, com cada fonte e o motivo no erro. A tela da Pauta mostra o resultado numa faixa que fica à vista (fontes com problema, avisos e as saídas: Capturar no portal, Importar relatório, Acessos aos portais).
+* `POST /api/pauta/capturar` `{tribunal, sistema}` → `{tarefa}` (captura assistida, seção 8.4); `resultado` = `{novas, atualizadas, capturadas, telas, url, motivo: "concluida"|"fechada"|"prazo", fonte}`, mais `sigilosos_novos`, como na sincronização
+* `POST /api/pauta/importar` (multipart `arquivo` ou JSON `{caminho}`) → `{novas, atualizadas, ignoradas, avisos, total, arquivo}` (`arquivo` = o nome que o usuário escolheu), mais `sigilosos_novos`, como na sincronização
+* `POST /api/pauta/exportar` `{de, ate, sistema?, situacao?, busca?, incluir_partes_sigilosos?}` → `{arquivo}` (`incluir_partes_sigilosos` presente vale como veio, `true` ou `false`, inclusive o `false` com o ajuste ligado; ausente, vale `[pauta] incluir_partes_sigilosos`)
+* `GET /api/pauta/alteracoes?desde=` → `[{quando, tipo: "nova"|"alterada"|"cancelada"|"removida", audiencia, campos: [{campo, antes, depois}]}]`; `POST /api/pauta/alteracoes/vistas`
+* `POST /api/pauta/monitoramento` `{ativo, intervalo_horas}`
+* `POST /api/pauta/baixar-autos` `{ids?: [], de?, ate?}` → `{tarefa}` (lote de download com os processos)
+
+**Compartilhar com IA** (as ações recusam com 409 `sigiloso_no_acervo` enquanto os **autos** de um processo sigiloso, um PDF dele fora de `Produtos\`, estiverem presos no acervo, e os outros arquivos presos só avisam; as que entregam o acervo — preparar, abrir o Cowork, o Claude Code, o ChatGPT Work ou o Codex, o pacote e o espelho na nuvem — começam pelo preparo, que tira do acervo o processo sigiloso, e, nas tarefas, o que não puder sair faz a tarefa falhar com a mesma frase: seção 12)
+* `GET /api/compartilhar/estado` → estado de cada destino (`servicos.estado_ia`), mais `sigilosos_avisos` (os arquivos de processo sigiloso que ficaram no acervo sem travar nada)
+* `POST /api/compartilhar/preparar` → `{tarefa}`; o `resultado` da tarefa `preparo` traz também `avisos` (as frases sobre os arquivos que só avisam)
+* `POST /api/compartilhar/claude-desktop` (conectar o acervo) · `/cowork` · `/claude-code` · `/chatgpt-work` · `/codex` → `{mensagem, abriu}`, mais `copiar` no Cowork (o pedido inicial) e no ChatGPT Work (o caminho do acervo), e `{pagina_aberta, url}` quando o programa precisou abrir uma página no navegador: o Claude Code ausente e o Claude Desktop ausente (também no Cowork), com `instalado: false`, e o ChatGPT Work sem o app, com `resultado: "web"` (contratos C6 e C7)
+* `POST /api/compartilhar/pacote` `{numeros?}` → `{tarefa}`
+* `GET /api/compartilhar/nuvem` → `[{rotulo, caminho}]`; `POST /api/compartilhar/nuvem/espelhar` `{destino}` → `{tarefa}` (o destino só é gravado em `[compartilhar] pasta_nuvem` depois de todas as conferências; dentro do acervo ou contendo-o → 400 `pastas_em_conflito`)
+* `GET /api/compartilhar/prompt` → `{texto}`
+
+### 6.4 Eventos (`GET /api/eventos?t=TOKEN`, Server-Sent Events)
+
+Cada evento: `event: <tipo>` + `data: <json>`. Tipos:
+
+| tipo | dados |
+|---|---|
+| `tarefa` | `Tarefa` (sempre que muda) |
+| `item` | `{tarefa, numero, situacao, mensagem, arquivo, sigiloso}` (download) |
+| `log` | `{tarefa?, nivel: "info"|"aviso"|"erro", texto, hora}` |
+| `pergunta` | `{id, tarefa, tipo: "codigo"|"confirmar"|"texto"|"escolha", titulo, mensagem, opcoes?, prazo_s}` |
+| `pergunta_fechada` | `{id, motivo}` |
+| `aviso` | `{titulo, mensagem, nivel, tarefa?}` (`tarefa`: o aviso é de uma tarefa; a interface não o repete quando a tela aberta já mostra o resultado dela). Quando a pauta revela o sigilo de processo com arquivos no acervo, o título é “Processo em segredo de justiça” (ou “Processos em segredo de justiça”), com `nivel` “aviso” e a frase de `frase_sigilo_revelado` (seção 12) |
+| `transcricao` | `{tipo: "estado"|"nivel"|"fala"|"atraso"|"aviso"|"erro"|"salvo"|"fim", dados}` (`fala` = `{inicio, fim, falante, texto}`; `estado` = `{texto, estado}`, e `estado: "erro"` com `fase: "inicio"|"fim"` quando a sessão acaba com erro — sem microfone, a gravação não começa e a tela volta à preparação com o motivo) |
+| `microfone_nivel` | `{nivel}` (0..1) |
+| `pauta` | `{tipo: "atualizada"|"alteracoes", dados}` |
+| `estado` | `{}` — algo do resumo mudou; a interface relê `/api/estado` |
+| `ping` | a cada 15 s |
+
+### 6.5 Perguntas
+
+O motor pede um dado ao usuário (código enviado por e-mail, código de dois
+fatores, confirmação) chamando o contexto da tarefa, que **bloqueia** a thread de
+trabalho num `threading.Event` (padrão de `helestron/tarefas.py`). O servidor
+publica `pergunta`; a interface abre uma folha (sheet) e responde em
+`/api/perguntas/{id}/responder`. Prazo esgotado, tarefa parada ou cancelamento
+fecham a pergunta (`pergunta_fechada`). A cada `pergunta` publicada, o
+servidor também chama quem pediu para saber (`Aplicacao.registrar_atencao`,
+contrato C3): a janela própria vem para a frente e pisca na barra de tarefas;
+no Edge e no navegador, a página alterna o título enquanto a pergunta espera.
+
+### 6.6 Contratos entre a interface, o servidor e o motor (C1–C9)
+
+Combinados na revisão da versão 1.0.0; cada lado tolera a falta do outro
+(campo ausente, função ausente), e os testes conferem os dois lados.
+
+* **C1 — Testar o acesso certo.** `POST /api/acessos/testar` recebe
+  `{tribunal, sistema?}`, com `sistema` “esaj” ou “eproc”; outro valor → 400
+  `valor_invalido`; sem `sistema`, vale o portal principal do tribunal (o
+  e-SAJ no TJAL). A tela manda o sistema da linha (no TJAL, no TJSP e no
+  TJAC os dois portais existem), e a tarefa `teste_login` tem o título do
+  portal exato (“Testar o acesso ao TJAL · eProc”). Em Ajustes › Acessos
+  aos portais, “Testar” e “Alterar” (ou “Cadastrar”) são botões irmãos numa
+  linha que não é botão, e o resultado aparece na própria linha (“Testando o
+  acesso…”, “Acesso confirmado às HH:MM.”, “O teste falhou. …”); o aviso do
+  fim dessa tarefa não aparece enquanto a tela está aberta.
+* **C2 — Microfone pelo nome.** `[transcricao] dispositivo` guarda o
+  **nome** do microfone (`""` = padrão do Windows): o número muda quando se
+  liga ou desliga um aparelho USB. A configuração antiga, só com dígitos, é
+  convertida no nome do mesmo aparelho e regravada. Em `iniciar` e no teste,
+  `dispositivo` é nome, número ou `""`; sem a chave, vale o da configuração; o
+  `""` vai explícito para a sessão (não herda o `config.ini`).
+  `microfone.conferir` confere antes de gravar: nome que não existe mais →
+  `MicrofoneNaoEncontrado` (“O microfone ‘X’ não foi encontrado. Escolha
+  outro em Audiências ou Ajustes › Transcrição.”; aqui, as aspas simples
+  marcam as aspas “ ” que a frase põe no nome); sem nenhum microfone, a
+  frase `SEM_MICROFONE` (“Nenhum microfone foi encontrado. Ligue o microfone
+  (ou o fone com microfone) e tente de novo. Se ele estiver ligado, confira
+  em Configurações do Windows › Sistema › Som › Entrada.”); o servidor
+  traduz os dois (e o microfone ocupado) em 409 `microfone_indisponivel`, e
+  a tela mostra a frase e recarrega a lista. A tela mostra o nome que sumiu
+  como “Não encontrado: X” (no início do rótulo: no fim, a caixa estreita o
+  cortava), com a nota “O microfone ‘X’ não foi encontrado neste computador.
+  Ligue-o ou escolha outro.”, e nunca o troca em silêncio pelo padrão.
+  Enquanto a lista mostra “Carregando os microfones…”, Gravar e Testar ficam
+  desativados. A `Captura` procura o nome de novo a cada abertura e, se
+  outro aparelho abrir no lugar do escolhido, avisa (evento `transcricao` de
+  tipo `aviso`: “O microfone ‘X’ não abriu (desligado, ou em uso por outro
+  programa); a gravação segue pelo ‘Y’. Confira o microfone em
+  Audiências.”). Ajustes › Transcrição tem a lista “Microfone”, com a mesma
+  regra e a mesma nota.
+* **C3 — Pedido de código que chama atenção.**
+  `Aplicacao.registrar_atencao(funcao)` guarda a função (sem repetir); a
+  cada `pergunta`, cada função registrada roda numa thread própria, dentro
+  de `try` (uma que falha não impede as outras; `pergunta_fechada` não
+  chama). A `JanelaWebview` registra `chamar_atencao`, que só age se ainda
+  for a janela ativa: `IsIconic` → `ShowWindowAsync(SW_RESTORE)`,
+  `SetForegroundWindow` e `FlashWindowEx(FLASHW_ALL | FLASHW_TIMERNOFG)`. No
+  Edge e no navegador (modo diferente de “janela”), a página não alcança a
+  janela: com pergunta pendente e a página sem foco, o título alterna a cada
+  segundo com “Código pedido — Helestron” (ou “Pergunta à espera —
+  Helestron”) até a pergunta ser respondida ou fechada.
+* **C4 — Sigilo vindo da pauta.** `ServicoPauta.processo_sigiloso(numero)`
+  (número em texto, em qualquer grafia, ou `Numero`) é verdadeiro se alguma
+  audiência daquele processo, em qualquer registro (do portal, do relatório
+  importado, já fora da pauta), está marcada sigilosa (`Armazem.sigilosas`).
+  Ela compara o número exato, sem a herança do incidente: na transcrição, a
+  herança vem da regra única (seção 12), que
+  `servidor/audiencia.sigilo_conhecido` consulta por último e que diz quando
+  o sigilo vem do principal (“Este processo é incidente de um processo
+  sigiloso: …”).
+  Na transcrição (`servidor/audiencia.py`, `sigilo_da_audiencia`), o pedido da
+  página só **acrescenta** sigilo: vale `servicos.processo_sigiloso` (autos,
+  transcrição, gravação ou diário do processo na pasta dos sigilosos), a
+  pauta, ou a gravação guardada na pasta dos sigilosos (no envio pela página,
+  um arquivo de mesmo nome e tamanho lá): é a regra única do sigilo
+  (seção 12), mais a gravação. A resposta de `iniciar` e de `gravacao` traz
+  `{sigiloso, sigiloso_forcado, motivo?}`; se a pauta falhar, a audiência
+  segue. A tela consulta a pauta (`GET /api/pauta` com `busca` = número, de um
+  ano para trás a um ano para a frente) quando o número fica válido e, se ele
+  for sigiloso, liga o interruptor com o motivo (“A pauta de audiências indica
+  que este processo corre em segredo de justiça.”); só desliga o que ela mesma
+  ligou, quando o número muda. Com `sigiloso_forcado`, a tela liga o
+  interruptor e mostra o motivo na barra ao vivo (ou no cartão da gravação
+  enviada).
+* **C5 — Primeiros passos da pauta.** `resumo_inicio()` devolve também
+  `fontes` (quantas cadastradas) e `configurada`: verdadeiro se há fonte
+  cadastrada, se já houve sincronização, captura ou importação (meta
+  `ultima_importacao`) ou se o banco já tem alguma audiência.
+  `GET /api/estado` repassa os dois em `resumo.pauta` (com uma pauta antiga,
+  sem os campos, completa `fontes` por `fontes()` e `configurada` por fonte ou
+  sincronização). O Início só dá o passo “Configurar a pauta de audiências”
+  por feito com `configurada`; pendente, ele tem o botão “Configurar”. O
+  cartão “Primeiros passos” aparece mesmo sem pendência do servidor e sai
+  quando tudo está feito. “Hoje na pauta” usa o mesmo critério: sem audiência
+  e sem pauta configurada, “A pauta ainda não foi configurada”, com o botão
+  “Configurar a pauta”; configurada, mas nunca sincronizada, “A pauta ainda
+  não foi sincronizada” só com fonte cadastrada (a pauta configurada só por um
+  relatório importado não tem fonte para sincronizar); fora disso, “Nenhuma
+  audiência hoje”, com a próxima.
+* **C6 — Ferramenta ausente abre a página oficial.**
+  `POST /api/compartilhar/claude-code` sem o Claude Code abre
+  `claude.URL_DOC_CODE` no navegador padrão (`sistema.abrir_endereco` devolve
+  se abriu) e responde
+  `{abriu: false, instalado: false, pagina_aberta, mensagem, url}`; sem
+  navegador, a mensagem traz o endereço. O Claude Desktop ausente faz o mesmo
+  com a página de download (`claude.URL_DOWNLOAD_DESKTOP`), no “Conectar o
+  acervo” e no “Abrir no Cowork”. O Cowork responde
+  `{abriu: false, resultado: "baixar", instalado: false, pagina_aberta}`, mais
+  `url`, `mensagem` e `copiar`: “O Claude Desktop não está instalado: abri no
+  navegador a página de download. Instale o app, entre com a sua conta (o
+  Cowork exige plano pago) e tente de novo.” ou, sem navegador, “O Claude
+  Desktop não está instalado. Baixe-o em https://claude.ai/download,
+  instale-o, entre com a sua conta (o Cowork exige plano pago) e tente de
+  novo.”. O ChatGPT Work sem o app do ChatGPT para Windows abre
+  `chatgpt.URL_CHATGPT` aqui mesmo e responde
+  `{abriu, resultado: "web", pagina_aberta, url, copiar, mensagem}`: “O
+  ChatGPT abriu no navegador, que não lê pastas do computador. Instale o app
+  do ChatGPT para Windows para usar o modo Work com o acervo — ou, no cartão
+  ‘Pacote para o ChatGPT’, ‘Gerar o pacote’.” ou, sem navegador, “Não consegui
+  abrir o ChatGPT no navegador (https://chatgpt.com/). Pelo navegador, ele não
+  lê pastas do computador. …”. Com `pagina_aberta: false`, a folha da tela
+  oferece os botões “Abrir a página” (`POST /api/abrir` com `tipo` “url”) e
+  “Copiar o endereço” (que funciona sem navegador nenhum); se “Abrir a página”
+  também não abrir o navegador, o servidor responde 409 `navegador_nao_abriu`
+  (“Não consegui abrir o navegador. Copie o endereço e cole-o no navegador:
+  …”, com o endereço), e a folha de erro tem o título “O navegador não abriu”.
+  As mensagens só citam botões que existem (o Codex ausente aponta “Abrir no
+  ChatGPT Work” e “Gerar o pacote”).
+* **C7 — Cowork e ChatGPT Work copiam na hora do clique.** A tela lê o
+  pedido inicial (`GET /api/compartilhar/prompt`) ao abrir. No clique de
+  “Abrir no Cowork” (o pedido inicial) e de “Abrir no ChatGPT Work” (o
+  caminho do acervo), `navigator.clipboard.writeText` começa antes de
+  qualquer espera de rede, com reserva por `execCommand("copy")`; só depois
+  a API é chamada (o app externo toma o foco, e o navegador recusaria a
+  cópia). Sem o texto à mão, vale o `copiar` da resposta; se nada der certo,
+  a folha mostra o texto num campo, com o botão “Copiar”.
+* **C8 — A ficha da audiência.** `POST /api/transcricao/encerrar` aceita
+  `{tipo}` e o grava em `sessao.meta.tipo`; `GerenteAudiencia.ultima` guarda
+  o tipo e os participantes. A revisão (`gravacao` com `revisao`) usa o `tipo` do pedido
+  ou o da sessão, mais os participantes. A tela manda o tipo com que ela
+  começou a sessão (depois de recarregar a página, nada: vale o do
+  servidor). A folha “Transcrever a gravação” tem o seletor “Tipo de
+  audiência” e, no envio pela página (o servidor só vê um temporário), manda
+  `nome_original` e `data_arquivo` (a data da última modificação do
+  arquivo, em ISO 8601; o servidor aceita também milissegundos); sem
+  `data_arquivo`, a data vem do nome do arquivo
+  (`<número> 2026-09-15 14h00.flac`). `servicos.transcrever_gravacao` recebe
+  `gravacao` e `data` e monta a `MetaAudiencia`.
+* **C9 — Relatório do lote mesclado.** “Tentar de novo” manda o **mesmo**
+  `nome_lote` (o da pasta do lote que terminou, não o do rascunho da tela),
+  só os `a_refazer` e `rebaixar: false`. O motor (`download/motor.py`,
+  `_Lote`) lê o relatório anterior da pasta (o mais recente entre
+  `relatorio.csv` e `relatorio (atualizado).csv`; a linha mascarada
+  “(processo sigiloso)” é casada, pela ordem, com a do relatório completo da
+  pasta de sigilosos) e grava a mescla: as linhas refeitas no lugar das
+  antigas, as demais como estavam e as novas no fim, com a ordem
+  renumerada. O relatório do acervo continua mascarado, e o completo vai
+  para a pasta de sigilosos do lote.
+
+## 7. Interface (`helestron/web`)
+
+### 7.1 Princípios
+
+* **iOS / iPadOS**: barra lateral translúcida (vidro), títulos grandes, cartões
+  com cantos de 20 px, listas agrupadas (“inset grouped”), controles segmentados,
+  interruptores, folhas modais com fundo desfocado, avisos discretos (toasts),
+  ícones de traço arredondado.
+* **Cores** (tokens CSS em `:root`):
+  `--navy-900 #0B1A33`, `--navy-800 #12284A`, `--navy-700 #1B3560`,
+  `--azul #0A66E8` (ação principal), `--azul-claro #4C8DFF`, `--azul-fundo #E8F1FF`,
+  `--cinza-900 #1C1C1E`, `--cinza-600 #6B7280`, `--cinza-400 #A1A7B3`,
+  `--cinza-200 #E5E7EB`, `--cinza-100 #F2F4F7`, `--branco #FFFFFF`,
+  `--verde #1F9D55`, `--ambar #C27C0E`, `--vermelho #D93A3A` (gravar, erro).
+  Vidro: `background: rgba(255,255,255,.62); backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255,255,255,.7); box-shadow: 0 8px 32px rgba(11,26,51,.08)`.
+  Fundo da janela: gradiente suave branco→azul-gelo com 2–3 manchas desfocadas
+  (azul e navy em baixa opacidade), para o vidro “aparecer”.
+* **Quadrados de ícone só em azul e cinza** (como os Ajustes do iOS em
+  monocromia azul). Os blocos `.cor-*` do CSS (`bloco-icone`) são só azuis,
+  navy e cinzas: `cor-azul`, `cor-celeste`, `cor-ciano`, `cor-cobalto`,
+  `cor-aco`, `cor-navy`, `cor-ardosia` e `cor-cinza` (não há mais índigo,
+  verde, âmbar nem vermelho). O ícone branco tem contraste de 3:1 ou mais
+  (WCAG 1.4.11) na faixa de 20 % a 80 % da altura do quadrado, por onde
+  passa o traço. O tom distingue o assunto e é o mesmo em todas as telas:
+  Baixar (download) navy, Transcrever azul, Pauta ciano, Compartilhar/IA
+  cobalto, Pastas celeste, Acessos aço, Unidade e sigilo ardósia,
+  Diagnóstico cinza; as oito seções de Ajustes têm tons diferentes entre si.
+* **Verde, âmbar e vermelho só dizem estado** (ou ação destrutiva): pontos,
+  pílulas, faixas de aviso, erro e ok, avisos (toasts), o anel do resultado
+  do lote, as folhas de erro (“A gravação não começou”, com o ícone
+  vermelho) e de alerta, o medidor de nível, o selo vermelho de alterações
+  não vistas, os passos feitos (verde) dos Primeiros passos, o botão de
+  gravar, o Encerrar e os botões de perigo. O ponto do selo do tipo de
+  audiência (`COR_TIPO`, em `componentes.js`) é em tons de azul e cinza, sem
+  cor de estado: antes, Custódia vermelha, Justificação âmbar e Mediação
+  verde pareciam erro, aviso e “pronto” na lista da Pauta. Os testes
+  `PaletaAzulCinzaBranco` (`testes/test_web_contrato.py`) e
+  `test_quadrados_de_icone_so_em_azul_navy_e_cinza`
+  (`testes/test_web_interface.py`) conferem a regra.
+* **Tipografia**: Inter (variável, embutida em `web/fontes/`, licença OFL junto),
+  com reserva `"Segoe UI Variable", "Segoe UI", system-ui`. Título grande 32–34 px
+  semibold; corpo 15 px; números de processo em `font-variant-numeric: tabular-nums`.
+* **Claro e limpo**: um assunto por tela; ação principal sempre visível; textos
+  curtos em português correto (acentos, crase, maiúsculas só onde cabe).
+* **Sem dependências externas**: nada de CDN; JS puro (ES2020), sem etapa de
+  construção. Funciona offline.
+* **Acessível**: foco visível, rótulos `aria-*`, navegação por teclado
+  (Ctrl+1…7 para as seções), contraste AA, `prefers-reduced-motion` respeitado.
+* Janela padrão 1280×820, mínima 1100×720; a interface deve caber também em
+  1366×768 com zoom 125 %. Quando a área útil do monitor não comporta a
+  janela padrão, ela abre maximizada (seção 3.3). Números de processo nunca
+  são cortados: nas listas laterais quebram depois do ano (`<wbr>`), e na
+  barra da audiência ao vivo ganham linha própria abaixo de 1240 px. Também
+  abaixo de 1240 px, a tabela do lote (Processos) deixa a coluna “Detalhe”,
+  e a frase vai para baixo da pílula de situação; e o cartão “Transcrição
+  salva” mostra o nome do documento inteiro, com os botões numa linha
+  própria.
+
+### 7.2 Estrutura
+
+Barra lateral (vidro, 248 px): logotipo H + “Helestron”; seções **Início**,
+**Processos**, **Audiências** (transcrição), **Pauta**, **Compartilhar**,
+**Ajustes**, **Ajuda**; no rodapé, tarefas em andamento (anel de progresso) e a
+versão. Conteúdo: título grande + subtítulo + ações à direita.
+
+* **Início** — saudação (“Boa tarde”) e data; **quatro cartões grandes** com as
+  funções principais (Baixar processos · Transcrever audiência · Pauta de
+  audiências · Compartilhar com IA), cada um com ícone, frase e botão; abaixo,
+  “Hoje na pauta” (próximas audiências), “Atividade recente” (lotes e
+  transcrições, com a concordância certa: “1 de 1 processo baixado”) e
+  “Primeiros passos” (acessos, pastas e modelo, feitos enquanto o servidor
+  não manda a pendência; a pauta, feita só com `resumo.pauta.configurada`,
+  contrato C5) como lista de verificação. As pendências do servidor entram
+  na mesma lista, com o botão “Resolver”: as do sigilo (“Processo sigiloso
+  no acervo” e “Arquivo de processo sigiloso no acervo”, seção 12) levam à
+  tela Compartilhar.
+* **Processos** — fluxo em etapas: (1) relação: área de soltar arquivo
+  (arrastar e soltar), botão “Escolher arquivo”, “Colar lista” e “Link”; (2)
+  revisão: processos reconhecidos com selos do tribunal/sistema, avisos e
+  números rejeitados; (3) opções (nome do lote, separar sigilosos, baixar de novo
+  o que já existe, mostrar o navegador); (4) andamento: anel de progresso, lista
+  de itens com situação, botões Parar e Abrir pasta; no fim, o título e o
+  anel dizem o resultado (“Lote concluído”, verde; “Lote concluído com
+  falhas”, âmbar; “Nenhum processo baixado”, vermelho), e “Tentar de novo”
+  refaz os que falharam no mesmo lote (contrato C9). Mais “Últimos lotes”.
+  O processo que o programa já sabe sigiloso (seção 12) vai para a pasta
+  dos sigilosos mesmo que a página do portal não mostre o selo.
+* **Audiências** — preparação (número do processo com validação e sugestões da
+  pauta de hoje, microfone escolhido pelo nome com medidor de nível — Gravar
+  e Testar desativados enquanto a lista carrega —, participantes F1–F8,
+  interruptor “Segredo de justiça”, que se liga sozinho com o motivo quando
+  o programa já sabe que o processo é sigiloso: contratos C2 e C4);
+  **botão de gravar** grande (círculo vermelho); se a gravação não começa
+  (sem microfone, por exemplo), a folha de erro “A gravação não começou”,
+  com o ícone vermelho, diz o motivo, e a audiência que cai no meio mostra
+  “A audiência foi interrompida”; durante a gravação: cronômetro, texto
+  ao vivo com marcação de tempo e falante, “Ouvindo…” só enquanto grava (não
+  na pausa), rolagem automática, Pausar/Retomar, botões de falante (F1 a F8,
+  cada um com uma cor em tons de azul, navy e cinza, todas com contraste AA
+  no nome, sobre o branco e o vidro, e na letra branca do botão apertado),
+  Encerrar → documento DOCX (“Abrir documento”). Também “Transcrever uma gravação”
+  (folha com número, “Tipo de audiência” e sigilo), a faixa “Uma transcrição
+  foi interrompida”, com o botão “Recuperar”, e “Transcrições recentes”.
+* **Pauta** — seção 8.8.
+* **Compartilhar** — botão principal “Preparar acervo para a IA”; cartões:
+  Claude Code, Claude Cowork, Claude Desktop (conector), ChatGPT Work, Codex,
+  Pacote para o ChatGPT, Nuvem (OneDrive/Google Drive); cada um com situação e
+  ação; “Copiar pedido inicial”. Cowork e ChatGPT Work copiam o texto na hora
+  do clique (contrato C7); sem o Claude Code, o Claude Desktop ou o app do
+  ChatGPT, a página oficial abre no navegador (contrato C6). A faixa
+  “Sigilo e responsabilidade” lembra a regra do sigilo (seção 12).
+* **Ajustes** — listas agrupadas: Acessos aos portais (usuário/senha por
+  portal, com os botões irmãos “Testar” e “Alterar”/“Cadastrar” e o
+  resultado do teste na linha: contrato C1), Pastas, Unidade, Download,
+  Transcrição (com a lista “Microfone”, pelo nome), Pauta (fontes,
+  monitoramento; a fonte cuja última sincronização falhou mostra “Último
+  erro: …” com um ponto âmbar, e o ícone dela não muda de cor),
+  Compartilhar, Sobre e diagnóstico (versão, verificar instalação, abrir
+  registros). Nenhum botão fica dentro de outro.
+* **Ajuda** — perguntas frequentes pesquisáveis e “como fazer” de cada função.
+
+Folhas (sheets) para perguntas (código de 6 dígitos com campo grande),
+confirmações e erros. Avisos (toasts) no canto superior direito, mas abaixo
+das ações do cabeçalho da página e do que a tela marcar com
+`data-livre-de-avisos` (a barra da audiência ao vivo, os botões de falante);
+no máximo três à vista; a mesma mensagem (ou uma contida noutra) substitui a
+anterior em vez de se repetir; o aviso do fim de uma tarefa cujo resultado a
+tela aberta já mostra (a sincronização e a captura na Pauta, o teste de
+acesso em Ajustes) não aparece.
+
+### 7.3 Arquivos
+
+`web/index.html`, `web/css/helestron.css`, `web/js/` (`api.js` — cliente com
+token e reconexão do SSE; `app.js` — rotas por `#/secao`; um arquivo por seção;
+`componentes.js`; `demo.js`), `web/img/` (logotipo, ícones SVG), `web/fontes/`.
+
+**Modo demonstração** (`index.html?demo=1`): `demo.js` responde a todas as
+chamadas da API com dados realistas e simula eventos (download andando, texto da
+audiência chegando, pauta com 40 audiências, uma delas sigilosa), **sem
+servidor**, nos mesmos formatos do servidor (contratos C1–C9). Serve para
+desenvolver o visual, para as capturas de tela e para testes da interface.
+Variações pela URL: `&pauta=vazia`, `&sem_dialogo=1`, `&lote=falhas` (nenhum
+processo do lote é baixado), `&claude_code=ausente`, `&microfone=<nome>` (o
+microfone guardado em Ajustes), `&presenca=certificado` (as fontes da pauta
+só entram com a pessoa à frente), `&modo=edge` ou `&modo=navegador` (o modo
+da janela) e `&falantes=ausentes` (construção sem os modelos de voz).
+
+**Modo autoteste** (`?autoteste=1`): percorre as seções, espera cada uma
+carregar e avisa o servidor (`POST /api/autoteste/passo {secao}`) para a captura;
+no fim, manda o balanço (`POST /api/autoteste/fim {secoes, erros}`). O
+`--autoteste` (seção 5) roda em pastas de dados temporárias e vazias: as
+capturas, que saem do computador, nunca mostram a pauta, o acervo ou a
+configuração de quem o roda (seção 12).
+
+## 8. Pauta de audiências (`helestron/pauta`)
+
+### 8.1 Modelo
+
+```python
+@dataclass
+class Audiencia:
+    id: str            # sha1(sistema|tribunal|processo|data|hora|tipo)[:16]
+    sistema: str       # "esaj" | "eproc" | "arquivo"
+    tribunal: str      # sigla (TJAL...) ou ""
+    processo: str      # CNJ formatado (nucleo.cnj); "" se não reconhecido
+    data: date
+    hora: str          # "HH:MM" ou ""
+    tipo: str          # normalizado: "Conciliação", "Instrução e julgamento", "Una", "Custódia", "Justificação", "Mediação", "Outra" (+ texto original em tipo_original)
+    situacao: str      # "Designada", "Realizada", "Cancelada", "Redesignada", "Não realizada", "Suspensa"
+    local: str         # sala/vara/"Virtual"
+    link: str          # link de audiência virtual, se houver
+    classe: str
+    partes: str        # "Autor x Réu" (como vier)
+    magistrado: str
+    sigiloso: bool     # o portal (ou o relatório) indicou segredo de justiça nesta ou em outra
+                       # audiência do mesmo processo, ou o processo está na pasta de sigilosos
+    observacoes: str
+    origem: str        # URL/arquivo de onde veio
+    capturada_em: datetime
+    tipo_original: str
+    situacao_original: str
+```
+
+### 8.2 Armazenamento
+
+SQLite em `LOCAL/pauta.sqlite3` (stdlib `sqlite3`, WAL). Tabelas `audiencias`
+(estado atual), `alteracoes` (histórico: nova/alterada/cancelada/removida,
+campos antes→depois, quando, vista) e `fontes` (id, tribunal, sistema, rótulo,
+modo automático/capturado, URL lembrada, última sincronização, último erro).
+Gravar em transação; `upsert` por `id`; a sincronização de uma fonte num período
+marca como **removida** a audiência daquela fonte e período que não veio mais
+(e não a apaga) — só quando a leitura cobriu o período inteiro
+(`Leitura.cobertura`, seção 8.3): leitura incompleta não marca nada como
+removida nem pareia remarcadas, e, sem o período aceito pelo portal, a
+cobertura se limita às datas que vieram. A audiência remarcada (a hora faz
+parte do `id`) é reconhecida quando, na mesma sincronização, some uma
+audiência de um processo e aparece outra do **mesmo** processo, uma só de
+cada lado: vira “alterada”, com a hora antes→depois, e não um par “nova” +
+“removida”. Campo vazio não apaga o que já se sabia, e o sigilo, uma vez
+apurado, fica (`a.sigiloso or velha.sigiloso`): não há como desmarcá-lo pelo
+programa (seção 12, “Uma marcação errada não se desfaz sozinha”).
+
+A audiência que o portal traz e que já estava na pauta por um relatório
+**importado** (mesmo processo, data e hora) não fica em dobro: na mesma
+transação, o registro do relatório (`sistema` “arquivo”) é absorvido pelo
+do portal (`Armazem._absorver_importadas`) — o que só o relatório sabia
+completa o registro do portal, o sigilo de um vale para o outro, e a
+absorvida não conta como “nova”; se o portal mudou a situação, a mudança
+vira alteração (“cancelada”, por exemplo). O par é **um a um, pelo tipo**
+(`modelos.parear_mesmo_horario`, a mesma regra da importação no sentido
+inverso): primeiro o do mesmo tipo (havendo mais de um, o da mesma
+situação); o que sobra só se pareia quando sobra **um de cada lado**. Com
+duas audiências do processo no mesmo horário (uma Conciliação cancelada e
+uma Instrução designada), cada uma fica com a sua, e o registro do
+relatório sem par fica onde está. A do portal que já estava no banco só
+absorve o do mesmo tipo (ela já foi pareada antes).
+
+`Armazem.sigilosas()` devolve as chaves CNJ e os ids marcados sigilosos em
+**qualquer** registro (o sigilo é do processo), e
+`Armazem.processos_sigilosos()`, `{chave: número}` (o número como a pauta o
+mostra), com que o serviço compara os sigilosos antes e depois de gravar
+(seção 8.10). A importação grava a meta `ultima_importacao`.
+
+### 8.3 Extração automática (e-SAJ e eProc)
+
+Reaproveita o login e o perfil de navegador do download (`download/esaj.py`,
+`download/eproc.py`, `download/navegador.py`): mesma sessão, mesmo código por
+e-mail/dois fatores via perguntas e as mesmas senhas — a do cofre e a
+digitada com “Lembrar neste computador” desligado, que vale até fechar o
+programa (`app.credenciais_sessao`, o mesmo dicionário do download, entregue
+ao `ServicoPauta.credenciais_sessao` em sincronizar e capturar; a da sessão
+tem precedência). No monitoramento (segundo plano), só vale a senha
+guardada (seção 8.7). Depois de entrar:
+
+1. **Rota lembrada** da fonte (URL capturada antes), se houver.
+2. **Rotas conhecidas** em `dados/pauta.json` (por sistema e, se preciso, por
+   tribunal) — candidatos de URL relativos ao portal.
+3. **Descoberta pelo menu**: procura links/itens de menu cujo texto case com
+   `pauta|audiênci|agenda de audi|gerenciar audi|consultar audi` (regex em
+   `pauta.json`), abre o primeiro e confere se a página tem tabela de audiências.
+4. Preenche o **período** se a página tiver campos de data (rótulos/nomes como
+   `Data inicial/final`, `dataInicio`, `txtDataInicio`, `de`/`até`) e envia.
+   O período só conta como **aplicado** (`periodo_aplicado`) se a página
+   mudou depois do envio e os campos não mostram outro período (portal que
+   recusa ou encurta o pedido); senão, a cobertura se limita às datas que
+   vieram, e o resultado traz o aviso (“O e-SAJ do TJAL não aceitou o
+   período…”, “O eProc do TJAL mostrou o período de … e não o pedido…”).
+5. Lê **todas as tabelas** da página (inclusive em frames), reconhece a de
+   audiências pelo cabeçalho (seção 8.5) e **pagina** (link/botão “Próxima”,
+   `infraAcaoPaginar` do eProc, seletor de página) até o fim (limite 50 páginas).
+   A leitura fica **incompleta** (`Leitura.incompleta`, com o motivo) quando a
+   página seguinte não abre a tempo ou não mostra a tabela, quando o portal
+   volta a uma página já lida, quando bate o limite de páginas, ou quando
+   foram lidas menos linhas do que o total que o portal informa (“Lista de …
+   (N registros)”). Nesse caso, nada é dado como removido (seção 8.2), e o
+   aviso diz “A leitura da pauta do … ficou incompleta: [motivo]. Por isso,
+   nenhuma audiência foi dada como fora da pauta; sincronize de novo mais
+   tarde.” A sessão que cai no meio da paginação (o portal pede a senha de
+   novo) lança `SessaoPerdida`, também depois da 1ª página: o serviço entra
+   de novo e relê tudo, uma vez.
+6. Normaliza, grava e registra a URL que funcionou como rota lembrada.
+
+eProc usa o framework “Infra” (tabelas `table.infraTable`, legenda “Lista de …
+(N registros)”, paginação `infraAreaPaginacao`). As rotas e regexes ficam em
+`pauta.json` para ajuste sem mexer no código.
+
+### 8.4 Captura assistida (funciona em qualquer tela)
+
+Para quando a descoberta falha, ou o tribunal tem tela própria: o Helestron abre
+o portal no navegador **visível** (perfil do usuário), já logado, e injeta (via
+`add_init_script` + `expose_binding`) uma **barra flutuante** discreta no topo da
+página: “Helestron — vá até a pauta de audiências e clique em **Capturar esta
+tela**” · [Capturar esta tela] [Concluir]. Cada clique lê as tabelas da página
+atual (e frames), mostra na barra quantas audiências reconheceu e acumula; o
+usuário pode mudar de página e capturar de novo. “Concluir” grava tudo e
+**lembra a URL** como rota da fonte, para o monitoramento automático.
+
+### 8.5 Reconhecimento de tabela
+
+Cabeçalhos por sinônimos (sem acento, minúsculas), em `pauta.json`:
+data (`data`, `dia`, `data/hora`, `data da audiencia`), hora (`hora`, `horario`,
+`inicio`), processo (`processo`, `numero`, `autos`, `n do processo`), tipo
+(`tipo`, `tipo de audiencia`, `natureza`, `audiencia`), situação (`situacao`,
+`status`, `andamento`), local (`local`, `sala`, `vara`, `orgao`), classe,
+partes (`partes`, `autor`/`reu` combinados, `polo ativo`/`polo passivo`),
+magistrado (`magistrado`, `juiz`, `conciliador`, `responsavel`), link. Uma
+tabela é de audiências se tiver ao menos **data** e (**processo** ou **tipo**),
+ou se ≥ 50 % das linhas tiverem data e número CNJ. Célula com data e hora juntas
+é separada. Datas `dd/mm/aaaa`, `dd/mm/aa`, `dd.mm.aaaa`, ISO; horas `HH:MM`,
+`HHhMM`. Além disso (`pauta/tabelas.py`):
+
+* **Cabeçalho depois do preâmbulo.** O cabeçalho é procurado nas primeiras
+  15 linhas (`MAX_LINHAS_CABECALHO`). Linha com valores (uma data ou um
+  número CNJ, como “Data: | 03/10/2026 | Hora: | 10:15”, da emissão do
+  relatório) é preâmbulo, não cabeçalho, e não encerra a busca. Duas linhas
+  de cabeçalho seguidas (“Audiência” mesclada sobre “Data | Hora”) são
+  juntadas coluna a coluna. Um cabeçalho de outra coisa (intimações) só
+  barra a tabela se nenhum cabeçalho de pauta vier abaixo dele. Na regra dos
+  50 %, as linhas antes do primeiro dado (título, vara, período) não contam.
+* **Só a própria tabela diz que é pauta.** Os sinais de audiência (coluna de
+  hora, “audiência”/“pauta” no cabeçalho, na legenda ou no nome da tabela)
+  vêm da própria tabela; o título da página nunca desfaz um cabeçalho com
+  negativos (`prazo`, `evento`, `intimac`, `movimentac`, `movimento`,
+  `publicac`, `expedi`, `peticao`, `documento`, `distribuic`, `distribuid`,
+  `recebimento`, `conclus`, `juntada`, `mandado`, `citac`, `remessa`,
+  `ultimo andamento`): a página da pauta costuma ter, ao lado, o painel de
+  intimações. A **única exceção** é a tabela que já tem a cara da pauta —
+  data com hora (pelo rótulo “Data/Hora” ou porque ao menos metade das
+  datas vem com o horário), processo, tipo e situação, com tipos de
+  audiência na coluna Tipo em ao menos metade das linhas (“Conciliação”,
+  “Audiência de Instrução”, e não “Intimação eletrônica” ou “Citação”) — e,
+  ao lado, uma coluna “Documento” (a ata), “Intimação das partes”,
+  “Mandados”…: na página da pauta (“audiência” ou “pauta” no título), ela é
+  a pauta, a menos que a legenda ou o nome da própria tabela fale de
+  intimações, prazos etc. (o painel “Intimações” com Tipo e Situação). No
+  portal (modo estrito), a tabela só com data e processo, sem hora, tipo nem
+  situação, precisa de “audiência” ou “pauta” na tabela ou na página (a fila
+  de processos também tem data e número).
+* **Células mescladas.** O `rowspan` (HTML e a leitura no navegador) vale
+  em todas as linhas que cobre, na mesma coluna, e as células seguintes não
+  escorregam; o `colspan` ocupa as colunas seguintes, vazias. A cópia que a
+  mescla põe nas linhas de baixo fica marcada como **herdada**: a linha
+  cuja data, hora e processo são só os herdados (a audiência em duas
+  linhas, com as partes embaixo) completa a audiência de cima e não vira
+  outra — a menos que traga o tipo ou a situação dela (um tipo ou uma
+  situação das regras, ou os dois em colunas próprias), que é outra
+  audiência do mesmo processo no mesmo horário (a Conciliação cancelada e,
+  embaixo, a Instrução designada). As partes numa célula larga sobre o Tipo
+  e a Situação, o selo de sigilo ou o processo apensado continuam detalhe
+  da audiência de cima.
+* **Data em uma linha só.** Linha de grupo (“Segunda-feira, 05/10/2026”,
+  sozinha ou só com a contagem ou o dia da semana: “2 audiências”, “Total:
+  3”, “(3)”) dá a data às linhas de baixo; nunca é linha de grupo a que tem
+  número de processo. A célula de data **vazia** repete a data da linha de
+  cima (o relatório com a data só na primeira audiência do dia) só se a
+  linha é mesmo outra audiência: com hora própria ou a hora mesclada de
+  cima ou, numa tabela sem coluna de hora, com o número na própria coluna
+  Processo. A hora sozinha na coluna Data/Hora (“10:00” embaixo de
+  “05/10/2026 09:00”) também usa o dia de cima. O número em outra célula
+  (“Apensado ao processo…”) e a linha sem hora numa tabela que tem a coluna
+  Hora (“Aguardando designação”) não herdam o dia de ninguém; com outro
+  texto na célula de data (“a designar”), só a data da linha de grupo vale.
+* **Sigilo por célula: só a indicação positiva marca.** Marcar um processo
+  como sigiloso o tira do acervo e da IA de vez (seção 12), e a marcação não
+  se desfaz (seção 8.2); por isso, só a indicação positiva e inequívoca
+  marca. O selo é procurado célula a célula (também na tabela sem
+  cabeçalho, na linha de baixo e no PDF), e o texto e o `title`/`alt` de
+  cada ícone são julgados separadamente: as dicas dos ícones de uma célula
+  são guardadas separadas por “ | ” (`SEPARADOR_DICAS`, no leitor de HTML e
+  no JavaScript de `pauta/navegacao.py`) e julgadas uma a uma. O número CNJ
+  sai do texto antes do julgamento. Uma célula marca se casa com `sigilo` e
+  não casa com `sem_sigilo` (em `dados/pauta.json`, iguais à regra embutida
+  de `pauta/regras.py`, e um teste confere; a chave `_sigilo` do JSON é só
+  um comentário, ignorado pelo programa).
+  * **Marcam:** o ícone “Segredo de Justiça”; as partes “(Segredo de
+    Justiça)”; “Ação Civil Pública - Segredo de Justiça”; “Processo em
+    segredo de justiça” (e “Autos sigilosos”, “Audiência sigilosa”,
+    “Processo sob sigilo”, “Tramita em sigilo”); “Sigiloso” ou “Em sigilo”
+    sozinho na célula; o nível com contexto de sigilo (“Segredo
+    de Justiça (Nível 1)”, “Nível de sigilo 1”); “Sigilo: sim”. Na coluna
+    **Sigilo** (cabeçalho `sigilo`, `segredo`, `segredo de justica`,
+    `sigiloso` ou `nivel de sigilo`), também “Sim”, “X” e o nível puro
+    (“Nível 1”, “2”).
+  * **Não marcam:** “Nível 1” ou “Nível 2” fora da coluna Sigilo (no Local,
+    é o andar ou o bloco do fórum); as negações, também na coluna Sigilo
+    (“Segredo de justiça: não”, “Segredo de Justiça? NÃO”, “Sem segredo de
+    justiça”, “Não sigiloso”, “Processo não é sigiloso”, “não corre” ou “não
+    tramita em segredo”); o nível 0 e “Público” sozinho; o sigilo retirado,
+    levantado, revogado, afastado, indeferido, inexistente ou ausente; a
+    menção que não afirma nada (“Pedido de segredo de justiça…”,
+    “requer…”, “verificar se há segredo de justiça”); e o “sigiloso” solto
+    de outra coisa (“Oitiva de testemunha sigilosa”).
+
+  “Público” só desfaz o selo quando é o rótulo do nível, sozinho na célula —
+  “Ministério Público”, “Defensoria Pública”, “Ação Civil Pública” ou
+  “Fazenda Pública” ao lado de “Segredo de Justiça” não tiram o sigilo de
+  ninguém —, e a negação de uma célula não vale para outra. Nas partes,
+  “Segredo de justiça: não” não é máscara (`_tirar_mascara`); na linha de
+  baixo de uma mescla (`rowspan`), a negação fica como observação e não
+  marca. `TestSigiloSoComIndicacaoPositiva` (`testes/test_pauta_tabelas.py`)
+  confere os casos por coluna.
+
+### 8.6 Importação de relatório
+
+`POST /api/pauta/importar`: planilha (xlsx/xls/ods/csv), HTML (inclusive o
+`.xls` que é HTML), PDF (tabela por texto) ou DOCX exportados do SAJ/eProc —
+mesmas regras de 8.5, aproveitando os leitores de `nucleo/listas.py`. As
+células mescladas na vertical das planilhas valem em todas as linhas que
+cobrem, na primeira coluna da mescla: `.xlsx` (openpyxl sem `read_only`, que
+é o que conta as mescladas), `.xls` (xlrd com `formatting_info`) e `.ods`
+(`number-rows-spanned`). No `.ods`, as células cobertas
+(`covered-table-cell`) valem **coluna a coluna**: cada uma herda o valor da
+mescla da sua coluna (o LibreOffice junta numa só as cobertas vizinhas de
+mesclas diferentes). Como no `rowspan` do HTML, a cópia é herdada (seção
+8.5). No PDF, a linha “Data: … Hora: …” da emissão não é tomada como
+cabeçalho. Importar e depois sincronizar não duplica (seção 8.2), e
+importar o que já veio do portal só completa o que faltava, com o mesmo
+par um a um, pelo tipo. O sigilo do relatório segue a mesma regra da
+seção 8.5 (só a indicação positiva marca), e o que ele revela vale na hora
+(seção 12); `TestRelatorioSoMarcaSigiloComSelo` confere com um CSV e com
+`sigilo.chaves_da_pauta`, a regra única.
+
+### 8.7 Monitoramento
+
+Thread do aplicativo: com `[pauta] monitorar = true`, sincroniza as fontes com
+rota a cada `intervalo_horas` (padrão 6) e ao abrir o programa (se a última
+sincronização passou do intervalo), no período `dias_atras` (7) a `dias_a_frente`
+(60). Se o portal pedir código, **não bloqueia**: registra e avisa (“Entre no
+portal para continuar o monitoramento”). Alterações viram eventos `pauta` e
+contam em “alterações não vistas” (selo na barra lateral). Com um download em
+andamento (o navegador dos portais ocupado), tenta de novo em 15 minutos.
+
+**Fontes que exigem a pessoa à frente** (`ServicoPauta.exige_presenca` e
+`motivo_presenca`, a mesma regra de `_acesso` no segundo plano; o monitor a
+consulta por `MonitorPauta.exige_presenca`): login por certificado digital
+ou pela entrada manual, ou sem senha **guardada**
+(`_credenciais(sessao=False)`: a senha “só por agora” não vale em segundo
+plano). Essas fontes ficam de
+fora da sincronização automática — nada de tarefa que falha nem de aviso
+“não deu certo” a cada ciclo — e viram a pendência `pauta_login`
+(“Monitoramento da pauta”, `MENSAGEM_PRESENCA`), uma vez por execução do
+programa: diz em que fontes o monitoramento não entra sozinho e o que fazer
+(Sincronizar à mão; guardar o usuário e a senha em Ajustes › Acessos aos
+portais; ou desligar “Conferir sozinho”). Se nenhuma fonte entra sozinha,
+nem há tarefa, nem **próxima sincronização** anunciada: `monitoramento()`
+(e `MonitorPauta.proxima`) devolvem `proxima` nula, inclusive depois de uma
+sincronização feita à mão, e o quadro Monitoramento da tela Pauta só mostra
+a linha “Próxima: …” com o monitoramento ligado e alguma fonte que entre no
+portal sozinha. A presença descoberta só durante a sincronização recebe a mesma frase; a de
+“código” (`MENSAGEM_LOGIN`) fica só para quando o portal pediu o código de
+fato (`ContextoMonitor.motivo` = “codigo”; a presença descoberta no
+`_acesso` marca “presenca”). Em `fontes()`, a fonte que exige a pessoa vem
+com `monitorada` falso, `exige_presenca` verdadeiro e o `motivo_presenca`
+(“a entrada no portal é pelo certificado digital”, “a entrada no portal é
+manual”, “o usuário e a senha do portal não estão guardados neste
+computador”); Ajustes › Pauta mostra o selo “Só com você” e o motivo, e o
+quadro Monitoramento da Pauta diz por que nenhuma fonte entra sozinha, se
+for o caso. A fonte sem rota lembrada (e que não exige a pessoa) tem o selo
+“Sem endereço salvo”, em Ajustes › Pauta, e aparece como “(sem endereço
+salvo)” na lista de fontes do quadro Monitoramento (a que exige a pessoa,
+como “(só com você)”). `monitoramento()` conta em `fontes_monitoradas` só
+as que o monitor sincroniza de fato.
+
+### 8.8 Tela da Pauta
+
+Cabeçalho: período (controle segmentado **Hoje · Semana · Mês · Período**),
+filtro de sistema (e-SAJ · eProc · Todos), situação, busca. Resumo em
+“chips”: total, hoje, próximos 7 dias (de hoje a hoje + 6, os mesmos dias da
+visão Semana), canceladas/redesignadas. O resultado da sincronização, da
+captura e da importação fica numa faixa que dura até ser fechada; a página
+só rola até ela quando a pessoa começou a tarefa com um clique nesta tela
+(o fim do monitoramento automático não tira do lugar quem está lendo a
+lista), e os avisos dessas tarefas não se repetem no canto enquanto a Pauta
+está aberta. A faixa da captura tem o título “Captura concluída: N
+audiências em N telas” e, no texto, só o que o título não diz: “O endereço
+ficou lembrado: a fonte entra no monitoramento automático.” (ou, na fonte
+que exige a pessoa, que o monitoramento não entra sozinho nela), mais o
+motivo, se o navegador foi fechado ou o tempo acabou antes de “Concluir”.
+Lista agrupada por dia (cabeçalho do dia “Segunda-feira, 5 de outubro”),
+cada audiência com hora, número do processo (copiável), selo do tipo,
+partes, local e pílula de situação; ações por linha: Baixar autos,
+Transcrever (abre Audiências com o número), Abrir link. Botões: **Sincronizar** (com e-SAJ/eProc), **Capturar no
+portal**, **Importar relatório**, **Exportar Excel**. Painel “Alterações
+recentes”. Interruptor de monitoramento e intervalo. Estado vazio explica como
+começar (configurar acesso + sincronizar ou capturar).
+
+### 8.9 Exportação Excel (`openpyxl`)
+
+Arquivo `Documentos\Helestron\Pauta\Pauta de audiências AAAA-MM-DD a AAAA-MM-DD.xlsx`
+(nome livre se já existir). Abas:
+* **Pauta** — título e período nas linhas 1–2, cabeçalho na 4 (fundo navy,
+  letra branca, negrito), colunas: Data · Dia da semana · Hora · Processo ·
+  Classe · Partes · Tipo de audiência · Situação · Local · Magistrado/Conciliador
+  · Sistema · Tribunal · Link · Observações. Datas como data do Excel
+  (`dd/mm/aaaa`), hora `hh:mm`; filtro automático; painel congelado; larguras
+  ajustadas; linhas zebradas leves; situação colorida (Cancelada cinza e
+  tachada, Redesignada âmbar, hoje em azul-claro). Processos sigilosos com a
+  coluna Partes como “(segredo de justiça)” **a menos** que o usuário marque
+  “Incluir as partes dos sigilosos”, na folha de exportação.
+* **Resumo** — quantidade por dia, por tipo e por situação.
+* **Alterações** — histórico do período.
+Rodapé com “Gerado pelo Helestron em dd/mm/aaaa hh:mm”.
+
+Regras da planilha:
+
+* **Sigilo por processo.** É sigiloso o processo com autos ou transcrição
+  na pasta dos sigilosos ou com **qualquer** audiência marcada sigilosa no
+  banco (`_numeros_sigilosos` = pasta + `Armazem.sigilosas`; a regra da
+  seção 12). Vale para a lista,
+  o Início, a planilha e o histórico: cada alteração é marcada sigilosa
+  (`_marcar_sigilo`) se o processo é sigiloso hoje ou se a audiência daquele
+  id está sigilosa, ainda que o retrato da alteração seja de antes do
+  sigilo.
+* **A escolha da janela vale.** `incluir_partes_sigilosos` presente no
+  pedido (ou `--incluir-partes-sigilosos`/`--sem-partes-sigilosos` na linha
+  de comando) vale nos dois sentidos; ausente, vale
+  `[pauta] incluir_partes_sigilosos`; a string “false” é falsa.
+* **Busca omitida.** Com as partes mascaradas e algum processo sigiloso no
+  resultado, a linha 2 das abas Pauta e Resumo diz “busca por texto
+  (omitido por causa do segredo de justiça)”, e não o texto procurado (que
+  pode ser o nome de uma parte).
+* **Texto, nunca fórmula.** Toda célula das três abas passa por
+  `exportacao._escrever`: texto que começa com “=” fica com `data_type` “s”
+  e `quotePrefix`, ou seja, como texto (`=WEBSERVICE(…)`, `=HYPERLINK(…)`
+  vindos do nome de uma parte não são calculados ao abrir).
+
+CLI: `python -m helestron pauta exportar --de 2026-10-01 --ate 2026-10-31`
+(mais `--incluir-partes-sigilosos` ou `--sem-partes-sigilosos`, se quiser).
+A linha de comando da pauta (`pauta/cli.py`: `sincronizar`, `exportar`,
+`importar`, `listar` e `fontes`) usa o `ArgumentParser` em português da
+seção 5, com a ajuda e os erros sem inglês (o “choose from” do argparse
+virou “opções: …”). `pauta importar` e `pauta sincronizar` que revelam o
+sigilo de processo com arquivos no acervo fazem o preparo rápido por conta
+própria (`servicos.atualizar_indice`) e dizem o que saiu: “Segredo de
+justiça: a pauta indica que o processo X corre em segredo de justiça, e
+ele tinha arquivos no acervo. Preparando o acervo...” e, depois, “1
+processo levado para a pasta dos sigilosos; fora do índice e do texto
+lidos pela IA.” (ou “N processos levados…”). O arquivo que não pôde sair
+vai para o erro padrão (“ATENÇÃO: não consegui levar para a pasta dos
+sigilosos: …”), e, com pasta da nuvem escolhida, a saída lembra que “A
+cópia na nuvem sai no próximo espelho (na janela: Compartilhar › Espelhar
+agora).”
+
+### 8.10 Fachada para a API (`helestron/pauta/servico.py`)
+
+```python
+class ServicoPauta:
+    def __init__(self, cfg, arquivo_banco: Path | None = None, eventos: Callable[[str, dict], None] | None = None): ...
+    def listar(self, de: date, ate: date, sistema="", situacao="", busca="") -> dict      # {audiencias:[dict], resumo:{...}}
+    def fontes(self) -> list[dict]
+    def salvar_fonte(self, tribunal, sistema, rotulo, url="") -> dict
+    def remover_fonte(self, id_fonte) -> None
+    def sincronizar(self, ctx, fontes: list[str] | None, de: date, ate: date) -> dict   # ctx = Contexto da tarefa (status, progresso, cancelado, pedir_codigo)
+    def capturar(self, ctx, tribunal: str, sistema: str) -> dict
+    def importar(self, caminho: Path) -> dict
+    def exportar(self, de, ate, destino_pasta: Path, **filtros) -> Path   # filtros: sistema, situacao, busca, incluir_partes_sigilosos (None/ausente = o ajuste)
+    def alteracoes(self, desde: datetime | None = None) -> list[dict]
+    def marcar_vistas(self) -> None
+    def monitoramento(self) -> dict ; def configurar_monitoramento(self, ativo: bool, intervalo_horas: int) -> dict
+    def ultima_sincronizacao(self) -> datetime | None
+    def configurada(self) -> bool      # há fonte, ou já houve sincronização/captura/importação, ou há audiência no banco
+    def resumo_inicio(self) -> dict    # {hoje, semana, proxima, ultima_sincronizacao, alteracoes_nao_vistas, fontes, configurada}
+    def processo_sigiloso(self, numero) -> bool   # alguma audiência do processo, em qualquer registro, está sigilosa (C4)
+    def motivo_presenca(self, fonte) -> str       # por que o login da fonte exige a pessoa ("" = entra sozinha; seção 8.7)
+    def exige_presenca(self, fonte) -> bool
+    credenciais_sessao: dict[str, tuple[str, str]] | None   # {portal: (usuário, senha)} digitados sem "Lembrar" (o servidor entrega o da sessão)
+    def quando_revelar_sigilo(self, funcao: Callable[[list[str]], None] | None) -> None   # quem aplica o sigilo revelado (o servidor)
+    ao_revelar_sigilo: Callable[[list[str]], None] | None   # propriedade: a função registrada
+
+# funções do módulo (o aviso e a linha de comando do sigilo revelado)
+def no_acervo(cfg, numeros) -> list[str]        # dos números, os que têm autos, transcrição ou _ia/texto no acervo (na dúvida, todos)
+def quem_corre(numeros: list[str]) -> str       # "o processo X corre", "os processos X e Y correm", "5 processos (X, Y, Z e mais 2) correm"
+def frase_sigilo_revelado(cfg, numeros: list[str], preso_no_acervo: bool = False) -> str
+```
+
+**Sigilo revelado.** `sincronizar` (mesmo com fontes que falharam),
+`capturar` e `importar` comparam os processos sigilosos do banco antes e
+depois de gravar (`Armazem.processos_sigilosos()`); os que a pauta acaba de
+revelar vão para `resultado["sigilosos_novos"]` (os números como a pauta os
+mostra; a chave só aparece quando há algum) e para a função registrada com
+`quando_revelar_sigilo`. O que se revela antes do registro (pelo monitor,
+por exemplo) fica guardado e é entregue uma vez, no registro; a função que
+falha não derruba a sincronização nem a importação. O serviço só informa:
+quem aplica no acervo é o servidor (`api_pauta.servico_da_pauta`, seção 12)
+ou a linha de comando (seção 8.9); usado sozinho, sem nenhum dos dois, ele
+não tira nada do acervo.
+
+`semana` (em `resumo` e em `resumo_inicio`) conta de hoje a hoje + 6
+(`DIAS_DA_SEMANA` = 7).
+
+`Audiencia` vira dict com `data` em ISO e `hora` “HH:MM”.
+
+## 9. Ícone e marca
+
+`construir/marca.py` (Pillow) gera, a partir de desenho vetorial próprio:
+`helestron/recursos/helestron.ico` (16, 20, 24, 32, 40, 48, 64, 128, 256),
+`helestron.png` (512), `helestron-64.png`, `web/img/marca/helestron.svg` e
+`web/img/marca/helestron-64.png` (para a interface) e as imagens do instalador
+(`instalador-boas-vindas.bmp` 164×314, `instalador-cabecalho.bmp` 150×57).
+
+Desenho: “squircle” do iOS (superelipse), **navy** em gradiente
+(#1B3560 → #0B1A33) com **reflexo de vidro** (faixa branca translúcida no topo,
+borda interna clara e translúcida) e um **“H”** geométrico moderno em
+branco→cinza-claro (#FFFFFF → #C5CDD8), com sombra suave; detrás do H, uma
+placa **cinza translúcida** (efeito vidro/transparência). Cantos transparentes
+(RGBA). Nos tamanhos 16–24 o desenho é simplificado (sem reflexo; H mais grosso)
+para ficar nítido.
+
+## 10. Construção e instalador (`construir/`)
+
+`python construir/construir.py [--sem-modelo] [--modelo PASTA] [--saida PASTA]`
+(roda em Linux — aqui e no CI — e no Windows):
+
+1. Baixa o Python Windows (python-build-standalone 3.12.10, SHA-256 conferido).
+2. Baixa as rodas **win_amd64/cp312** de `requisitos-windows.txt` (travado com
+   hash). Pacote só em código-fonte e puro Python (ex.: `proxy_tools`) é
+   convertido em roda localmente.
+3. Instala as rodas na pasta do Python (biblioteca `installer`, esquema Windows;
+   arquivos de dados de `msvc-runtime` na raiz). Copia o pacote `helestron`
+   para `Lib/site-packages`.
+4. Enxuga (remove `*.pdb`, `Lib/test`, `idlelib`, `__pycache__` estranhos,
+   `Scripts` desnecessários) e **pré-compila** tudo em `.pyc`
+   (`UNCHECKED_HASH`).
+5. Modelo `faster-whisper-small` em `modelos/` (de `--modelo PASTA` ou baixado do
+   Hugging Face); `--sem-modelo` gera instalador sem ele (o programa baixa no
+   primeiro uso). Modelos da separação de falantes, se disponíveis.
+6. Compila o lançador `Helestron.exe` (MinGW: `lancador/helestron.c` +
+   `.rc` com ícone, informações de versão e manifesto: DPI PerMonitorV2,
+   longPathAware, Windows 10/11). O lançador carrega `python312.dll` pelo
+   caminho completo (`LoadLibraryExW`; se faltar ou não carregar, mostra
+   mensagem clara em português) e, **antes do `Py_Main`**, confere os
+   arquivos de partida, sem os quais nem a tela de erro do programa abre (o
+   Python sem `Lib\encodings` não inicia; sem o `__main__`, o `registro` ou
+   o `caminhos` do pacote, ele fecharia sem dizer nada): `Lib\encodings\__init__`
+   e, em `Lib\site-packages\helestron\`, `__init__`, `__main__`,
+   `nucleo\__init__`, `nucleo\caminhos`, `nucleo\registro`,
+   `aplicativo\__init__`, `aplicativo\inicio`, `aplicativo\integridade` e
+   `aplicativo\erro`, cada um como `.py` ou como `.pyc` ao lado. Se faltar
+   algum, a caixa “O Helestron não pôde abrir” diz “Falta um arquivo do
+   programa:” com o caminho, a hipótese do antivírus (ou da instalação
+   interrompida) e a orientação de reinstalar com o Helestron-Setup, sem
+   perder os dados. Depois, chama `Py_Main` com `-I -m helestron` +
+   argumentos. Aberto sem argumentos (pelo atalho), o lançador vigia as
+   janelas do processo (`SetWinEventHook`): se o programa sair com código
+   diferente de 0 em menos de 20 s (`PRAZO_SAIDA_RAPIDA_MS`) sem ter
+   mostrado janela nenhuma, a caixa “O Helestron fechou logo depois de
+   começar, sem abrir a janela (código N).” aponta `%LOCALAPPDATA%\Helestron\Logs`
+   (ou `HELESTRON_LOCAL\Logs`) e pergunta “Deseja abrir a pasta do registro
+   agora?”. Nas chamadas do instalador (`--encerrar`, `--verificar-instalacao`)
+   nunca há caixa: quem informa é o instalador, pelo código de saída.
+   Códigos de saída do próprio lançador (o resto vem do Python): 3 (o
+   `python312.dll` falta ou não carrega), 4 (o DLL não é o esperado: sem
+   `Py_Main`), 5 (sem memória, ou a pasta do programa não foi localizada) e
+   6 (falta um arquivo de partida).
+7. Gera `manifesto.json` (versão + SHA-256 e tamanho de cada arquivo).
+8. Gera as imagens da marca, a lista do que a instalação põe na pasta do
+   programa (`construir.gerar_registro`, a partir de
+   `construir.linhas_do_registro`: `arquivos-instalados.txt`, em UTF-16 com
+   BOM e CRLF, que o `FileReadUTF16LE` do NSIS lê com qualquer caractere; o
+   cabeçalho “Helestron <versão> - arquivos instalados nesta pasta…”, uma
+   linha `A <arquivo>` por arquivo, com o `Desinstalar.exe`, o
+   `manifesto.json` e a própria lista por último, e depois `P <pasta>`, das
+   mais fundas para as de cima) e o script NSIS (`@REGISTRO@`: a lista desta
+   versão vai embutida no instalador), e roda `makensis` →
+   `dist/Helestron-Setup-1.0.0.exe` + `.sha256`.
+
+Instalador NSIS (`instalador/helestron.nsi`): Unicode, MUI2, **Português do
+Brasil**, `RequestExecutionLevel user`, pasta padrão
+`$LOCALAPPDATA\Programs\Helestron`, LZMA sólido. Páginas: boas-vindas (imagem da
+marca), pasta, opções, instalação e concluir (“Pronto!”, com ☑ “Abrir o
+Helestron”; com `MUI_FINISHPAGE_TEXT_LARGE`, o texto aparece inteiro a 100 %
+e a 125 %, e saiu dele a frase “Clique em Concluir para fechar este
+assistente.”, que só repetia o botão). Seções: programa (obrigatória) e
+atalho na Área de Trabalho (marcada). Atalho no Menu Iniciar e na Área de
+Trabalho com o ícone. Registro em `HKCU\...\Uninstall\Helestron` (nome,
+ícone, versão, editor, tamanho). Modo silencioso (`/S`, `/D=`) para a TI e o
+CI.
+
+1. **Pasta só do Helestron e com permissão.** Ao sair da página da pasta
+   (`MUI_PAGE_CUSTOMFUNCTION_LEAVE ConferirPasta`) e de novo no começo da
+   seção do programa (para o `/S /D=`, que não tem a página),
+   `ConferirDestino` vem antes do teste de permissão. A pasta escolhida
+   serve se não existe, se está vazia (`PastaVazia`; a `.antigos` que o
+   RunOnce do próprio Helestron vai apagar não conta) ou se já é do
+   Helestron (`EhDoHelestron`: tem a `arquivos-instalados.txt` com o
+   cabeçalho “Helestron …” ou, numa instalação de antes da lista, o
+   `manifesto.json` com `"nome": "Helestron"`), e então é uma atualização.
+   Se ela existe, tem outras coisas e não é do Helestron, o programa vai
+   para `<pasta>\Helestron`, para nada se misturar (uma pasta `Lib`,
+   `Scripts` ou `modelos` do usuário receberia arquivos do programa): na
+   página, o assistente pergunta antes (“A pasta escolhida já tem outros
+   arquivos: … Para não misturar o Helestron com eles, ele será instalado
+   numa pasta própria dentro dela: … Clique em OK para continuar ou em
+   Cancelar para escolher outra pasta.”), e o campo passa a mostrar o
+   caminho novo (por `WM_SETTEXT`: o NSIS relê o campo depois da função de
+   saída e o mostra de novo no Voltar); no `/S /D=`, ajusta sem perguntar e
+   registra no detalhe. Se a subpasta `Helestron` também tiver outras
+   coisas, a instalação é recusada: na página, com a mensagem “A pasta
+   escolhida já tem outros arquivos, e a pasta Helestron dentro dela
+   também: …”, e a página continua; no `/S`, com o código **3**, sem copiar
+   nada. Depois, `PodeGravarNaPasta` cria a pasta e grava um arquivo de
+   teste; sem permissão, a mensagem “Não há permissão para gravar na
+   pasta…” (a sugerida não precisa de administrador) e a página continua. O
+   mesmo teste abre a seção do programa, para o `/S /D=`: sem permissão,
+   código **8** e nada copiado. As mensagens de erro de arquivo
+   (`^FileError` e `^FileError_NoIgnore`) citam as duas causas e os botões
+   que o Windows mostra de fato: “Se o Helestron (ou o Claude Desktop)
+   estiver aberto, feche-o e clique em Repetir. Se a pasta escolhida exigir
+   administrador, clique em Anular e instale na pasta sugerida. Ignorar
+   pula este arquivo.” (na caixa sem Ignorar, “clique em Cancelar”). O
+   `MB_ABORTRETRYIGNORE` do Windows em português mostra **Anular**,
+   **Repetir** e **Ignorar**; o “Abortar” do `PortugueseBR.nlf` (e do Wine)
+   não existe na tela. (No Wine em inglês, os botões das caixas aparecem
+   como “Cancel”, “Yes” e “No”; os textos citam só os nomes do Windows em
+   português.)
+2. **Fechar o Helestron sem cortar a audiência.** `FecharHelestron` roda
+   `Helestron.exe --encerrar` (seção 5). Código 10 (audiência em
+   andamento): no modo interativo, “Há uma audiência sendo transcrita no
+   Helestron…”, com Repetir/Cancelar (“encerre a audiência no Helestron
+   (botão Encerrar: o documento é salvo) e clique em Repetir”); no `/S`, ou
+   com Cancelar, desiste com o código **7**, sem mexer em nada.
+3. **Arquivos presos, sem matar processo.** `EsperarArquivosLivres` tenta
+   abrir o `python312.dll` para gravação. Se o Helestron fechou e outro
+   processo do programa ainda prende os arquivos (o servidor MCP do acervo,
+   aberto pelo Claude Desktop ou pelo Codex com o `python.exe` daqui), depois
+   de 10 s marca `$Afastar`: `LiberarArquivos` renomeia o `python312.dll`
+   para `.antigos\<instante>` (o Windows deixa renomear um arquivo em uso,
+   não apagar) e, na remoção, `RemoverArquivo` renomeia para lá cada arquivo
+   da lista que não puder ser apagado. Se nem a renomeação do
+   `python312.dll` der certo, volta ao caminho de sempre (esperar e
+   perguntar) antes de apagar qualquer coisa. `AgendarLimpeza` grava em
+   `HKCU\...\RunOnce` o `rundll32 advpack.dll,DelNodeRunDLL32` da pasta
+   `.antigos` (sem console nem administrador), e `inicio.limpar_antigos`
+   apaga os restos na próxima abertura. Nenhum processo é encerrado (nada de
+   `taskkill`/`TerminateProcess`). Se o próprio Helestron não fechou, espera
+   20 s e pergunta; no `/S`, código **4**.
+4. **Remove a versão anterior do programa, pela lista dela** (nunca os
+   dados; nenhuma pasta é apagada inteira pelo nome, como `Lib`, `DLLs`,
+   `modelos`, `Scripts`, `share`, `tcl`, `include` ou `libs`). Só numa
+   atualização (`ConferirDestino` devolveu `atualizacao`),
+   `RemoverPrograma` lê `$INSTDIR\arquivos-instalados.txt` (sem ela, numa
+   instalação de antes da lista, usa a lista desta versão, que vai embutida
+   no instalador) e apaga, um a um, os arquivos das linhas `A`
+   (`RemoverArquivo`); as pastas das linhas `P` só saem se ficarem vazias,
+   com exceção das `__pycache__` do programa, onde só o Python grava. A
+   própria lista sai por último. Depois, copia a nova: primeiro a lista
+   desta versão (uma cópia interrompida ainda é reconhecida e removida pela
+   próxima instalação), depois os arquivos. Arquivos e pastas do usuário que
+   estiverem na pasta ficam. Limitação conhecida: numa instalação feita por
+   uma construção anterior à lista, os arquivos que só aquela construção
+   tinha (módulos renomeados entre construções da 1.0.0) podem ficar na
+   pasta; nada do usuário é apagado, e a próxima atualização já parte da
+   lista gravada. A atualização com a lista leva cerca de 12 s a mais (8.192
+   linhas).
+5. **Restos do Assessor Integrado** (a versão anterior). Depois de copiar,
+   `ApagarAtalhoAntigo` tira “Assessor Integrado.lnk” da Área de Trabalho
+   (`$DESKTOP`) e do Menu Iniciar (`$SMPROGRAMS`), só quando o atalho, lido
+   pelo próprio Windows (`IShellLinkW` e `IPersistFile::Load`), aponta para
+   `…\runtime\python\pythonw.exe` com o `iniciar.pyw` nos argumentos; um
+   atalho de mesmo nome que aponte para outra coisa fica. Em seguida, roda
+   num processo à parte, sem console e sem esperar (`Exec`),
+   `pythonw.exe -I -c "from helestron.compartilhar import migracao; migracao.limpar_restos_antigos()"`:
+   `migracao.limpar_restos_antigos()` tira só os conectores da versão
+   anterior (`assessor-integrado` e `assessor_integrado`, nomes em
+   `claude.NOMES_ANTIGOS` e `chatgpt.NOMES_ANTIGOS`) do Claude Desktop
+   (`claude_desktop_config.json`) e do Codex/ChatGPT Work
+   (`%USERPROFILE%\.codex\config.toml`), guarda antes uma cópia de cada
+   arquivo ao lado (`…antes-do-helestron-<data>`), não toca arquivo com JSON
+   ou TOML inválido, nunca levanta e devolve o que fez, em frases. A limpeza
+   nunca segura nem derruba a instalação. A mesma função existe como linha
+   de comando, `python -I -m helestron.compartilhar.migracao` (sai sempre
+   com 0, em cerca de 0,1 s), e como `helestron.compartilhar.limpar_restos_antigos()`,
+   de importação leve. O conector antigo que sobrar aparece no Diagnóstico
+   (“o Claude Desktop ainda tem o conector da versão anterior (Assessor
+   Integrado)”, e o mesmo para o ChatGPT/Codex), e conectar o acervo de novo
+   também o tira.
+6. **Conferência final.** `Helestron.exe --verificar-instalacao`. Saída 0:
+   “Instalação conferida: tudo certo.”; saída 9 (os arquivos estão certos,
+   mas sem WebView2, sem Edge e com o Internet Explorer de navegador padrão
+   não há como abrir a janela): código **9** e uma mensagem própria (“O
+   Helestron foi instalado, mas este computador não tem como abrir a janela
+   dele…”, com o pedido de instalar o Microsoft Edge WebView2 Runtime);
+   qualquer outra: código **2**, o resumo e onde está o relatório.
+
+Códigos de saída do instalador:
+
+| Código | Significado |
+|---|---|
+| 0 | instalado e conferido |
+| 2 | copiado, mas a conferência final encontrou problemas (ou não terminou) |
+| 3 | a pasta escolhida e a subpasta `Helestron` dentro dela já têm arquivos de outro programa ou do usuário: nada foi copiado (`PASTA_OCUPADA`) |
+| 4 | o Helestron não fechou e continuou prendendo os arquivos do programa |
+| 5 | outro instalador do Helestron já estava aberto (mutex `HelestronSetup`) |
+| 6 | Windows não suportado (32 bits ou anterior ao Windows 10) |
+| 7 | audiência sendo transcrita no Helestron (o `--encerrar` devolveu 10): nada foi alterado; rodar de novo depois |
+| 8 | sem permissão para gravar na pasta escolhida |
+| 9 | instalado e conferido, mas o computador não tem como abrir a janela (falta o WebView2 Runtime) |
+
+Desinstalador: fecha o programa (`FecharHelestron`, com a mesma recusa e o
+mesmo código 7 durante uma audiência), retira **os dois conectores** do
+acervo, que apontam para o `python.exe` daqui e, sem o programa, só dariam
+erro — `claude.remover_mcp()` (Claude Desktop) e
+`chatgpt.remover_mcp_codex()` (Codex/ChatGPT Work,
+`%USERPROFILE%\.codex\config.toml`), em dois processos separados, para a
+falha de um não impedir o outro; os dois tiram também os nomes da versão
+anterior e guardam antes uma cópia do arquivo
+(`claude_desktop_config.antes-do-helestron-<data>.json`,
+`config.antes-do-helestron-<data>.toml`) —, remove o programa só pela lista
+da instalação (`RemoverPrograma`, com a mesma renomeação dos arquivos
+presos) e os atalhos, apaga a pasta do programa só se ela ficar vazia,
+pergunta se apaga também configurações e senhas (padrão: não; no `/S`,
+mantém) e **nunca** apaga `Documentos\Helestron`.
+
+## 11. CI (`.github/workflows/helestron.yml`)
+
+* **testes** (ubuntu): unittest completo (+ Playwright Chromium para a
+  interface em modo demonstração e para `testes/test_ponta_a_ponta.py`, que
+  sobe o programa real e percorre a interface contra portais falsos locais;
+  capturas de `HELESTRON_CAPTURAS` como artefato).
+* **construir** (ubuntu): apt `nsis` e `mingw-w64`; `construir.py` com o modelo
+  baixado do Hugging Face; artefato `Helestron-Setup`.
+* **windows** (windows-latest, depende de construir): antes de instalar,
+  cria os restos do Assessor Integrado (o atalho antigo, que aponta para o
+  `pythonw.exe` do runtime dele com o `iniciar.pyw`; um atalho de mesmo nome
+  que não é dele; e o conector `assessor-integrado` no Claude Desktop, ao
+  lado de um servidor “outro”); instala em silêncio (`/S`), confere arquivos
+  (também a `arquivos-instalados.txt`) e atalhos e que o atalho e o conector
+  antigos saíram, mas o atalho alheio e o servidor “outro” ficaram;
+  `--verificar-instalacao`, `--autoteste`
+  (capturas da janela real, também copiadas para o registro em JPEG reduzido
+  e base64), transcrição de ponta a ponta com fala sintetizada
+  (System.Speech) pela linha de comando, servidor MCP por JSON-RPC (e o
+  conector registrado também no Codex), exportação da pauta, cofre DPAPI;
+  reinstalação por cima **com o servidor MCP aberto** (exige código 0, o MCP
+  vivo, os arquivos presos em `.antigos`, o RunOnce agendado e o
+  `limpar_antigos` apagando os restos depois que o MCP sai); desinstalação
+  silenciosa (dados preservados, conectores do Claude Desktop e do Codex
+  retirados); por fim, instalação e desinstalação com `/D=` numa pasta que
+  já tem arquivos do usuário, em pastas `share`, `Scripts`, `Lib` e
+  `modelos` (o Helestron vai para `<pasta>\Helestron`, e nada do usuário
+  sai nem muda). Os cenários dos códigos 3, 7, 8 e 9, do servidor MCP
+  aberto, da desinstalação com os dois conectores, da pasta nova, da pasta
+  com arquivos do usuário, da atualização (da 1.0.0 para a 1.0.1 e de uma
+  instalação sem a lista) e da migração do Assessor Integrado têm também um
+  teste no Wine, com o `.nsi` de verdade e um programa falso
+  (`testes/test_construir.py`, `TestInstaladorNoWine`; roda quando há o
+  makensis, o MinGW-w64 e o Wine de 64 bits), e o lançador tem os seus
+  (`TestLancadorNoWine`: os arquivos de partida e a saída rápida sem janela,
+  inclusive os casos em que nenhuma caixa deve aparecer: o programa mostrou
+  a janela, foi chamado com argumentos ou pelo instalador).
+* **publicar** (tags `v*`): cria a versão no GitHub com o instalador e o `.sha256`.
+
+## 12. Regras transversais (valem para todos)
+
+* **Sigilo** (invariantes do motor, não podem regredir).
+  * **Uma regra só** (`nucleo/sigilo.py`). O processo é sigiloso se
+    qualquer uma destas fontes o diz: (1) os **autos** estão na pasta dos
+    sigilosos (`<sigilosos>\<número>.pdf` ou `<sigilosos>\<lote>\<número>.pdf`,
+    como o download grava); (2) há **transcrição, gravação ou diário** de
+    audiência dele em `<sigilosos>\Transcricoes` (ou em `Transcricoes\_audio`):
+    a audiência que já foi sigilosa uma vez continua sigilosa; (3) a
+    **pauta** o marca sigiloso em qualquer registro (do portal, do
+    relatório importado, já fora da pauta: `Armazem.sigilosas`, contrato
+    C4) — o sigilo é do processo, não da linha —, e a pauta só marca com
+    indicação positiva e inequívoca (seção 8.5). `sigilo.chaves_sigilosas`
+    dá todos; `sigilo.motivo` diz por quê (“os autos, uma transcrição ou
+    uma gravação dele estão na pasta dos sigilosos” ou “a pauta de
+    audiências indica que ele corre em segredo de justiça”). O banco da
+    pauta só é lido se já existir (a consulta nunca o cria), e o resultado
+    fica guardado enquanto o banco (e o WAL) não muda, por até 30 s; banco
+    ilegível ou ocupado não derruba quem pergunta: vale o que se leu da
+    última vez (o sigilo, uma vez apurado, fica), e o registro diz que a
+    pauta não pôde ser lida. Consultam essa mesma regra o compartilhamento
+    (`INDICE.md`, `CLAUDE.md`/`AGENTS.md`, `_ia/texto`, o MCP, o pacote e o
+    espelho na nuvem), o download e a transcrição (tela, linha de comando e
+    gravação enviada). O MCP apura a listagem do acervo e a regra uma vez
+    por pedido (`Acervo.pedido()`, seção 5).
+  * **O incidente herda o sigilo do principal.** O incidente (`…0001-01`, o
+    cumprimento de sentença, por exemplo) tem as partes e o conteúdo do
+    principal: se o principal é sigiloso, ele também é. O contrário não
+    vale: o principal não fica sigiloso só por causa de um incidente.
+    `sigilo.principal()` dá o principal de um incidente, e `sigilo.contem()`
+    e a classe `Sigilosas` (um `frozenset` em que `chave in sigilosas` vale
+    também para `<principal>-NN`) fazem a herança; `chaves_sigilosas`,
+    `chaves_na_pasta` e `chaves_da_pauta` devolvem `Sigilosas`, e `na_pasta`
+    e `na_pauta` herdam (o parâmetro `herdar=False` desliga). Os motivos
+    dizem quando o sigilo vem do principal (`motivo_da_pasta`,
+    `motivo_da_pauta`, `MOTIVO_PASTA_PRINCIPAL`, `MOTIVO_PAUTA_PRINCIPAL`):
+    na tela, “Este processo é incidente de um processo sigiloso: …”; na
+    linha de comando e no relatório do lote, “é incidente de um processo
+    sigiloso: …”. Com isso, o índice, o MCP, a nuvem, o pacote, o preparo, o
+    download (`motor._motivo_sigilo` e os relatórios anteriores do lote) e a
+    transcrição herdam, e retirar do acervo o principal leva também os
+    incidentes.
+  * **Nada sigiloso vai para a IA nem para a nuvem.** Processo sigiloso
+    nunca vai para a IA, o pacote, o espelho na nuvem (nem na subpasta
+    antiga `Assessor Integrado - Acervo`), o MCP, o texto em `_ia/texto` ou
+    o índice e, com a separação dos sigilosos ligada (o padrão), não fica
+    no acervo; a pasta da nuvem nunca fica dentro do acervo nem o contém,
+    e a pasta dos sigilosos (e a da pauta exportada) nunca fica dentro do
+    acervo, nem o acervo dentro dela.
+  * **O que ainda estiver no acervo sai.** Todo compartilhamento começa
+    pelo preparo (`preparo.atualizar_contexto`), que varre o acervo uma vez
+    só (`motor.processos_no_acervo`: arquivo com o número no nome, pasta de
+    gravações ou linha no relatório de um lote). Com a separação dos
+    sigilosos ligada (`[download] separar_sigilosos`, o padrão), o que for
+    de processo sigiloso (baixado antes de o segredo ser decretado, por
+    exemplo, quando só a pauta o mostra) é levado para a pasta dos
+    sigilosos como o download faria (`motor.retirar_do_acervo`): os autos
+    de `Processos\<lote>` para `Sigilosos\<lote>`, com capa e gravações — o
+    que já estiver lá vence; a capa e as gravações saem mesmo sem os autos —,
+    as transcrições para `Sigilosos\Transcricoes`, a minuta em `Produtos\`
+    para `Sigilosos\Produtos\` e qualquer outro arquivo com o número do
+    processo em outra pasta do acervo (subpasta do lote, `Minutas\`…) para
+    o mesmo caminho relativo dentro da pasta dos sigilosos
+    (`motor.destino_na_pasta_dos_sigilosos`: sem o `Processos\` do começo;
+    nunca sobrescreve, usa um nome livre). Os incidentes saem com o
+    principal. O texto dele em `_ia/texto` é apagado, e a linha dele no
+    `relatorio.csv` de cada lote do acervo é mascarada como no download
+    (“(processo sigiloso)”, arquivo vazio, sigiloso “sim”); a linha
+    completa, com “(na pasta de sigilosos)”, vai mesclada para
+    `Sigilosos\<lote>\_controle\relatorio.csv`, que o motor relê no “Tentar
+    de novo”. O espelho na nuvem refaz o índice antes de copiar, não copia
+    o processo sigiloso e apaga do destino a cópia que tenha chegado lá
+    antes de se saber do sigilo. Com a separação desligada, o sigiloso fica
+    no acervo, mas continua fora do índice, do texto, do MCP, do pacote e
+    da nuvem, e o `CLAUDE.md` avisa a IA de que a pasta pode conter
+    processo em segredo de justiça.
+  * **Só os autos travam o compartilhamento.** O que não puder sair fica
+    entre os “presos”, e `motor.bloqueia()` decide: só os **autos** (PDF
+    fora de `Produtos\`) travam. Até eles saírem, nada se compartilha
+    (`SigilosoNoAcervo`; na API, 409 `sigiloso_no_acervo`; no Início, a
+    pendência `sigilo`, “Processo sigiloso no acervo”), e antes de recusar
+    o programa tenta levá-los de novo (o arquivo pode ter sido fechado). A
+    frase (`preparo.frase_sigilosos_no_acervo`, com `trava` verdadeiro)
+    conta processos, não arquivos, diz “arquivo”, não “PDF”, e dá o
+    caminho relativo ao acervo, o motivo real e a pasta de destino: “Os
+    autos do processo X, que corre em segredo de justiça, não puderam sair
+    do acervo: <caminho dentro do acervo> (<motivo>). Feche o arquivo e
+    tente de novo, ou mova-o para a pasta dos sigilosos (<pasta>). Até ele
+    sair, nada do acervo é compartilhado: os botões da tela Compartilhar, o
+    pacote e o espelho na nuvem ficam suspensos.” Os motivos
+    são “está aberto em outro programa?”, “a pasta dos sigilosos não está
+    acessível…”, “a audiência está sendo gravada agora” e “está aberto no
+    Excel?”. O resto (a transcrição aberta no Word, a gravação em curso, a
+    minuta em `Produtos\`, a capa, o relatório aberto no Excel) **não
+    trava**, porque o índice, o MCP, o pacote e a nuvem já o deixam de
+    fora: vira aviso — a pendência `sigilo-arquivos` (“Arquivo de processo
+    sigiloso no acervo”), `sigilosos_avisos` no estado do Compartilhar e
+    no resumo do lote (`ResumoLote.sigilosos_avisos` e `sigilosos_motivos`)
+    e `avisos` no resultado do preparo; `sigilosos_no_acervo` traz só os
+    autos. As duas pendências levam à tela Compartilhar. **Risco aceito:**
+    até sair, esse arquivo fica ao alcance do Claude Code, do Cowork e do
+    ChatGPT, que abrem a pasta inteira, e o aviso diz isso; para voltar a travar com a
+    transcrição presa, basta mudar `motor.bloqueia()`. (A tela Compartilhar
+    ainda não mostra os `avisos` do preparo nem os `sigilosos_avisos`, e o
+    modo demonstração não tem a pendência `sigilo-arquivos`; o Início
+    mostra as duas pendências.) No download, a transcrição presa ou a
+    gravação em curso de um sigiloso não marcam mais o processo como ERRO:
+    o item mostra “atenção: …”, e o lote avisa “Arquivo de processo
+    sigiloso no acervo”.
+  * **O sigilo revelado pela pauta vale na hora.** Quando a sincronização
+    (inclusive a do monitor), a captura ou a importação revela em segredo
+    de justiça um processo que o programa ainda não tratava como sigiloso
+    (`sigilosos_novos`, seção 8.10) e ele tem arquivos no acervo
+    (`pauta.servico.no_acervo`: autos ou transcrição fora da pasta dos
+    sigilosos, ou o texto em `_ia/texto`), o servidor pede o preparo rápido
+    na hora (`api_pauta.sigilo_revelado` → `api_compartilhar.depois_de_salvar`,
+    em segundo plano): o processo sai do acervo (autos e transcrições para a
+    pasta dos sigilosos), do `_ia/texto`, do `INDICE.md` e, com o espelho
+    automático ligado (`[compartilhar] espelhar_automaticamente`), da nuvem
+    (a tarefa `nuvem`, que apaga a cópia do destino); sem ele, a cópia na
+    nuvem sai no próximo espelho. A janela recebe o evento `aviso` com o
+    título “Processo em segredo de justiça” (ou “Processos em segredo de
+    justiça”) e a frase de `frase_sigilo_revelado`, que varia com a
+    separação dos sigilosos, a nuvem automática ou manual e o arquivo preso
+    no acervo (então, o processo sai quando o acervo puder ser preparado de
+    novo). Exemplo: “A pauta indica que o processo X corre em segredo de
+    justiça. O Helestron está levando os autos e as transcrições dele para
+    a pasta dos sigilosos, e ele sai do índice e do texto lidos pela IA e
+    do espelho na nuvem.” (sem o espelho automático: “… e ele sai do índice
+    e do texto lidos pela IA. A cópia dele na nuvem sai no próximo espelho
+    (Compartilhar › Espelhar agora).”). Processo sem nada no acervo não gera
+    aviso. O servidor liga o gancho (`api_pauta.servico_da_pauta`, usado em
+    todos os pedidos à API da pauta) no `ServicoPauta` do programa, que é o
+    mesmo do monitor; o que o monitor revelou antes do primeiro pedido fica
+    pendente no serviço e é tratado nele (o Início lê a pauta ao abrir). Sem
+    nenhuma janela (`--servidor --sem-janela`), esse pendente só vale no
+    próximo preparo ou compartilhamento, como antes. A linha de comando
+    (`pauta importar` e `pauta sincronizar`) faz o mesmo preparo por conta
+    própria (seção 8.9).
+  * **Uma marcação errada não se desfaz sozinha.** O sigilo apurado na pauta
+    não se desfaz (`a.sigiloso or velha.sigiloso`, seção 8.2), e os
+    arquivos levados para a pasta dos sigilosos ficam lá, mantendo o
+    processo sigiloso pela regra (1) ou (2). Uma marcação falsa gravada por
+    uma versão anterior da regra da pauta (“Nível 1” no Local, “Segredo de
+    justiça: não”) continua valendo. Não há comando nem botão “não é
+    sigiloso” (mexeria na interface, na pasta dos sigilosos, no download e
+    no preparo). O manual (Segredo de justiça › Se um processo foi marcado
+    como sigiloso por engano) dá o caminho manual: fechar o programa,
+    afastar o `pauta.sqlite3` (a pauta recomeça; é preciso cadastrar as
+    fontes, sincronizar e importar de novo antes de baixar ou transcrever) e
+    trazer os arquivos de volta da pasta dos sigilosos para o acervo.
+  * **Download.** O processo que o programa já sabe sigiloso pela regra
+    única vai para a pasta dos sigilosos mesmo que a página do portal não
+    mostre o selo (segredo decretado depois, leiaute que a leitura não
+    pega), e uma vez sigiloso, sempre sigiloso (relatórios anteriores do
+    lote, a capa guardada). A tela de processo sigiloso nunca é guardada em
+    `Logs\diagnostico` (ela traz as partes, e o diagnóstico é o que se envia
+    ao suporte): o registro diz por quê, e a mensagem de erro diz que a tela
+    não foi guardada.
+  * **Transcrição.** O interruptor da tela e o `--sigiloso` da linha de
+    comando só **acrescentam** sigilo: o que o programa já sabe sigiloso
+    pela regra única (ou a gravação guardada na pasta dos sigilosos) é
+    transcrito como sigiloso mesmo com o interruptor desligado, e a tela (ou
+    a saída da linha de comando) diz o motivo. A transcrição de sigiloso vai
+    para `Sigilosos\Transcricoes` (com a gravação e o diário em `_audio`);
+    na linha de comando, um `--destino` dentro do acervo é recusado. Os
+    registros do programa guardam só a posição do falante (F1–F8), nunca o
+    rótulo digitado, que costuma trazer o nome de quem depõe.
+  * **Pauta exportada.** Fica fora do acervo e mascara as partes dos
+    sigilosos por padrão (também nas alterações e no texto da busca).
+  * **Autoteste.** O `--autoteste` (seção 5) roda em pastas de dados novas e
+    vazias (`PastasDoAutoteste`) e captura só o retângulo da janela: as
+    capturas, que o CI publica, nunca mostram a configuração, a pauta (com
+    as partes dos sigilosos), o acervo ou outros programas abertos de quem
+    o roda.
+* **Documentos gerados.** O DOCX da transcrição (`transcricao/documento.py`,
+  `montar_docx`, o único gerador de DOCX do programa) sai com as
+  propriedades do próprio documento (`propriedades_do_documento`): autor e
+  “modificado por” Helestron, criado e modificado na hora da geração (UTC),
+  título “Transcrição de audiência — Processo nº <número>”, assunto
+  “Transcrição de audiência”, palavras-chave com o número, comentários e
+  categoria vazios, revisão 1, o aplicativo “Helestron 1.0.0” no
+  `docProps/app.xml` e sem a miniatura do modelo. O modelo do python-docx
+  deixava o autor “python-docx”, a data de 2013 e o aplicativo “Microsoft
+  Macintosh Word” num documento que pode ir aos autos.
+* **Português do Brasil** correto em tudo o que o usuário lê (acentos, crase,
+  concordância). Código e comentários em português, no estilo do código
+  existente.
+* Nada de dependência nova além de: `pywebview`, `pythonnet` (e dependências),
+  `bottle`, `proxy_tools`, `typing_extensions` (Windows), `installer` (só na
+  construção). Biblioteca padrão para HTTP, SQLite, threads.
+* Testes com `unittest`, rodando em Linux sem rede e sem Windows (o que é só do
+  Windows é pulado com `skipUnless`), sem tocar em `~` ou `%LOCALAPPDATA%` reais:
+  `testes/__init__.py` aponta `HELESTRON_LOCAL` e `HELESTRON_DADOS` para uma
+  pasta temporária antes de qualquer import de `helestron` (e a apaga no fim);
+  depois da suíte, a raiz do repositório e o HOME não ganham arquivos.
+* Nada de `importlib.import_module` com nome montado em tempo de execução para
+  partes essenciais do programa.
