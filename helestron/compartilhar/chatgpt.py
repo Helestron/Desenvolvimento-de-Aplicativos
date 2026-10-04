@@ -63,7 +63,8 @@ def abrir_codex(pasta: Path) -> None:
     if exe is None:
         raise FileNotFoundError(
             "O Codex (agente da OpenAI) não está instalado neste computador. "
-            "Use “Abrir no ChatGPT Work” ou “Gerar pacote para o ChatGPT”.")
+            "Use “Abrir no ChatGPT Work” ou, no cartão “Pacote para o ChatGPT”, "
+            "“Gerar o pacote”.")
     _abrir_terminal(pasta, exe, "Codex - Acervo")
 
 

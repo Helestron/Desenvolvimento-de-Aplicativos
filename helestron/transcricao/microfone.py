@@ -63,6 +63,15 @@ class MicrofoneIndisponivel(RuntimeError):
     """Não há microfone, ou nenhum pôde ser aberto."""
 
 
+class MicrofoneNaoEncontrado(MicrofoneIndisponivel):
+    """O microfone escolhido (pelo nome) não está mais neste computador."""
+
+
+SEM_MICROFONE = ("Nenhum microfone foi encontrado. Ligue o microfone (ou o fone com "
+                 "microfone) e clique em Testar de novo. Se ele estiver ligado, confira "
+                 "em Configurações do Windows › Sistema › Som › Entrada.")
+
+
 @dataclass(frozen=True)
 class Entrada:
     indice: int
@@ -151,8 +160,16 @@ def achar(dispositivo: int | str | None) -> int | None:
     texto = str(dispositivo).strip()
     if texto.isdigit():
         return int(texto)
-    entradas = listar_entradas()
-    alvo = texto.lower()
+    indice = _procurar(texto, listar_entradas())
+    if indice is None:
+        log.info("microfone '%s' não encontrado; usando o padrão do Windows.", texto)
+    return indice
+
+
+def _procurar(texto: str, entradas: list[Entrada]) -> int | None:
+    alvo = texto.strip().lower()
+    if not alvo:
+        return None
     for e in entradas:
         if e.nome.lower() == alvo:
             return e.indice
@@ -160,8 +177,39 @@ def achar(dispositivo: int | str | None) -> int | None:
         n = e.nome.lower()
         if n.startswith(alvo[:31]) or alvo.startswith(n[:31]):
             return e.indice
-    log.info("microfone '%s' não encontrado; usando o padrão do Windows.", texto)
     return None
+
+
+def _mesmo_aparelho(a: str, b: str) -> bool:
+    """Os dois nomes são do mesmo microfone? (O MME corta o nome em 31 letras.)"""
+    a, b = a.strip().lower(), b.strip().lower()
+    return bool(a and b) and (a == b or a.startswith(b[:31]) or b.startswith(a[:31]))
+
+
+def conferir(dispositivo: int | str | None) -> int | str | None:
+    """O microfone escolhido na tela, conferido AGORA, antes de gravar.
+
+    Nome (o que a configuração guarda) que não está mais na lista é erro com
+    a frase para o usuário - e não o padrão do Windows em silêncio, que
+    gravaria a audiência por outro aparelho. Devolve o próprio nome (a
+    Captura o procura de novo a cada abertura: o número muda quando um
+    aparelho USB é religado no meio da audiência), o número, ou None/""
+    para o padrão do Windows.
+    """
+    if dispositivo is None or isinstance(dispositivo, int):
+        return dispositivo
+    texto = str(dispositivo).strip()
+    if not texto or texto.lstrip("-").isdigit():
+        return int(texto) if texto else ""
+    entradas = listar_entradas()
+    if _procurar(texto, entradas) is not None:
+        return texto
+    if not entradas:
+        _sounddevice()           # sem o componente de áudio, a frase é a dele
+        raise MicrofoneIndisponivel(SEM_MICROFONE)
+    raise MicrofoneNaoEncontrado(
+        f"O microfone «{texto}» não foi encontrado. Escolha outro em Audiências ou "
+        "Ajustes › Transcrição.")
 
 
 def nivel(bloco: np.ndarray) -> float:
@@ -350,6 +398,9 @@ class Captura(_CapturaBase):
         self._ultimo_bloco = 0.0
         self._estouros = 0
         self._estouros_avisados = 0
+        # O microfone pedido (nome), para avisar quando outro abre no lugar dele
+        self._escolhido = ""
+        self._avisou_troca = False
 
     # ------------------------------------------------------------ abertura
     def _candidatos(self, sd) -> list[tuple]:
@@ -382,6 +433,14 @@ class Captura(_CapturaBase):
                     candidatos.append((idx, canais, taxa, extra))
 
         indice = achar(self.dispositivo)
+        self._escolhido = ""
+        if indice is not None:
+            try:
+                self._escolhido = str(sd.query_devices(indice)["name"])
+            except Exception:
+                self._escolhido = str(self.dispositivo)
+        elif isinstance(self.dispositivo, str) and self.dispositivo.strip():
+            self._escolhido = self.dispositivo.strip()      # sumiu: vai o padrão, com aviso
         adicionar(indice)
         if indice is not None:
             # O mesmo microfone por outra API (o MME é o mais tolerante)
@@ -400,10 +459,7 @@ class Captura(_CapturaBase):
         sd = _sounddevice()
         candidatos = self._candidatos(sd)
         if not candidatos:
-            raise MicrofoneIndisponivel(
-                "Nenhum microfone foi encontrado. Ligue o microfone (ou o fone com "
-                "microfone) e clique em Testar de novo. Se ele estiver ligado, confira "
-                "em Configurações do Windows › Sistema › Som › Entrada.")
+            raise MicrofoneIndisponivel(SEM_MICROFONE)
         erros: list[str] = []
         for indice, canais, taxa, extra in candidatos:
             try:
@@ -424,6 +480,15 @@ class Captura(_CapturaBase):
                 self.nome = str(indice)
             self._ultimo_bloco = time.monotonic()
             log.info("microfone aberto: %s (%d Hz, %d canal/canais)", self.nome, taxa, canais)
+            escolhido = self._escolhido
+            if escolhido and not _mesmo_aparelho(escolhido, self.nome) \
+                    and not self._avisou_troca:
+                # Nunca o padrão em silêncio: o escolhido não abriu (ocupado,
+                # desligado), e a audiência segue gravando por outro aparelho.
+                self._avisou_troca = True
+                self._avisar(f"O microfone «{escolhido}» não abriu (desligado, ou em uso por "
+                             f"outro programa); a gravação segue pelo «{self.nome}». Confira o "
+                             "microfone em Audiências.")
             return
         log.warning("nenhuma configuração de microfone abriu: %s", "; ".join(erros[:6]))
         raise MicrofoneIndisponivel(

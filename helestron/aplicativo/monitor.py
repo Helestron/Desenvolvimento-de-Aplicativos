@@ -11,6 +11,13 @@ portal desiste do login, e fica o aviso "Entre no portal para continuar o
 monitoramento" (evento 'aviso' e pendência na tela Início). A próxima
 sincronização feita pelo usuário (que responde ao código) limpa a pendência.
 
+Quem entra por certificado digital, pela entrada manual ou sem a senha
+guardada nunca entra sozinho: o portal só abre com a pessoa à frente, e
+nenhum código chega a ser pedido. Essas fontes ficam de fora da
+sincronização automática (nada de tarefa que falha e de aviso "não deu
+certo" a cada ciclo); a pendência diz o que de fato acontece e o que fazer
+(MENSAGEM_PRESENCA), uma vez por execução do programa.
+
 Se o navegador dos portais estiver ocupado (um download em andamento), o
 monitor tenta de novo em ADIAR_S - não disputa o perfil do navegador.
 """
@@ -33,6 +40,49 @@ TITULO_AVISO = "Monitoramento da pauta"
 MENSAGEM_LOGIN = ("Entre no portal para continuar o monitoramento: o portal pediu o código de "
                   "verificação durante a sincronização automática. Na tela Pauta, clique em "
                   "Sincronizar e informe o código.")
+MENSAGEM_PRESENCA = ("O monitoramento automático não entra sozinho em {fontes}: com o certificado "
+                     "digital, com a entrada manual ou sem a senha guardada, o portal só abre com "
+                     "você à frente. Na tela Pauta, clique em Sincronizar quando quiser atualizar. "
+                     "Para a pauta ser conferida sozinha, guarde o usuário e a senha em Ajustes › "
+                     "Acessos aos portais; ou desligue “Conferir sozinho”, na tela Pauta.")
+
+
+class ContextoMonitor(ContextoFundo):
+    """O Contexto de fundo que lembra POR QUE o login não aconteceu.
+
+    'pediu_login' fica verdadeiro nos dois casos: quando o portal pediu o
+    código (perguntar) e quando a pauta viu que o login exige a pessoa
+    (ServicoPauta._acesso). Só o primeiro passa por aqui: motivo "codigo".
+    """
+
+    def __init__(self, tarefa, aviso_titulo: str, aviso_mensagem: str):
+        super().__init__(tarefa, aviso_titulo, aviso_mensagem)
+        self.motivo = getattr(self, "motivo", None) or None
+
+    def perguntar(self, pergunta):
+        self.motivo = "codigo"
+        return super().perguntar(pergunta)
+
+
+NOMES_SISTEMA = {"esaj": "e-SAJ", "eproc": "eProc"}
+
+
+def rotulo_fonte(fonte: dict) -> str:
+    rotulo = str(fonte.get("rotulo") or "").strip()
+    if rotulo:
+        return rotulo
+    sistema = str(fonte.get("sistema") or "").strip().lower()
+    partes = (str(fonte.get("tribunal") or "").strip().upper(), NOMES_SISTEMA.get(sistema, sistema))
+    return " · ".join(x for x in partes if x) or "uma fonte da pauta"
+
+
+def mensagem_presenca(fontes: list[dict]) -> str:
+    rotulos = [rotulo_fonte(f) for f in fontes]
+    if len(rotulos) > 1:
+        lista = ", ".join(rotulos[:-1]) + " e " + rotulos[-1]
+    else:
+        lista = rotulos[0] if rotulos else "uma fonte da pauta"
+    return MENSAGEM_PRESENCA.format(fontes=lista)
 
 
 def _inteiro(cfg, chave: str, padrao: int) -> int:
@@ -51,6 +101,8 @@ class MonitorPauta:
         self.ultima_execucao: datetime | None = None
         self._acordar = threading.Event()
         self._fim = threading.Event()
+        # as fontes que exigem a pessoa e já viraram pendência nesta execução
+        self._avisadas_presenca: set[str] = set()
         self._thread: threading.Thread | None = None
 
     def iniciar(self) -> "MonitorPauta":
@@ -112,27 +164,72 @@ class MonitorPauta:
         if not fontes:
             self.proxima = agora + intervalo
             return intervalo.total_seconds()
-        if not self.sincronizar(servico, [str(f.get("id")) for f in fontes if f.get("id")]):
+        automaticas, presenciais = [], []
+        for f in fontes:
+            (presenciais if self.exige_presenca(servico, f) else automaticas).append(f)
+        if not automaticas:
+            # Nada entra sozinho: sem tarefa (que só falharia), só a pendência.
+            self._avisar_presenca(presenciais)
+            self.proxima = agora + intervalo
+            return intervalo.total_seconds()
+        if not self.sincronizar(servico, [str(f.get("id")) for f in automaticas if f.get("id")],
+                                presenciais):
             self.proxima = agora + timedelta(seconds=ADIAR_S)
             return ADIAR_S
         self.proxima = datetime.now(agora.tzinfo) + intervalo
         return intervalo.total_seconds()
 
-    def sincronizar(self, servico, fontes: list[str]) -> bool:
+    @staticmethod
+    def exige_presenca(servico, fonte: dict) -> bool:
+        """O login desta fonte só entra com a pessoa à frente? (Certificado,
+        entrada manual ou senha não guardada: a regra de ServicoPauta._acesso.)
+        Na dúvida, False - a sincronização decide."""
+        publica = getattr(servico, "exige_presenca", None)
+        try:
+            if callable(publica):
+                return bool(publica(fonte))
+            tribunal = servico._tribunal(str(fonte.get("tribunal") or ""),
+                                         str(fonte.get("sistema") or ""))
+            opcoes = servico._opcoes(tribunal)
+            if opcoes.modo_login(tribunal.sistema) in ("manual", "certificado"):
+                return True
+            try:
+                # sem ninguém à frente, só vale a senha GUARDADA (não a da sessão)
+                credenciais = servico._credenciais(tribunal, opcoes, sessao=False)
+            except TypeError:
+                credenciais = servico._credenciais(tribunal, opcoes)
+            return credenciais is None
+        except Exception as erro:
+            log.debug("não sei se a fonte %s entra sozinha: %s", fonte.get("id"), erro)
+            return False
+
+    def _avisar_presenca(self, presenciais: list[dict]) -> None:
+        """A pendência das fontes que exigem a pessoa - uma vez por execução
+        (a sincronização feita à mão a limpa, e ela não volta a cada ciclo)."""
+        chaves = {str(f.get("id") or rotulo_fonte(f)) for f in presenciais}
+        if not chaves or chaves <= self._avisadas_presenca:
+            return
+        self._avisadas_presenca |= chaves
+        self.app.pendencia_pauta = {"chave": "pauta_login", "titulo": TITULO_AVISO,
+                                    "mensagem": mensagem_presenca(presenciais), "acao": "pauta"}
+        self.app.hub.publicar("estado", {})
+
+    def sincronizar(self, servico, fontes: list[str], presenciais: list[dict] | None = None) -> bool:
         """Roda a sincronização como tarefa (aparece na barra lateral) e
         espera ela acabar. False: o navegador estava ocupado."""
         app = self.app
         hoje = date.today()
         de = hoje - timedelta(days=max(0, _inteiro(app.cfg, "dias_atras", 7)))
         ate = hoje + timedelta(days=max(1, _inteiro(app.cfg, "dias_a_frente", 60)))
-        pediu = {"login": False}
+        pediu = {"login": False, "motivo": None}
 
         def alvo(tw):
-            ctx = ContextoFundo(tw, TITULO_AVISO, MENSAGEM_LOGIN)
+            ctx = ContextoMonitor(tw, TITULO_AVISO, MENSAGEM_LOGIN)
             try:
                 return servico.sincronizar(ctx, fontes or None, de, ate)
             finally:
                 pediu["login"] = ctx.pediu_login
+                pediu["motivo"] = getattr(ctx, "motivo", None)
 
         try:
             tw = app.tarefas.iniciar("pauta_sincronizar", "Monitoramento da pauta", alvo,
@@ -146,10 +243,24 @@ class MonitorPauta:
                 tw.esperar(10)
                 break
         self.ultima_execucao = datetime.now()
-        if pediu["login"]:
+        presenciais = list(presenciais or [])
+        if pediu["login"] and pediu["motivo"] == "codigo":
             app.pendencia_pauta = {"chave": "pauta_login", "titulo": TITULO_AVISO,
                                    "mensagem": MENSAGEM_LOGIN, "acao": "pauta"}
-        elif tw.estado == "concluida":
-            app.pendencia_pauta = None
+        else:
+            if pediu["login"]:
+                # O login exigia a pessoa e a regra não pôde ser vista antes:
+                # as fontes que falharam (ou todas, se a tarefa inteira falhou).
+                resultado = getattr(tw, "resultado", None)
+                erros = resultado.get("erros", []) if isinstance(resultado, dict) else []
+                ids = {str(e.get("fonte")) for e in erros if isinstance(e, dict)} or set(fontes)
+                presenciais += [f for f in (servico.fontes() or []) if str(f.get("id")) in ids]
+            atual = app.pendencia_pauta or {}
+            if tw.estado == "concluida" and atual.get("mensagem") == MENSAGEM_LOGIN:
+                app.pendencia_pauta = None          # o código já não falta
+            if presenciais:
+                self._avisar_presenca(presenciais)
+            elif tw.estado == "concluida":
+                app.pendencia_pauta = None
         app.hub.publicar("estado", {})
         return True

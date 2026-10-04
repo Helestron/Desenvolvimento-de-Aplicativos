@@ -11,6 +11,11 @@
        que BLOQUEIA até ser fechada;
     6. encerramento seguro: salva a audiência, para as tarefas, apaga o
        registro da instância.
+
+Sem AppUserModelID explícito: o Windows usa o implícito do Helestron.exe,
+o mesmo dos atalhos que o instalador cria - o Helestron fixado na barra de
+tarefas reconhece a janela aberta (com um ID só no processo, ela aparecia
+como um segundo botão). O ícone vem do próprio Helestron.exe.
 """
 
 from __future__ import annotations
@@ -22,12 +27,20 @@ import time
 from pathlib import Path
 
 from .. import NOME
-from ..nucleo import caminhos, registro, sistema
+from ..nucleo import caminhos, registro
 from . import integridade, instancia, mensagem_nativa
 
 log = logging.getLogger("aplicativo.inicio")
 
 IDADE_TEMP_S = 3600
+# O encerramento espera a audiência ao vivo terminar de transcrever a fila
+# (servidor.aplicacao.ESPERA_AUDIENCIA_S) e as tarefas pararem: o processo
+# não pode sair antes (as threads de trabalho são "daemon").
+FOLGA_ENCERRAR_S = 60
+# Arquivos de uma versão anterior que estavam em uso na atualização (o
+# servidor MCP aberto pelo Claude Desktop): o instalador os renomeia para
+# esta pasta, dentro da pasta do programa, e eles são apagados depois.
+PASTA_ANTIGOS = ".antigos"
 
 
 def limpar_temporarios(agora: float | None = None) -> int:
@@ -55,6 +68,46 @@ def limpar_temporarios(agora: float | None = None) -> int:
     if apagados:
         log.info("Apaguei %d arquivo(s) temporário(s) que tinham sobrado.", apagados)
     return apagados
+
+
+def limpar_antigos(pasta: Path | None = None) -> int:
+    """Apaga o que o instalador deixou em <programa>\\.antigos (arquivos da
+    versão anterior presos por um processo na hora da atualização). O que
+    ainda estiver em uso fica para a próxima vez."""
+    if pasta is None:
+        instalada = integridade.pasta_instalada()
+        if instalada is None:
+            return 0
+        pasta = Path(instalada) / PASTA_ANTIGOS
+    if not pasta.is_dir():
+        return 0
+    apagados = 0
+    for arq in sorted(pasta.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        try:
+            if arq.is_dir():
+                arq.rmdir()
+            else:
+                arq.unlink()
+                apagados += 1
+        except OSError:
+            continue
+    try:
+        pasta.rmdir()
+    except OSError:
+        pass
+    if apagados:
+        log.info("Apaguei %d arquivo(s) da versão anterior do programa.", apagados)
+    return apagados
+
+
+def _espera_encerrar_s() -> float:
+    try:
+        from ..servidor import aplicacao
+
+        return (float(getattr(aplicacao, "ESPERA_AUDIENCIA_S", 15 * 60))
+                + float(getattr(aplicacao, "ESPERA_TAREFAS_S", 120)) + FOLGA_ENCERRAR_S)
+    except Exception:                               # pragma: no cover
+        return 20 * 60.0
 
 
 def _instancia_unica(trava: instancia.Trava) -> int | None:
@@ -90,7 +143,6 @@ def main(autoteste: Path | None = None) -> int:
         registro.configurar(console=autoteste is not None)
     except Exception:                               # sem log, o programa abre mesmo assim
         pass
-    sistema.id_do_aplicativo("Helestron.App")
     trava = instancia.Trava()
     if autoteste is None:
         codigo = _instancia_unica(trava)
@@ -110,7 +162,9 @@ def _abrir(autoteste: Path | None) -> int:
         try:
             from . import erro
 
-            return erro.mostrar(problemas)
+            # Grava o instancia.json também aqui: o --encerrar do instalador
+            # (que esta tela manda rodar) e a segunda abertura falam com ela.
+            return erro.mostrar(problemas, registrar=autoteste is None)
         except Exception as falha:
             log.exception("a tela de erro não abriu")
             mensagem_nativa(f"O {NOME} não pôde abrir",
@@ -147,18 +201,19 @@ def _abrir(autoteste: Path | None) -> int:
         except OSError as erro:
             log.warning("não consegui gravar o registro da instância: %s", erro)
     threading.Thread(target=limpar_temporarios, name="limpar-temp", daemon=True).start()
+    threading.Thread(target=limpar_antigos, name="limpar-antigos", daemon=True).start()
     app.monitor = MonitorPauta(app).iniciar()
     url = app.url + ("&autoteste=1" if teste is not None else "")
     try:
         modo = janela.abrir(app, url)
-        if not modo:
-            mensagem_nativa(NOME, f"Não consegui abrir a janela do {NOME}: nem o WebView2, nem o "
-                                  "Microsoft Edge, nem o navegador padrão responderam.")
+        if not modo and not app.fechando:
+            mensagem_nativa(f"O {NOME} não pôde abrir", janela.motivo_sem_janela())
     finally:
         app.encerrar()
         # Se o encerramento começou em outra thread (o "Fechar mesmo assim?"
-        # da janela), espera ele acabar: o processo não pode sair no meio.
-        app.esperar(60)
+        # da janela, o --encerrar), espera ele acabar - inclusive a audiência
+        # terminando de transcrever: o processo não pode sair no meio.
+        app.esperar(_espera_encerrar_s())
     if teste is not None:
         return teste.codigo
     return 0 if modo else 1

@@ -81,7 +81,10 @@ class Aplicacao:
         self.modo = modo if modo in MODOS else "janela"
         self.token = token or secrets.token_urlsafe(32)
         self.hub = HubEventos()
-        self.perguntas = GerentePerguntas(self.hub.publicar)
+        # Quem quer saber que chegou uma pergunta (a janela, para vir para a
+        # frente e piscar na barra de tarefas): registrar_atencao().
+        self._atencao: list[Callable[[], None]] = []
+        self.perguntas = GerentePerguntas(self._publicar_pergunta)
         self.recursos = Recursos()
         self.tarefas = GerenteTarefas(self.hub.publicar, self.perguntas, self.recursos)
         self.audiencia = GerenteAudiencia(self)
@@ -189,6 +192,32 @@ class Aplicacao:
         if tipo == "pauta":
             self.hub.publicar("estado", {})
 
+    # ---------------------------------------------------------- perguntas
+    def registrar_atencao(self, funcao: Callable[[], None]) -> None:
+        """'funcao' é chamada (numa thread própria) sempre que uma pergunta é
+        publicada: o código do e-SAJ, o do autenticador do eProc. O magistrado
+        pode estar em outro programa, com a janela minimizada - sem resposta
+        no prazo, o lote inteiro termina em "login falhou"."""
+        if callable(funcao) and funcao not in self._atencao:
+            self._atencao.append(funcao)
+
+    def _publicar_pergunta(self, tipo: str, dados=None) -> None:
+        self.hub.publicar(tipo, dados)
+        if tipo == "pergunta":
+            self._chamar_atencao()
+
+    def _chamar_atencao(self) -> None:
+        for funcao in list(self._atencao):
+            threading.Thread(target=self._rodar_atencao, args=(funcao,), name="atencao",
+                             daemon=True).start()
+
+    @staticmethod
+    def _rodar_atencao(funcao: Callable[[], None]) -> None:
+        try:
+            funcao()
+        except Exception as erro:                  # chamar atenção nunca derruba a pergunta
+            log.debug("chamar atenção para a pergunta: %s", erro)
+
     # ------------------------------------------------------------- erros
     def traduzir_erro(self, erro: Exception) -> ErroApi | None:
         """A exceção do motor com a frase certa e o código HTTP certo."""
@@ -207,6 +236,12 @@ class Aplicacao:
             return ErroApi(500, "componente_ausente", frase)
         if nome == "ListaInvalida":
             return ErroApi(400, "relacao_invalida", frase)
+        # Pelo nome, como a ListaInvalida: o pacote da transcrição só é
+        # importado quando usado. Sem microfone, microfone ocupado (Teams,
+        # Zoom), sem permissão, nome que não existe mais: a frase do motor diz
+        # o que fazer - e não "Algo deu errado no Helestron".
+        if nome in ("MicrofoneIndisponivel", "MicrofoneNaoEncontrado"):
+            return ErroApi(409, "microfone_indisponivel", frase)
         if isinstance(erro, PermissionError):
             return ErroApi(409, "arquivo_preso", frase or "O arquivo está em uso por outro "
                                                            "programa.", nome)

@@ -73,9 +73,10 @@ class TestFormatos(apoio.PastaTemporaria):
                 self.ctype, self.value = ctype, value
 
         class Aba:
-            def __init__(self, nome, linhas, visibility=0):
+            def __init__(self, nome, linhas, visibility=0, merged_cells=()):
                 self.name, self._linhas, self.visibility = nome, linhas, visibility
                 self.nrows = len(linhas)
+                self.merged_cells = list(merged_cells)
 
             def row(self, i):
                 return self._linhas[i]
@@ -86,16 +87,19 @@ class TestFormatos(apoio.PastaTemporaria):
         livro.sheets.return_value = [
             Aba("Oculta", [[texto("Data"), texto("Processo"), texto("Tipo")],
                            [Celula(xlrd.XL_CELL_DATE, 46301), texto(N3), texto("Una")]], 1),
+            # "Data/Hora" mesclada na vertical (linhas 2 e 3): vale para as duas audiências
             Aba("Pauta", [[texto("Data/Hora"), texto("Processo"), texto("Tipo")],
                           [data, texto(N1), texto("Conciliação")],
+                          [Celula(xlrd.XL_CELL_EMPTY, ""), texto(N2), texto("Una")],
                           [Celula(xlrd.XL_CELL_EMPTY, ""), Celula(xlrd.XL_CELL_EMPTY, ""),
-                           Celula(xlrd.XL_CELL_EMPTY, "")]])]
+                           Celula(xlrd.XL_CELL_EMPTY, "")]], merged_cells=[(1, 3, 0, 1)])]
         (self.tmp / "antigo.xls").write_bytes(b"\xd0\xcf\x11\xe0" + b"\x00" * 600)
         with mock.patch.object(xlrd, "open_workbook", return_value=livro) as abrir:
             r = self.ler("antigo.xls")
-        abrir.assert_called_once_with(str(self.tmp / "antigo.xls"))
+        abrir.assert_called_once_with(str(self.tmp / "antigo.xls"), formatting_info=True)
         self.assertEqual([(a.data, a.hora, a.processo, a.tipo) for a in r.audiencias],
-                         [(date(2026, 10, 5), "14:30", N1, "Conciliação")])
+                         [(date(2026, 10, 5), "14:30", N1, "Conciliação"),
+                          (date(2026, 10, 5), "14:30", N2, "Una")])
 
     def test_xls_que_e_html_e_html(self):
         lista = ap.no_periodo(ap.audiencias_padrao(), ap.INICIO, ap.FIM)
@@ -312,6 +316,144 @@ class TestImportarNoServico(apoio.PastaTemporaria):
         self.assertEqual(sig["partes"], "", "a máscara não vira nome de parte")
         virtual = next(a for a in de_volta if a["processo"] == lista[5].processo)
         self.assertEqual(virtual["link"], lista[5].link)
+
+
+class TestRelatoriosDoMundoReal(apoio.PastaTemporaria):
+    """Layouts comuns de relatório: data mesclada ou só na primeira linha do dia,
+    preâmbulo com "Data:/Hora:" da emissão, título longo."""
+
+    def ler(self, nome: str):
+        return ler_relatorio(self.tmp / nome, R, agora=datetime(2026, 10, 3, 10, 0))
+
+    def esperado(self):
+        return [(date(2026, 10, 5), "09:00", N1, "Sala 1"),
+                (date(2026, 10, 5), "10:00", N2, "Sala 1"),
+                (date(2026, 10, 5), "11:00", N3, "Sala 2")]
+
+    def test_xlsx_com_celulas_mescladas_e_preambulo_de_emissao(self):
+        from openpyxl import Workbook
+
+        livro = Workbook()
+        aba = livro.active
+        aba.append(["Relatório de audiências - 2ª Vara Cível"])
+        aba.append(["Data:", datetime(2026, 10, 3), "Hora:", "10:15"])
+        aba.append(["Vara:", "2ª Vara Cível", "Data de emissão:", "03/10/2026"])
+        aba.append([])
+        aba.append(["Data", "Hora", "Processo", "Tipo de audiência", "Local"])
+        aba.append([datetime(2026, 10, 5), "09:00", N1, "Conciliação", "Sala 1"])
+        aba.append([None, "10:00", N2, "Una", None])
+        aba.append([None, "11:00", N3, "Instrução", "Sala 2"])
+        aba.merge_cells("A6:A8")          # a data do dia, uma vez só
+        aba.merge_cells("E6:E7")          # a mesma sala para as duas primeiras
+        livro.save(self.tmp / "mesclada.xlsx")
+        r = self.ler("mesclada.xlsx")
+        self.assertEqual([(a.data, a.hora, a.processo, a.local) for a in r.audiencias],
+                         self.esperado())
+        self.assertEqual((r.ignoradas, r.avisos), (0, []))
+
+    def test_ods_com_linhas_mescladas(self):
+        ns = ('xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+              'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" '
+              'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"')
+
+        def texto(t, extra=""):
+            return (f'<table:table-cell office:value-type="string"{extra}><text:p>{t}</text:p>'
+                    '</table:table-cell>')
+
+        coberta = "<table:covered-table-cell/>"
+        linhas = ["".join(texto(t) for t in ("Data", "Hora", "Processo", "Local")),
+                  texto("05/10/2026", ' table:number-rows-spanned="3"') + texto("09:00")
+                  + texto(N1) + texto("Sala 1", ' table:number-rows-spanned="2"'),
+                  coberta + texto("10:00") + texto(N2) + coberta,
+                  coberta + texto("11:00") + texto(N3) + texto("Sala 2")]
+        conteudo = (f'<?xml version="1.0" encoding="UTF-8"?><office:document-content {ns}>'
+                    '<office:body><office:spreadsheet><table:table table:name="Pauta">'
+                    + "".join(f"<table:table-row>{x}</table:table-row>" for x in linhas)
+                    + "</table:table></office:spreadsheet></office:body></office:document-content>")
+        with zipfile.ZipFile(self.tmp / "mesclada.ods", "w") as z:
+            z.writestr("mimetype", "application/vnd.oasis.opendocument.spreadsheet")
+            z.writestr("content.xml", conteudo)
+        r = self.ler("mesclada.ods")
+        self.assertEqual([(a.data, a.hora, a.processo, a.local) for a in r.audiencias],
+                         self.esperado())
+
+    def test_csv_com_a_data_so_na_primeira_linha_do_dia(self):
+        (self.tmp / "rel.csv").write_text(
+            "Data;Hora;Processo;Local\n"
+            f"05/10/2026;09:00;{N1};Sala 1\n;10:00;{N2};Sala 1\n;11:00;{N3};Sala 2\n",
+            encoding="utf-8")
+        r = self.ler("rel.csv")
+        self.assertEqual([(a.data, a.hora, a.processo, a.local) for a in r.audiencias],
+                         self.esperado())
+
+    def test_html_com_rowspan_e_grupo_com_contagem(self):
+        html = ap.pagina(
+            "<table><tr><th>Data</th><th>Hora</th><th>Processo</th><th>Partes</th></tr>"
+            "<tr><td colspan='2'>05/10/2026 - Segunda-feira</td><td></td><td>3 audiências</td>"
+            "</tr>"
+            f"<tr><td rowspan='3'></td><td>09:00</td><td>{N1}</td><td>A x B</td></tr>"
+            f"<tr><td>10:00</td><td>{N2}</td><td>C x D</td></tr>"
+            f"<tr><td>11:00</td><td>{N3}</td><td>E x F</td></tr></table>")
+        (self.tmp / "agenda.xls").write_text(html, encoding="utf-8")
+        r = self.ler("agenda.xls")
+        self.assertEqual([(a.data, a.hora, a.processo, a.partes) for a in r.audiencias], [
+            (date(2026, 10, 5), "09:00", N1, "A x B"), (date(2026, 10, 5), "10:00", N2, "C x D"),
+            (date(2026, 10, 5), "11:00", N3, "E x F")])
+
+    def test_pdf_com_data_e_hora_da_emissao_no_topo(self):
+        import pymupdf
+
+        documento = pymupdf.open()
+        pagina = documento.new_page(width=842, height=595)
+        colunas = (30, 100, 150, 330, 470, 560)
+        pagina.insert_text((30, 40), "Pauta de audiências", fontsize=13)
+        for x, t in ((30, "Data:"), (100, "03/10/2026"), (330, "Hora:"), (470, "10:15")):
+            pagina.insert_text((x, 60), t, fontsize=9)
+        for x, t in zip(colunas, ("Data", "Hora", "Processo", "Tipo de audiência", "Situação",
+                                  "Partes")):
+            pagina.insert_text((x, 90), t, fontsize=9)
+        for x, t in zip(colunas, ("05/10/2026", "09:00", N1, "Conciliação", "Designada",
+                                  "Maria x Banco")):
+            pagina.insert_text((x, 110), t, fontsize=9)
+        for x, t in zip(colunas, ("05/10/2026", "14:30", N2, "Una", "Cancelada", "José")):
+            pagina.insert_text((x, 125), t, fontsize=9)
+        pagina.insert_text((560, 137), "x Equatorial S.A.", fontsize=9)
+        documento.save(self.tmp / "emitido.pdf")
+        documento.close()
+        r = self.ler("emitido.pdf")
+        self.assertEqual([(a.data, a.hora, a.processo, a.tipo, a.situacao, a.partes)
+                          for a in r.audiencias], [
+            (date(2026, 10, 5), "09:00", N1, "Conciliação", "Designada", "Maria x Banco"),
+            (date(2026, 10, 5), "14:30", N2, "Una", "Cancelada", "José x Equatorial S.A.")])
+
+
+class TestSigiloDoRelatorioNaPlanilha(apoio.PastaTemporaria):
+    """"Ministério Público" nas partes não desfaz o selo de segredo de justiça: o
+    relatório importado sai mascarado na planilha."""
+
+    def test_ministerio_publico_ao_lado_do_selo(self):
+        from openpyxl import load_workbook
+
+        amb = ap.config_temporaria(self.tmp)
+        servico = ServicoPauta(amb.cfg, self.tmp / "pauta.sqlite3")
+        self.addCleanup(servico.fechar)
+        icone = "<img src='data:,' title='Segredo de Justiça'>"
+        html = ap.pagina(
+            "<table><tr><th>Data</th><th>Hora</th><th>Processo</th><th>Classe</th>"
+            "<th>Partes</th></tr>"
+            f"<tr><td>05/10/2026</td><td>09:00</td><td>{N1}</td><td>Ato Infracional</td>"
+            f"<td>Ministério Público do Estado de Alagoas x Adolescente J.S. {icone}</td></tr>"
+            f"<tr><td>05/10/2026</td><td>10:00</td><td>{N2}</td>"
+            "<td>Ação Civil Pública - Segredo de Justiça</td>"
+            "<td>Associação X x Município Y</td></tr></table>")
+        (self.tmp / "pauta.html").write_text(html, encoding="utf-8")
+        servico.importar(self.tmp / "pauta.html")
+        lista = servico.listar(date(2026, 10, 5), date(2026, 10, 5))["audiencias"]
+        self.assertEqual([a["sigiloso"] for a in lista], [True, True])
+        arquivo = servico.exportar(date(2026, 10, 5), date(2026, 10, 5), amb.pauta)
+        aba = load_workbook(arquivo)["Pauta"]
+        self.assertEqual([aba.cell(r, 6).value for r in (5, 6)],
+                         ["(segredo de justiça)", "(segredo de justiça)"])
 
 
 if __name__ == "__main__":

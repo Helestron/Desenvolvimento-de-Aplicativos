@@ -11,6 +11,11 @@ O que é verificado sem rede e sem Windows:
     desinstalação, atalhos, --encerrar, a conferência final e o
     desinstalador que nunca apaga Documentos\\Helestron (com o makensis, se
     houver, ele é compilado de verdade);
+  * com o makensis, o MinGW-w64 e o Wine de 64 bits: o instalador de verdade
+    (alvo amd64), com um programa falso, roda no Wine - audiência em
+    andamento (código 7), servidor MCP prendendo os arquivos (renomeados,
+    código 0), pasta sem permissão (código 8), sem janela (código 9) e a
+    desinstalação que tira os dois conectores;
   * o lançador: a fonte chama "-I -m helestron" pelo Py_Main do
     python312.dll carregado à mão; o manifesto e o .rc (com o MinGW, se
     houver, compila e confere o executável);
@@ -28,6 +33,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import re
 import shutil
 import struct
@@ -35,6 +41,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 import xml.etree.ElementTree as ET
 import zipfile
@@ -72,6 +79,9 @@ TEM_INSTALLER = importlib.util.find_spec("installer") is not None
 
 MINGW = all(shutil.which(f"x86_64-w64-mingw32-{f}") for f in ("gcc", "windres", "objdump"))
 MAKENSIS = shutil.which("makensis")
+WINE64 = shutil.which("wine64") or next(
+    (c for c in ("/usr/lib/wine/wine64", "/usr/lib/x86_64-linux-gnu/wine/wine64")
+     if Path(c).is_file()), None)
 
 
 def _arvore_exemplo(pasta: Path) -> Path:
@@ -546,8 +556,11 @@ class TestScriptNsis(unittest.TestCase):
 
     def test_fecha_o_programa_antes_de_copiar_e_confere_no_fim(self):
         secao = self.script[self.script.index('Section "Helestron (programa)"'):]
-        self.assertLess(secao.index("!insertmacro FecharHelestron"), secao.index("File /r"))
-        self.assertLess(secao.index("!insertmacro RemoverPrograma"), secao.index("File /r"))
+        self.assertLess(secao.index("Call FecharHelestron"), secao.index("File /r"))
+        self.assertLess(secao.index("Call EsperarArquivosLivres"), secao.index("File /r"))
+        self.assertLess(secao.index("Call LiberarArquivos"), secao.index("!insertmacro RemoverPrograma"))
+        self.assertLess(secao.index("!insertmacro RemoverPrograma"), secao.index("Call AfastarPresos"))
+        self.assertLess(secao.index("Call AfastarPresos"), secao.index("File /r"))
         self.assertIn("--encerrar", self.script)
         conferir = self.script[self.script.index('Section "-Conferir a instalação"'):]
         self.assertIn('--verificar-instalacao --relatorio "${RELATORIO}"', conferir)
@@ -555,7 +568,8 @@ class TestScriptNsis(unittest.TestCase):
         self.assertIn("/SD IDNO", conferir)               # o modo silencioso não para em pergunta
 
     def test_remover_programa_lista_o_que_foi_instalado(self):
-        macro = self.script[self.script.index("!macro RemoverPrograma"):self.script.index("!macroend")]
+        inicio = self.script.index("!macro RemoverPrograma")
+        macro = self.script[inicio:self.script.index("!macroend", inicio)]
         for linha in ('RMDir /r "$INSTDIR\\Lib"', 'RMDir /r "$INSTDIR\\DLLs"', 'RMDir /r "$INSTDIR\\modelos"',
                       'Delete "$INSTDIR\\python312.dll"', 'Delete "$INSTDIR\\Helestron.exe"',
                       'Delete "$INSTDIR\\manifesto.json"', 'RMDir /r "$INSTDIR\\Scripts"'):
@@ -575,7 +589,49 @@ class TestScriptNsis(unittest.TestCase):
         self.assertIn('Delete "$SMPROGRAMS\\Helestron.lnk"', desinstalar)
         self.assertIn('Delete "$DESKTOP\\Helestron.lnk"', desinstalar)
         self.assertIn("claude.remover_mcp()", desinstalar)
+        # o conector do Codex/ChatGPT Work também (config.toml), num processo à parte
+        self.assertIn("chatgpt.remover_mcp_codex()", desinstalar)
+        self.assertNotIn("claude, chatgpt", desinstalar)
         self.assertIn('RMDir "$INSTDIR"', desinstalar)       # só se ficou vazia
+
+    def test_audiencia_em_andamento_nao_e_cortada(self):
+        funcao = self.script[self.script.index("Function ${UN}FecharHelestron"):]
+        funcao = funcao[:funcao.index("FunctionEnd")]
+        self.assertIn('!define AUDIENCIA_EM_ANDAMENTO 10', self.script)
+        self.assertIn("$0 == ${AUDIENCIA_EM_ANDAMENTO}", funcao)
+        self.assertIn("/SD IDCANCEL IDRETRY tentar", funcao)     # no silencioso, desiste
+        self.assertIn("SetErrorLevel 7", funcao)
+        self.assertLess(funcao.index("SetErrorLevel 7"), funcao.index("Abort"))
+        self.assertIn("Call un.FecharHelestron", self.script)
+
+    def test_arquivos_presos_sao_renomeados_e_nenhum_processo_e_morto(self):
+        lista = self.script[self.script.index("!macro AfastarLista"):]
+        lista = lista[:lista.index("!macroend")]
+        for linha in ('!insertmacro AfastarPasta "${UN}" "Lib"', '!insertmacro AfastarPasta "${UN}" "DLLs"',
+                      '!insertmacro AfastarArquivo "${UN}" "python312.dll"',
+                      '!insertmacro AfastarArquivo "${UN}" "python.exe"'):
+            self.assertIn(linha, lista)
+        self.assertIn('Rename "$INSTDIR\\python312.dll" "$PastaAfastados\\python312.dll"', self.script)
+        self.assertIn("advpack.dll,DelNodeRunDLL32", self.script)
+        self.assertIn("HKCU \"${CHAVE_RUNONCE}\"", self.script)
+        for proibido in ("taskkill", "TerminateProcess", "KillProcess", "wmic"):
+            self.assertNotIn(proibido, self.script)
+
+    def test_pasta_sem_permissao(self):
+        paginas = self.script[:self.script.index("!insertmacro MUI_PAGE_DIRECTORY")]
+        self.assertTrue(paginas.rstrip().endswith("!define MUI_PAGE_CUSTOMFUNCTION_LEAVE ConferirPasta"))
+        secao = self.script[self.script.index('Section "Helestron (programa)"'):]
+        self.assertLess(secao.index("Call PodeGravarNaPasta"), secao.index("Call FecharHelestron"))
+        self.assertIn("SetErrorLevel 8", secao)
+        erro_arquivo = re.search(r'LangString \^FileError \$\{LANG_PORTUGUESEBR\} "([^"]+)"', self.script)
+        self.assertIn("administrador", erro_arquivo.group(1))
+
+    def test_sem_janela_tem_codigo_e_mensagem_proprios(self):
+        conferir = self.script[self.script.index('Section "-Conferir a instalação"'):]
+        self.assertIn("!define SEM_JANELA 9", self.script)
+        self.assertIn("$0 == ${SEM_JANELA}", conferir)
+        self.assertIn("SetErrorLevel 9", conferir)
+        self.assertIn("WebView2 Runtime", conferir)
 
     def test_textos_em_portugues_correto(self):
         # o arquivo de idioma do NSIS usa "pra"; todos os textos visíveis são nossos
@@ -598,6 +654,188 @@ class TestScriptNsis(unittest.TestCase):
         self.assertNotIn("warning", (r.stdout + r.stderr).lower())
         self.assertTrue(self.saida.is_file())
         self.assertEqual(self.saida.read_bytes()[:2], b"MZ")
+
+
+# ============================================================ instalador no Wine
+_STUB_C = r"""
+/* Helestron.exe e python.exe falsos: registram a chamada em chamadas.txt e
+   saem com o código de encerrar-codigo.txt / verificar-codigo.txt. */
+#include <windows.h>
+#include <stdio.h>
+#include <wchar.h>
+static int codigo_de(const wchar_t *pasta, const wchar_t *nome) {
+    wchar_t caminho[1024]; swprintf(caminho, 1024, L"%ls%ls", pasta, nome);
+    FILE *f = _wfopen(caminho, L"r"); int c = 0;
+    if (!f) return 0;
+    if (fscanf(f, "%d", &c) != 1) c = 0;
+    fclose(f); return c;
+}
+int wmain(int argc, wchar_t **argv) {
+    wchar_t pasta[1024], exe[1024], registro[1024];
+    GetModuleFileNameW(NULL, exe, 1024); wcscpy(pasta, exe);
+    wchar_t *barra = wcsrchr(pasta, L'\\'); if (barra) barra[1] = 0;
+    swprintf(registro, 1024, L"%lschamadas.txt", pasta);
+    FILE *r = _wfopen(registro, L"a");
+    if (r) {
+        fwprintf(r, L"%ls", wcsrchr(exe, L'\\') + 1);
+        for (int i = 1; i < argc; i++) fwprintf(r, L" %ls", argv[i]);
+        fwprintf(r, L"\n"); fclose(r);
+    }
+    for (int i = 1; i < argc; i++) {
+        if (wcscmp(argv[i], L"--encerrar") == 0) return codigo_de(pasta, L"encerrar-codigo.txt");
+        if (wcscmp(argv[i], L"--verificar-instalacao") == 0) return codigo_de(pasta, L"verificar-codigo.txt");
+    }
+    return 0;
+}
+"""
+_DLL_C = r"""
+#include <windows.h>
+BOOL WINAPI DllMain(HINSTANCE h, DWORD m, LPVOID r) { (void)h; (void)m; (void)r; return TRUE; }
+"""
+_SEGURAR_C = r"""
+/* O "servidor MCP do Claude Desktop": carrega os DLLs (como o python.exe
+   carrega o python312.dll e os .pyd) e fica vivo enquanto o arquivo-sinal existir. */
+#include <windows.h>
+#include <stdio.h>
+int wmain(int argc, wchar_t **argv) {
+    for (int i = 2; i < argc; i++) if (!LoadLibraryW(argv[i])) return 2;
+    FILE *f = _wfopen(argv[1], L"w"); if (f) { fputs("vivo", f); fclose(f); }
+    for (int i = 0; i < 1200; i++) {
+        Sleep(100);
+        if (GetFileAttributesW(argv[1]) == INVALID_FILE_ATTRIBUTES) return 0;
+    }
+    return 0;
+}
+"""
+
+
+@unittest.skipUnless(MAKENSIS and MINGW and WINE64,
+                     "precisa do makensis, do MinGW-w64 e do Wine de 64 bits")
+class TestInstaladorNoWine(unittest.TestCase):
+    """O helestron.nsi de verdade (alvo amd64, compressão rápida), com um
+    programa falso, instalado e desinstalado em silêncio (/S) no Wine."""
+
+    ALVO_WIN = r"C:\TesteArea\Helestron"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="helestron-wine-"))
+        casa = cls.tmp / "casa"
+        casa.mkdir()
+        # HOME próprio (o Wine grava em ~/.cache e ~/.local); sem menus do Linux
+        cls.env = dict(os.environ, WINEPREFIX=str(cls.tmp / "prefixo"), WINEDEBUG="-all",
+                       HOME=str(casa), XDG_DATA_HOME=str(casa / "dados"),
+                       XDG_CONFIG_HOME=str(casa / "config"), XDG_CACHE_HOME=str(casa / "cache"),
+                       WINEDLLOVERRIDES="mscoree,mshtml=;winemenubuilder.exe=d;winedbg.exe=d")
+        fontes = cls.tmp / "fontes"
+        fontes.mkdir()
+        gcc = shutil.which("x86_64-w64-mingw32-gcc")
+        for nome, codigo, opcoes, saida in (("stub.c", _STUB_C, ["-municode"], "stub.exe"),
+                                            ("dll.c", _DLL_C, ["-shared"], "falso.dll"),
+                                            ("segurar.c", _SEGURAR_C, ["-municode"], "segurar.exe")):
+            (fontes / nome).write_text(codigo, encoding="utf-8")
+            subprocess.run([gcc, *opcoes, "-O2", "-s", "-o", str(fontes / saida), str(fontes / nome)],
+                           check=True, capture_output=True)
+        cls.segurar = fontes / "segurar.exe"
+        arvore = cls.tmp / "obra" / "Helestron"
+        (arvore / "Lib" / "site-packages" / "helestron").mkdir(parents=True)
+        (arvore / "DLLs").mkdir()
+        shutil.copy(fontes / "stub.exe", arvore / "Helestron.exe")
+        shutil.copy(fontes / "stub.exe", arvore / "python.exe")
+        shutil.copy(fontes / "falso.dll", arvore / "python312.dll")
+        shutil.copy(fontes / "falso.dll", arvore / "DLLs" / "_socket.pyd")
+        (arvore / "Lib" / "os.py").write_text("# os\n", encoding="utf-8")
+        (arvore / "Lib" / "site-packages" / "helestron" / "__init__.py").write_text("# h\n")
+        construcao.gerar_manifesto(arvore, "1.0.0")
+        cls.setup = cls.tmp / "obra" / "Helestron-Setup-1.0.0.exe"
+        script = construcao.script_nsis(arvore, "1.0.0", cls.setup, RECURSOS)
+        script = script.replace("Unicode true", "Target amd64-unicode")
+        script = script.replace("SetCompressor /SOLID /FINAL lzma", "SetCompressor /FINAL zlib")
+        script = script.replace("SetCompressorDictSize 64\n", "")
+        (cls.tmp / "obra" / "h.nsi").write_text(script, encoding="utf-8")
+        r = subprocess.run([MAKENSIS, "-V2", "-INPUTCHARSET", "UTF8", str(cls.tmp / "obra" / "h.nsi")],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+        subprocess.run([WINE64, "wineboot", "-i"], env=cls.env, capture_output=True, timeout=300)
+        cls.alvo = cls.tmp / "prefixo" / "drive_c" / "TesteArea" / "Helestron"
+
+    @classmethod
+    def tearDownClass(cls):
+        subprocess.run([str(Path(WINE64).with_name("wineserver")), "-k"], env=cls.env,
+                       capture_output=True, timeout=60)
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def wine(self, *args, espera=240) -> int:
+        # sem pipe: um processo do Wine que o herde seguraria o fim da leitura
+        return subprocess.run([WINE64, *map(str, args)], env=self.env, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=espera).returncode
+
+    def instalar(self, destino: str | None = None) -> int:
+        return self.wine(self.setup, "/S", f"/D={destino or self.ALVO_WIN}")
+
+    def runonce(self) -> str:
+        return subprocess.run([WINE64, "reg", "query",
+                               r"HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce"],
+                              env=self.env, capture_output=True, text=True, timeout=60).stdout
+
+    def setUp(self):
+        shutil.rmtree(self.alvo.parent, ignore_errors=True)
+        subprocess.run([WINE64, "reg", "delete",
+                        r"HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce",
+                        "/v", "HelestronLimpeza", "/f"], env=self.env, capture_output=True, timeout=60)
+        self.assertEqual(self.instalar(), 0)
+        self.assertTrue((self.alvo / "python312.dll").is_file())
+
+    def test_audiencia_em_andamento_adia_a_atualizacao(self):
+        (self.alvo / "encerrar-codigo.txt").write_text("10")
+        self.assertEqual(self.instalar(), 7)
+        for nome in ("Helestron.exe", "python312.dll", "manifesto.json", "Lib/os.py"):
+            self.assertTrue((self.alvo / nome).exists(), nome)        # nada foi mexido
+
+    def test_servidor_mcp_aberto_nao_trava_atualizacao_nem_desinstalacao(self):
+        sinal = self.alvo / "mcp-vivo.txt"
+        mcp = subprocess.Popen([WINE64, str(self.segurar), self.ALVO_WIN + r"\mcp-vivo.txt",
+                                self.ALVO_WIN + r"\python312.dll", self.ALVO_WIN + r"\DLLs\_socket.pyd"],
+                               env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: mcp.poll() is None and mcp.kill())
+        limite = time.monotonic() + 60
+        while not sinal.exists() and time.monotonic() < limite:
+            time.sleep(0.2)
+        self.assertTrue(sinal.exists(), "o processo que segura os DLLs não subiu")
+        # atualização silenciosa: antes, código 4 depois de 20 s
+        self.assertEqual(self.instalar(), 0)
+        self.assertIsNone(mcp.poll(), "o instalador encerrou o processo do servidor MCP")
+        afastados = [p.name for p in (self.alvo / ".antigos").rglob("*") if p.is_file()]
+        self.assertIn("python312.dll", afastados)
+        self.assertTrue(any(n.endswith("_socket.pyd") for n in afastados), afastados)
+        self.assertTrue((self.alvo / "python312.dll").is_file())
+        self.assertTrue((self.alvo / "DLLs" / "_socket.pyd").is_file())
+        self.assertIn("DelNodeRunDLL32", self.runonce())
+        # desinstalação silenciosa, com o servidor ainda aberto
+        (self.alvo / "chamadas.txt").unlink(missing_ok=True)
+        self.wine(self.alvo / "Desinstalar.exe", "/S")
+        limite = time.monotonic() + 60
+        while (self.alvo / "manifesto.json").exists() and time.monotonic() < limite:
+            time.sleep(0.2)
+        time.sleep(1)
+        chamadas = (self.alvo / "chamadas.txt").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("claude.remover_mcp()", chamadas)
+        self.assertIn("chatgpt.remover_mcp_codex()", chamadas)
+        self.assertFalse((self.alvo / "python312.dll").exists())
+        self.assertFalse((self.alvo / "Lib").exists())
+        self.assertIsNone(mcp.poll())
+        sinal.unlink()
+        mcp.wait(30)
+
+    def test_pasta_sem_permissao(self):
+        self.assertEqual(self.instalar(r"Z:\proc\Helestron"), 8)
+
+    def test_sem_como_abrir_a_janela(self):
+        (self.alvo / "verificar-codigo.txt").write_text("9")
+        self.assertEqual(self.instalar(), 9)
+        (self.alvo / "verificar-codigo.txt").write_text("1")
+        self.assertEqual(self.instalar(), 2)
 
 
 # =================================================================== lançador

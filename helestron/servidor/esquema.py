@@ -157,6 +157,8 @@ POR_CHAVE = {(c.secao, c.chave): c for c in CAMPOS}
 # aceitas no POST, mas não aparecem em Ajustes.
 SECOES_INTERNAS = ("interface",)
 PASTAS_DO_SIGILO = (("geral", "pasta_acervo"), ("geral", "pasta_sigilosos"), ("pauta", "pasta"))
+# A pasta da nuvem não pode ficar dentro do acervo nem contê-lo (conflito_da_nuvem).
+NUVEM = ("compartilhar", "pasta_nuvem")
 
 
 def _padroes_ini() -> dict[tuple[str, str], str]:
@@ -268,7 +270,19 @@ def normalizar(c: Campo, valor) -> str:
 
 
 def conferir_pastas(cfg, secao: str, chave: str, valor: str) -> None:
-    """Recusa a pasta que poria os sigilosos (ou a pauta) ao alcance da IA."""
+    """Recusa a pasta que poria os sigilosos (ou a pauta) ao alcance da IA, e
+    a pasta da nuvem que entraria em conflito com o acervo."""
+    if (secao, chave) == NUVEM or (secao, chave) == ("geral", "pasta_acervo"):
+        novo = Path(os.path.expandvars(valor)).expanduser() if valor else None
+        if (secao, chave) == NUVEM:
+            nuvem, acervo = (str(novo) if novo is not None else ""), cfg.pasta_acervo
+        else:
+            nuvem = cfg.texto(*NUVEM)
+            nuvem = str(Path(os.path.expandvars(nuvem)).expanduser()) if nuvem else ""
+            acervo = novo if novo is not None else cfg.pasta_acervo
+        frase = servicos.conflito_da_nuvem(nuvem, acervo)
+        if frase:
+            raise ErroApi(400, "pastas_em_conflito", frase)
     if (secao, chave) not in PASTAS_DO_SIGILO:
         return
     acervo, sigilosos, pauta = cfg.pasta_acervo, cfg.pasta_sigilosos, servicos.pasta_pauta(cfg)

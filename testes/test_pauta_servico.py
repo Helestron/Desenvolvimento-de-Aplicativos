@@ -383,5 +383,162 @@ class TestSincronizar(Base):
             self.servico.sincronizar(ctx, ["eproc-tjrs", "esaj-tjal"], *self.PERIODO)
 
 
+class TestSemanaDeSeteDias(Base):
+    def test_proximos_7_dias_sao_os_da_visao_semana(self):
+        """'Nos próximos 7 dias' = hoje e os 6 seguintes (a visão Semana da tela)."""
+        d = AGORA.date()
+        self.servico.armazem.gravar([aud(f"07009{i:02d}", d + timedelta(days=i), "08:00")
+                                     for i in range(0, 9)], "x", None, registrar_novas=False)
+        self.agora = AGORA.replace(hour=7)
+        r = self.servico.resumo_inicio()
+        self.assertEqual((r["hoje"], r["semana"]), (1, 7))
+        self.assertEqual(self.servico.listar(d, d + timedelta(days=30))["resumo"]["semana"], 7)
+
+
+class TestPrimeirosPassos(Base):
+    def test_fontes_e_configurada(self):
+        r = self.servico.resumo_inicio()
+        self.assertEqual((r["fontes"], r["configurada"]), (0, False),
+                         "abrir a tela da pauta não a configura")
+        self.servico.salvar_fonte("TJAL", "esaj", "")
+        r = self.servico.resumo_inicio()
+        self.assertEqual((r["fontes"], r["configurada"]), (1, True))
+        self.servico.remover_fonte("esaj-tjal")
+        self.assertFalse(self.servico.resumo_inicio()["configurada"])
+        (self.tmp / "rel.csv").write_text(
+            f"Data;Processo;Tipo\n05/10/2026;{ap.numero('0700101')};Una\n", encoding="utf-8")
+        self.servico.importar(self.tmp / "rel.csv")
+        r = self.servico.resumo_inicio()
+        self.assertEqual((r["fontes"], r["configurada"]), (0, True), "a importação configura")
+
+
+class TestSigiloPorProcesso(Base):
+    """O sigilo é do processo: vale para todos os registros dele, para o histórico
+    gravado antes e para quem pergunta (a transcrição)."""
+
+    D = date(2026, 10, 6)
+
+    def setUp(self):
+        super().setUp()
+        self.n = ap.numero("0700124")
+
+    def planilha(self, **filtros):
+        from openpyxl import load_workbook
+
+        arquivo = self.servico.exportar(date(2026, 10, 1), date(2026, 10, 31), self.amb.pauta,
+                                        **filtros)
+        return load_workbook(arquivo)
+
+    def test_relatorio_importado_antes_e_o_portal_depois(self):
+        (self.tmp / "rel.csv").write_text(
+            f"Data;Hora;Processo;Partes\n06/10/2026;09:00;{self.n};Maria Souza x José Souza\n",
+            encoding="utf-8")
+        self.servico.importar(self.tmp / "rel.csv")
+        self.assertFalse(self.servico.processo_sigiloso(self.n))
+        # outra audiência do MESMO processo, que o portal marca como segredo de justiça
+        self.servico.armazem.gravar([aud("0700124", self.D + timedelta(days=7), "10:00",
+                                         sigiloso=True)], "esaj-tjal", None,
+                                    registrar_novas=False)
+        self.assertTrue(self.servico.processo_sigiloso(self.n))
+        self.assertTrue(self.servico.processo_sigiloso(self.n.replace("-", "").replace(".", "")))
+        self.assertFalse(self.servico.processo_sigiloso(ap.numero("0700999")))
+        self.assertFalse(self.servico.processo_sigiloso("não é número"))
+        lista = self.servico.listar(date(2026, 10, 1), date(2026, 10, 31))["audiencias"]
+        self.assertEqual([(a["sistema"], a["sigiloso"]) for a in lista],
+                         [("arquivo", True), ("esaj", True)])
+        aba = self.planilha()["Pauta"]
+        self.assertEqual({aba.cell(r, 6).value for r in (5, 6)}, {"(segredo de justiça)"})
+
+    def test_historico_de_antes_do_sigilo(self):
+        """As partes mudaram quando o processo era público; depois o portal passou a
+        mostrar "(Segredo de Justiça)": a aba Alterações também mascara."""
+        a = lambda **x: aud("0700124", self.D, "09:00", **x)  # noqa: E731
+        self.servico.armazem.gravar([a(partes="Maria Souza x José Souza")], "esaj-tjal", None,
+                                    registrar_novas=False)
+        self.servico.armazem.gravar([a(partes="Maria Souza x Pedro Lima")], "esaj-tjal", None)
+        self.servico.armazem.gravar([a(partes="", sigiloso=True)], "esaj-tjal", None)
+        hist = self.planilha()["Alterações"]
+        textos = " ".join(str(c.value or "") for linha in hist.iter_rows() for c in linha)
+        self.assertIn("Partes: (segredo de justiça) → (segredo de justiça)", textos)
+        self.assertNotIn("Pedro", textos)
+        self.assertNotIn("Maria", textos)
+        self.assertTrue(all(x["audiencia"]["sigiloso"] for x in self.servico.alteracoes()))
+        # com as partes incluídas (escolha do usuário), aparecem
+        hist = self.planilha(incluir_partes_sigilosos=True)["Alterações"]
+        self.assertIn("Pedro", " ".join(str(c.value or "") for linha in hist.iter_rows()
+                                        for c in linha))
+
+
+class TestRelatorioDepoisSincronizacao(Base):
+    """Importar o relatório (a sincronização falhou) e depois sincronizar: a
+    audiência não fica em dobro."""
+
+    PERIODO = (date(2026, 10, 1), date(2026, 10, 31))
+
+    def test_portal_absorve_a_importada(self):
+        n1, n2 = ap.numero("0700101"), ap.numero("0700102")
+        (self.tmp / "rel.csv").write_text(
+            "Data;Hora;Processo;Tipo;Local;Partes\n"
+            f"06/10/2026;09:00;{n1};Conciliação;Sala 9;Maria x Banco\n"
+            f"07/10/2026;10:00;{n2};Una;;João x Município\n", encoding="utf-8")
+        self.servico.importar(self.tmp / "rel.csv")
+        self.servico.salvar_fonte("TJAL", "esaj", "")
+        ExtratorFalso.roteiro["esaj-tjal"] = [
+            ([aud("0700101", date(2026, 10, 6), "09:00", local=""),
+              aud("0700102", date(2026, 10, 7), "10:00", situacao="Cancelada", sigiloso=True)],
+             True, "https://portal.invalid/pauta")]
+        self.servico.armazem.atualizar_fonte("esaj-tjal", ultima_sincronizacao=AGORA)
+        r = self.servico.sincronizar(apoio.ContextoGravador(), None, *self.PERIODO)
+        lista = self.servico.listar(*self.PERIODO)["audiencias"]
+        self.assertEqual([(a["sistema"], a["processo"]) for a in lista],
+                         [("esaj", n1), ("esaj", n2)], "nenhuma cópia do relatório sobrou")
+        self.assertEqual(self.servico.resumo(lista)["total"], 2)
+        um = lista[0]
+        self.assertEqual((um["local"], um["partes"]), ("Sala 9", "Maria x Banco"),
+                         "o que só o relatório sabia completa o registro do portal")
+        self.assertTrue(lista[1]["sigiloso"])
+        # a que só mudou de origem não é "nova"; a que o portal cancelou avisa
+        tipos = [(x["tipo"], x["audiencia"]["processo"]) for x in self.servico.alteracoes()]
+        self.assertEqual(tipos, [("cancelada", n2)])
+        self.assertEqual((r["novas"], r["atualizadas"], r["canceladas"]), (0, 1, 1))
+        # sincronizar de novo não muda nada
+        ExtratorFalso.roteiro["esaj-tjal"] = [
+            ([aud("0700101", date(2026, 10, 6), "09:00"),
+              aud("0700102", date(2026, 10, 7), "10:00", situacao="Cancelada")], True, "")]
+        r = self.servico.sincronizar(apoio.ContextoGravador(), None, *self.PERIODO)
+        self.assertEqual((r["novas"], r["atualizadas"], r["removidas"]), (0, 0, 0))
+        self.assertEqual(len(self.servico.listar(*self.PERIODO)["audiencias"]), 2)
+
+
+class TestSenhaSoPorAgora(Base):
+    """A senha cadastrada com "Lembrar neste computador" desligado vale para
+    Sincronizar e Capturar (como no download), mas não para o monitoramento."""
+
+    PERIODO = (date(2026, 10, 1), date(2026, 10, 31))
+
+    def test_sessao(self):
+        self.servico.salvar_fonte("TJAL", "esaj", "", "https://portal.invalid/pauta")
+        self.cofre.dados.clear()
+        self.servico.credenciais_sessao = {"esaj:TJAL": ("12345678900", "segredo")}
+        ExtratorFalso.roteiro["esaj-tjal"] = [([], True, "")]
+        self.servico.sincronizar(apoio.ContextoGravador(), None, *self.PERIODO)
+        portal = PortalFalso.instancias[-1]
+        self.assertEqual(portal.credenciais, ("12345678900", "segredo"))
+        self.assertEqual(portal.opcoes.modo_login("esaj"), "senha",
+                         "a tela de entrada não abre: a senha foi informada")
+        # no monitoramento, só a senha guardada (o manual promete isso)
+        ctx = ap.ContextoDeFundo()
+        with self.assertRaises(ErroPauta):
+            self.servico.sincronizar(ctx, None, *self.PERIODO)
+        self.assertTrue(ctx.pediu_login)
+        # a guardada continua valendo, e a da sessão tem a vez quando há as duas
+        self.cofre.dados["esaj:TJAL"] = ("u", "s")
+        ExtratorFalso.roteiro["esaj-tjal"] = [([], True, ""), ([], True, "")]
+        self.servico.sincronizar(apoio.ContextoGravador(), None, *self.PERIODO)
+        self.assertEqual(PortalFalso.instancias[-1].credenciais, ("12345678900", "segredo"))
+        self.servico.sincronizar(ap.ContextoDeFundo(), None, *self.PERIODO)
+        self.assertEqual(PortalFalso.instancias[-1].credenciais, ("u", "s"))
+
+
 if __name__ == "__main__":
     unittest.main()

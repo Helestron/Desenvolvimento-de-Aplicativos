@@ -14,6 +14,7 @@ Word não derruba nada: o Word tranca o arquivo, então gravamos ao lado, em
 
 from __future__ import annotations
 
+import glob
 import io
 import logging
 import re
@@ -183,16 +184,23 @@ def magistrado_da_config(cfg) -> str:
 
 
 def processo_sigiloso(cfg, numero) -> bool:
-    """Os autos do processo estão na pasta de sigilosos (soltos ou num lote)?
+    """O processo já está na pasta de sigilosos?
 
-    É o critério do compartilhamento (um PDF com o número em
-    <sigilosos>/ ou <sigilosos>/<lote>/): o que vale para os autos vale para
-    a transcrição da audiência, a gravação e o diário.
+    Os autos (um PDF com o número em <sigilosos>/ ou <sigilosos>/<lote>/, o
+    critério do compartilhamento) ou uma transcrição, gravação ou diário dele
+    em <sigilosos>/Transcricoes: a audiência que já foi sigilosa uma vez
+    continua sigilosa - na retranscrição, no envio da gravação pela página
+    (que perde a pasta de origem) e numa nova audiência do mesmo processo. O
+    que vale para os autos vale para a transcrição, a gravação e o diário.
     """
     try:
         nome = numero.nome_arquivo
         pasta = Path(cfg.pasta_sigilosos)
-        candidatos = [*pasta.glob(f"{nome}*.pdf"), *pasta.glob(f"*/{nome}*.pdf")]
+        prefixo = glob.escape(nome)
+        transcricoes = pasta / SUBPASTA_TRANSCRICOES
+        candidatos = [*pasta.glob(f"{prefixo}*.pdf"), *pasta.glob(f"*/{prefixo}*.pdf"),
+                      *transcricoes.glob(f"{prefixo}*.docx"),
+                      *(transcricoes / "_audio").glob(f"{prefixo}*")]
     except (AttributeError, OSError, ValueError):
         return False
     for p in candidatos:

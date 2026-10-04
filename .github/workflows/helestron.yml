@@ -382,6 +382,10 @@ jobs:
           alterados = claude.registrar_mcp(acervo)
           assert claude.mcp_registrado(), "o conector ficou sem registro"
           print("Registrado em:", [str(a) for a in alterados])
+          # o conector do Codex/ChatGPT Work: o desinstalador tem de tira-lo
+          from helestron.compartilhar import chatgpt
+          print("Codex:", chatgpt.registrar_mcp_codex(acervo))
+          assert chatgpt.mcp_codex_registrado(), "o conector do Codex ficou sem registro"
           print("MCP OK")
           '@
           & (Join-Path $env:PASTA 'python.exe') -I $script
@@ -444,17 +448,48 @@ jobs:
           & (Join-Path $env:PASTA 'python.exe') -I $script
           if ($LASTEXITCODE -ne 0) { throw 'O cofre de senhas falhou' }
 
-      - name: Instalar de novo por cima (atualizacao mantem os dados)
+      - name: Instalar de novo por cima (atualizacao mantem os dados; servidor MCP aberto)
         shell: powershell
         timeout-minutes: 20
         run: |
           $ErrorActionPreference = 'Stop'
+          # Como o Claude Desktop faz: o servidor MCP do acervo fica aberto (stdin
+          # aberto) com o python.exe da instalacao, que prende o python312.dll. A
+          # atualizacao silenciosa nao pode parar nele (codigo 4): os arquivos presos
+          # sao renomeados para .antigos, e o processo do MCP segue vivo.
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = Join-Path $env:PASTA 'python.exe'
+          $psi.Arguments = '-I -m helestron mcp'
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardInput = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.WorkingDirectory = $env:RUNNER_TEMP
+          $mcp = [System.Diagnostics.Process]::Start($psi)
+          $mcp.StandardInput.WriteLine('{"jsonrpc": "2.0", "id": 1, "method": "ping"}')
+          $mcp.StandardInput.Flush()
+          Write-Host ("MCP aberto: " + $mcp.StandardOutput.ReadLine())
+          $preso = $false
+          try { $f = [IO.File]::Open((Join-Path $env:PASTA 'python312.dll'), 'Open', 'ReadWrite', 'None'); $f.Close() } catch { $preso = $true }
+          Write-Host "python312.dll preso pelo MCP: $preso"
           # sem /D=: a pasta vem do registro da instalacao anterior
           $p = Start-Process -FilePath $env:SETUP -ArgumentList '/S' -PassThru
           $null = $p.Handle
           $p.WaitForExit()
           Write-Host "Instalador terminou com o codigo $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { throw "A reinstalacao terminou com o codigo $($p.ExitCode)" }
+          if ($mcp.HasExited) { throw 'O instalador encerrou o servidor MCP (processo alheio ao instalador)' }
+          $antigos = Join-Path $env:PASTA '.antigos'
+          if ($preso -and -not (Test-Path -LiteralPath $antigos)) { throw 'O python312.dll preso nao foi para .antigos' }
+          Get-ChildItem -LiteralPath $antigos -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  .antigos: $($_.FullName)" }
+          $limpeza = (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -ErrorAction SilentlyContinue).HelestronLimpeza
+          Write-Host "RunOnce: $limpeza"
+          if ($preso -and -not $limpeza) { throw 'A limpeza de .antigos nao ficou agendada' }
+          $mcp.StandardInput.Close()
+          if (-not $mcp.WaitForExit(30000)) { $mcp.Kill(); throw 'O servidor MCP nao saiu depois de fechada a entrada' }
+          # o Helestron apaga os restos ao abrir (inicio.limpar_antigos)
+          & (Join-Path $env:PASTA 'python.exe') -I -c "from helestron.aplicativo import inicio; print('apagados:', inicio.limpar_antigos())"
+          if (Test-Path -LiteralPath $antigos) { throw 'A pasta .antigos ficou depois de o MCP sair' }
+          Remove-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'HelestronLimpeza' -ErrorAction SilentlyContinue
           if (-not (Test-Path -LiteralPath (Join-Path $env:PASTA 'Helestron.exe'))) { throw 'A reinstalacao nao foi para a mesma pasta' }
           $docx = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'docx.txt') -Raw -Encoding UTF8
           if (-not (Test-Path -LiteralPath $docx.Trim())) { throw 'A reinstalacao apagou a transcricao' }
@@ -489,6 +524,10 @@ jobs:
           $cfg = Join-Path $env:APPDATA 'Claude\claude_desktop_config.json'
           if ((Test-Path -LiteralPath $cfg) -and ((Get-Content -LiteralPath $cfg -Raw) -match '"helestron"')) {
             throw 'O conector continuou registrado no Claude Desktop'
+          }
+          $toml = Join-Path $env:USERPROFILE '.codex\config.toml'
+          if ((Test-Path -LiteralPath $toml) -and ((Get-Content -LiteralPath $toml -Raw) -match 'mcp_servers\.helestron')) {
+            throw 'O conector continuou registrado no Codex/ChatGPT Work'
           }
           Write-Host 'Desinstalacao OK: programa removido, documentos e configuracao mantidos.'
 

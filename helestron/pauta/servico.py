@@ -9,17 +9,22 @@ O que vale para todas as entradas:
 
 * sincronizar e capturar usam o login, o perfil do navegador e as
   perguntas do DOWNLOAD (helestron.download.motor: as mesmas fábricas de
-  navegador e de portal, o mesmo cofre de senhas). Sem senha guardada no
-  modo "senha", o navegador abre na tela de entrada para o usuário entrar -
-  como no download. No monitoramento (ninguém olhando) isso não acontece:
-  a fonte fica pendente, com o aviso "Entre no portal para continuar o
-  monitoramento", em vez de abrir uma janela do nada;
+  navegador e de portal, o mesmo cofre de senhas - mais a senha digitada
+  com "Lembrar neste computador" desligado, que vale até fechar o
+  Helestron: 'credenciais_sessao', o mesmo dicionário do download). Sem
+  senha no modo "senha", o navegador abre na tela de entrada para o
+  usuário entrar - como no download. No monitoramento (ninguém olhando)
+  isso não acontece: só a senha GUARDADA vale, e sem ela a fonte fica
+  pendente, com o aviso "Entre no portal para continuar o monitoramento",
+  em vez de abrir uma janela do nada;
 * uma fonte que falha não derruba as outras; só quando todas falham a
   tarefa termina como "falhou", com o motivo de cada uma;
-* SIGILO: a audiência é sigilosa se o portal disse (segredo de justiça) ou
-  se os autos do processo estão na pasta de sigilosos - a mesma regra do
-  compartilhamento e da transcrição. A planilha mascara as partes dela por
-  padrão e nunca é gravada dentro do acervo.
+* SIGILO é do PROCESSO, não da linha: a audiência é sigilosa se o portal
+  (ou o relatório) disse segredo de justiça em QUALQUER audiência daquele
+  processo, ou se os autos do processo estão na pasta de sigilosos - a
+  mesma regra do compartilhamento e da transcrição. Vale para a lista, o
+  histórico e a planilha, que mascara as partes por padrão (inclusive nas
+  alterações e no texto da busca) e nunca é gravada dentro do acervo.
 """
 
 from __future__ import annotations
@@ -48,6 +53,7 @@ MENSAGEM_LOGIN = ("Entre no portal para continuar o monitoramento: sem a senha g
                   "login por certificado), o {nome} só pode ser aberto com você à frente. Na tela "
                   "Pauta, clique em Sincronizar.")
 CACHE_SIGILOSOS_S = 15.0
+DIAS_DA_SEMANA = 7            # "nos próximos 7 dias": hoje e os 6 seguintes
 
 
 class ErroPauta(RuntimeError):
@@ -88,6 +94,9 @@ class ServicoPauta:
         self.espera_pagina_s = 20.0
         self.limite_captura_s: float | None = None
         self._sigilosos: tuple[float, str, set[str]] = (0.0, "", set())
+        # A senha digitada sem "Lembrar neste computador" ({portal: (usuário, senha)}):
+        # o servidor entrega o dicionário da sessão (o mesmo do download).
+        self.credenciais_sessao: dict[str, tuple[str, str]] | None = None
 
     # ================================================================ apoio
     @property
@@ -109,6 +118,29 @@ class ServicoPauta:
         return self.relogio().date()
 
     def _numeros_sigilosos(self) -> set[str]:
+        """As chaves CNJ dos processos sigilosos: os da pasta de sigilosos e os
+        que têm ALGUMA audiência marcada sigilosa no banco (em qualquer
+        registro). Ver _sigilosos_do_banco."""
+        return self._na_pasta_de_sigilosos() | self._sigilosos_do_banco()[0]
+
+    def _sigilosos_do_banco(self) -> tuple[set[str], set[str]]:
+        try:
+            return self.armazem.sigilosas()
+        except Exception as erro:          # banco ocupado: a pasta ainda vale
+            log.warning("não consegui ler o sigilo da pauta no banco: %s", erro)
+            return set(), set()
+
+    def processo_sigiloso(self, numero) -> bool:
+        """True se alguma audiência deste processo, em qualquer registro (do
+        portal, do relatório, já fora da pauta), está marcada sigilosa.
+
+        É o que a transcrição consulta: o processo que a pauta diz estar em
+        segredo de justiça é transcrito como sigiloso.
+        """
+        chave = modelos.chave_processo(str(getattr(numero, "formatado", numero) or ""))
+        return bool(chave) and chave in self._sigilosos_do_banco()[0]
+
+    def _na_pasta_de_sigilosos(self) -> set[str]:
         """As chaves CNJ dos processos com autos (ou transcrição) na pasta de sigilosos.
 
         A regra do motor (transcricao.documento.processo_sigiloso): um PDF com
@@ -145,6 +177,24 @@ class ServicoPauta:
             saida.append(d)
         return saida
 
+    def _marcar_sigilo(self, alteracoes: list[dict]) -> list[dict]:
+        """O retrato guardado em cada alteração é do momento da mudança: o
+        processo que ficou sigiloso depois (ou que é sigiloso por outro
+        registro, ou pela pasta) é sigiloso também no histórico."""
+        chaves = self._na_pasta_de_sigilosos()
+        do_banco, ids = self._sigilosos_do_banco()
+        chaves = chaves | do_banco
+        for alt in alteracoes:
+            a = alt.get("audiencia")
+            if not isinstance(a, dict):
+                a = alt["audiencia"] = {}
+            if a.get("sigiloso"):
+                continue
+            if (a.get("id") and a["id"] in ids) or (
+                    a.get("processo") and modelos.chave_processo(a["processo"]) in chaves):
+                a["sigiloso"] = True
+        return alteracoes
+
     # ============================================================= consulta
     def listar(self, de: date, ate: date, sistema="", situacao="", busca="") -> dict:
         """{audiencias: [dict], resumo: {total, hoje, semana, por_situacao, por_tipo}}."""
@@ -178,8 +228,10 @@ class ServicoPauta:
         return {"audiencias": dicts, "resumo": self.resumo(dicts)}
 
     def resumo(self, audiencias: list[dict]) -> dict:
+        """'semana' = "nos próximos 7 dias": de hoje a hoje + 6, os mesmos dias
+        da visão Semana da tela (que o chip abre)."""
         hoje = self._hoje()
-        semana = hoje + timedelta(days=7)
+        semana = hoje + timedelta(days=DIAS_DA_SEMANA - 1)
         acontecem = [a for a in audiencias if a.get("situacao") not in SEM_AUDIENCIA]
         por_situacao: dict[str, int] = {}
         por_tipo: dict[str, int] = {}
@@ -211,14 +263,7 @@ class ServicoPauta:
         self.armazem.remover_fonte(str(id_fonte))
 
     def alteracoes(self, desde: datetime | None = None) -> list[dict]:
-        alteracoes = self.armazem.alteracoes(desde)
-        sigilosos = self._numeros_sigilosos()
-        for alt in alteracoes:
-            a = alt.get("audiencia") or {}
-            if not a.get("sigiloso") and a.get("processo") and \
-                    modelos.chave_processo(a["processo"]) in sigilosos:
-                a["sigiloso"] = True
-        return alteracoes
+        return self._marcar_sigilo(self.armazem.alteracoes(desde))
 
     def marcar_vistas(self) -> None:
         self.armazem.marcar_vistas()
@@ -254,11 +299,24 @@ class ServicoPauta:
         self.cfg.definir("pauta", "intervalo_horas", horas)
         return self.monitoramento()
 
+    def configurada(self) -> bool:
+        """A pauta já foi posta para funcionar: há fonte cadastrada, ou já houve
+        sincronização, captura ou importação (o passo "Pauta" dos Primeiros
+        passos só se dá por feito assim - ter aberto a tela não basta)."""
+        try:
+            return bool(self.armazem.fontes() or self.ultima_sincronizacao()
+                        or self.armazem.meta("ultima_importacao")
+                        or self.armazem.contar(incluir_removidas=True))
+        except Exception as erro:
+            log.debug("configurada: %s", erro)
+            return False
+
     def resumo_inicio(self) -> dict:
-        """{hoje, semana, proxima, ultima_sincronizacao, alteracoes_nao_vistas} - a tela Início."""
+        """{hoje, semana, proxima, ultima_sincronizacao, alteracoes_nao_vistas, fontes,
+        configurada} - a tela Início ('fontes': quantas cadastradas)."""
         agora = self.relogio()
         hoje = agora.date()
-        lista = self._dicts(self.armazem.listar(hoje, hoje + timedelta(days=7)))
+        lista = self._dicts(self.armazem.listar(hoje, hoje + timedelta(days=DIAS_DA_SEMANA - 1)))
         resumo = self.resumo(lista)
         agora_hm = f"{agora:%H:%M}"
         proxima = None
@@ -271,7 +329,8 @@ class ServicoPauta:
             break
         return {"hoje": resumo["hoje"], "semana": resumo["semana"], "proxima": proxima,
                 "ultima_sincronizacao": _iso(self.ultima_sincronizacao()),
-                "alteracoes_nao_vistas": self.armazem.nao_vistas()}
+                "alteracoes_nao_vistas": self.armazem.nao_vistas(),
+                "fontes": len(self.armazem.fontes()), "configurada": self.configurada()}
 
     # ============================================================ o portal
     def _tribunal(self, sigla: str, sistema: str):
@@ -302,9 +361,19 @@ class ServicoPauta:
             opcoes = replace(opcoes, mostrar_navegador=True)
         return opcoes
 
-    def _credenciais(self, tribunal, opcoes) -> tuple[str, str] | None:
+    def _credenciais(self, tribunal, opcoes, sessao: bool = True) -> tuple[str, str] | None:
+        """Usuário e senha do portal: os digitados nesta sessão sem "Lembrar"
+        (se 'sessao'), senão os guardados no cofre - a regra do download
+        (servicos.CofreMisto)."""
         if opcoes.modo_login(tribunal.sistema) != "senha":
             return None
+        if sessao:
+            try:
+                usuario, senha = (self.credenciais_sessao or {}).get(tribunal.portal) or ("", "")
+            except (TypeError, ValueError):
+                usuario, senha = "", ""
+            if usuario and senha:
+                return usuario, senha
         cofre = self.cofre
         if cofre is None:
             try:
@@ -327,13 +396,18 @@ class ServicoPauta:
         return getattr(ctx, "pediu_login", None) is not None
 
     def _acesso(self, tribunal, ctx, visivel: bool = False):
-        """(opções, credenciais) - a regra do motor (_opcoes_do_grupo) para o login."""
+        """(opções, credenciais) - a regra do motor (_opcoes_do_grupo) para o login.
+
+        No monitoramento (segundo plano) só vale a senha GUARDADA no
+        computador; com alguém à frente, também a digitada nesta sessão.
+        """
         opcoes = self._opcoes(tribunal, visivel)
-        credenciais = self._credenciais(tribunal, opcoes)
+        fundo = self._em_segundo_plano(ctx)
+        credenciais = self._credenciais(tribunal, opcoes, sessao=not fundo)
         sistema = tribunal.sistema
         precisa_de_alguem = (opcoes.modo_login(sistema) in ("manual", "certificado")
                              or credenciais is None)
-        if precisa_de_alguem and self._em_segundo_plano(ctx):
+        if precisa_de_alguem and fundo:
             try:
                 ctx.pediu_login = True
             except Exception:
@@ -500,6 +574,7 @@ class ServicoPauta:
         parcial.update({"fonte": fonte["id"], "rotulo": fonte.get("rotulo") or "",
                         "paginas": leitura.paginas, "url": leitura.url,
                         "periodo_aplicado": leitura.periodo_aplicado,
+                        "incompleta": getattr(leitura, "incompleta", ""),
                         "avisos": [f"{fonte.get('rotulo') or nome}: {x}" for x in leitura.avisos]})
         return parcial
 
@@ -607,6 +682,7 @@ class ServicoPauta:
             b = self.armazem.gravar([alvo], alvo.fonte, None, registrar_novas=False,
                                     agora=self.relogio())
             atualizadas += b.atualizadas
+        self.armazem.definir_meta("ultima_importacao", self.relogio())
         resultado = {"novas": balanco.novas, "atualizadas": atualizadas,
                      "ignoradas": rec.ignoradas, "avisos": list(rec.avisos),
                      "total": len(audiencias), "arquivo": Path(caminho).name}
@@ -632,28 +708,28 @@ class ServicoPauta:
 
     def exportar(self, de, ate, destino_pasta: Path, **filtros) -> Path:
         """A planilha do período (seção 8.9). Filtros: sistema, situacao, busca,
-        incluir_partes_sigilosos (padrão: [pauta] incluir_partes_sigilosos)."""
+        incluir_partes_sigilosos (ausente ou None: o padrão [pauta]
+        incluir_partes_sigilosos; False explícito MASCARA, mesmo com o
+        Ajuste ligado - a escolha feita na hora vale)."""
         destino = Path(destino_pasta)
         if self._dentro_do_acervo(destino):
             raise ValueError("A planilha da pauta não pode ser gravada dentro do acervo: ela traz "
                              "as partes dos processos em segredo de justiça, e tudo o que está no "
                              "acervo é lido pela IA. Escolha outra pasta.")
         incluir = filtros.pop("incluir_partes_sigilosos", None)
+        if isinstance(incluir, str):        # "false" vindo de um formulário não é verdadeiro
+            incluir = incluir.strip().lower() in ("1", "true", "sim", "s", "yes", "on")
         if incluir is None:
             incluir = ler_flag(self.cfg, "incluir_partes_sigilosos", False)
         escolhidos = {k: str(filtros.get(k) or "").strip() for k in ("sistema", "situacao",
                                                                      "busca")}
         dados = self.listar(de, ate, **escolhidos)
-        alteracoes = self.armazem.alteracoes(de=de, ate=ate)
-        sigilosos = self._numeros_sigilosos()
         sistema = escolhidos["sistema"].lower().replace("-", "")
         saida_alt = []
-        for alt in alteracoes:
+        for alt in self._marcar_sigilo(self.armazem.alteracoes(de=de, ate=ate)):
             a = alt.get("audiencia") or {}
             if sistema and sistema not in ("todos", "*") and a.get("sistema") != sistema:
                 continue
-            if a.get("processo") and modelos.chave_processo(a["processo"]) in sigilosos:
-                a["sigiloso"] = True
             saida_alt.append(alt)
         return exportacao.exportar(dados["audiencias"], saida_alt, de, ate, destino,
                                    incluir_partes_sigilosos=bool(incluir),

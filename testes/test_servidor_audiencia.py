@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
-from helestron.transcricao.documento import Fala
-from helestron.transcricao.microfone import Entrada
+from helestron.transcricao.documento import Fala, MetaAudiencia
+from helestron.transcricao.microfone import Entrada, MicrofoneIndisponivel
 
 from testes.test_servidor_base import ServidorDeTeste
 
@@ -35,6 +36,8 @@ class SessaoFalsa:
         self.falante = falante
         self.sigiloso = sigiloso
         self.refinar = None
+        self.meta = MetaAudiencia(numero=numero.formatado, tipo=tipo,
+                                  participantes=dict(participantes or {}))
         pasta = Path(cfg.pasta_sigilosos if sigiloso else cfg.pasta_transcricoes)
         self.pasta = pasta
         self.caminho_audio = pasta / "_audio" / f"{numero.nome_arquivo}.flac"
@@ -177,6 +180,107 @@ class TestAoVivo(ServidorDeTeste):
             time.sleep(0.02)
         self.assertIsNone(self.app.recursos.quem_tem("microfone"))
 
+    def test_microfone_pelo_nome(self):
+        """Ajustes guarda o NOME do microfone: o número muda quando se liga ou
+        desliga um aparelho USB. O nome que não existe mais é erro claro - antes,
+        o número velho gravava a audiência por outro aparelho, em silêncio."""
+        lista = [Entrada(2, "Microfone (Realtek(R) Audio)", True, 48000),
+                 Entrada(5, "Microfone de mesa (USB)", False, 48000)]
+        with mock.patch("helestron.transcricao.microfone.listar_entradas", return_value=lista):
+            self.cliente.dados("POST", "/api/transcricao/iniciar", {
+                "processo": NUMERO, "dispositivo": "Microfone de mesa (USB)"})
+            self.assertEqual(SessaoFalsa.criadas[-1].kw["dispositivo"], "Microfone de mesa (USB)")
+            self.cliente.dados("POST", "/api/transcricao/encerrar")
+            status, env = self.cliente.post("/api/transcricao/iniciar", {
+                "processo": NUMERO, "dispositivo": "Fone Jabra Evolve"})
+            self.assertEqual(status, 409)
+            self.assertEqual(env["erro"]["codigo"], "microfone_indisponivel")
+            self.assertEqual(env["erro"]["mensagem"],
+                             "O microfone «Fone Jabra Evolve» não foi encontrado. Escolha outro "
+                             "em Audiências ou Ajustes › Transcrição.")
+            self.assertEqual(len(SessaoFalsa.criadas), 1)
+            self.assertIsNone(self.app.recursos.quem_tem("microfone"))
+            # sem a chave, vale o da configuração (o nome), conferido do mesmo jeito
+            self.cfg.definir("transcricao", "dispositivo", "Microfone de mesa (USB)")
+            self.cliente.dados("POST", "/api/transcricao/iniciar", {"processo": NUMERO})
+            self.assertEqual(SessaoFalsa.criadas[-1].kw["dispositivo"], "Microfone de mesa (USB)")
+            self.cliente.dados("POST", "/api/transcricao/encerrar")
+            self.cfg.definir("transcricao", "dispositivo", "Fone que sumiu")
+            status, env = self.cliente.post("/api/transcricao/iniciar", {"processo": NUMERO})
+            self.assertEqual((status, env["erro"]["codigo"]), (409, "microfone_indisponivel"))
+            self.assertIn("«Fone que sumiu»", env["erro"]["mensagem"])
+
+    def test_padrao_do_windows_escolhido_na_tela_nao_herda_a_configuracao(self):
+        """A tela mostra "Padrão do Windows" e manda "": a sessão recebe "" - e
+        não None, que a fazia cair no microfone (velho) do config.ini."""
+        self.cfg.definir("transcricao", "dispositivo", "3")
+        self.cliente.dados("POST", "/api/transcricao/iniciar",
+                           {"processo": NUMERO, "dispositivo": ""})
+        self.assertEqual(SessaoFalsa.criadas[-1].kw["dispositivo"], "")
+        self.cliente.dados("POST", "/api/transcricao/encerrar")
+
+    def test_sigilo_pela_pauta(self):
+        """A pauta sabe que o processo corre em segredo de justiça (o portal
+        disse): a transcrição sai sigilosa mesmo com o interruptor desligado,
+        e a resposta diz por quê (a tela liga o interruptor e mostra o motivo)."""
+        pauta = mock.Mock()
+        pauta.processo_sigiloso.side_effect = lambda n: n == NUMERO
+        with mock.patch.object(self.app, "pauta_ou_none", return_value=pauta):
+            dados = self.cliente.dados("POST", "/api/transcricao/iniciar",
+                                       {"processo": NUMERO, "sigiloso": False})
+            self.assertTrue(dados["sigiloso"])
+            self.assertTrue(dados["sigiloso_forcado"])
+            self.assertIn("pauta", dados["motivo"])
+            self.assertTrue(SessaoFalsa.criadas[-1].kw["sigiloso"])
+            self.cliente.dados("POST", "/api/transcricao/encerrar")
+            # pedido sigiloso: nada a forçar
+            dados = self.cliente.dados("POST", "/api/transcricao/iniciar",
+                                       {"processo": NUMERO, "sigiloso": True})
+            self.assertEqual((dados["sigiloso"], dados["sigiloso_forcado"]), (True, False))
+            self.assertNotIn("motivo", dados)
+            self.cliente.dados("POST", "/api/transcricao/encerrar")
+            # outro processo, que a pauta não marca
+            dados = self.cliente.dados("POST", "/api/transcricao/iniciar",
+                                       {"processo": "0700124-68.2024.8.02.0001",
+                                        "sigiloso": False})
+            self.assertEqual((dados["sigiloso"], dados["sigiloso_forcado"]), (False, False))
+            self.cliente.dados("POST", "/api/transcricao/encerrar")
+        # pauta que falha não impede a audiência
+        pauta.processo_sigiloso.side_effect = RuntimeError("banco ocupado")
+        with mock.patch.object(self.app, "pauta_ou_none", return_value=pauta):
+            dados = self.cliente.dados("POST", "/api/transcricao/iniciar", {"processo": NUMERO})
+        self.assertFalse(dados["sigiloso"])
+        self.cliente.dados("POST", "/api/transcricao/encerrar")
+
+    def test_encerrar_com_o_tipo_e_revisar_mantem_a_ficha(self):
+        """"Revisar" mandava só {revisao: true}: o documento revisado saía com
+        "Tipo de audiência: —" e sem os participantes."""
+        self.cliente.dados("POST", "/api/transcricao/iniciar", {
+            "processo": NUMERO, "tipo": "Conciliação",
+            "participantes": {"F1": "Juiz(a)", "F2": "Autor(a)"}})
+        sessao = SessaoFalsa.criadas[-1]
+        # o tipo escolhido na tela ao encerrar vale para o documento
+        self.cliente.dados("POST", "/api/transcricao/encerrar",
+                           {"refinar": False, "tipo": "Instrução e julgamento"})
+        self.assertEqual(sessao.meta.tipo, "Instrução e julgamento")
+        self.assertEqual(self.app.audiencia.ultima["tipo"], "Instrução e julgamento")
+        chamadas = []
+
+        def transcrever(origem, numero, cfg, progresso, cancelado, **kw):
+            chamadas.append(kw)
+            return Path(cfg.pasta_transcricoes) / "rev.docx"
+
+        with mock.patch("helestron.servicos.transcrever_gravacao", side_effect=transcrever), \
+                mock.patch("helestron.servidor.api_compartilhar.depois_de_salvar"):
+            self.esperar_tarefa(self.cliente.dados(
+                "POST", "/api/transcricao/gravacao", {"revisao": True})["tarefa"])
+            self.esperar_tarefa(self.cliente.dados(
+                "POST", "/api/transcricao/gravacao", {"revisao": True, "tipo": "Una"})["tarefa"])
+        self.assertEqual(chamadas[0]["tipo"], "Instrução e julgamento")
+        self.assertEqual(chamadas[0]["participantes"], {"F1": "Juiz(a)", "F2": "Autor(a)"})
+        self.assertTrue(chamadas[0]["rotulos_manuais"])
+        self.assertEqual(chamadas[1]["tipo"], "Una")
+
     def test_fechar_o_programa_salva_a_audiencia(self):
         self.cliente.dados("POST", "/api/transcricao/iniciar", {"processo": NUMERO})
         sessao = SessaoFalsa.criadas[0]
@@ -197,9 +301,10 @@ class TestGravacaoERecuperacao(ServidorDeTeste):
         recebidos = []
 
         def transcrever(origem, numero, cfg, progresso, cancelado, *, rotulos_manuais=None,
-                        destino=None, tipo="", participantes=None, sigiloso=False):
+                        destino=None, tipo="", participantes=None, sigiloso=False, **kw):
             recebidos.append({"existe": Path(origem).exists(), "numero": numero.formatado,
-                              "sigiloso": sigiloso, "tipo": tipo, "origem": Path(origem)})
+                              "sigiloso": sigiloso, "tipo": tipo, "origem": Path(origem),
+                              "gravacao": kw.get("gravacao"), "data": kw.get("data")})
             progresso(0.5, "Transcrevendo…")
             doc = Path(cfg.pasta_transcricoes) / f"{numero.nome_arquivo}.docx"
             doc.parent.mkdir(parents=True, exist_ok=True)
@@ -218,6 +323,8 @@ class TestGravacaoERecuperacao(ServidorDeTeste):
         self.assertTrue(recebidos[0]["existe"])
         self.assertEqual(recebidos[0]["tipo"], "Conciliação")
         self.assertFalse(recebidos[0]["origem"].exists())      # o envio foi apagado
+        # a ficha leva o nome do arquivo do usuário, e não o do temporário
+        self.assertEqual(recebidos[0]["gravacao"], f"audiencia {NUMERO}.wav")
         self.assertTrue(tarefa["resultado"]["documento"].endswith(".docx"))
         self.assertFalse(tarefa["resultado"]["sigiloso"])
 
@@ -245,6 +352,86 @@ class TestGravacaoERecuperacao(ServidorDeTeste):
     def test_revisao_sem_audiencia_409(self):
         status, env = self.cliente.post("/api/transcricao/gravacao", {"revisao": True})
         self.assertEqual(status, 409)
+
+    def test_envio_pela_pagina_guarda_nome_data_e_sigilo_da_pasta(self):
+        """Modos Edge e navegador: a gravação chega por envio, como um
+        temporário de hoje, fora da pasta dos sigilosos. O nome e a data vão
+        para a ficha, e a gravação guardada na pasta dos sigilosos (mesmo nome
+        e tamanho) continua sigilosa - antes ia para o acervo."""
+        recebidos = []
+
+        def transcrever(origem, numero, cfg, progresso, cancelado, **kw):
+            recebidos.append(kw)
+            doc = Path(cfg.pasta_transcricoes) / f"{numero.nome_arquivo}.docx"
+            doc.parent.mkdir(parents=True, exist_ok=True)
+            doc.write_bytes(b"PK")
+            return doc
+
+        conteudo = b"RIFF....WAVE-sala-2"
+        guardada = self.amb.dados / "Sigilosos" / "Gravacoes" / "sala 2.wav"
+        guardada.parent.mkdir(parents=True)
+        guardada.write_bytes(conteudo)
+        quando = datetime(2026, 9, 15, 10, 30)
+        with mock.patch("helestron.servicos.transcrever_gravacao", side_effect=transcrever):
+            status, env = self.cliente.enviar(
+                "/api/transcricao/gravacao", "sala 2.wav", conteudo,
+                {"processo": NUMERO, "sigiloso": "false",
+                 "data_arquivo": str(int(quando.timestamp() * 1000))})
+            self.assertEqual(status, 200, env)
+            self.esperar_tarefa(env["dados"]["tarefa"])
+            self.assertTrue(env["dados"]["sigiloso"])
+            self.assertTrue(env["dados"]["sigiloso_forcado"])
+            self.assertIn("pasta dos sigilosos", env["dados"]["motivo"])
+            self.assertTrue(recebidos[-1]["sigiloso"])
+            self.assertEqual(recebidos[-1]["gravacao"], "sala 2.wav")
+            self.assertEqual(recebidos[-1]["data"], quando)
+            # mesmo nome, outro conteúdo: não é a gravação guardada
+            status, env = self.cliente.enviar(
+                "/api/transcricao/gravacao", "sala 2.wav", b"RIFF-outra-gravacao-maior",
+                {"processo": "0700124-68.2024.8.02.0001", "sigiloso": "false"})
+            self.esperar_tarefa(env["dados"]["tarefa"])
+            self.assertFalse(recebidos[-1]["sigiloso"])
+            # a gravação de audiência sigilosa (o _audio da pasta dos sigilosos),
+            # retranscrita sem os autos lá: o número já está na pasta - e a data
+            # sai do nome que o Helestron deu ao arquivo
+            audio = (self.amb.dados / "Sigilosos" / "Transcricoes" / "_audio"
+                     / f"{NUMERO} 2026-09-15 14h00.flac")
+            audio.parent.mkdir(parents=True)
+            audio.write_bytes(b"fLaC-original")
+            status, env = self.cliente.enviar(
+                "/api/transcricao/gravacao", audio.name, b"fLaC-copia", {"sigiloso": "false"})
+            self.esperar_tarefa(env["dados"]["tarefa"])
+        self.assertTrue(recebidos[-1]["sigiloso"])
+        self.assertTrue(env["dados"]["sigiloso_forcado"])
+        self.assertEqual(recebidos[-1]["data"], datetime(2026, 9, 15, 14, 0))
+
+    def test_gravacao_sigilosa_pela_pauta(self):
+        audio = self.amb.raiz / "gravacao.mp3"
+        audio.write_bytes(b"ID3")
+        pauta = mock.Mock()
+        pauta.processo_sigiloso.return_value = True
+        with mock.patch.object(self.app, "pauta_ou_none", return_value=pauta), \
+                mock.patch("helestron.servicos.transcrever_gravacao",
+                           return_value=self.amb.raiz / "x.docx") as transcrever:
+            dados = self.cliente.dados("POST", "/api/transcricao/gravacao",
+                                       {"caminho": str(audio), "processo": NUMERO,
+                                        "sigiloso": False})
+            self.esperar_tarefa(dados["tarefa"])
+        self.assertTrue(transcrever.call_args.kwargs["sigiloso"])
+        self.assertEqual((dados["sigiloso"], dados["sigiloso_forcado"]), (True, True))
+        self.assertIn("pauta", dados["motivo"])
+        pauta.processo_sigiloso.assert_called_with(NUMERO)
+
+    def test_recuperar_refaz_o_indice_e_o_espelho(self):
+        diario = self.amb.dados / "Acervo" / "Transcricoes" / "_audio" / f"{NUMERO} 2026.jsonl"
+        diario.parent.mkdir(parents=True)
+        diario.write_text("{}", encoding="utf-8")
+        documento = self.amb.dados / "Acervo" / "Transcricoes" / f"{NUMERO}.docx"
+        with mock.patch("helestron.servicos.recuperaveis", return_value=[diario]), \
+                mock.patch("helestron.servicos.recuperar", return_value=documento), \
+                mock.patch("helestron.servidor.api_compartilhar.depois_de_salvar") as depois:
+            self.cliente.dados("POST", "/api/transcricao/recuperar", {"arquivo": str(diario)})
+        depois.assert_called_once_with(self.app, documento)
 
     def test_recuperacao_so_dos_achados(self):
         diario = self.amb.dados / "Acervo" / "Transcricoes" / "_audio" / f"{NUMERO} 2026.jsonl"
@@ -299,6 +486,49 @@ class TestMicrofoneEModelos(ServidorDeTeste):
             self.assertEqual(self.app.recursos.quem_tem("microfone"), "Teste do microfone")
             self.cliente.dados("POST", "/api/transcricao/microfone/parar")
         captura.parar.assert_called_once()
+        self.assertIsNone(self.app.recursos.quem_tem("microfone"))
+
+    def test_teste_do_microfone_ausente_ou_ocupado_tem_a_frase_do_motor(self):
+        """Sem microfone, ou preso pelo Teams: a frase que diz o que fazer - e
+        não "Algo deu errado no Helestron" (500)."""
+        for frase in ("Nenhum microfone foi encontrado. Ligue o microfone (ou o fone com "
+                      "microfone) e clique em Testar de novo.",
+                      "Não consegui abrir o microfone. Outro programa (Teams, Zoom, gravador "
+                      "da sala) pode estar usando-o com exclusividade."):
+            with self.subTest(frase=frase[:30]):
+                with mock.patch("helestron.transcricao.microfone.Captura._abrir",
+                                side_effect=MicrofoneIndisponivel(frase)):
+                    status, env = self.cliente.post("/api/transcricao/microfone/teste",
+                                                    {"dispositivo": ""})
+                    self.assertEqual(status, 409)
+                    self.assertEqual(env["erro"]["codigo"], "microfone_indisponivel")
+                    self.assertEqual(env["erro"]["mensagem"], frase)
+                    # o microfone ficou livre: o segundo clique não diz "ocupado"
+                    self.assertIsNone(self.app.recursos.quem_tem("microfone"))
+                    status, env = self.cliente.post("/api/transcricao/microfone/teste",
+                                                    {"dispositivo": ""})
+                    self.assertEqual(env["erro"]["codigo"], "microfone_indisponivel")
+
+    def test_teste_do_microfone_pelo_nome(self):
+        lista = [Entrada(7, "Microfone de mesa (USB)", False, 48000)]
+        recebidos = []
+
+        def abrir(dispositivo, ao_nivel, ao_aviso=None):
+            recebidos.append(dispositivo)
+            return mock.Mock()
+
+        with mock.patch("helestron.transcricao.microfone.listar_entradas", return_value=lista), \
+                mock.patch("helestron.servicos.abrir_teste_microfone", side_effect=abrir):
+            self.cliente.dados("POST", "/api/transcricao/microfone/teste",
+                               {"dispositivo": "Microfone de mesa (USB)"})
+            self.cliente.dados("POST", "/api/transcricao/microfone/parar")
+            self.cliente.dados("POST", "/api/transcricao/microfone/teste", {"dispositivo": 7})
+            self.cliente.dados("POST", "/api/transcricao/microfone/parar")
+            status, env = self.cliente.post("/api/transcricao/microfone/teste",
+                                            {"dispositivo": "Microfone que sumiu"})
+        self.assertEqual(recebidos, ["Microfone de mesa (USB)", 7])
+        self.assertEqual((status, env["erro"]["codigo"]), (409, "microfone_indisponivel"))
+        self.assertIn("«Microfone que sumiu» não foi encontrado", env["erro"]["mensagem"])
         self.assertIsNone(self.app.recursos.quem_tem("microfone"))
 
     def test_modelos(self):

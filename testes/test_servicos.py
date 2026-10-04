@@ -35,6 +35,28 @@ class TestPastas(unittest.TestCase):
         self.assertIsNone(servicos.problema_nas_pastas(self.base / "Acervo", self.base / "Sigilosos",
                                                        self.base / "Sigilosos" / "Pauta"))
 
+    def test_conflito_da_nuvem(self):
+        acervo = self.base / "Acervo"
+        for nuvem in (acervo, acervo / "OneDrive", self.base, self.amb.raiz):
+            with self.subTest(nuvem=nuvem):
+                self.assertTrue(servicos.conflito_da_nuvem(nuvem, acervo))
+        self.assertIsNone(servicos.conflito_da_nuvem(self.amb.raiz / "OneDrive", acervo))
+        self.assertIsNone(servicos.conflito_da_nuvem("", acervo))
+        # a mesma subpasta do espelho de compartilhar.nuvem
+        from helestron.compartilhar import nuvem as mod_nuvem
+
+        self.assertEqual(servicos.SUBPASTA_NUVEM, mod_nuvem.SUBPASTA)
+
+    def test_gravacao_guardada_na_pasta_dos_sigilosos(self):
+        pasta = self.base / "Sigilosos" / "Gravacoes"
+        pasta.mkdir(parents=True)
+        (pasta / "sala [2].wav").write_bytes(b"12345")
+        self.assertTrue(servicos.copia_na_pasta_dos_sigilosos(self.amb.cfg, "sala [2].wav", 5))
+        self.assertTrue(servicos.copia_na_pasta_dos_sigilosos(self.amb.cfg, "sala [2].wav", None))
+        self.assertFalse(servicos.copia_na_pasta_dos_sigilosos(self.amb.cfg, "sala [2].wav", 6))
+        self.assertFalse(servicos.copia_na_pasta_dos_sigilosos(self.amb.cfg, "outra.wav", 5))
+        self.assertFalse(servicos.copia_na_pasta_dos_sigilosos(self.amb.cfg, "", 5))
+
     def test_acervo_nao_contem_a_pasta_local_nem_o_programa(self):
         self.assertIn("senhas", servicos.problema_nas_pastas(self.amb.raiz, Path("/fora/sig")))
         with mock.patch.object(caminhos, "INSTALACAO", self.base / "Programa", create=True):
@@ -80,6 +102,37 @@ class TestPontesDoMotor(unittest.TestCase):
             self.assertEqual(Sessao.call_args.kwargs["dispositivo"], 2)
             servicos.nova_sessao(cnj.ler(NUMERO), object(), lambda t, d: None)
             self.assertNotIn("dispositivo", Sessao.call_args.kwargs)
+            # "Padrão do Windows" escolhido na tela vai explícito
+            servicos.nova_sessao(cnj.ler(NUMERO), object(), lambda t, d: None, dispositivo="")
+            self.assertEqual(Sessao.call_args.kwargs["dispositivo"], "")
+
+    def test_padrao_do_windows_nao_cai_no_microfone_da_configuracao(self):
+        """Achado: a tela mostrava "Padrão do Windows" e mandava "", mas a
+        sessão gravava pelo microfone (índice velho) do config.ini."""
+        amb = AmbienteTemporario().iniciar()
+        self.addCleanup(amb.parar)
+        amb.cfg.definir("transcricao", "dispositivo", "3")
+        sessao = servicos.nova_sessao(cnj.ler(NUMERO), amb.cfg, lambda t, d: None, dispositivo="")
+        self.assertEqual(sessao.dispositivo, "")
+        sessao = servicos.nova_sessao(cnj.ler(NUMERO), amb.cfg, lambda t, d: None)
+        self.assertEqual(sessao.dispositivo, "3")
+
+    def test_gravacao_enviada_leva_nome_e_data_para_a_ficha(self):
+        from datetime import datetime
+
+        quando = datetime(2026, 9, 15, 10, 30)
+        with mock.patch("helestron.transcricao.arquivo.transcrever_arquivo") as transcrever:
+            servicos.transcrever_gravacao(Path("/tmp/envio-abc.wav"), cnj.ler(NUMERO), object(),
+                                          None, None, gravacao="sala 2.wav", data=quando)
+            meta = transcrever.call_args.kwargs["meta"]
+            self.assertEqual((meta.gravacao, meta.data, meta.tipo), ("sala 2.wav", quando, ""))
+            servicos.transcrever_gravacao(Path("/tmp/a.wav"), cnj.ler(NUMERO), object(), None,
+                                          None, participantes={"F1": "Juiz(a)"})
+            self.assertEqual(transcrever.call_args.kwargs["meta"].participantes,
+                             {"F1": "Juiz(a)"})
+            servicos.transcrever_gravacao(Path("/tmp/a.wav"), cnj.ler(NUMERO), object(), None,
+                                          None)
+            self.assertNotIn("meta", transcrever.call_args.kwargs)
 
     def test_componente_ausente_tem_frase(self):
         erro = servicos._ausente(ImportError("x", name="faster_whisper"), "transcrição")

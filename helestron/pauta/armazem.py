@@ -24,6 +24,10 @@ Por que assim:
 * campo que veio vazio não apaga o que já se sabia (a captura de uma tela
   com menos colunas não "altera" o local para nada); sigilo, uma vez
   apurado, fica;
+* a audiência que o portal traz e que já estava na pauta por um relatório
+  IMPORTADO (mesmo processo, data e hora) não fica em dobro: o registro do
+  relatório é absorvido pelo do portal (o que só ele sabia completa o do
+  portal, e o sigilo de um vale para o outro);
 * banco corrompido (disco cheio, cópia pela metade) é posto de lado com
   outro nome e um novo é criado: a pauta se refaz na próxima sincronização,
   e o programa não deixa de abrir por causa dela.
@@ -249,16 +253,42 @@ class Armazem:
             con = self._c()
             con.execute("BEGIN IMMEDIATE")
             try:
+                importadas = ({} if fonte == "arquivo"
+                              else self._absorver_importadas(con, unicas.values()))
                 existentes = self._por_ids(con, list(unicas))
                 novas_agora: list[Audiencia] = []
                 hist_novas: dict[str, int] = {}
                 for a in unicas.values():
                     balanco.ids.append(a.id)
                     antigo = existentes.get(a.id)
+                    velha = importadas.get(a.id)
+                    if velha is not None:
+                        # o que só o relatório sabia completa o registro do portal
+                        for nome in _COMPLETAVEIS:
+                            if not getattr(a, nome) and not (antigo is not None and antigo[nome]):
+                                setattr(a, nome, getattr(velha, nome))
+                        a.sigiloso = bool(a.sigiloso or velha.sigiloso)
                     if antigo is None:
                         self._inserir(con, a, agora)
-                        balanco.novas += 1
+                        if velha is not None and registrar_novas and \
+                                velha.situacao != a.situacao:
+                            # já estava na pauta pelo relatório; o portal mudou a situação
+                            balanco.atualizadas += 1
+                            tipo = "alterada"
+                            if a.situacao == "Cancelada":
+                                tipo = "cancelada"
+                                balanco.canceladas += 1
+                            self._historico(con, tipo, a, [{
+                                "campo": "situacao", "antes": velha.situacao,
+                                "depois": a.situacao}], agora)
+                            balanco.alteracoes += 1
+                            continue
                         novas_agora.append(a)
+                        if velha is not None:
+                            # já estava na pauta pelo relatório: não é "nova" para ninguém
+                            balanco.inalteradas += 1
+                            continue
+                        balanco.novas += 1
                         if registrar_novas:
                             hist_novas[a.id] = self._historico(con, "nova", a, [], agora)
                             balanco.alteracoes += 1
@@ -284,12 +314,30 @@ class Armazem:
                         balanco.inalteradas += 1
                 if periodo is not None:
                     self._remover_ausentes(con, fonte, periodo, set(unicas), novas_agora,
-                                           hist_novas, balanco, agora)
+                                           hist_novas, balanco, agora, set(importadas))
                 con.execute("COMMIT")
             except BaseException:
                 con.execute("ROLLBACK")
                 raise
         return balanco
+
+    def _absorver_importadas(self, con, audiencias) -> dict[str, Audiencia]:
+        """Tira do banco o registro do relatório importado que é a mesma audiência
+        que o portal trouxe agora (processo, data e hora - a regra de
+        ServicoPauta.importar, no sentido inverso). {id da do portal: a do relatório}."""
+        saida: dict[str, Audiencia] = {}
+        for a in audiencias:
+            chave = modelos.chave_processo(a.processo) if a.processo else ""
+            if not chave or a.sistema == "arquivo":
+                continue
+            for linha in con.execute("SELECT * FROM audiencias WHERE sistema = 'arquivo' AND "
+                                     "data = ? AND hora = ?", (a.data.isoformat(), a.hora)
+                                     ).fetchall():
+                if linha["id"] == a.id or modelos.chave_processo(linha["processo"]) != chave:
+                    continue
+                con.execute("DELETE FROM audiencias WHERE id = ?", (linha["id"],))
+                saida.setdefault(a.id, self._linha_para_audiencia(linha))
+        return saida
 
     def _por_ids(self, con, ids: list[str]) -> dict[str, sqlite3.Row]:
         saida = {}
@@ -331,7 +379,8 @@ class Armazem:
 
     def _remover_ausentes(self, con, fonte: str, periodo, recebidos: set[str],
                           novas_agora: list[Audiencia], hist_novas: dict[str, int],
-                          balanco: Balanco, agora: datetime) -> None:
+                          balanco: Balanco, agora: datetime,
+                          absorvidas: set[str] | None = None) -> None:
         de, ate = periodo
         faltam = [linha for linha in con.execute(
             "SELECT * FROM audiencias WHERE fonte = ? AND removida = 0 AND data BETWEEN ? AND ?",
@@ -360,7 +409,10 @@ class Armazem:
             self._atualizar(con, final, agora)
             con.execute("DELETE FROM audiencias WHERE id = ?", (velho.id,))
             pareadas.add(velho.id)
-            balanco.novas -= 1
+            if nova.id in (absorvidas or ()):
+                balanco.inalteradas -= 1      # contada como "já estava" (relatório importado)
+            else:
+                balanco.novas -= 1
             balanco.atualizadas += 1
             tipo = "alterada"
             if final.situacao == "Cancelada" and velho.situacao != "Cancelada":
@@ -423,10 +475,24 @@ class Armazem:
                 (a_partir.isoformat(), int(limite))).fetchall()
         return [self._linha_para_audiencia(x) for x in linhas]
 
-    def contar(self) -> int:
+    def contar(self, incluir_removidas: bool = False) -> int:
+        filtro = "" if incluir_removidas else " WHERE removida = 0"
         with self._trava:
             return int(self._c().execute(
-                "SELECT count(*) FROM audiencias WHERE removida = 0").fetchone()[0])
+                "SELECT count(*) FROM audiencias" + filtro).fetchone()[0])
+
+    def sigilosas(self) -> tuple[set[str], set[str]]:
+        """(chaves CNJ dos processos, ids das audiências) marcados sigilosos.
+
+        Em QUALQUER registro - o do portal, o do relatório importado, o que já
+        saiu da pauta: o sigilo é do processo, não da linha.
+        """
+        with self._trava:
+            linhas = self._c().execute(
+                "SELECT id, processo FROM audiencias WHERE sigiloso = 1").fetchall()
+        chaves = {modelos.chave_processo(x["processo"]) for x in linhas if x["processo"]}
+        chaves.discard("")
+        return chaves, {x["id"] for x in linhas}
 
     # ----------------------------------------------------------- histórico
     def alteracoes(self, desde: datetime | None = None, de: date | None = None,

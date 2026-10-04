@@ -6,7 +6,9 @@ respondem 503 {codigo: "pauta_indisponivel"} e o resto do programa segue.
 
 Sincronizar e capturar usam o navegador dos portais (o mesmo perfil e a
 mesma sessão do download): rodam como tarefa, com o recurso 'navegador' -
-não andam junto com um download.
+não andam junto com um download. E a mesma senha: a guardada no cofre e a
+digitada com "Lembrar neste computador" desligado (app.credenciais_sessao,
+como em api_processos), que vale até fechar o Helestron.
 """
 
 from __future__ import annotations
@@ -85,6 +87,17 @@ def _periodo(de, ate, padrao: tuple[date, date]) -> tuple[date, date]:
     if (ate - de).days > 3 * 366:
         raise erro_400("Escolha um período de até três anos.", "periodo_invalido")
     return de, ate
+
+
+def _com_senha_da_sessao(app, servico) -> None:
+    """A senha "só por agora" vale também para a pauta (o mesmo dicionário do
+    download: o que mudar nos Acessos vale na hora)."""
+    sessao = getattr(app, "credenciais_sessao", None)
+    if sessao is not None:
+        try:
+            servico.credenciais_sessao = sessao
+        except Exception as erro:          # serviço sem o atributo: segue com o cofre
+            log.debug("credenciais da sessão: %s", erro)
 
 
 def monitoramento_dict(app, servico) -> dict:
@@ -181,6 +194,7 @@ def sincronizar(p: Pedido) -> dict:
         raise erro_400("“fontes” deve ser uma lista de ids.", "campo_invalido")
     de, ate = _periodo(data(p.campo("de"), "de"), data(p.campo("ate"), "ate"),
                        periodo_padrao(app.cfg))
+    _com_senha_da_sessao(app, servico)
 
     def alvo(tw):
         tw.definir_status("Entrando nos portais…")
@@ -203,6 +217,7 @@ def capturar(p: Pedido) -> dict:
     servico = app.pauta()
     sistema_ = p.campo("sistema", obrigatorio=True, tipo=str).strip().lower()
     sigla = _tribunal(p.campo("tribunal", obrigatorio=True, tipo=str), sistema_)
+    _com_senha_da_sessao(app, servico)
 
     def alvo(tw):
         tw.definir_status("Abrindo o portal: vá até a pauta de audiências e clique em "
@@ -250,8 +265,11 @@ def exportar(p: Pedido) -> dict:
             valor = ""
         if valor:
             filtros[chave] = valor
-    if p.campo("incluir_partes_sigilosos", padrao=False, tipo=bool):
-        filtros["incluir_partes_sigilosos"] = True
+    # a escolha feita na janela vale - inclusive o "não" com o Ajuste ligado; sem o
+    # campo, o serviço usa o Ajuste ([pauta] incluir_partes_sigilosos)
+    incluir = p.campo("incluir_partes_sigilosos", padrao=None, tipo=bool)
+    if incluir is not None:
+        filtros["incluir_partes_sigilosos"] = bool(incluir)
     destino = servicos.pasta_pauta(app.cfg)
     problema = servicos.problema_nas_pastas(app.cfg.pasta_acervo, app.cfg.pasta_sigilosos, destino)
     if problema:

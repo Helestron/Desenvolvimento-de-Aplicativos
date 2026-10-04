@@ -413,7 +413,9 @@
       enderecos: () => chamar("enderecosCorrigidos"),
       enderecosDoPortal: (portal) => chamar("enderecosDoPortal", { params: { portal } }),
       corrigirEndereco: (portal, grau, url) => chamar("enderecoCorrigir", { corpo: { portal, grau, url } }),
-      testar: (tribunal) => chamar("acessosTestar", { corpo: { tribunal } }),
+      // O portal exato da linha (esaj ou eproc): no TJAL, no TJSP e no TJAC os
+      // dois existem, e só a sigla testaria o principal (o e-SAJ).
+      testar: (tribunal, sistema) => chamar("acessosTestar", { corpo: sistema ? { tribunal, sistema } : { tribunal } }),
     },
     abrir: (tipo, alvo) => chamar("abrir", { corpo: { tipo, alvo } }),
     verificacao: {
@@ -457,7 +459,7 @@
       pausar: () => chamar("transcricaoPausar"),
       retomar: () => chamar("transcricaoRetomar"),
       falante: (falante) => chamar("transcricaoFalante", { corpo: { falante } }),
-      encerrar: () => chamar("transcricaoEncerrar"),
+      encerrar: (pedido) => chamar("transcricaoEncerrar", { corpo: pedido || {} }),
       estado: () => chamar("transcricaoEstado"),
       recuperaveis: () => chamar("recuperaveis"),
       recuperar: (arquivo) => chamar("recuperar", { corpo: { arquivo } }),

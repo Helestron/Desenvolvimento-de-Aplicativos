@@ -25,12 +25,16 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 log = logging.getLogger("aplicativo.integridade")
+
+NO_WINDOWS = sys.platform == "win32"
 
 NOME_MANIFESTO = "manifesto.json"
 AUSENTE, TAMANHO, CONTEUDO, MANIFESTO = "ausente", "tamanho", "conteudo", "manifesto"
@@ -216,13 +220,147 @@ def descrever(problemas: list[Problema], limite: int = 10) -> str:
     return "\n".join(linhas)
 
 
-def procurar_instalador() -> Path | None:
+# ============================================================ o instalador
+# O nome que a construção publica (e o que o navegador acrescenta quando o
+# arquivo é baixado de novo: "Helestron-Setup-1.0.0 (1).exe"). Outro nome
+# qualquer - "Helestron-Setup (atualização).exe", vindo de um anexo ou de um
+# site - nunca é aberto pelo botão Reparar.
+PADRAO_INSTALADOR = re.compile(r"^Helestron-Setup-(\d+)\.(\d+)\.(\d+)(?: \(\d+\))?\.exe$",
+                               re.IGNORECASE)
+# O cabeçalho que todo instalador NSIS tem (firstheader: flags, 0xDEADBEEF,
+# "NullsoftInst"), num limite de 512 bytes logo depois do executável inicial.
+ASSINATURA_NSIS = b"\xef\xbe\xad\xdeNullsoftInst"
+# A descrição que o helestron.nsi grava nas propriedades do Setup.exe.
+DESCRICAO_INSTALADOR = "Instalador do Helestron".encode("utf-16-le")
+LIMITE_CABECALHO = 4 * 1024 * 1024
+# FOLDERID_Downloads {374DE290-123F-4565-9164-39C4925E467B}
+_FOLDERID_DOWNLOADS = (0x374DE290, 0x123F, 0x4565, (0x91, 0x64, 0x39, 0xC4, 0x92, 0x5E, 0x46, 0x7B))
+
+
+def _versao_tupla(texto: str) -> tuple[int, ...]:
+    partes = []
+    for parte in str(texto or "").split("."):
+        if not parte.isdigit():
+            break
+        partes.append(int(parte))
+    return tuple(partes)
+
+
+def versao_do_instalador(arquivo: Path) -> tuple[int, int, int] | None:
+    """(1, 0, 0) de "Helestron-Setup-1.0.0.exe"; None se o nome não for o publicado."""
+    achado = PADRAO_INSTALADOR.match(Path(arquivo).name)
+    if not achado:
+        return None
+    return int(achado.group(1)), int(achado.group(2)), int(achado.group(3))
+
+
+def _downloads_windows() -> Path | None:  # pragma: no cover - só no Windows
+    """A pasta Downloads de verdade (SHGetKnownFolderPath): com o
+    redirecionamento de pastas da TI (GPO) ou a pasta movida pelo usuário,
+    ela não é %USERPROFILE%\\Downloads - e é onde o navegador salva."""
+    import ctypes
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                    ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+    d1, d2, d3, d4 = _FOLDERID_DOWNLOADS
+    guid = GUID(d1, d2, d3, (ctypes.c_ubyte * 8)(*d4))
+    # Protótipo próprio (e não argtypes na função compartilhada do windll).
+    prototipo = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.POINTER(GUID), wintypes.DWORD,
+                                   wintypes.HANDLE, ctypes.POINTER(ctypes.c_void_p))
+    pedir = prototipo(("SHGetKnownFolderPath", ctypes.windll.shell32))
+    saida = ctypes.c_void_p()
+    resultado = pedir(ctypes.byref(guid), 0, None, ctypes.byref(saida))
+    try:
+        if resultado != 0 or not saida.value:
+            return None
+        texto = ctypes.wstring_at(saida.value)
+        return Path(texto) if texto else None
+    finally:
+        # A memória é liberada mesmo quando a chamada falha (documentação da API).
+        ctypes.windll.ole32.CoTaskMemFree(saida)
+
+
+def pastas_downloads() -> list[Path]:
+    """A pasta Downloads registrada no Windows e, de reserva, a de sempre
+    (%USERPROFILE%\\Downloads), sem repetir."""
+    pastas: list[Path] = []
+    if NO_WINDOWS:
+        try:
+            achada = _downloads_windows()
+        except Exception as erro:                    # sem a API: só a de sempre
+            log.debug("pasta Downloads não lida pelo Windows: %s", erro)
+            achada = None
+        if achada is not None:
+            pastas.append(achada)
+    reserva = Path.home() / "Downloads"
+    if not any(_mesma_pasta(reserva, p) for p in pastas):
+        pastas.append(reserva)
+    return pastas
+
+
+def _mesma_pasta(a: Path, b: Path) -> bool:
+    try:
+        return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+    except (OSError, ValueError):
+        return False
+
+
+def conferir_instalador(arquivo: Path) -> str | None:
+    """None se o arquivo é um instalador do Helestron; senão, o motivo.
+
+    Confere o nome publicado, o cabeçalho de instalador NSIS, a descrição
+    "Instalador do Helestron" nas propriedades do arquivo e, se houver o
+    .sha256 ao lado (o que a página de versões publica), o código de
+    conferência. Não é uma assinatura digital (o instalador não é assinado):
+    é o bastante para o botão Reparar não abrir um executável qualquer que
+    tenha caído na pasta Downloads.
+    """
+    arquivo = Path(arquivo)
+    if versao_do_instalador(arquivo) is None:
+        return "o nome não é o do instalador publicado (Helestron-Setup-versão.exe)"
+    try:
+        with open(arquivo, "rb") as f:
+            inicio = f.read(LIMITE_CABECALHO)
+    except OSError as erro:
+        return f"não pôde ser lido ({erro})"
+    if not inicio.startswith(b"MZ"):
+        return "não é um programa do Windows"
+    posicao, achou = inicio.find(ASSINATURA_NSIS), False
+    while posicao >= 0:
+        if (posicao - 4) % 512 == 0:
+            achou = True
+            break
+        posicao = inicio.find(ASSINATURA_NSIS, posicao + 1)
+    if not achou:
+        return "não é um instalador (falta o cabeçalho do instalador)"
+    if DESCRICAO_INSTALADOR not in inicio:
+        return "não é o instalador do Helestron"
+    soma = arquivo.with_name(arquivo.name + ".sha256")
+    if soma.is_file():
+        try:
+            esperado = (soma.read_text(encoding="utf-8", errors="replace").split() or [""])[0].lower()
+            obtido = sha256_de(arquivo)
+        except OSError as erro:
+            return f"não pôde ser conferido ({erro})"
+        if esperado and obtido != esperado:
+            return ("está incompleto ou corrompido (o código de conferência do arquivo .sha256 "
+                    "não bate)")
+    return None
+
+
+def procurar_instalador(conferir: bool = True) -> Path | None:
     """O Helestron-Setup que estiver no computador, para o botão Reparar.
 
     O instalador não deixa cópia de si (seriam centenas de MB a mais): quem
-    o baixou costuma tê-lo em Downloads. Procura ali e, por garantia, em
-    LOCAL e na pasta do programa (onde a TI pode tê-lo deixado) - o mais
-    novo primeiro.
+    o baixou costuma tê-lo em Downloads - a pasta Downloads registrada no
+    Windows, que a TI pode ter redirecionado. Procura ali e, por garantia,
+    em LOCAL e na pasta do programa (onde a TI pode tê-lo deixado). Só vale
+    o nome publicado, e (conferir=True) um instalador do Helestron de
+    verdade; nunca uma versão mais velha que a instalada. A versão mais
+    nova primeiro; na mesma versão, o arquivo mais recente.
     """
     candidatos: list[Path] = []
     pastas: list[Path] = []
@@ -235,13 +373,39 @@ def procurar_instalador() -> Path | None:
     instalada = pasta_instalada()
     if instalada is not None:
         pastas.append(instalada)
-    pastas.append(Path.home() / "Downloads")
+    pastas += pastas_downloads()
+    minima: tuple[int, ...] = ()
+    if instalada is not None:
+        try:
+            minima = _versao_tupla(ler_manifesto(instalada)[0])
+        except ValueError:
+            minima = ()
     for pasta in pastas:
         try:
-            candidatos += [p for p in pasta.glob("Helestron-Setup*.exe") if p.is_file()]
+            achados = [p for p in pasta.glob("Helestron-Setup*.exe") if p.is_file()]
         except OSError:
             continue
-    if not candidatos:
-        return None
-    candidatos.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
-    return candidatos[0]
+        for p in achados:
+            versao = versao_do_instalador(p)
+            if versao is None or (minima and versao < minima[:3]):
+                continue
+            if any(_mesma_pasta(p, c) for c in candidatos):
+                continue
+            candidatos.append(p)
+
+    def chave(p: Path):
+        try:
+            quando = p.stat().st_mtime
+        except OSError:
+            quando = 0
+        return versao_do_instalador(p) or (0, 0, 0), quando
+
+    candidatos.sort(key=chave, reverse=True)
+    for p in candidatos:
+        if not conferir:
+            return p
+        motivo = conferir_instalador(p)
+        if motivo is None:
+            return p
+        log.warning("%s não serve para reparar a instalação: %s", p, motivo)
+    return None

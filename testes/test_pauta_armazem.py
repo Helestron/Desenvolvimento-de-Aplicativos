@@ -202,5 +202,49 @@ class TestArmazem(apoio.PastaTemporaria):
         self.assertEqual(len(self.banco.alteracoes(desde=T0.astimezone())), 2)
 
 
+class TestRelatorioImportadoEPortal(apoio.PastaTemporaria):
+    """A audiência do relatório importado que o portal traz depois é absorvida
+    pelo registro do portal - no mesmo processo, data e hora."""
+
+    def setUp(self):
+        super().setUp()
+        self.banco = Armazem(self.tmp / "local" / "pauta.sqlite3")
+        self.addCleanup(self.banco.fechar)
+
+    def importada(self, seq, **extra):
+        a = modelos.nova(sistema="arquivo", tribunal="TJAL", data_=extra.pop("data_", D1),
+                         processo=ap.numero(seq), hora=extra.pop("hora", "09:00"),
+                         tipo_original=extra.pop("tipo", ""), fonte="arquivo", **extra)
+        self.banco.gravar([a], "arquivo", None, registrar_novas=False, agora=T0)
+        return a
+
+    def test_absorve_completa_e_nao_e_nova(self):
+        self.importada("0700101", local="Sala 9", partes="A x B", sigiloso=True)
+        self.importada("0700102", hora="10:00")          # outra hora: outra audiência
+        b = self.banco.gravar([aud("0700101", local="")], "esaj-tjal", PERIODO, agora=T1)
+        self.assertEqual((b.novas, b.inalteradas, b.alteracoes), (0, 1, 0))
+        lista = self.banco.listar(*PERIODO, incluir_removidas=True)
+        self.assertEqual(sorted((a.sistema, a.processo[:7]) for a in lista),
+                         [("arquivo", "0700102"), ("esaj", "0700101")])
+        portal = next(a for a in lista if a.sistema == "esaj")
+        self.assertEqual((portal.local, portal.partes, portal.sigiloso), ("Sala 9", "A x B", True))
+        self.assertEqual(self.banco.sigilosas()[0], {modelos.chave_processo(ap.numero("0700101"))})
+
+    def test_remarcada_no_portal_com_a_importada_no_meio(self):
+        self.banco.gravar([aud("0700101", hora="09:00")], "esaj-tjal", PERIODO,
+                          registrar_novas=False, agora=T0)
+        self.importada("0700101", hora="10:00")
+        b = self.banco.gravar([aud("0700101", hora="10:00")], "esaj-tjal", PERIODO, agora=T1)
+        self.assertEqual((b.novas, b.atualizadas, b.removidas, b.inalteradas), (0, 1, 0, 0))
+        self.assertEqual([(a.sistema, a.hora) for a in
+                          self.banco.listar(*PERIODO, incluir_removidas=True)], [("esaj", "10:00")])
+        self.assertEqual([x["tipo"] for x in self.banco.alteracoes()], ["alterada"])
+
+    def test_contar_com_as_removidas(self):
+        self.banco.gravar([aud("0700101")], "esaj-tjal", PERIODO, registrar_novas=False)
+        self.banco.gravar([], "esaj-tjal", PERIODO)
+        self.assertEqual((self.banco.contar(), self.banco.contar(incluir_removidas=True)), (0, 1))
+
+
 if __name__ == "__main__":
     unittest.main()

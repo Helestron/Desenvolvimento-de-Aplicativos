@@ -12,11 +12,21 @@ Justiça"). Daí em diante a regra é uma só (seção 8.5 da especificação):
   número CNJ;
 * uma tabela de intimações, prazos ou movimentações tem data e processo
   também: o cabeçalho que fala de "prazo", "evento", "intimação"... sem
-  nada que lembre audiência (hora, "audiência" na legenda) NÃO é pauta.
-  Ler a lista de intimações como pauta encheria a tela de audiências que
-  não existem;
-* data e hora na mesma célula são separadas; linhas de grupo ("Segunda-
-  feira, 05/10/2026") dão a data às linhas de baixo; linha sem data é
+  nada que lembre audiência NA PRÓPRIA TABELA (hora, "audiência" no
+  cabeçalho ou na legenda) NÃO é pauta - o título da página não basta: a
+  tela da pauta do portal costuma ter, ao lado, o painel de intimações.
+  No portal, a tabela só com data e processo (sem hora, tipo ou situação)
+  também precisa desse sinal: a fila de processos não é pauta. Ler a lista
+  de intimações como pauta encheria a tela de audiências que não existem;
+* o cabeçalho é procurado nas primeiras linhas, passando por cima do
+  preâmbulo do relatório ("Data: 03/10/2026 | Hora: 10:15" da emissão,
+  título, vara, período) e juntando o cabeçalho em duas linhas
+  ("Audiência" mesclada sobre "Data | Hora");
+* células mescladas na vertical (rowspan) valem para todas as linhas que
+  cobrem; data e hora na mesma célula são separadas; linhas de grupo
+  ("Segunda-feira, 05/10/2026", com ou sem a contagem ao lado) dão a data
+  às linhas de baixo, e a célula de data vazia repete a da linha de cima
+  (relatório com a data só na primeira audiência do dia); linha sem data é
   ignorada (e contada), com aviso se trazia um processo.
 """
 
@@ -24,7 +34,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from html import unescape
 from html.parser import HTMLParser
@@ -36,8 +46,9 @@ from .modelos import Audiencia, limpar, normalizar_texto
 log = logging.getLogger("pauta.tabelas")
 
 MAX_AVISOS = 20
-MAX_LINHAS_CABECALHO = 6       # o cabeçalho é procurado nas primeiras linhas
+MAX_LINHAS_CABECALHO = 15      # o cabeçalho é procurado nas primeiras linhas (após o preâmbulo)
 MAX_CELULA_CABECALHO = 60      # célula mais longa que isto não é rótulo de coluna
+MAX_ROWSPAN = 500
 _RE_URL = re.compile(r"https?://[^\s<>\"']+", re.I)
 _NADA = re.compile(r"nenhum(a)?\s+(registro|audiencia|resultado|item)|"
                    r"nao (ha|foram encontrad|existem)|sem (registros|audiencias|resultados)", re.I)
@@ -50,6 +61,32 @@ COLUNAS_DE_CONTAGEM = {"quantidade", "qtd", "qtde", "total", "audiencias", "n de
 ROTULOS_SITUACAO = {normalizar_texto(x) for x in (
     *modelos.SITUACOES, "cancelado", "realizado", "redesignado", "designado", "nao realizado",
     "suspenso", "adiada", "adiado", "remarcada", "remarcado")}
+# O que acompanha a data numa linha de grupo: a contagem ("2 audiências",
+# "Total: 3", "(3)") ou o dia da semana.
+_ANOTACAO_DE_GRUPO = re.compile(
+    r"^\(?\s*(?:(?:total|quantidade|qtde?|n)\s*(?:de\s+(?:audiencias?|registros?))?\s*:?\s*)?"
+    r"\d{1,4}\s*(?:audiencias?|registros?|processos?|itens?)?\s*\)?$"
+    r"|^(?:segunda|terca|quarta|quinta|sexta)(?:[\s-]*feira)?$|^(?:sabado|domingo)$")
+
+
+def tem_valores(linha) -> bool:
+    """A linha traz dados (uma data, um número de processo): não é cabeçalho de colunas.
+
+    "Data: | 03/10/2026 | Hora: | 10:15", da emissão do relatório, tem
+    rótulos de coluna, mas é preâmbulo.
+    """
+    return any(cnj.extrair_todos(c.texto) or modelos.ler_data(c.bruto) is not None
+               for c in linha)
+
+
+def _juntar_cabecalhos(cima: list["Celula"], baixo: list["Celula"]) -> list["Celula"]:
+    """O cabeçalho em duas linhas: o rótulo de baixo; onde ele falta, o de cima."""
+    saida = []
+    for j in range(max(len(cima), len(baixo))):
+        b = baixo[j] if j < len(baixo) else None
+        c = cima[j] if j < len(cima) else None
+        saida.append(b if b is not None and b.texto else (c or b or Celula()))
+    return saida
 
 
 class _LinhaRecusada(ValueError):
@@ -99,22 +136,63 @@ class Tabela:
 
     @classmethod
     def de_js(cls, dados: dict, origem: str = "") -> "Tabela":
-        """A tabela lida no navegador (navegacao.JS_TABELAS)."""
+        """A tabela lida no navegador (navegacao.JS_TABELAS) ou no HTML.
+
+        colspan: a célula ocupa as colunas seguintes (vazias). rowspan: ela
+        vale também nas linhas de baixo, na mesma coluna - a data (ou a
+        hora) escrita uma vez para as audiências do dia não some nelas, e as
+        células seguintes não escorregam para a coluna errada.
+        """
         linhas = []
+        # coluna -> [célula que desce, quantas linhas ainda ocupa]
+        descendo: dict[int, list] = {}
         for linha in dados.get("linhas") or []:
-            celulas = []
+            celulas: list[Celula] = []
+            de_cima = dict(descendo)
+            novas: dict[int, list] = {}
+
+            def cobrir() -> None:
+                while len(celulas) in de_cima:
+                    celulas.append(replace(de_cima[len(celulas)][0]))
+
             for c in linha:
+                cobrir()
                 celula = Celula(texto=limpar(c.get("texto")), links=tuple(c.get("links") or ()),
                                 dicas=limpar(c.get("dicas")), th=bool(c.get("th")),
                                 aninhada=bool(c.get("aninhada")))
+                inicio = len(celulas)
+                largura = max(1, min(_inteiro(c.get("colspan"), 1), 30))
                 celulas.append(celula)
-                for _ in range(max(0, min(int(c.get("colspan") or 1), 30) - 1)):
+                for _ in range(largura - 1):
                     celulas.append(Celula(th=celula.th))
+                altura = max(1, min(_inteiro(c.get("rowspan"), 1), MAX_ROWSPAN))
+                if altura > 1:
+                    # a moldura de layout (tabela dentro) não se repete: vira célula vazia
+                    copia = Celula(th=celula.th) if celula.aninhada else celula
+                    novas[inicio] = [copia, altura - 1]
+                    for k in range(1, largura):
+                        novas[inicio + k] = [Celula(th=celula.th), altura - 1]
+            if de_cima:
+                while len(celulas) <= max(de_cima):
+                    if len(celulas) in de_cima:
+                        celulas.append(replace(de_cima[len(celulas)][0]))
+                    else:
+                        celulas.append(Celula())
+            descendo = {col: [cel, n - 1] for col, (cel, n) in de_cima.items() if n > 1}
+            descendo.update(novas)
             linhas.append(celulas)
         legenda = limpar(dados.get("legenda") or "") or limpar(dados.get("antes") or "")
         ident = " ".join(x for x in (dados.get("id") or "", dados.get("classes") or "") if x)
         return cls(linhas=linhas, legenda=legenda, origem=origem or dados.get("origem") or "",
                    identificador=ident)
+
+
+def _inteiro(valor, padrao: int) -> int:
+    try:
+        n = int(valor)
+    except (TypeError, ValueError):
+        return padrao
+    return n if n > 0 else padrao        # rowspan="0" (até o fim do grupo): fica em 1
 
 
 def _texto_de_valor(v) -> str:
@@ -207,12 +285,9 @@ class _LeitorTabelas(HTMLParser):
             t["linhas"].append(t["linha"])
         elif tag in ("td", "th"):
             self._fechar_celula(t)
-            try:
-                colspan = int(a.get("colspan") or 1)
-            except ValueError:
-                colspan = 1
             t["celula"] = {"texto": [], "links": [], "dicas": [], "th": tag == "th",
-                           "colspan": colspan, "aninhada": False}
+                           "colspan": _inteiro(a.get("colspan"), 1),
+                           "rowspan": _inteiro(a.get("rowspan"), 1), "aninhada": False}
         elif tag == "a" and t["celula"] is not None and a.get("href"):
             t["celula"]["links"].append(a["href"])
         elif tag in ("br", "p", "div", "li"):
@@ -266,7 +341,8 @@ def tabelas_do_html(html: str, origem: str = "") -> list[Tabela]:
     for t in leitor.tabelas:
         dados = {"linhas": [[{"texto": unescape("".join(c["texto"])), "links": c["links"],
                               "dicas": " ".join(c["dicas"]), "th": c["th"],
-                              "colspan": c["colspan"], "aninhada": c["aninhada"]}
+                              "colspan": c["colspan"], "rowspan": c["rowspan"],
+                              "aninhada": c["aninhada"]}
                              for c in linha] for linha in t["linhas"]],
                  "legenda": unescape(" ".join(t["legenda"])), "antes": t["antes"],
                  "id": t["id"], "classes": t["classes"]}
@@ -348,17 +424,31 @@ def mapear_cabecalho(linha: list[Celula], regras) -> dict[str, int]:
     return mapa
 
 
-def _eh_pauta(mapa: dict[str, int], linha: list[Celula], contexto: str, regras) -> bool:
+def _eh_pauta(mapa: dict[str, int], linha: list[Celula], contexto: str, regras,
+              contexto_pagina: str = "", estrito: bool = False) -> bool:
+    """O cabeçalho é de pauta? 'contexto': a legenda e o nome da PRÓPRIA tabela.
+
+    O título da página ('contexto_pagina') nunca desfaz um cabeçalho de
+    intimações ou prazos: a página da pauta tem, muitas vezes, o painel de
+    intimações ao lado. No portal ('estrito'), a tabela só com data e
+    processo (sem hora, tipo nem situação) precisa de "audiência" ou
+    "pauta" na própria tabela ou na página - uma fila de processos tem data
+    e número também.
+    """
     if "data" not in mapa or not ({"processo", "tipo"} & set(mapa)):
         return False
     if "processo" not in mapa and any(normalizar_texto(c.texto) in COLUNAS_DE_CONTAGEM
                                       for c in linha):
         return False             # resumo (quantas por dia, por tipo): contagem, não audiência
     rotulos = " ".join(normalizar_texto(c.texto) for c in linha)
-    audiencia = ("hora" in mapa or bool(regras.contexto_audiencia.search(rotulos))
-                 or bool(regras.contexto_audiencia.search(contexto)))
-    negativo = any(n in rotulos for n in regras.negativos)
-    return audiencia or not negativo
+    if ("hora" in mapa or regras.contexto_audiencia.search(rotulos)
+            or regras.contexto_audiencia.search(contexto)):
+        return True
+    if any(n in rotulos for n in regras.negativos):
+        return False
+    if {"tipo", "situacao"} & set(mapa) or not estrito:
+        return True
+    return bool(regras.contexto_audiencia.search(contexto_pagina))
 
 
 def total_da_legenda(texto: str, regras) -> int | None:
@@ -402,25 +492,61 @@ class Reconhecedor:
         linhas = [linha for linha in t.linhas if linha]
         if not linhas:
             return r
+        ctx_tabela = normalizar_texto(" ".join(x for x in (t.legenda, t.identificador) if x))
+        ctx_pagina = normalizar_texto(contexto)
         ctx = normalizar_texto(" ".join(x for x in (t.legenda, contexto, t.identificador) if x))
+        outra_coisa = False
+        anterior: list[Celula] | None = None
         for i, linha in enumerate(linhas[:MAX_LINHAS_CABECALHO]):
+            if tem_valores(linha):
+                anterior = None      # dado, ou preâmbulo "Data: | 03/10/2026": não é cabeçalho
+                continue
             mapa = mapear_cabecalho(linha, self.regras)
-            if mapa and _eh_pauta(mapa, linha, ctx, self.regras):
-                r.tabelas = 1
-                r.total_informado = total_da_legenda(t.legenda, self.regras)
-                self._rotulos = {j: c.texto for j, c in enumerate(linha)}
-                self._com_cabecalho(linhas[i + 1:], mapa, t, r)
-                return r
+            candidatos = [(mapa, linha)]
+            if mapa and anterior is not None:
+                junta = _juntar_cabecalhos(anterior, linha)
+                candidatos.append((mapear_cabecalho(junta, self.regras), junta))
+            for m, rotulos in candidatos:
+                if m and _eh_pauta(m, rotulos, ctx_tabela, self.regras, ctx_pagina, self.estrito):
+                    r.tabelas = 1
+                    r.total_informado = total_da_legenda(t.legenda, self.regras)
+                    self._rotulos = {j: c.texto for j, c in enumerate(rotulos)}
+                    self._com_cabecalho(linhas[i + 1:], m, t, r)
+                    return r
             if mapa and len(mapa) >= 2 and "data" in mapa:
-                # cabeçalho de outra coisa (intimações, prazos): não é pauta, e a
-                # regra sem cabeçalho também não vale para ela
-                return r
-        self._sem_cabecalho(linhas, t, ctx, r)
+                # cabeçalho de outra coisa (intimações, prazos): se nenhum de pauta
+                # vier abaixo, não é pauta - e a regra sem cabeçalho não vale para ela
+                outra_coisa = True
+            anterior = linha if mapa else None
+        if outra_coisa:
+            return r
+        self._sem_cabecalho(linhas, t, ctx, r, ctx_tabela)
         return r
 
     # ------------------------------------------------------- com cabeçalho
+    @staticmethod
+    def _data_do_grupo(cheias: list[Celula], juntas: str) -> date | None:
+        """A data de uma linha de grupo, ou None se a linha não é de grupo.
+
+        "Segunda-feira, 05/10/2026" sozinha na linha (célula mesclada), ou
+        acompanhada só da contagem ou do dia da semana ("05/10/2026" |
+        "2 audiências"). Linha com número de processo nunca é de grupo.
+        """
+        if cnj.extrair_todos(juntas):
+            return None
+        com_data = [(c, modelos.ler_data(c.bruto)) for c in cheias]
+        com_data = [(c, d) for c, d in com_data if d is not None]
+        if len(com_data) != 1:
+            return None
+        celula, d = com_data[0]
+        resto = [c for c in cheias if c is not celula]
+        if all(_ANOTACAO_DE_GRUPO.match(normalizar_texto(c.texto)) for c in resto):
+            return d
+        return None
+
     def _com_cabecalho(self, linhas, mapa: dict[str, int], t: Tabela, r: Reconhecimento) -> None:
-        data_corrente: date | None = None
+        data_grupo: date | None = None       # a da última linha de grupo
+        data_corrente: date | None = None    # a última data vista (grupo ou audiência)
         for numero, linha in enumerate(linhas, start=1):
             if any(c.aninhada for c in linha):
                 continue
@@ -431,15 +557,24 @@ class Reconhecedor:
             juntas = " ".join(textos)
             if self._parece_cabecalho(linha, juntas):
                 continue                         # cabeçalho repetido (nova página do PDF)
-            if len(cheias) == 1 and not cnj.extrair_todos(juntas):
-                d = modelos.ler_data(cheias[0].bruto)
-                if d is not None:
-                    data_corrente = d            # linha de grupo: "Segunda-feira, 05/10/2026"
-                    continue
-                if _NADA.search(normalizar_texto(juntas)):
-                    continue                     # "Nenhum registro encontrado"
+            d = self._data_do_grupo(cheias, juntas)
+            if d is not None:
+                data_grupo = data_corrente = d   # linha de grupo: "Segunda-feira, 05/10/2026"
+                continue
+            if len(cheias) == 1 and _NADA.search(normalizar_texto(juntas)):
+                continue                         # "Nenhum registro encontrado"
+            # a célula de data VAZIA repete a de cima (a data escrita só na primeira
+            # audiência do dia, ou a célula mesclada) - se a linha é mesmo outra
+            # audiência, com processo ou hora, e não a continuação da de cima; com
+            # outro texto ("a designar"), só a da linha de grupo vale
+            c_data = self._celula(linha, mapa, "data")
+            vazia = c_data is None or (not c_data.texto and c_data.valor in (None, ""))
+            c_hora = self._celula(linha, mapa, "hora")
+            outra = bool(cnj.extrair_todos(juntas)) or (
+                c_hora is not None and bool(modelos.ler_hora(c_hora.bruto)
+                                            or modelos.ler_hora(c_hora.texto)))
             try:
-                a = self._linha(linha, mapa, data_corrente, t)
+                a = self._linha(linha, mapa, data_corrente if vazia and outra else data_grupo, t)
             except _LinhaRecusada as recusa:
                 r.ignoradas += 1
                 r.avisar(f"Linha {numero}: {recusa}; a linha foi ignorada.")
@@ -453,6 +588,7 @@ class Reconhecedor:
                     r.avisar(f"Linha {numero}: sem data reconhecível (processo "
                              f"{processo[0].formatado}); a linha foi ignorada.")
                 continue
+            data_corrente = a.data
             r.audiencias.append(a)
 
     def _parece_cabecalho(self, linha, juntas: str) -> bool:
@@ -563,12 +699,18 @@ class Reconhecedor:
                 return True
             if valor and self._diz_sigilo(valor):
                 return True
-        for celula in linha:
-            curto = celula.texto if len(celula.texto) < 80 else ""
-            alvo = normalizar_texto(f"{celula.dicas} {curto}")
-            if alvo and self._diz_sigilo(alvo):
-                return True
-        return False
+        return any(self._celula_sigilosa(celula, 80) for celula in linha)
+
+    def _celula_sigilosa(self, celula: Celula, limite: int | None = None) -> bool:
+        """O selo de sigilo numa célula: no 'title'/'alt' do ícone ou no texto.
+
+        Cada um é julgado por si, e nunca a linha inteira junta: "Ministério
+        Público x Fulano" ao lado do ícone "Segredo de Justiça" não desfaz o
+        sigilo (o rótulo "Público" do nível de sigilo só vale sozinho).
+        'limite': texto mais longo que isto (observações) não é selo.
+        """
+        texto = celula.texto if limite is None or len(celula.texto) < limite else ""
+        return any(self._diz_sigilo(normalizar_texto(x)) for x in (celula.dicas, texto) if x)
 
     def _diz_sigilo(self, texto: str) -> bool:
         """"Segredo de Justiça (Nível 1)" sim; "Sem Sigilo (Nível 0)" não."""
@@ -594,32 +736,42 @@ class Reconhecedor:
         return ""
 
     # ------------------------------------------------------ sem cabeçalho
-    def _sem_cabecalho(self, linhas, t: Tabela, ctx: str, r: Reconhecimento) -> None:
+    def _sem_cabecalho(self, linhas, t: Tabela, ctx: str, r: Reconhecimento,
+                       ctx_tabela: str | None = None) -> None:
         """A regra dos 50 %: linhas com data e UM número CNJ.
 
-        Moldura de layout (célula com tabela dentro, ou com vários números)
-        não conta: a tabela de dentro é lida por si.
+        As linhas antes do primeiro dado (título, vara, período, "emitido
+        por") não contam. Moldura de layout (célula com tabela dentro, ou
+        com vários números) não conta: a tabela de dentro é lida por si.
         """
+        ctx_tabela = ctx if ctx_tabela is None else ctx_tabela
         cheias = [linha for linha in linhas
                   if any(c.texto for c in linha) and not any(c.aninhada for c in linha)]
         if not cheias:
             return
-        boas = []
-        for linha in cheias:
+
+        def boa(linha) -> bool:
             juntas = " ".join(c.texto for c in linha)
             numeros = cnj.extrair_todos(juntas)
             d = next((modelos.ler_data(c.bruto) for c in linha if modelos.ler_data(c.bruto)), None)
-            if len(numeros) == 1 and d is not None and len(juntas) <= 600:
-                boas.append(linha)
-        if not boas or len(boas) * 2 < len(cheias):
+            return len(numeros) == 1 and d is not None and len(juntas) <= 600
+
+        primeira = next((i for i, linha in enumerate(cheias) if boa(linha)), None)
+        if primeira is None:
+            return
+        cheias = cheias[primeira:]
+        boas = [linha for linha in cheias if boa(linha)]
+        if len(boas) * 2 < len(cheias):
             return
         if self.estrito:
             com_hora = sum(1 for linha in boas
                            if modelos.ler_hora(" ".join(c.texto for c in linha)))
             if com_hora * 2 < len(boas) and not self.regras.contexto_audiencia.search(ctx):
                 return
-            if any(n in ctx for n in self.regras.negativos) and \
-                    not self.regras.contexto_audiencia.search(ctx):
+            # a legenda da PRÓPRIA tabela ("Intimações pendentes"): o título da
+            # página ("Pauta de Audiências") não a desfaz
+            if any(n in ctx_tabela for n in self.regras.negativos) and \
+                    not self.regras.contexto_audiencia.search(ctx_tabela):
                 return
         r.tabelas = 1
         r.total_informado = total_da_legenda(t.legenda, self.regras)
@@ -668,9 +820,8 @@ class Reconhecedor:
                     break
         partes = next((x for x in textos if re.search(r"\s[xX]\s|\bversus\b|\bvs\.?\s", x)), "")
         partes, sigilo_partes = self._tirar_mascara(partes)
-        alvo_sigilo = normalizar_texto(" ".join(c.dicas for c in linha) + " " + juntas)
-        sigiloso = sigilo_partes or (bool(self.regras.sigilo.search(alvo_sigilo))
-                                     and not self.regras.sem_sigilo.search(alvo_sigilo))
+        # célula a célula: o "Ministério Público" das partes não desfaz o selo da outra
+        sigiloso = sigilo_partes or any(self._celula_sigilosa(c) for c in linha)
         tribunal = self.tribunal or modelos.tribunal_do_processo(processo)
         link = ""
         for celula in linha:

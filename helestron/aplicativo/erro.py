@@ -4,8 +4,14 @@ Em vez do "No module named ..." cru da versão anterior, a janela mostra o
 que falta, a hipótese mais provável (o antivírus pôs o arquivo em
 quarentena, ou a instalação foi interrompida), que os dados do usuário não
 foram afetados, e o botão Reparar: procura o instalador (Helestron-Setup) na
-pasta Downloads e o abre; se não o encontrar, explica como baixá-lo e
-reinstalar. O instalador não deixa cópia de si no computador.
+pasta Downloads registrada no Windows, confere que é mesmo um instalador do
+Helestron (integridade.conferir_instalador), mostra o nome, o tamanho e a
+data e só o abre com a confirmação do usuário (segundo clique); se não o
+encontrar, explica como baixá-lo e reinstalar. O instalador não deixa cópia
+de si no computador.
+
+A tela grava o instancia.json, como a abertura normal: o --encerrar do
+instalador (que ela manda rodar) e a segunda abertura falam com ela.
 
 Roda no mesmo servidor local (modo de erro: poucas rotas) e na mesma
 janela; se nem isso for possível, quem chama mostra a caixa de mensagem
@@ -22,6 +28,9 @@ import sys
 import threading
 import time
 
+from datetime import datetime
+from pathlib import Path
+
 from .. import NOME, __version__
 from ..nucleo import caminhos, sistema
 from ..servidor.eventos import HubEventos
@@ -30,6 +39,8 @@ from ..servidor.rede import ErroApi, Pedido, Roteador, ServidorLocal
 from . import integridade
 
 log = logging.getLogger("aplicativo.erro")
+
+NO_WINDOWS = sys.platform == "win32"
 
 HIPOTESE = ("Isso costuma acontecer quando o antivírus põe um arquivo em quarentena logo "
             "depois da instalação, ou quando a instalação foi interrompida no meio.")
@@ -89,9 +100,11 @@ button:focus-visible{{outline:3px solid rgba(10,102,232,.45);outline-offset:2px}
 <button id="registros">Abrir os registros</button>
 <button id="fechar">Fechar</button>
 </div>
-<p class="sub" id="sobre-reparar">Reparar abre o instalador do {NOME} (Helestron-Setup) que estiver na
-pasta Downloads; se ele não estiver lá, explica como baixá-lo de novo.</p>
+<p class="sub" id="sobre-reparar">Reparar procura o instalador do {NOME} (Helestron-Setup) na pasta
+Downloads e pede a sua confirmação antes de abri-lo; se ele não estiver lá, explica como baixá-lo de
+novo.</p>
 <p id="recado" role="status" aria-live="polite"></p>
+<div class="acoes"><button class="principal" id="abrir-instalador" hidden>Abrir o instalador</button></div>
 <p class="versao">{NOME} {__version__} · pasta do programa: <code>{html.escape(str(pasta))}</code></p>
 </main>
 <script nonce="{nonce}">
@@ -99,6 +112,8 @@ pasta Downloads; se ele não estiver lá, explica como baixá-lo de novo.</p>
   var t = new URLSearchParams(location.search).get("t") || sessionStorage.getItem("helestron-token") || "";
   if (t) {{ sessionStorage.setItem("helestron-token", t); history.replaceState(null, "", "/"); }}
   var recado = document.getElementById("recado");
+  var abrirInstalador = document.getElementById("abrir-instalador");
+  var achado = null;
   function api(caminho, corpo) {{
     return fetch(caminho, {{method: "POST", headers: {{"X-Helestron-Token": t,
       "Content-Type": "application/json"}}, body: JSON.stringify(corpo || {{}})}})
@@ -106,7 +121,21 @@ pasta Downloads; se ele não estiver lá, explica como baixá-lo de novo.</p>
   }}
   document.getElementById("reparar").addEventListener("click", function () {{
     recado.textContent = "Procurando o instalador na pasta Downloads…";
+    abrirInstalador.hidden = true;
+    achado = null;
     api("/api/integridade/reparar").then(function (r) {{
+      recado.textContent = r.ok ? r.dados.mensagem : r.erro.mensagem;
+      if (r.ok && r.dados.confirmar) {{
+        achado = r.dados.arquivo;
+        abrirInstalador.hidden = false;
+        abrirInstalador.focus();
+      }}
+    }}).catch(function () {{ recado.textContent = "Não consegui falar com o programa."; }});
+  }});
+  abrirInstalador.addEventListener("click", function () {{
+    if (!achado) {{ return; }}
+    abrirInstalador.hidden = true;
+    api("/api/integridade/reparar", {{arquivo: achado}}).then(function (r) {{
       recado.textContent = r.ok ? r.dados.mensagem : r.erro.mensagem;
     }}).catch(function () {{ recado.textContent = "Não consegui falar com o programa."; }});
   }});
@@ -179,12 +208,24 @@ class AplicacaoErro:
                 "pasta": str(integridade.pasta_instalada() or ""), "logs": str(caminhos.LOGS)}
 
     def _reparar(self, p: Pedido) -> dict:
-        instalador = integridade.procurar_instalador()
+        """Primeiro clique: acha e confere o instalador e pede confirmação
+        (nome, tamanho, data). Segundo clique ({arquivo}): abre - só se ainda
+        for o mesmo arquivo que a busca acha agora."""
         pasta = integridade.pasta_instalada() or caminhos.LOCAL
-        if instalador is None or sys.platform != "win32":
+        if not NO_WINDOWS:
             return {"abriu": False, "mensagem": instrucoes_reinstalar(pasta)}
+        instalador = integridade.procurar_instalador()
+        if instalador is None:
+            return {"abriu": False, "mensagem": instrucoes_reinstalar(pasta)}
+        pedido = p.campo("arquivo", padrao="", tipo=str).strip()
+        if not pedido:
+            return {"abriu": False, "confirmar": True, "arquivo": str(instalador),
+                    "mensagem": descrever_instalador(instalador)}
+        if not _mesmo_arquivo(Path(pedido), instalador):
+            return {"abriu": False, "mensagem": "O instalador da pasta Downloads mudou desde a "
+                                                "busca. Clique em Reparar de novo."}
         try:
-            os.startfile(str(instalador))           # type: ignore[attr-defined]
+            _executar(instalador)
         except OSError as erro:
             log.warning("o instalador não abriu: %s", erro)
             return {"abriu": False, "mensagem": instrucoes_reinstalar(pasta)}
@@ -228,15 +269,49 @@ class AplicacaoErro:
         self.encerrado.set()
 
 
-def mostrar(problemas: list[integridade.Problema]) -> int:
-    """Mostra a tela de erro e espera ela fechar. Código de saída: 1."""
-    from . import janela
+def descrever_instalador(instalador: Path) -> str:
+    """A frase da confirmação: nome, tamanho, data e pasta do instalador achado."""
+    try:
+        info = instalador.stat()
+        detalhe = (f" ({info.st_size / (1024 * 1024):.0f} MB, de "
+                   f"{datetime.fromtimestamp(info.st_mtime):%d/%m/%Y às %H:%M})")
+    except OSError:
+        detalhe = ""
+    return (f"Encontrei o instalador {instalador.name}{detalhe} na pasta {instalador.parent}. "
+            "Confira se é o que você baixou e clique em Abrir o instalador: ele conserta a "
+            "instalação sem apagar os seus dados.")
+
+
+def _mesmo_arquivo(a: Path, b: Path) -> bool:
+    try:
+        return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+    except (OSError, ValueError):
+        return False
+
+
+def _executar(arquivo: Path) -> None:  # pragma: no cover - só no Windows
+    os.startfile(str(arquivo))                     # type: ignore[attr-defined]
+
+
+def mostrar(problemas: list[integridade.Problema], registrar: bool = True) -> int:
+    """Mostra a tela de erro e espera ela fechar. Código de saída: 1.
+
+    registrar: grava o instancia.json (quem chama tem a trava da instância
+    única e o apaga no fim) - sem ele, o --encerrar do instalador não acha
+    esta tela e a segunda abertura diz que o programa "não respondeu".
+    """
+    from . import instancia, janela
 
     log.error("a instalação está incompleta:\n%s", integridade.descrever(problemas, 50))
     app = AplicacaoErro(problemas).iniciar()
+    if registrar:
+        try:
+            instancia.gravar_registro(app.porta, app.token)
+        except OSError as falha:
+            log.warning("não consegui gravar o registro da instância: %s", falha)
     try:
         modo = janela.abrir(app, app.url)
-        if not modo:
+        if not modo and not app.fechando:
             raise RuntimeError("nenhuma janela pôde ser aberta")
     finally:
         app.encerrar()

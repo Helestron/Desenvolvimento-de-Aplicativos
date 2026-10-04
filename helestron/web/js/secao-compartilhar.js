@@ -13,8 +13,35 @@
   const { el, icone, botao, cartao, faixa, trocar, folha, aviso, blocoIcone } = H.ui;
   const { fmt, api } = H;
 
-  function mostrarResposta(titulo, r) {
+  /**
+   * A resposta de um destino (Claude Code, Cowork, ChatGPT Work...).
+   * 'copia': {texto, copiado, oQue} quando o clique pôs um texto na área de
+   * transferência. Se a cópia não deu certo, a folha mostra o texto para
+   * copiar à mão - a mensagem manda colar, e colaria outra coisa. Se o
+   * programa não conseguiu abrir a página oficial (pagina_aberta: false),
+   * a folha oferece o botão para abri-la.
+   */
+  function mostrarResposta(titulo, r, copia) {
     const mensagem = (r && r.mensagem) || "Pronto.";
+    const semCopia = copia && copia.texto && !copia.copiado;
+    const pagina = r && r.url && r.pagina_aberta === false ? r.url : "";
+    if (semCopia || pagina) {
+      const conteudo = [];
+      if (semCopia) {
+        const caixa = el("textarea", { classe: "campo texto-para-copiar", id: "texto-para-copiar", rows: copia.texto.length > 120 ? "6" : "2", readonly: true, spellcheck: "false", aria: { label: copia.oQue } });
+        caixa.value = copia.texto;
+        caixa.addEventListener("focus", () => caixa.select());
+        conteudo.push(
+          el("p", { classe: "ajuda-campo erro", texto: `Não consegui pôr ${copia.oQue} na área de transferência. Copie daqui (Ctrl+C) antes de colar.` }),
+          caixa,
+          el("div", { classe: "grupo-botoes" }, botao({ rotulo: "Copiar", icone: "copiar", tamanho: "pequeno", acao: () => H.ui.copiar(copia.texto, "Copiado") })));
+      }
+      if (pagina) {
+        conteudo.push(el("div", { classe: "grupo-botoes" },
+          botao({ rotulo: "Abrir a página", icone: "externo", tipo: "tonal", tamanho: "pequeno", acao: () => api.abrir("url", pagina) })));
+      }
+      return folha.informar({ titulo, mensagem, icone: "brilho", conteudo });
+    }
     if (mensagem.length > 110) {
       return folha.informar({ titulo, mensagem, icone: "brilho" });
     }
@@ -31,6 +58,10 @@
     async montar(ctx) {
       const raiz = ctx.raiz;
       const pastas = (H.loja.estado && H.loja.estado.pastas) || {};
+      // O pedido inicial fica pronto desde já: "Abrir no Cowork" o copia na
+      // hora do clique, antes de o Claude Desktop tomar o foco da janela.
+      let pedidoInicial = "";
+      const lerPedido = api.compartilhar.prompt().then((r) => { pedidoInicial = (r && r.texto) || ""; return pedidoInicial; }).catch(() => "");
 
       const botaoPreparar = botao({ rotulo: "Preparar acervo para a IA", icone: "brilho", tipo: "primario", acao: async () => {
         const r = await api.compartilhar.preparar();
@@ -38,8 +69,8 @@
       } });
       botaoPreparar.id = "botao-preparar";
       const copiarPedido = botao({ rotulo: "Copiar pedido inicial", icone: "copiar", acao: async () => {
-        const r = await api.compartilhar.prompt();
-        await H.ui.copiar((r && r.texto) || "", "Pedido inicial copiado");
+        const texto = pedidoInicial || await lerPedido;
+        await H.ui.copiar(texto || "", "Pedido inicial copiado");
       } });
       const cab = H.ui.cabecalho({
         titulo: "Compartilhar com IA",
@@ -121,6 +152,19 @@
         const appChatgpt = e.chatgpt_desktop !== undefined && e.chatgpt_desktop !== null ? e.chatgpt_desktop : chatgpt.app;
         const conectado = !!(e.mcp_acervo || claude.mcp);
         const executar = (titulo, fn) => async () => mostrarResposta(titulo, await fn());
+        /**
+         * Copia NA HORA DO CLIQUE (o texto já está na tela) e só depois chama
+         * o programa, que abre o app externo. Sem o texto à mão, tenta o que
+         * a resposta trouxer ('copiar'); se nada der, a folha mostra o texto.
+         */
+        const abrirCopiando = (titulo, fn, oQue, texto) => async () => {
+          const agora = texto();
+          let copiado = agora ? await H.ui.copiarTexto(agora) : false;
+          const r = await fn();
+          const reserva = (r && r.copiar) || "";
+          if (!copiado && reserva) copiado = await H.ui.copiarTexto(reserva);
+          return mostrarResposta(titulo, r, { texto: agora || reserva, copiado, oQue });
+        };
 
         const selecaoNuvem = el("select", { classe: "campo campo-pequeno", id: "destino-nuvem", aria: { label: "Pasta na nuvem" } });
         const salva = String(H.app.valorConfig("compartilhar", "pasta_nuvem", "") || "");
@@ -158,7 +202,7 @@
             id: "destino-cowork", nomeIcone: "brilho", cor: "indigo", nome: "Claude Cowork",
             situacao: claude.desktop ? estadoLinha("Claude Desktop instalado", "verde") : estadoLinha("Claude Desktop não instalado", "cinza"),
             texto: "No app Claude Desktop, o Cowork trabalha na pasta do acervo. O pedido inicial vai copiado: é só colar.",
-            acoes: [botao({ rotulo: "Abrir no Cowork", tipo: "tonal", tamanho: "pequeno", acao: executar("Claude Cowork", api.compartilhar.cowork) })],
+            acoes: [botao({ rotulo: "Abrir no Cowork", tipo: "tonal", tamanho: "pequeno", acao: abrirCopiando("Claude Cowork", api.compartilhar.cowork, "o pedido inicial", () => pedidoInicial) })],
           }),
           destino({
             id: "destino-claude-desktop", nomeIcone: "computador", cor: "azul", nome: "Claude Desktop",
@@ -173,7 +217,7 @@
             id: "destino-chatgpt-work", nomeIcone: "conversa", cor: "ciano", nome: "ChatGPT Work",
             situacao: appChatgpt === true ? estadoLinha("App do ChatGPT instalado", "verde") : appChatgpt === false ? estadoLinha("App do ChatGPT não instalado", "cinza") : estadoLinha("App do ChatGPT: não verificado", "cinza"),
             texto: "O app do ChatGPT trabalha em pastas locais no modo Work: tecle Ctrl+O e cole o caminho do acervo, que já vai copiado.",
-            acoes: [botao({ rotulo: "Abrir no ChatGPT Work", tipo: "tonal", tamanho: "pequeno", acao: executar("ChatGPT Work", api.compartilhar.chatgptWork) })],
+            acoes: [botao({ rotulo: "Abrir no ChatGPT Work", tipo: "tonal", tamanho: "pequeno", acao: abrirCopiando("ChatGPT Work", api.compartilhar.chatgptWork, "o caminho do acervo", () => pastas.acervo || "") })],
           }),
           destino({
             id: "destino-codex", nomeIcone: "codigo", cor: "ardosia", nome: "Codex",

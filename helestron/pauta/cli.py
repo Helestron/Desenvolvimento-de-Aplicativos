@@ -92,8 +92,13 @@ def criar_parser() -> argparse.ArgumentParser:
     e.add_argument("--situacao", help="só uma situação (ex.: Designada)")
     e.add_argument("--busca", metavar="TEXTO", help="só o que contiver este texto (processo, partes...)")
     e.add_argument("--pasta", help="pasta de destino (padrão: [pauta] pasta, fora do acervo)")
-    e.add_argument("--incluir-partes-sigilosos", action="store_true",
-                   help="mostrar as partes dos processos em segredo de justiça")
+    partes = e.add_mutually_exclusive_group()
+    partes.add_argument("--incluir-partes-sigilosos", action="store_true", default=None,
+                        help="mostrar as partes dos processos em segredo de justiça")
+    partes.add_argument("--sem-partes-sigilosos", action="store_false",
+                        dest="incluir_partes_sigilosos",
+                        help="mascarar as partes dos processos em segredo de justiça, mesmo com "
+                             "[pauta] incluir_partes_sigilosos ligado")
 
     i = sub.add_parser("importar", help="importa relatório exportado do SAJ/eProc")
     i.add_argument("arquivos", nargs="+", help="planilha, HTML, PDF ou DOCX")
@@ -178,8 +183,8 @@ def _exportar(args, servico) -> int:
         return 2
     pasta = Path(args.pasta).expanduser() if args.pasta else servicos.pasta_pauta(servico.cfg)
     filtros = {k: getattr(args, k) for k in ("sistema", "situacao", "busca") if getattr(args, k)}
-    if args.incluir_partes_sigilosos:
-        filtros["incluir_partes_sigilosos"] = True
+    if args.incluir_partes_sigilosos is not None:      # sem a opção: vale o Ajuste
+        filtros["incluir_partes_sigilosos"] = bool(args.incluir_partes_sigilosos)
     try:
         arquivo = servico.exportar(de, ate, pasta, **filtros)
     except Exception as erro:

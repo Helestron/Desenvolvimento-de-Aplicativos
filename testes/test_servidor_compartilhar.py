@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -46,7 +47,8 @@ class TestCompartilhar(ServidorDeTeste):
         self.assertIn("Pasta do acervo", dados["copiar"])
         with mock.patch("helestron.compartilhar.preparo.atualizar_contexto"), \
                 mock.patch("helestron.compartilhar.claude.abrir_claude_code",
-                           side_effect=FileNotFoundError("sem")):
+                           side_effect=FileNotFoundError("sem")), \
+                mock.patch("helestron.nucleo.sistema.abrir_endereco", return_value=True):
             dados = self.cliente.dados("POST", "/api/compartilhar/claude-code")
         self.assertFalse(dados["abriu"])
         self.assertTrue(dados["url"].startswith("https://"))
@@ -77,6 +79,85 @@ class TestCompartilhar(ServidorDeTeste):
         self.assertEqual(tarefa["resultado"]["arquivo"],
                          str(self.amb.dados / "Pacotes para IA" / "pacote.zip"))
         self.assertEqual(g.call_args.kwargs["numeros"], ["x"])
+
+    def test_claude_code_ausente_abre_a_pagina_oficial(self):
+        """O manual promete: sem o Claude Code, o botão abre a página oficial que
+        explica como instalá-lo. Antes, a resposta só trazia o endereço."""
+        from helestron.compartilhar import claude
+
+        with mock.patch("helestron.compartilhar.preparo.atualizar_contexto"), \
+                mock.patch("helestron.compartilhar.claude.achar_claude_code", return_value=None), \
+                mock.patch("helestron.nucleo.sistema.abrir_endereco",
+                           return_value=True) as abrir:
+            dados = self.cliente.dados("POST", "/api/compartilhar/claude-code")
+        abrir.assert_called_once_with(claude.URL_DOC_CODE)
+        self.assertEqual((dados["abriu"], dados["pagina_aberta"]), (False, True))
+        self.assertIn("Abri no navegador a página oficial", dados["mensagem"])
+        self.assertNotIn("Instalar o Claude Code", dados["mensagem"])
+        # sem navegador que abra: a mensagem traz o endereço para copiar
+        with mock.patch("helestron.compartilhar.preparo.atualizar_contexto"), \
+                mock.patch("helestron.compartilhar.claude.achar_claude_code", return_value=None), \
+                mock.patch("helestron.nucleo.sistema.abrir_endereco", return_value=False):
+            dados = self.cliente.dados("POST", "/api/compartilhar/claude-code")
+        self.assertFalse(dados["pagina_aberta"])
+        self.assertIn(claude.URL_DOC_CODE, dados["mensagem"])
+
+    def test_claude_desktop_ausente_abre_a_pagina_de_download(self):
+        from helestron.compartilhar import claude
+
+        with mock.patch("helestron.compartilhar.claude.registrar_mcp", return_value=[Path("a")]), \
+                mock.patch("helestron.compartilhar.claude.claude_desktop_instalado",
+                           return_value=False), \
+                mock.patch("helestron.nucleo.sistema.abrir_endereco",
+                           return_value=True) as abrir:
+            dados = self.cliente.dados("POST", "/api/compartilhar/claude-desktop")
+        abrir.assert_called_once_with(claude.URL_DOWNLOAD_DESKTOP)
+        self.assertEqual((dados["abriu"], dados["instalado"], dados["pagina_aberta"]),
+                         (False, False, True))
+        self.assertIn("página de download", dados["mensagem"])
+
+    def test_pasta_da_nuvem_recusada_nao_fica_gravada(self):
+        """Antes, espelhar gravava a pasta ANTES de conferi-la: o pedido voltava
+        400, mas a pasta recusada ficava no config.ini, em uso pelo espelho
+        automático e aceita pelo /api/abrir (com "/", o disco inteiro)."""
+        acervo = self.amb.dados / "Acervo"
+        (acervo / "Nuvem").mkdir(parents=True)
+        for destino in (str(acervo / "Nuvem"), str(acervo), "/"):
+            with self.subTest(destino=destino):
+                status, env = self.cliente.post("/api/compartilhar/nuvem/espelhar",
+                                                {"destino": destino})
+                self.assertEqual(status, 400)
+                self.assertEqual(env["erro"]["codigo"], "pastas_em_conflito")
+                self.cfg.recarregar()
+                self.assertEqual(self.cfg.texto("compartilhar", "pasta_nuvem"), "")
+        with mock.patch("helestron.nucleo.sistema.abrir_arquivo") as abrir:
+            status, _ = self.cliente.post("/api/abrir", {"tipo": "arquivo",
+                                                         "alvo": str(Path(__file__).resolve())})
+        self.assertEqual(status, 403)
+        abrir.assert_not_called()
+
+    def test_espelho_automatico_pula_a_nuvem_em_conflito(self):
+        """pasta_nuvem dentro do acervo (gravada à mão ou por versão anterior):
+        o espelho automático não roda - antes, cada lote ou audiência copiava a
+        cópia anterior para dentro do acervo."""
+        from helestron.servidor import api_compartilhar, api_processos
+
+        acervo = self.amb.dados / "Acervo"
+        acervo.mkdir(parents=True, exist_ok=True)
+        self.cfg.definir("compartilhar", "espelhar_automaticamente", True)
+        for nuvem_dir in (acervo, acervo / "OneDrive"):
+            with self.subTest(nuvem=nuvem_dir):
+                self.cfg.definir("compartilhar", "pasta_nuvem", str(nuvem_dir))
+                with mock.patch("helestron.compartilhar.nuvem.espelhar") as espelhar, \
+                        mock.patch("helestron.servicos.atualizar_indice"), \
+                        self.assertLogs("servidor", level="WARNING") as registro:
+                    api_compartilhar.depois_de_salvar(self.app)
+                    api_processos._espelhar_ao_fim(self.app)
+                    time.sleep(0.2)
+                espelhar.assert_not_called()
+                self.assertFalse([t for t in self.app.tarefas.listar() if t.tipo == "nuvem"])
+                self.assertTrue(any("Espelho na nuvem NÃO feito" in linha
+                                    for linha in registro.output))
 
     def test_nuvem(self):
         nuvem = self.amb.raiz / "OneDrive"

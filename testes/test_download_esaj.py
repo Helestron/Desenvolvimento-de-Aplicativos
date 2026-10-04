@@ -240,6 +240,32 @@ class TestSeletores(apoio.PastaTemporaria):
         arq.write_text("{quebrado", encoding="utf-8")
         self.assertEqual(esaj.carregar_seletores(arq)["login_senha"][0], "#passwordForm")
 
+    def test_correcao_fica_na_pasta_de_dados_que_a_atualizacao_nao_apaga(self):
+        """A pasta do programa (Lib\\site-packages\\helestron\\dados) é apagada a
+        cada atualização: a correção do usuário mora na pasta de dados (LOCAL);
+        a de dentro do programa ainda vale, de reserva, atrás dela."""
+        from helestron.nucleo import caminhos
+
+        local, programa = self.tmp / "local", self.tmp / "programa"
+        local.mkdir()
+        programa.mkdir()
+        with mock.patch.object(caminhos, "LOCAL", local), \
+                mock.patch.object(caminhos, "DADOS", programa):
+            self.assertEqual(esaj.carregar_seletores()["login_usuario"][0], "#usernameForm")
+            (local / "seletores.json").write_text(json.dumps(
+                {"esaj": {"login_usuario": ["#novoCampoUsuario"]}}), encoding="utf-8")
+            self.assertEqual(esaj.carregar_seletores()["login_usuario"][:2],
+                             ["#novoCampoUsuario", "#usernameForm"])
+            (programa / "seletores.json").write_text(json.dumps(
+                {"esaj": {"login_usuario": ["#campoDaVersao"], "login_senha": ["#senhaNova"]}}),
+                encoding="utf-8")
+            sel = esaj.carregar_seletores()
+            self.assertEqual(sel["login_usuario"][:3],
+                             ["#novoCampoUsuario", "#campoDaVersao", "#usernameForm"])
+            self.assertEqual(sel["login_senha"][0], "#senhaNova")
+            # a mensagem do portal mudado aponta o arquivo certo
+            self.assertEqual(esaj.arquivos_de_seletores()[-1], local / "seletores.json")
+
 
 class TestCapa(unittest.TestCase):
     def test_capa(self):
@@ -352,6 +378,9 @@ class TestLoginInsiste(unittest.TestCase):
         self.assertEqual(p.tentativas, 3)
         self.assertIn("esaj-login-sem-campos", p.nav.diagnosticos)
         self.assertIn("seletores", str(caso.exception))
+        from helestron.nucleo import caminhos
+
+        self.assertIn(str(caminhos.LOCAL / "seletores.json"), str(caso.exception))
 
     def test_campos_no_primeiro_gole_nao_repete(self):
         p = PortalDeLogin([True])

@@ -38,9 +38,56 @@
     return nomes.slice(0, 8);
   }
 
+  /**
+   * O número CNJ como texto que pode quebrar depois do ano, se a coluna for
+   * estreita ("0700412-16.2024." / "8.02.0001"), em vez de ser cortado com
+   * reticências. Quem copia leva o número inteiro (o <wbr> não é texto).
+   */
+  function numeroQuebravel(numero) {
+    const texto = String(numero || "");
+    const m = /^(\d{7}-\d{2}\.\d{4}\.)(\d\.\d{2}\.\d{4})$/.exec(texto);
+    return m ? [m[1], el("wbr"), m[2]] : texto;
+  }
+
+  const MOTIVO_PAUTA = "A pauta de audiências indica que este processo corre em segredo de justiça.";
+
+  /**
+   * A pauta sabe que o processo é sigiloso (o portal disse "segredo de
+   * justiça")? Procura o número em qualquer audiência de um ano para trás a
+   * um ano para a frente. Na dúvida (pauta indisponível), "": o servidor
+   * confere de novo ao começar e liga o sigilo se for o caso.
+   */
+  async function sigiloNaPauta(numero) {
+    if (!numero) return "";
+    const hoje = new Date();
+    try {
+      const r = await api.pauta.listar({ de: fmt.iso(fmt.somarDias(hoje, -366)), ate: fmt.iso(fmt.somarDias(hoje, 366)), busca: numero });
+      return ((r && r.audiencias) || []).some((a) => a.sigiloso && a.processo === numero) ? MOTIVO_PAUTA : "";
+    } catch (_e) {
+      return "";
+    }
+  }
+
+  /** O microfone guardado (o NOME; "" é o padrão do Windows). */
+  function microfoneSalvo() {
+    return String(H.app.valorConfig("transcricao", "dispositivo", "") || "");
+  }
+
+  /** Guarda o microfone pelo nome (o número muda quando se liga um aparelho USB). */
+  function guardarMicrofone(nome) {
+    const valores = H.loja.config && H.loja.config.valores;
+    if (valores) {
+      valores.transcricao = valores.transcricao || {};
+      valores.transcricao.dispositivo = nome;
+    }
+    return api.config.gravar("transcricao", "dispositivo", nome).catch(() => {});
+  }
+
   function rascunho() {
     if (!H.loja.audiencia) {
-      H.loja.audiencia = { processo: "", tipo: lerLocal("tipo_audiencia", "Instrução e julgamento"), sigiloso: false, dispositivo: null, participantes: null, documento: null, falas: [] };
+      // tipoDaSessao: o tipo com que ESTA tela começou a sessão (null se ela
+      // veio de antes, já em curso: o servidor guarda o dela).
+      H.loja.audiencia = { processo: "", tipo: lerLocal("tipo_audiencia", "Instrução e julgamento"), sigiloso: false, motivoSigilo: "", tipoDaSessao: null, participantes: null, documento: null, falas: [] };
     }
     return H.loja.audiencia;
   }
@@ -53,7 +100,10 @@
     if (p.get("processo")) {
       r.processo = cnj.mascarar(p.get("processo"));
       if (p.get("tipo")) r.tipo = p.get("tipo");
+      // Veio da Pauta ou do Início: o selo de sigilo da audiência vale aqui.
       r.sigiloso = p.get("sigiloso") === "1";
+      r.motivoSigilo = r.sigiloso ? MOTIVO_PAUTA : "";
+      r.sigiloAutomatico = r.sigiloso;
     }
 
     // --- processo
@@ -83,7 +133,9 @@
         ajudaProcesso.classList.add("ok");
       }
       r.processo = campoProcesso.value;
-      botaoGravar.disabled = !(d.length === 20 && cnj.valido(d));
+      const ok = d.length === 20 && cnj.valido(d);
+      botaoGravar.disabled = !ok;
+      conferirSigilo(ok ? cnj.mascarar(d) : "");
     };
     campoProcesso.addEventListener("input", () => {
       // Máscara que não briga com o cursor: só reformata quando se digita no fim.
@@ -98,9 +150,47 @@
     campoTipo.value = TIPOS.includes(r.tipo) ? r.tipo : "Outra";
     campoTipo.addEventListener("change", () => { r.tipo = campoTipo.value; gravarLocal("tipo_audiencia", r.tipo); });
 
+    // --- segredo de justiça
+    // O Helestron liga o interruptor sozinho quando a pauta sabe que o
+    // processo é sigiloso (e o servidor confere de novo ao começar). Nunca o
+    // desliga sozinho, a não ser o que ele mesmo ligou para outro número.
+    const sigilo = interruptor({ marcado: r.sigiloso, rotulo: "Segredo de justiça", id: "sigilo-audiencia", aoMudar: (v) => {
+      r.sigiloso = v;
+      r.sigiloAutomatico = false;
+      if (!v) { r.motivoSigilo = ""; notaSigilo.hidden = true; }
+    } });
+    const notaSigilo = el("span", { classe: "linha-sub nota-sigilo", id: "motivo-sigilo", "aria-live": "polite", hidden: !r.motivoSigilo, texto: r.motivoSigilo || "" });
+    let numeroConferido = r.sigiloso && r.motivoSigilo ? cnj.mascarar(r.processo) : "";
+    let consulta = 0;
+    function ligarSigilo(motivo, numero) {
+      sigilo.checked = true;
+      r.sigiloso = true;
+      r.sigiloAutomatico = true;
+      r.motivoSigilo = motivo;
+      numeroConferido = numero || numeroConferido;
+      notaSigilo.textContent = motivo;
+      notaSigilo.hidden = false;
+    }
+    function conferirSigilo(numero) {
+      if (numero && numero === numeroConferido) return;
+      numeroConferido = numero;
+      const minha = ++consulta;
+      if (r.sigiloAutomatico) {
+        // O que o programa ligou para o número anterior não vale para este.
+        sigilo.checked = false;
+        r.sigiloso = false;
+        r.sigiloAutomatico = false;
+      }
+      r.motivoSigilo = "";
+      notaSigilo.hidden = true;
+      if (!numero) return;
+      sigiloNaPauta(numero).then((motivo) => {
+        if (motivo && minha === consulta && ctx.vivo) ligarSigilo(motivo, numero);
+      });
+    }
+
     // --- sugestões da pauta de hoje
     const sugestoes = el("div", { classe: "sugestoes", aria: { label: "Audiências de hoje na pauta" } });
-    const sigilo = interruptor({ marcado: r.sigiloso, rotulo: "Segredo de justiça", id: "sigilo-audiencia", aoMudar: (v) => { r.sigiloso = v; } });
     const carregarSugestoes = async () => {
       const hoje = fmt.iso(new Date());
       let lista = [];
@@ -113,15 +203,17 @@
           on: { click: () => {
             campoProcesso.value = cnj.mascarar(a.processo);
             if (TIPOS.includes(a.tipo)) { campoTipo.value = a.tipo; r.tipo = a.tipo; }
-            sigilo.checked = !!a.sigiloso;
-            r.sigiloso = !!a.sigiloso;
             validar();
+            if (a.sigiloso) ligarSigilo(MOTIVO_PAUTA, cnj.mascarar(a.processo));
             campoProcesso.focus();
           } },
         }, icone("relogio", { tamanho: 13 }), `${a.hora} · ${a.processo}`)));
     };
 
     // --- microfone
+    // Escolhido e guardado pelo NOME: o número do aparelho muda quando se liga
+    // ou desliga um fone USB, e o número velho gravaria por outro microfone.
+    // O que a lista mostra é o que vai no pedido ("" = padrão do Windows).
     const campoMic = el("select", { classe: "campo", id: "microfone", aria: { label: "Microfone" } }, el("option", { value: "", texto: "Carregando os microfones…" }));
     const medidor = H.ui.medidor(22);
     const legendaMedidor = el("span", { texto: "Clique em Testar e fale algo: as barras devem se mexer." });
@@ -131,9 +223,16 @@
     } });
     botaoTestar.id = "testar-microfone";
     async function iniciarTeste() {
-      await api.transcricao.testarMicrofone(valorDispositivo());
+      try {
+        await api.transcricao.testarMicrofone(valorDispositivo());
+      } catch (erro) {
+        if (erro.codigo === "microfone_indisponivel") carregarMicrofones();
+        folha.erro(erro, "O microfone não respondeu");
+        return;
+      }
       testando = true;
       botaoTestar.querySelector("span").textContent = "Parar teste";
+      legendaMedidor.classList.remove("erro");
       legendaMedidor.textContent = "Fale algo: as barras devem se mexer.";
     }
     async function pararTeste() {
@@ -142,12 +241,13 @@
       medidor.definir(0);
       try { await api.transcricao.pararMicrofone(); } catch (_e) { /* já parou */ }
     }
-    const valorDispositivo = () => (campoMic.value === "" ? "" : Number(campoMic.value));
+    const valorDispositivo = () => String(campoMic.value || "");
     ctx.on("microfone_nivel", (d) => { if (testando) medidor.definir(d && d.nivel); });
     ctx.aoSair(() => { if (testando) api.transcricao.pararMicrofone().catch(() => {}); });
     campoMic.addEventListener("change", async () => {
-      r.dispositivo = campoMic.value;
-      api.config.gravar("transcricao", "dispositivo", campoMic.value === "" ? "" : String(campoMic.value)).catch(() => {});
+      guardarMicrofone(valorDispositivo());
+      legendaMedidor.classList.remove("erro");
+      legendaMedidor.textContent = "Clique em Testar e fale algo: as barras devem se mexer.";
       if (testando) { await pararTeste(); await iniciarTeste(); }
     });
     const carregarMicrofones = async () => {
@@ -159,12 +259,31 @@
       }
       if (!ctx.vivo) return;
       const padrao = lista.find((m) => m.padrao);
-      trocar(campoMic,
-        el("option", { value: "", texto: "Padrão do Windows" + (padrao ? ` — ${padrao.nome}` : "") }),
-        lista.map((m) => el("option", { value: String(m.indice), texto: m.nome })));
-      const salvo = r.dispositivo !== null && r.dispositivo !== undefined ? r.dispositivo : H.app.valorConfig("transcricao", "dispositivo", "");
-      if (salvo !== "" && lista.some((m) => String(m.indice) === String(salvo))) campoMic.value = String(salvo);
-      if (!lista.length) legendaMedidor.textContent = "Nenhum microfone encontrado. Confira se ele está conectado e se o Windows permite o acesso.";
+      const nomes = Array.from(new Set(lista.map((m) => String(m.nome || "")).filter(Boolean)));
+      let salvo = microfoneSalvo();
+      const opcoes = [el("option", { value: "", texto: "Padrão do Windows" + (padrao ? ` — ${padrao.nome}` : "") })]
+        .concat(nomes.map((n) => el("option", { value: n, texto: n })));
+      let problema = "";
+      if (salvo && !nomes.includes(salvo)) {
+        const pelo = /^\d+$/.test(salvo) ? lista.find((m) => String(m.indice) === salvo) : null;
+        if (pelo) {
+          // Configuração antiga, pelo número: passa a guardar o nome.
+          salvo = String(pelo.nome);
+          guardarMicrofone(salvo);
+        } else if (/^\d+$/.test(salvo)) {
+          salvo = "";
+          problema = "O microfone escolhido antes não está mais na lista. Confira a escolha.";
+        } else {
+          // Nunca troca em silêncio pelo padrão: mostra o que estava escolhido.
+          opcoes.push(el("option", { value: salvo, texto: `${salvo} (não encontrado)` }));
+          problema = `O microfone «${salvo}» não foi encontrado. Ligue-o ou escolha outro.`;
+        }
+      }
+      trocar(campoMic, opcoes);
+      campoMic.value = salvo;
+      if (!lista.length) problema = "Nenhum microfone encontrado. Confira se ele está conectado e se o Windows permite o acesso.";
+      legendaMedidor.classList.toggle("erro", !!problema);
+      legendaMedidor.textContent = problema || "Clique em Testar e fale algo: as barras devem se mexer.";
     };
 
     // --- participantes
@@ -189,13 +308,15 @@
       r.participantes.forEach((n, i) => { if (n.trim()) participantesMapa["F" + (i + 1)] = n.trim(); });
       const primeiro = Object.values(participantesMapa)[0] || "";
       botaoGravar.disabled = true;
+      let resposta = null;
       try {
-        await api.transcricao.iniciar({
+        resposta = await api.transcricao.iniciar({
           processo: cnj.mascarar(d), dispositivo: valorDispositivo(), sigiloso: !!sigilo.checked,
           tipo: campoTipo.value, participantes: participantesMapa, falante: primeiro,
         });
       } catch (erro) {
         botaoGravar.disabled = false;
+        if (erro.codigo === "microfone_indisponivel") carregarMicrofones();
         folha.erro(erro, "A gravação não começou");
         return;
       }
@@ -204,7 +325,16 @@
       r.falante = primeiro;
       r.processo = cnj.mascarar(d);
       r.tipo = campoTipo.value;
-      r.sigiloso = !!sigilo.checked;
+      r.tipoDaSessao = campoTipo.value;
+      r.sigiloso = !!sigilo.checked || !!(resposta && resposta.sigiloso);
+      // O programa já sabia do sigilo (autos na pasta dos sigilosos, pauta)
+      // e gravou como sigilosa mesmo com o interruptor desligado: liga-o e
+      // diz por quê.
+      if (resposta && resposta.sigiloso_forcado) {
+        ligarSigilo(resposta.motivo || MOTIVO_PAUTA, r.processo);
+      } else if (!r.sigiloAutomatico) {
+        r.motivoSigilo = "";
+      }
       irParaAoVivo({ segundos: 0, estado: "iniciando", texto_estado: "Preparando a gravação…", falas: [], falante: primeiro });
     };
     botaoGravar.addEventListener("click", gravar);
@@ -247,7 +377,8 @@
           icone("cadeado"),
           el("span", { classe: "linha-texto" },
             el("span", { classe: "linha-titulo", texto: "Segredo de justiça" }),
-            el("span", { classe: "linha-sub", texto: "A transcrição e a gravação ficam na pasta dos sigilosos, fora do acervo da IA." })),
+            el("span", { classe: "linha-sub", texto: "A transcrição e a gravação ficam na pasta dos sigilosos, fora do acervo da IA." }),
+            notaSigilo),
           sigilo),
         el("div", {},
           el("label", { classe: "rotulo", for: "microfone", texto: "Microfone" }),
@@ -276,15 +407,40 @@
       const campo = el("input", { classe: "campo numero", id: "processo-gravacao", placeholder: "0000000-00.0000.0.00.0000", inputmode: "numeric" });
       campo.value = doNome ? cnj.mascarar(doNome[0]) : cnj.mascarar(campoProcesso.value);
       const ajuda = el("p", { classe: "ajuda-campo" });
-      campo.addEventListener("input", () => { campo.value = cnj.mascarar(campo.value); ajuda.textContent = ""; campo.classList.remove("invalido"); });
-      const sig = interruptor({ marcado: !!sigilo.checked, rotulo: "Segredo de justiça" });
+      // O tipo vai para a ficha do documento: escolhido aqui, à vista.
+      const tipoGravacao = el("select", { classe: "campo", id: "tipo-gravacao" }, TIPOS.map((t) => el("option", { value: t, texto: t })));
+      tipoGravacao.value = campoTipo.value;
+      const sig = interruptor({ marcado: !!sigilo.checked, rotulo: "Segredo de justiça", id: "sigilo-gravacao", aoMudar: (v) => { sigAutomatico = false; if (!v) nota.hidden = true; } });
+      const nota = el("span", { classe: "nota-sigilo", id: "motivo-sigilo-folha", hidden: true, "aria-live": "polite" });
+      let sigAutomatico = false;
+      let conferido = "";
+      let consultaGravacao = 0;
+      const conferirNaPauta = () => {
+        const d = cnj.digitos(campo.value);
+        const numero = d.length === 20 && cnj.valido(d) ? cnj.mascarar(d) : "";
+        if (numero === conferido) return;
+        conferido = numero;
+        const minha = ++consultaGravacao;
+        if (sigAutomatico) { sig.checked = false; sigAutomatico = false; }
+        nota.hidden = true;
+        if (!numero) return;
+        sigiloNaPauta(numero).then((motivo) => {
+          if (!motivo || minha !== consultaGravacao) return;
+          sig.checked = true;
+          sigAutomatico = true;
+          nota.textContent = motivo;
+          nota.hidden = false;
+        });
+      };
+      campo.addEventListener("input", () => { campo.value = cnj.mascarar(campo.value); ajuda.textContent = ""; campo.classList.remove("invalido"); conferirNaPauta(); });
       const f = folha.abrir({
         titulo: "Transcrever a gravação", icone: "ondas",
         mensagem: `Arquivo: ${escolha.nome}. A transcrição usa o modelo preciso, roda no computador e pode levar alguns minutos; acompanhe na barra lateral.`,
         conteudo: [
           el("div", {}, el("label", { classe: "rotulo", for: "processo-gravacao", texto: "Número do processo" }), campo, ajuda),
+          el("div", {}, el("label", { classe: "rotulo", for: "tipo-gravacao", texto: "Tipo de audiência" }), tipoGravacao),
           el("div", { classe: "grupo-lista", estilo: { boxShadow: "none" } },
-            H.ui.linha({ icone: "cadeado", cor: "navy", titulo: "Segredo de justiça", sub: "O documento vai para a pasta dos sigilosos.", acessorio: sig })),
+            H.ui.linha({ icone: "cadeado", cor: "navy", titulo: "Segredo de justiça", sub: el("span", {}, el("span", { estilo: { display: "block" }, texto: "O documento vai para a pasta dos sigilosos." }), nota), acessorio: sig })),
         ],
         botoes: [
           { rotulo: "Cancelar" },
@@ -297,20 +453,28 @@
               campo.focus();
               return false;
             }
-            const resposta = await api.transcricao.gravacao(escolha, { processo: cnj.mascarar(d), sigiloso: !!sig.checked, tipo: campoTipo.value });
-            mostrarTarefaArquivo(resposta.tarefa);
+            // Enviado pela página, o arquivo chega ao programa como um
+            // temporário: o nome e a data dele vão junto, para a ficha.
+            const extras = escolha.arquivo ? { nome_original: escolha.arquivo.name, data_arquivo: escolha.arquivo.lastModified || "" } : {};
+            const resposta = await api.transcricao.gravacao(escolha, Object.assign({ processo: cnj.mascarar(d), sigiloso: !!sig.checked, tipo: tipoGravacao.value }, extras));
+            mostrarTarefaArquivo(resposta.tarefa, resposta);
             return true;
           } },
         ],
       });
+      conferirNaPauta();
       return f.resultado;
     };
 
-    function mostrarTarefaArquivo(id) {
+    /** O andamento da gravação enviada; 'pedido' traz o sigilo que o programa ligou. */
+    function mostrarTarefaArquivo(id, pedido) {
       const anel = H.ui.anel({ tamanho: 40, espessura: 4 });
       const titulo = el("span", { classe: "acao-item-titulo" });
       const status = el("span", { classe: "acao-item-sub" });
-      const caixa = cartao({ classe: "tarefa-arquivo" }, el("div", { classe: "monitor-linha" }, anel, el("div", { classe: "linha-texto" }, titulo, status)));
+      const forcado = pedido && pedido.sigiloso_forcado
+        ? el("p", { classe: "ajuda-campo nota-sigilo", id: "motivo-sigilo-gravacao" }, icone("cadeado", { tamanho: 14 }),
+          ` ${pedido.motivo || MOTIVO_PAUTA} O documento vai para a pasta dos sigilosos.`) : null;
+      const caixa = cartao({ classe: "tarefa-arquivo" }, el("div", { classe: "monitor-linha" }, anel, el("div", { classe: "linha-texto" }, titulo, status)), forcado);
       const atualizar = () => {
         const t = H.loja.tarefas.get(id);
         if (!t) return;
@@ -338,9 +502,9 @@
         titulo: lista.length === 1 ? "Uma transcrição foi interrompida" : `${lista.length} transcrições foram interrompidas`,
         texto: el("div", {},
           el("span", { texto: "O computador desligou ou o programa fechou no meio. O que já tinha sido transcrito pode ser recuperado." }),
-          el("div", { classe: "lista-simples", estilo: { marginTop: "6px" } }, lista.map((x) => el("div", { classe: "item-simples", estilo: { padding: "6px 0" } },
+          el("div", { classe: "lista-simples", estilo: { marginTop: "6px" } }, lista.map((x) => el("div", { classe: "item-simples item-recuperar", estilo: { padding: "6px 0" } },
             el("span", { classe: "item-texto" },
-              el("span", { classe: "item-titulo numero", texto: x.processo || x.arquivo }),
+              el("span", { classe: "item-titulo numero", title: x.processo || x.arquivo }, x.processo ? numeroQuebravel(x.processo) : String(x.arquivo || "").split(/[\\/]/).pop()),
               el("span", { classe: "item-sub", texto: "Interrompida " + fmt.quando(x.quando) })),
             botao({ rotulo: "Recuperar", tipo: "tonal", tamanho: "pequeno", acao: async () => {
               const r2 = await api.transcricao.recuperar(x.arquivo);
@@ -363,7 +527,7 @@
           el("button", { type: "button", classe: "item-simples", on: { click: () => api.abrir("arquivo", t.arquivo).catch((e) => folha.erro(e)) }, aria: { label: `Abrir a transcrição de ${t.numero}` } },
             blocoIcone(t.sigiloso ? "cadeado" : "documento", t.sigiloso ? "navy" : "azul"),
             el("span", { classe: "item-texto" },
-              el("span", { classe: "item-titulo numero", texto: t.numero }),
+              el("span", { classe: "item-titulo numero", title: t.numero }, numeroQuebravel(t.numero)),
               el("span", { classe: "item-sub", texto: (t.sigiloso ? "Segredo de justiça · " : "") + fmt.quando(t.quando) })),
             icone("chevron-direita", { classe: "linha-chevron" })))));
       }
@@ -422,6 +586,7 @@
         // A sessão acabou com erro (não começou, ou não conseguiu salvar):
         // volta à preparação com o motivo, em vez de um cronômetro andando.
         rodando = false;
+        mostrarOuvindo(false);
         if (!terminou && aoFalhar) { terminou = true; aoFalhar(texto, (info && info.fase) || "", r.falas.length); }
         return;
       }
@@ -433,11 +598,15 @@
         botaoPausar.setAttribute("aria-label", "Retomar a gravação");
         medidor.definir(0);
         statusLinha.textContent = "";
+        // Pausada, nada é captado: o "Ouvindo…" some (o magistrado precisa
+        // ver que a conversa da pausa não está sendo gravada).
+        mostrarOuvindo(false);
       } else if (t.startsWith("revis")) {
         base = agora; rodando = false;
         selo.className = "selo-gravando concluindo";
         selo.textContent = "Revisando";
         statusLinha.textContent = texto;
+        mostrarOuvindo(false);
       } else if (e === "encerrando" || (t.startsWith("conclu") && t !== "concluido")) {
         base = agora; rodando = false;
         selo.className = "selo-gravando concluindo";
@@ -445,18 +614,23 @@
         statusLinha.textContent = texto || "Concluindo a transcrição…";
         botaoPausar.disabled = true;
         botaoEncerrar.disabled = true;
+        medidor.definir(0);
+        mostrarOuvindo(false);
       } else if (e === "encerrada" || e === "parada" || t === "concluido") {
         rodando = false;
+        mostrarOuvindo(false);
       } else if (e === "iniciando" || t.startsWith("carregando") || t.startsWith("preparando")) {
         // O áudio já está sendo gravado enquanto o modelo carrega.
         if (!rodando) { base = agora; desde = performance.now(); rodando = true; }
         selo.className = "selo-gravando";
         selo.textContent = "Gravando";
         statusLinha.textContent = "Preparando a transcrição… o áudio já está sendo gravado.";
+        mostrarOuvindo(true);
       } else if (e === "gravando" || t.startsWith("gravando")) {
         if (!rodando) { base = agora; desde = performance.now(); rodando = true; }
         selo.className = "selo-gravando";
         selo.textContent = "Gravando";
+        mostrarOuvindo(true);
         botaoPausar.replaceChildren(icone("pausa"), el("span", { texto: "Pausar" }));
         botaoPausar.setAttribute("aria-label", "Pausar a gravação");
         statusLinha.textContent = "";
@@ -491,7 +665,7 @@
     // --- falantes
     let falanteAtual = r.falante || participantes.find(Boolean) || "";
     const botoesFalantes = [];
-    const barraFalantes = el("div", { classe: "falantes", role: "group", aria: { label: "Quem está falando (F1 a F8)" } });
+    const barraFalantes = el("div", { classe: "falantes", role: "group", aria: { label: "Quem está falando (F1 a F8)" }, dados: { livreDeAvisos: "1" } });
     participantes.forEach((nome, i) => {
       if (!nome) return;
       const b = el("button", {
@@ -526,7 +700,8 @@
 
     // --- texto ao vivo
     const rolagem = el("div", { classe: "texto-ao-vivo-rolagem", role: "log", aria: { label: "Texto da audiência", live: "polite" }, tabindex: "0" });
-    const ouvindo = el("div", { classe: "ouvindo" }, el("span", { classe: "ouvindo-pontos", "aria-hidden": "true" }, el("i"), el("i"), el("i")), "Ouvindo…");
+    const ouvindo = el("div", { classe: "ouvindo", id: "ouvindo" }, el("span", { classe: "ouvindo-pontos", "aria-hidden": "true" }, el("i"), el("i"), el("i")), "Ouvindo…");
+    function mostrarOuvindo(sim) { ouvindo.hidden = !sim; }
     const irAoFim = botao({ rotulo: "Ir para o fim", icone: "chevron-baixo", tipo: "primario", tamanho: "pequeno", classe: "ir-ao-fim" });
     irAoFim.hidden = true;
     irAoFim.addEventListener("click", () => { rolagem.scrollTop = rolagem.scrollHeight; irAoFim.hidden = true; });
@@ -596,7 +771,7 @@
       botaoPausar.disabled = true;
       botaoEncerrar.disabled = true;
       try {
-        const resposta = await api.transcricao.encerrar();
+        const resposta = await api.transcricao.encerrar(r.tipoDaSessao ? { tipo: r.tipoDaSessao } : {});
         // Num computador lento o encerramento demora: sem o documento na
         // resposta, ele chega pelo evento 'fim'.
         if (!terminou && resposta && resposta.documento) { terminou = true; aoTerminar(resposta.documento); }
@@ -607,18 +782,25 @@
       }
     }
 
+    const numeroAoVivo = inicial.processo || r.processo;
     const sub = el("span", { classe: "ao-vivo-sub" },
-      r.tipo ? el("span", { texto: r.tipo }) : null,
+      // O tipo só quando esta tela começou a sessão (depois de recarregar a
+      // página, o do rascunho pode não ser o da audiência em curso).
+      r.tipoDaSessao ? el("span", { classe: "ao-vivo-tipo", texto: r.tipoDaSessao, title: r.tipoDaSessao }) : null,
       r.sigiloso ? pilula("Segredo de justiça", "navy", "cadeado") : null,
       atrasoChip);
-    const topo = cartao({ classe: "ao-vivo-topo" },
+    const topo = cartao({ classe: "ao-vivo-topo", dados: { livreDeAvisos: "1" } },
       selo, cronometro,
-      el("div", { classe: "ao-vivo-info" }, el("span", { classe: "ao-vivo-processo", texto: inicial.processo || r.processo }), sub),
+      el("div", { classe: "ao-vivo-info" }, el("span", { classe: "ao-vivo-processo numero", texto: numeroAoVivo, title: numeroAoVivo }), sub),
       medidor,
-      el("div", { classe: "grupo-botoes" }, botaoPausar, botaoEncerrar));
+      el("div", { classe: "grupo-botoes ao-vivo-botoes" }, botaoPausar, botaoEncerrar));
     const texto = cartao({ classe: "texto-ao-vivo" }, rolagem, irAoFim);
+    // O programa ligou o sigilo sozinho (pauta, autos na pasta dos sigilosos): diz por quê.
+    const motivo = r.sigiloso && r.motivoSigilo
+      ? el("span", { classe: "ajuda-campo nota-sigilo", id: "motivo-sigilo-ao-vivo", estilo: { margin: "0" } }, icone("cadeado", { tamanho: 14 }),
+        ` ${r.motivoSigilo} A transcrição e a gravação vão para a pasta dos sigilosos.`) : null;
     const rodape = el("div", { classe: "ao-vivo-barra" },
-      el("span", { classe: "ajuda-campo", estilo: { margin: "0" } }, salvoEm), statusLinha);
+      el("span", { classe: "ajuda-campo", estilo: { margin: "0" } }, salvoEm), statusLinha, motivo);
 
     definirEstado(inicial.estado !== undefined || inicial.texto_estado !== undefined
       ? { estado: inicial.estado, texto: inicial.texto_estado || "" } : "Gravando");
@@ -670,7 +852,7 @@
     anelRevisao.hidden = true;
     let tarefaRevisao = null;
     const botaoRevisar = botao({ rotulo: "Revisar", icone: "brilho", tipo: "tonal", tamanho: "pequeno", acao: async () => {
-      const resposta = await api.transcricao.gravacao({}, { revisao: true });
+      const resposta = await api.transcricao.gravacao({}, Object.assign({ revisao: true }, r.tipoDaSessao ? { tipo: r.tipoDaSessao } : {}));
       tarefaRevisao = resposta.tarefa;
       botaoRevisar.hidden = true;
       anelRevisao.hidden = false;
@@ -743,7 +925,7 @@
           titulo: comeco ? "A gravação não começou" : "A audiência foi interrompida",
           icone: "aviso",
           mensagem: motivo || "O microfone não respondeu.",
-          conteudo: comeco ? null : el("p", { classe: "ajuda-campo", texto: "O áudio gravado até aqui foi guardado: use “Recuperar sessão interrompida” para gerar o documento." }),
+          conteudo: comeco ? null : el("p", { classe: "ajuda-campo", texto: "O áudio gravado até aqui foi guardado: clique em “Recuperar”, na faixa “Uma transcrição foi interrompida”, para gerar o documento." }),
         });
       };
       const documento = (caminho) => {

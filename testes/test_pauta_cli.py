@@ -82,6 +82,30 @@ class TestCLI(apoio.PastaTemporaria):
         self.assertEqual(codigo, 1)
         self.assertIn("dentro do acervo", erro)
 
+
+    def test_exportar_mascarando_mesmo_com_o_ajuste_ligado(self):
+        from openpyxl import load_workbook
+
+        (self.tmp / "sig.csv").write_text(
+            "Data;Hora;Processo;Partes;Sigilo\n"
+            f"05/10/2026;09:00;{N1};Maria x José;Segredo de Justiça\n", encoding="utf-8")
+        self.assertEqual(self.rodar("importar", str(self.tmp / "sig.csv"))[0], 0)
+        self.amb.cfg.definir("pauta", "incluir_partes_sigilosos", True)
+        partes = {}
+        for opcao in ("", "--sem-partes-sigilosos", "--incluir-partes-sigilosos"):
+            argv = ["exportar", "--de", "2026-10-05", "--ate", "2026-10-05",
+                    "--pasta", str(self.tmp / f"saida{opcao}")] + ([opcao] if opcao else [])
+            codigo, saida, erro = self.rodar(*argv)
+            self.assertEqual(codigo, 0, erro)
+            arquivo = saida.strip().removeprefix("Planilha gravada: ")
+            partes[opcao] = load_workbook(arquivo)["Pauta"].cell(5, 6).value
+        self.assertEqual(partes, {"": "Maria x José", "--sem-partes-sigilosos":
+                                  "(segredo de justiça)",
+                                  "--incluir-partes-sigilosos": "Maria x José"})
+        codigo, _, erro = self.rodar("exportar", "--sem-partes-sigilosos",
+                                     "--incluir-partes-sigilosos")
+        self.assertEqual(codigo, 2)
+
     def test_importar_com_erro(self):
         codigo, saida, erro = self.rodar("importar", str(self.tmp / "rel.csv"),
                                          str(self.tmp / "nao-existe.pdf"))

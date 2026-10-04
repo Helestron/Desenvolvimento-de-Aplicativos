@@ -368,6 +368,32 @@ class TestConfiguracao(apoio.PastaTemporaria):
         with self.assertLogs("download.eproc", "WARNING"):
             self.assertEqual(eproc.carregar_seletores(arquivo), eproc.SELETORES_PADRAO)
 
+    def test_correcao_dos_seletores_na_pasta_de_dados(self):
+        """Como no e-SAJ: seletores-eproc.json (ou a seção "eproc" do
+        seletores.json) na pasta de dados, que a atualização não apaga."""
+        from unittest import mock
+
+        from helestron.nucleo import caminhos
+
+        local, programa = self.tmp / "local", self.tmp / "programa"
+        local.mkdir()
+        programa.mkdir()
+        with mock.patch.object(caminhos, "LOCAL", local), \
+                mock.patch.object(caminhos, "DADOS", programa):
+            self.assertEqual(eproc.carregar_seletores(), eproc.SELETORES_PADRAO)
+            (local / "seletores-eproc.json").write_text(json.dumps(
+                {"pesquisa_rapida": ["#campoNovo"]}), encoding="utf-8")
+            (local / "seletores.json").write_text(json.dumps(
+                {"esaj": {"login_usuario": ["#x"]}, "eproc": {"capa_classe": ["#classe"]}}),
+                encoding="utf-8")
+            (programa / "seletores-eproc.json").write_text(json.dumps(
+                {"pesquisa_rapida": ["#daVersao"]}), encoding="utf-8")
+            sel = eproc.carregar_seletores()
+        self.assertEqual(sel["pesquisa_rapida"][:2], ["#campoNovo", "#daVersao"])
+        self.assertEqual(sel["capa_classe"][0], "#classe")
+        # a seção do e-SAJ não vale aqui
+        self.assertNotIn("#x", sel.get("login_usuario", []))
+
     def test_modo_do_pdf(self):
         self.assertEqual(eproc.resolver_modo("completo"), "completo")
         self.assertEqual(eproc.resolver_modo(" Documentos "), "documentos")

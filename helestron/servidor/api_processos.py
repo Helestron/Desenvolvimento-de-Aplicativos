@@ -283,6 +283,10 @@ def _espelhar_ao_fim(app) -> None:
     if any(Path(p).exists() for p in app.sigilosos_presos):
         log.warning("Espelho na nuvem NÃO feito: há processo sigiloso no acervo.")
         return
+    from .api_compartilhar import nuvem_sem_conflito
+
+    if not nuvem_sem_conflito(cfg, destino):
+        return
     from ..compartilhar import nuvem
 
     def alvo(tw):

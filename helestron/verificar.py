@@ -110,6 +110,10 @@ CHAVES_WEBVIEW2 = (
     ("HKCU", rf"Software\Microsoft\EdgeUpdate\Clients\{GUID_WEBVIEW2}"),
 )
 URL_WEBVIEW2 = "https://developer.microsoft.com/microsoft-edge/webview2/"
+# A pywebview 6 usa uma interface do WebView2 (ICoreWebView2Environment10) que
+# só existe a partir deste runtime; com um mais velho, a janela abriria vazia,
+# e o programa abre no Edge em modo aplicativo (helestron.aplicativo.janela).
+VERSAO_MINIMA_WEBVIEW2 = (101, 0, 1210, 39)
 
 # Códigos de saída de processo que caiu (Windows: NTSTATUS; POSIX: -sinal).
 QUEDAS = {
@@ -714,13 +718,43 @@ def checar_teste_navegador(cfg) -> Item:
 
 
 # ------------------------------------------------------------ WebView2
+def _versao_numerica(texto) -> tuple[int, ...] | None:
+    """'101.0.1210.39' -> (101, 0, 1210, 39); None se não for uma versão."""
+    partes = str(texto or "").strip().split(".")
+    if not partes or not all(p.isdigit() for p in partes):
+        return None
+    numeros = tuple(int(p) for p in partes[:4])
+    return numeros + (0,) * (4 - len(numeros))
+
+
 def avaliar_webview2(versoes: list[str | None]) -> Item:
-    """Decide o item a partir das versões ("pv") lidas do registro (puro, testável)."""
+    """Decide o item a partir das versões ("pv") lidas do registro (puro, testável).
+
+    Vale a maior das versões instaladas (a que a pywebview usa). Abaixo da
+    101.0.1210.39 a janela própria não abre: o Helestron funciona no Edge em
+    modo aplicativo, e o item é aviso, com a orientação de atualizar.
+    """
     nome = "WebView2 (janela do programa)"
-    validas = [v.strip() for v in versoes if v and v.strip() and v.strip() != "0.0.0.0"]
+    validas = []
+    for v in versoes:
+        numero = _versao_numerica(v)
+        if numero is not None and any(numero):
+            validas.append((numero, str(v).strip()))
+    minima = ".".join(str(n) for n in VERSAO_MINIMA_WEBVIEW2)
     if validas:
-        return Item(nome, OK, f"Microsoft Edge WebView2 Runtime {validas[0]} instalado.",
-                    obrigatorio=False, codigo="webview2")
+        numero, texto = max(validas)
+        if numero >= VERSAO_MINIMA_WEBVIEW2:
+            return Item(nome, OK, f"Microsoft Edge WebView2 Runtime {texto} instalado.",
+                        obrigatorio=False, codigo="webview2")
+        return Item(nome, AVISO,
+                    f"O Microsoft Edge WebView2 Runtime deste computador é antigo (versão "
+                    f"{texto}; o Helestron precisa da {minima} ou de uma mais recente).",
+                    obrigatorio=False, codigo="webview2",
+                    acao=("O Helestron funciona assim mesmo: abre no Microsoft Edge, em modo "
+                          "aplicativo. Para a janela própria, atualize o \u201cMicrosoft Edge "
+                          "WebView2 Runtime\u201d (gratuito, da Microsoft, sem administrador): "
+                          f"{URL_WEBVIEW2}. Se o computador é do tribunal, peça a atualização "
+                          "à informática."))
     return Item(nome, AVISO, "O Microsoft Edge WebView2 Runtime não foi encontrado.",
                 obrigatorio=False, codigo="webview2",
                 acao=("O Helestron funciona assim mesmo: abre no Microsoft Edge, em modo "

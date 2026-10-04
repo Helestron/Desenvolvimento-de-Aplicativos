@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 from .. import servicos
+from ..nucleo import sistema
 from ..tarefas import NUVEM
 from .api_geral import maiuscula
 from .rede import ErroApi, Pedido, Roteador, erro_400
@@ -72,7 +73,8 @@ def depois_de_salvar(app, documento: Path | None = None) -> None:
         return
     cfg = app.cfg
     destino = cfg.texto("compartilhar", "pasta_nuvem")
-    if destino and cfg.flag("compartilhar", "espelhar_automaticamente"):
+    if destino and cfg.flag("compartilhar", "espelhar_automaticamente") \
+            and nuvem_sem_conflito(cfg, destino):
         from ..compartilhar import nuvem
 
         def alvo(tw):
@@ -91,6 +93,17 @@ def depois_de_salvar(app, documento: Path | None = None) -> None:
         except Exception as erro:
             log.info("espelho na nuvem adiado: %s", erro)
     _indice_em_segundo_plano(cfg)
+
+
+def nuvem_sem_conflito(cfg, destino) -> bool:
+    """O espelho automático pode ir para 'destino'? Pasta da nuvem dentro do
+    acervo (ou que o contém), gravada antes desta regra ou à mão no
+    config.ini: o espelho é pulado, com o aviso no registro."""
+    frase = servicos.conflito_da_nuvem(destino, cfg.pasta_acervo)
+    if frase:
+        log.warning("Espelho na nuvem NÃO feito: %s", frase)
+        return False
+    return True
 
 
 def _indice_em_segundo_plano(cfg) -> None:
@@ -153,10 +166,14 @@ def claude_desktop(p: Pedido) -> dict:
     alterados = claude.registrar_mcp(app.cfg.pasta_acervo)
     instalado = claude.claude_desktop_instalado()
     if not instalado:
-        return {"abriu": False, "instalado": False,
-                "mensagem": "O conector do acervo foi registrado, mas o app Claude Desktop não "
-                            "está instalado neste computador. Instale o app, entre com a sua "
-                            "conta e conecte de novo.", "url": claude.URL_DOWNLOAD_DESKTOP}
+        aberta = abrir_pagina(claude.URL_DOWNLOAD_DESKTOP)
+        inicio = ("O conector do acervo foi registrado, mas o app Claude Desktop não está "
+                  "instalado neste computador. ")
+        meio = ("Abri no navegador a página de download: instale o app, " if aberta else
+                f"Baixe o app em {claude.URL_DOWNLOAD_DESKTOP}, instale-o, ")
+        return {"abriu": False, "instalado": False, "pagina_aberta": aberta,
+                "mensagem": inicio + meio + "entre com a sua conta e conecte de novo.",
+                "url": claude.URL_DOWNLOAD_DESKTOP}
     if alterados:
         mensagem = ("Acervo conectado ao Claude Desktop. Feche e abra o Claude Desktop para ele "
                     "carregar o conector (ferramentas que só leem os autos, sem alterar nada).")
@@ -186,6 +203,18 @@ def cowork(p: Pedido) -> dict:
             "copiar": pedido}
 
 
+def abrir_pagina(url: str) -> bool:
+    """Abre a página no navegador padrão; False se não abriu (nunca levanta)."""
+    try:
+        aberta = sistema.abrir_endereco(url) is not False
+    except Exception as erro:
+        log.warning("não consegui abrir %s no navegador: %s", url, erro)
+        return False
+    if not aberta:
+        log.warning("nenhum navegador abriu %s", url)
+    return aberta
+
+
 def claude_code(p: Pedido) -> dict:
     from ..compartilhar import claude
 
@@ -195,10 +224,16 @@ def claude_code(p: Pedido) -> dict:
     try:
         claude.abrir_claude_code(app.cfg.pasta_acervo)
     except FileNotFoundError:
-        return {"abriu": False, "instalado": False,
-                "mensagem": "O Claude Code não está instalado neste computador. A página "
-                            "oficial explica como instalá-lo (sem administrador).",
-                "url": claude.URL_DOC_CODE}
+        aberta = abrir_pagina(claude.URL_DOC_CODE)
+        if aberta:
+            mensagem = ("O Claude Code não está instalado neste computador. Abri no navegador a "
+                        "página oficial que explica como instalá-lo (sem administrador). Depois "
+                        "de instalar, clique de novo em “Abrir no Claude Code”.")
+        else:
+            mensagem = ("O Claude Code não está instalado neste computador. A página oficial "
+                        f"explica como instalá-lo (sem administrador): {claude.URL_DOC_CODE}")
+        return {"abriu": False, "instalado": False, "pagina_aberta": aberta,
+                "mensagem": mensagem, "url": claude.URL_DOC_CODE}
     return {"abriu": True, "mensagem": "O Claude Code abriu numa janela própria, já na pasta "
                                        "do acervo. No primeiro uso, entre com a sua conta."}
 
@@ -289,22 +324,23 @@ def espelhar(p: Pedido) -> dict:
 
     app = p.app
     cfg = app.cfg
-    destino = str(p.campo("destino", padrao="", tipo=str) or "").strip().strip('"')
-    if destino:
-        if not Path(destino).is_absolute():
-            raise erro_400("Escolha a pasta completa da nuvem.", "valor_invalido")
-        if destino != cfg.texto("compartilhar", "pasta_nuvem"):
-            cfg.definir("compartilhar", "pasta_nuvem", destino)
-    destino = destino or cfg.texto("compartilhar", "pasta_nuvem")
+    novo = str(p.campo("destino", padrao="", tipo=str) or "").strip().strip('"')
+    if novo and not Path(novo).is_absolute():
+        raise erro_400("Escolha a pasta completa da nuvem.", "valor_invalido")
+    destino = novo or cfg.texto("compartilhar", "pasta_nuvem")
     if not destino:
         raise erro_400("Escolha antes a pasta do OneDrive ou do Google Drive.", "sem_nuvem")
     if not Path(destino).is_dir():
         raise ErroApi(404, "pasta_inexistente", f"A pasta {destino} não existe.")
     exigir_sem_sigiloso(app)
     acervo = cfg.pasta_acervo
-    if servicos.dentro_ou_igual(destino, acervo) or servicos.dentro_ou_igual(acervo, destino):
-        raise erro_400("A pasta da nuvem não pode ficar dentro do acervo, nem conter o acervo.",
-                       "pastas_em_conflito")
+    frase = servicos.conflito_da_nuvem(destino, acervo)
+    if frase:
+        raise erro_400(frase, "pastas_em_conflito")
+    # Só depois de todas as conferências: a pasta recusada não fica gravada
+    # (nem em uso pelo espelho automático, nem aceita pelo /api/abrir).
+    if novo and novo != cfg.texto("compartilhar", "pasta_nuvem"):
+        cfg.definir("compartilhar", "pasta_nuvem", novo)
 
     def alvo(tw):
         tw.definir_status("Copiando o acervo para a nuvem…")

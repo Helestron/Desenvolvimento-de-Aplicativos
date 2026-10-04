@@ -94,6 +94,11 @@ def linha_console(pasta: Path, exe: str, titulo: str) -> str:
     return f'cmd.exe /s /k "title {titulo}& pushd "{pasta}" && "{exe}""'
 
 
+def _sem_separador_wt(texto: str) -> str:
+    """O ";" escapado para o Windows Terminal, que o usa para separar comandos."""
+    return str(texto).replace(";", "\\;")
+
+
 def _abrir_terminal(pasta: Path, executavel: Path, titulo: str) -> None:
     """Abre um terminal novo na pasta, rodando o executável.
 
@@ -108,13 +113,20 @@ def _abrir_terminal(pasta: Path, executavel: Path, titulo: str) -> None:
         return
     wt = shutil.which("wt.exe") or shutil.which("wt")
     if wt:
-        # Um item por palavra: o Windows Terminal remonta a linha e põe aspas
-        # no que tem espaço. O pushd cobre a pasta de rede (ver linha_console);
-        # nela, o "-d" só faria o cmd.exe reclamar antes de chegar ao pushd.
-        args = [wt, "-w", "new", "--title", titulo]
+        # O Windows Terminal remonta a linha do cmd.exe pondo aspas SÓ no que
+        # tem espaço: "pushd", pasta, "&&", exe soltos deixavam um "&" de
+        # caminho sem espaço (usuário "M&M", "D:\\P&D\\Acervo") cru para o
+        # cmd, que partia o comando em dois. Por isso o comando vai num
+        # argumento só, já com as aspas de cada caminho, e com /s (a regra de
+        # linha_console: o cmd tira só a primeira e a última aspa). O pushd
+        # cobre a pasta de rede; nela, o "-d" só faria o cmd.exe reclamar
+        # antes de chegar ao pushd. O ";" separa comandos do próprio Windows
+        # Terminal: vai escapado ("\\;").
+        args = [wt, "-w", "new", "--title", _sem_separador_wt(titulo)]
         if not str(pasta).startswith("\\\\"):
-            args += ["-d", str(pasta)]
-        subprocess.Popen(args + ["cmd.exe", "/k", "pushd", str(pasta), "&&", exe], env=env)
+            args += ["-d", _sem_separador_wt(str(pasta))]
+        comando = _sem_separador_wt(f'pushd "{pasta}" && "{exe}"')
+        subprocess.Popen(args + ["cmd.exe", "/s", "/k", comando], env=env)
         return
     subprocess.Popen(linha_console(pasta, exe, titulo), env=env,
                      creationflags=sistema.NOVO_CONSOLE)
@@ -124,8 +136,8 @@ def abrir_claude_code(pasta: Path) -> None:
     exe = achar_claude_code()
     if exe is None:
         raise FileNotFoundError(
-            "O Claude Code não está instalado neste computador. Use o botão "
-            "\"Instalar o Claude Code\" (instalação oficial, sem administrador).")
+            "O Claude Code não está instalado neste computador. A página oficial explica "
+            f"como instalá-lo (sem administrador): {URL_DOC_CODE}")
     _abrir_terminal(pasta, exe, "Claude Code - Acervo")
 
 

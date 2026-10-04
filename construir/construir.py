@@ -707,15 +707,32 @@ def gerar_manifesto(arvore: Path, versao: str) -> dict:
 
 
 # ============================================================= etapa 8
-def linhas_remover_programa(arvore: Path) -> str:
-    """As linhas do macro RemoverPrograma: cada item da raiz da pasta do
-    programa (pastas com RMDir /r, arquivos com Delete), mais os nomes de
+def _itens_da_raiz(arvore: Path) -> tuple[list[str], list[str]]:
+    """(pastas, arquivos) da raiz da pasta do programa - mais as pastas de
     versões anteriores."""
     pastas = sorted({p.name for p in arvore.iterdir() if p.is_dir()} | set(LEGADO_RAIZ),
                     key=str.lower)
     arquivos = sorted((p.name for p in arvore.iterdir() if p.is_file()), key=str.lower)
+    return pastas, arquivos
+
+
+def linhas_remover_programa(arvore: Path) -> str:
+    """As linhas do macro RemoverPrograma: cada item da raiz da pasta do
+    programa (pastas com RMDir /r, arquivos com Delete), mais os nomes de
+    versões anteriores."""
+    pastas, arquivos = _itens_da_raiz(arvore)
     linhas = [f'  RMDir /r "$INSTDIR\\{nome}"' for nome in pastas]
     linhas += [f'  Delete "$INSTDIR\\{nome}"' for nome in arquivos]
+    return "\n".join(linhas)
+
+
+def linhas_afastar_presos(arvore: Path) -> str:
+    """As linhas do macro AfastarLista: os mesmos itens do RemoverPrograma,
+    para renomear o que ficou preso (o servidor MCP aberto pelo Claude
+    Desktop) em vez de esperar por ele."""
+    pastas, arquivos = _itens_da_raiz(arvore)
+    linhas = [f'  !insertmacro AfastarPasta "${{UN}}" "{nome}"' for nome in pastas]
+    linhas += [f'  !insertmacro AfastarArquivo "${{UN}}" "{nome}"' for nome in arquivos]
     return "\n".join(linhas)
 
 
@@ -731,6 +748,7 @@ def script_nsis(arvore: Path, versao: str, saida_exe: Path, recursos: Path) -> s
         "CABECALHO": (recursos / "instalador-cabecalho.bmp").resolve().as_posix(),
         "TAMANHO_KB": str(max(1, tamanho_da_arvore(arvore) // 1024)),
         "REMOVER_PROGRAMA": linhas_remover_programa(arvore),
+        "AFASTAR_PRESOS": linhas_afastar_presos(arvore),
         "URL_PROJETO": URL_PROJETO,
     }
     if os.name == "nt":     # o makensis do Windows quer barras invertidas

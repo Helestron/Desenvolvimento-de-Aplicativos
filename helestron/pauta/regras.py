@@ -85,9 +85,14 @@ PADROES: dict = {
     "situacao_padrao": "Designada",
     "sigilo": "segredo de justica|sigilos[oa]|\\bem sigilo\\b|sigilo\\s*\\(?\\s*nivel\\s*[1-9]|"
               "nivel\\s*[1-9]",
-    "sem_sigilo": "sem sigilo|nivel\\s*0|nao sigilos|\\bpublic[oa]\\b",
-    "negativos": ["prazo", "evento", "intimac", "movimentac", "publicac", "expedi", "peticao",
-                  "documento", "distribuic", "conclus", "juntada", "mandado", "citac", "remessa"],
+    # "Público" só desfaz o selo quando é o rótulo do nível, sozinho na célula: o
+    # "Ministério Público" (ou a "Ação Civil Pública") ao lado de "Segredo de
+    # Justiça" não tira o sigilo de ninguém
+    "sem_sigilo": "sem sigilo|nivel\\s*0|nao sigilos|^\\(?\\s*public[oa]\\s*\\)?$|"
+                  "sigilo\\W*public[oa]",
+    "negativos": ["prazo", "evento", "intimac", "movimentac", "movimento", "publicac", "expedi",
+                  "peticao", "documento", "distribuic", "distribuid", "recebimento", "conclus",
+                  "juntada", "mandado", "citac", "remessa", "ultimo andamento"],
     "contexto_audiencia": "audienc|pauta",
     "link_virtual": "teams\\.microsoft|teams\\.live|meet\\.google|zoom\\.us|webex|whereby|jitsi|"
                     "videoconferencia|sala.?virtual|balcao.?virtual|\\bvirtual\\b",

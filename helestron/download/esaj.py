@@ -86,28 +86,44 @@ SELETORES_PADRAO: dict[str, list[str]] = {
 }
 
 
+def arquivos_de_seletores(*nomes: str) -> list[Path]:
+    """Onde se lê a correção dos seletores, da reserva para a que vale mais.
+
+    A correção mora na pasta de dados do Helestron (%LOCALAPPDATA%\\Helestron,
+    como o enderecos-locais.json): a pasta do programa é trocada inteira a
+    cada atualização, e a correção sumiria com ela. A de dentro do programa
+    (dados\\) ainda é lida, de reserva, para a que vier numa versão nova.
+    """
+    nomes = nomes or ("seletores.json",)
+    return [*(caminhos.DADOS / n for n in nomes), *(caminhos.LOCAL / n for n in nomes)]
+
+
 def carregar_seletores(arquivo: Path | None = None) -> dict[str, list[str]]:
-    """Seletores padrão, com os do usuário na frente (dados/seletores.json).
+    """Seletores padrão, com os do usuário na frente (seletores.json).
 
     Formato: {"esaj": {"login_usuario": ["#novoCampo"], ...}}. Serve para
-    o dia em que o portal mudar um campo de lugar: corrige-se no arquivo,
-    sem esperar nova versão do programa. Os padrões ficam atrás, de reserva.
+    o dia em que o portal mudar um campo de lugar: corrige-se no arquivo
+    seletores.json da pasta de dados do Helestron, sem esperar nova versão
+    do programa. Os padrões ficam atrás, de reserva.
     """
     sel = {k: list(v) for k, v in SELETORES_PADRAO.items()}
-    alvo = Path(arquivo or (caminhos.DADOS / "seletores.json"))
-    try:
-        dados = json.loads(alvo.read_text(encoding="utf-8-sig"))
-    except FileNotFoundError:
-        return sel
-    except (OSError, ValueError) as erro:
-        log.warning("dados\\seletores.json ilegível (%s); uso os seletores padrão.", erro)
-        return sel
-    for chave, lista in ((dados or {}).get("esaj") or {}).items():
-        if isinstance(lista, str):
-            lista = [lista]
-        if isinstance(lista, list):
-            proprios = [s for s in lista if isinstance(s, str) and s.strip()]
-            sel[chave] = proprios + [s for s in sel.get(chave, []) if s not in proprios]
+    fontes = [Path(arquivo)] if arquivo else arquivos_de_seletores("seletores.json")
+    for alvo in fontes:
+        try:
+            dados = json.loads(alvo.read_text(encoding="utf-8-sig"))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as erro:
+            log.warning("%s ilegível (%s); uso os seletores padrão.", alvo, erro)
+            continue
+        if not isinstance(dados, dict):
+            continue
+        for chave, lista in (dados.get("esaj") or {}).items():
+            if isinstance(lista, str):
+                lista = [lista]
+            if isinstance(lista, list):
+                proprios = [s for s in lista if isinstance(s, str) and s.strip()]
+                sel[chave] = proprios + [s for s in sel.get(chave, []) if s not in proprios]
     return sel
 
 
@@ -974,7 +990,7 @@ class PortalESAJ:
                     "a tela de login do e-SAJ não trouxe os campos de usuário e senha em "
                     "três tentativas. Veja a captura em Logs\\diagnostico: se mostrar a "
                     "tela de login normal, o portal mudou (os seletores se ajustam em "
-                    "dados\\seletores.json); se mostrar outra página, o portal está "
+                    f"{caminhos.LOCAL / 'seletores.json'}); se mostrar outra página, o portal está "
                     "instável - tente mais tarde.")
             self.nav.diagnosticar("esaj-login-instavel")
             raise PortalIndisponivel(

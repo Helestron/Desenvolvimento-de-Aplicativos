@@ -645,6 +645,53 @@ class TestRelatorio(BaseMotor):
                          "o .tmp da troca recusada não fica esquecido")
 
 
+class TestRefazerParteDoLote(BaseMotor):
+    """"Tentar de novo" refaz só os que falharam, na mesma pasta: o relatório
+    do lote mescla - as linhas refeitas substituem as antigas, as demais
+    ficam. Antes ele era regravado só com os refeitos, e "Últimos lotes"
+    mostrava o lote com 1 processo."""
+
+    def test_relatorio_mescla_as_linhas_refeitas(self):
+        from helestron import servicos
+
+        primeiro = self.rodar([TJAL1, TJAL2, TJAL3],
+                              roteiro={TJAL1.formatado: ["ok_sigiloso"],
+                                       TJAL2.formatado: ["sem_acesso"]})
+        self.assertEqual(primeiro.a_refazer(), [TJAL2.formatado])
+        antes = ler_relatorio(primeiro.relatorio)
+        segundo = self.rodar([TJAL2])                  # o "Tentar de novo"
+        self.assertEqual(len(segundo.itens), 1)
+        linhas = ler_relatorio(segundo.relatorio)
+        self.assertEqual([l[0] for l in linhas[1:]], ["1", "2", "3"])
+        self.assertEqual([l[1] for l in linhas[1:]],
+                         ["(processo sigiloso)", TJAL2.formatado, TJAL3.formatado])
+        self.assertEqual([l[4] for l in linhas[1:]], ["OK", "OK", "OK"])
+        # a linha que não foi refeita continua como estava
+        self.assertEqual(linhas[3], antes[3])
+        self.assertNotIn(TJAL1.formatado, segundo.relatorio.read_text(encoding="utf-8-sig"))
+        completo = ler_relatorio(self.tmp / "Sigilosos" / self.destino.name / "_controle" /
+                                 "relatorio.csv")
+        self.assertEqual([l[1] for l in completo[1:]],
+                         [TJAL1.formatado, TJAL2.formatado, TJAL3.formatado])
+        self.assertEqual(completo[1][8], "sim")
+        info = servicos.ler_relatorio(segundo.relatorio)
+        self.assertEqual((info.total, info.baixados, info.falhas), (3, 3, 0))
+        # um processo novo no mesmo lote entra no fim, sem tirar os outros
+        self.rodar([apoio.numero("0700004", tr="02")])
+        linhas = ler_relatorio(segundo.relatorio)
+        self.assertEqual(len(linhas) - 1, 4)
+        self.assertEqual(linhas[4][1], apoio.numero("0700004", tr="02").formatado)
+        self.assertEqual(linhas[4][0], "4")
+
+    def test_sem_separar_os_sigilosos_tambem_mescla(self):
+        self.rodar([TJAL1, TJAL2], roteiro={TJAL2.formatado: ["sem_acesso"]},
+                   separar_sigilosos=False)
+        resumo = self.rodar([TJAL2], separar_sigilosos=False)
+        linhas = ler_relatorio(resumo.relatorio)
+        self.assertEqual([(l[1], l[4]) for l in linhas[1:]],
+                         [(TJAL1.formatado, "OK"), (TJAL2.formatado, "OK")])
+
+
 class TestRetentativas(BaseMotor):
     def test_falha_passageira_e_repetida(self):
         resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["erro", "ok"]}, tentativas=2)
@@ -1222,7 +1269,8 @@ class TestRotulosCitados(unittest.TestCase):
         pacote = Path(motor.__file__).resolve().parents[1]
         antigos = ("INSTALAR.bat", "Configurações >", "AssessorIntegrado", "Instalar o componente",
                    "instalar o componente", "Configurações do Helestron", "tela de Configurações")
-        permitidos = {"compartilhar/claude.py", "compartilhar/chatgpt.py", "verificar.py"}
+        permitidos = {"compartilhar/claude.py", "compartilhar/chatgpt.py", "compartilhar/nuvem.py",
+                      "verificar.py"}
         for arquivo in sorted(pacote.rglob("*")):
             if arquivo.suffix not in (".py", ".js", ".html", ".json", ".css") or \
                     "__pycache__" in arquivo.parts:

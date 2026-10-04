@@ -9,6 +9,7 @@ import unittest
 from datetime import date, datetime, timedelta
 from unittest import mock
 
+from helestron.aplicativo import monitor as modulo_monitor
 from helestron.aplicativo.monitor import ADIAR_S, SEM_PAUTA_S, MonitorPauta
 
 from testes.test_servidor_base import ServidorDeTeste
@@ -60,6 +61,11 @@ class TestMonitor(ServidorDeTeste):
         self.assertEqual(tarefa["titulo"], "Monitoramento da pauta")
         self.assertIsNotNone(self.monitor.proxima)
 
+    def test_mensagem_com_varias_fontes(self):
+        texto = modulo_monitor.mensagem_presenca([{"rotulo": "TJAL · e-SAJ"},
+                                                   {"tribunal": "trf4", "sistema": "eproc"}])
+        self.assertIn("TJAL · e-SAJ e TRF4 · eProc", texto)
+
     def test_codigo_pedido_nao_bloqueia_e_vira_pendencia(self):
         self.servico.configurar_monitoramento(True, 6)
         self.servico.pedir_codigo = True
@@ -79,6 +85,79 @@ class TestMonitor(ServidorDeTeste):
         self.assertEqual(tarefa["estado"], "concluida")
         pendencias = self.cliente.dados("GET", "/api/estado")["pendencias"]
         self.assertNotIn("pauta_login", [p["chave"] for p in pendencias])
+
+    def test_certificado_ou_sem_senha_nao_diz_que_pediu_codigo(self):
+        """Quem entra por certificado, pela entrada manual ou sem a senha
+        guardada: nada de tarefa que falha a cada ciclo nem de "o portal pediu
+        o código" - a pendência diz o que acontece e o que fazer, uma vez."""
+        self.servico.configurar_monitoramento(True, 6)
+        self.servico.exige_presenca = lambda fonte: True
+        leitor = self.eventos()
+        espera = self.monitor.ciclo()
+        self.assertEqual(espera, 6 * 3600)
+        self.assertEqual(self.sincronizacoes(), [])          # nenhuma tentativa de login
+        pendencia = [p for p in self.cliente.dados("GET", "/api/estado")["pendencias"]
+                     if p["chave"] == "pauta_login"][0]
+        self.assertIn("não entra sozinho em TJAL · e-SAJ", pendencia["mensagem"])
+        self.assertIn("certificado", pendencia["mensagem"])
+        self.assertIn("Conferir sozinho", pendencia["mensagem"])
+        self.assertNotIn("pediu o código", pendencia["mensagem"])
+        self.assertFalse(any(t == "tarefa" for t, _ in leitor.recebidos))
+        # a sincronização à mão limpa a pendência, e o ciclo seguinte não a repõe
+        self.app.pendencia_pauta = None
+        self.monitor.ciclo()
+        pendencias = self.cliente.dados("GET", "/api/estado")["pendencias"]
+        self.assertNotIn("pauta_login", [p["chave"] for p in pendencias])
+
+    def test_presenca_descoberta_na_sincronizacao(self):
+        """A regra não pôde ser vista antes (ServicoPauta._acesso marca
+        pediu_login sem pergunta nenhuma): também não é "pediu o código"."""
+        self.servico.configurar_monitoramento(True, 6)
+
+        def sincronizar(ctx, fontes, de, ate):
+            self.servico.chamadas.append(("sincronizar", fontes, de, ate))
+            ctx.pediu_login = True
+            raise RuntimeError("Entre no portal para continuar o monitoramento: sem a senha "
+                               "guardada (ou no login por certificado)...")
+
+        self.servico.sincronizar = sincronizar
+        self.monitor.ciclo()
+        pendencia = self.app.pendencia_pauta
+        self.assertIsNotNone(pendencia)
+        self.assertIn("não entra sozinho", pendencia["mensagem"])
+        self.assertNotIn("pediu o código", pendencia["mensagem"])
+
+    def test_regra_da_presenca_com_o_servico_de_verdade(self):
+        from helestron.download.modelos import OpcoesDownload
+
+        class Tribunal:
+            sistema, portal = "esaj", "esaj:TJAL"
+
+        class Servico:
+            cofre_tem = False
+
+            def _tribunal(self, sigla, sistema):
+                return Tribunal()
+
+            def _opcoes(self, tribunal):
+                return OpcoesDownload.de_config(cfg)
+
+            def _credenciais(self, tribunal, opcoes, sessao=True):
+                # a senha digitada só nesta sessão não vale para o monitor
+                if sessao:
+                    return ("usuario", "senha")
+                return ("usuario", "senha") if self.cofre_tem else None
+
+        cfg = self.cfg
+        fonte = {"id": "f1", "tribunal": "TJAL", "sistema": "esaj"}
+        servico = Servico()
+        for modo, cofre, exige in (("certificado", True, True), ("manual", True, True),
+                                   ("senha", False, True), ("senha", True, False)):
+            with self.subTest(modo=modo, cofre=cofre):
+                cfg.definir("esaj", "login", modo)
+                servico.cofre_tem = cofre
+                self.assertEqual(MonitorPauta.exige_presenca(servico, fonte), exige)
+        self.assertFalse(MonitorPauta.exige_presenca(object(), fonte))     # na dúvida, tenta
 
     def test_navegador_ocupado_adia(self):
         self.servico.configurar_monitoramento(True, 6)
@@ -120,6 +199,36 @@ class TestMonitor(ServidorDeTeste):
             self.cliente.dados("POST", "/api/config", {"secao": "pauta", "chave": "monitorar",
                                                        "valor": True})
         acordar.assert_called_once()
+
+
+class TestPresencaComOServicoReal(unittest.TestCase):
+    """A regra do monitor bate com a do ServicoPauta de verdade (_acesso)."""
+
+    def setUp(self):
+        from testes.test_servidor_base import AmbienteTemporario
+
+        self.amb = AmbienteTemporario().iniciar()
+        self.addCleanup(self.amb.parar)
+
+    def test_regra(self):
+        from helestron.pauta.servico import ServicoPauta
+
+        class Cofre:
+            guardado = ("", "")
+
+            def obter(self, portal):
+                return self.guardado
+
+        cofre = Cofre()
+        servico = ServicoPauta(self.amb.cfg, arquivo_banco=self.amb.local / "pauta.sqlite3",
+                               cofre=cofre)
+        fonte = {"id": "f1", "tribunal": "TJAL", "sistema": "esaj"}
+        for modo, guardado, exige in (("certificado", ("u", "s"), True), ("manual", ("u", "s"), True),
+                                      ("senha", ("", ""), True), ("senha", ("u", "s"), False)):
+            with self.subTest(modo=modo, guardado=guardado):
+                self.amb.cfg.definir("esaj", "login", modo)
+                cofre.guardado = guardado
+                self.assertEqual(MonitorPauta.exige_presenca(servico, fonte), exige)
 
 
 if __name__ == "__main__":

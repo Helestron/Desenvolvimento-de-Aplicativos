@@ -11,14 +11,36 @@
   const { el, icone, botao, cartao, cabecalhoCartao, vazio, blocoIcone, pilulaSituacao, seloTipo, trocar } = H.ui;
   const { fmt, api } = H;
 
-  // Os passos de configuração que o Início acompanha. Cada um está feito
-  // enquanto o servidor não manda uma pendência com a mesma chave.
+  // Os passos de configuração que o Início acompanha. Acessos, pastas e
+  // modelo estão feitos enquanto o servidor não manda uma pendência com a
+  // mesma chave. A pauta, não: está feita só quando o resumo diz que ela foi
+  // configurada (há fonte cadastrada, ou a pauta já foi sincronizada ou
+  // importada) - numa instalação nova ela está por fazer.
   const PASSOS = [
     { chave: "acessos", titulo: "Cadastrar o acesso aos portais", sub: "Usuário e senha do e-SAJ e do eProc, guardados cifrados pelo Windows.", acao: "ajustes/acessos" },
     { chave: "pastas", titulo: "Conferir as pastas", sub: "O acervo vai para a IA; os sigilosos ficam sempre fora dele.", acao: "ajustes/pastas" },
     { chave: "modelo", titulo: "Preparar a transcrição", sub: "Modelo de transcrição instalado neste computador.", acao: "ajustes/transcricao" },
-    { chave: "pauta", titulo: "Configurar a pauta de audiências", sub: "Sincronizada com o e-SAJ e o eProc.", acao: "pauta" },
+    { chave: "pauta", titulo: "Configurar a pauta de audiências", sub: "Cadastre o e-SAJ ou o eProc como fonte e sincronize, ou importe o relatório de audiências.", acao: "pauta" },
   ];
+
+  /**
+   * A pauta está configurada? O servidor diz em resumo.pauta.configurada;
+   * sem o campo (versão anterior do servidor), vale ter fonte cadastrada ou
+   * já ter havido sincronização.
+   */
+  function pautaConfigurada(pauta) {
+    const p = pauta || {};
+    if (typeof p.configurada === "boolean") return p.configurada;
+    return !!(p.ultima_sincronizacao || Number(p.fontes) > 0);
+  }
+
+  /** O subtítulo do passo da pauta já feito: só o que é verdade. */
+  function subPautaFeita(pauta) {
+    const p = pauta || {};
+    if (p.ultima_sincronizacao) return `Última sincronização: ${fmt.quando(p.ultima_sincronizacao)}.`;
+    if (Number(p.fontes) > 0) return fmt.plural(Number(p.fontes), "fonte da pauta cadastrada.", "fontes da pauta cadastradas.");
+    return "Audiências já carregadas na pauta.";
+  }
 
   function rotaDaAcao(acao) {
     return String(acao || "inicio").replace("#", "/");
@@ -87,12 +109,19 @@
     }
     const lista = (dados.audiencias || []).slice().sort((a, b) => String(a.hora).localeCompare(String(b.hora)));
     if (!lista.length) {
-      const nuncaSincronizou = !pauta.ultima_sincronizacao && !(dados.resumo && dados.resumo.total);
-      if (nuncaSincronizou && !pauta.proxima) {
+      // O mesmo critério do passo "Configurar a pauta de audiências".
+      const temAudiencias = !!((dados.resumo && dados.resumo.total) || pauta.proxima);
+      const nuncaSincronizou = !pauta.ultima_sincronizacao && !temAudiencias;
+      if (nuncaSincronizou && !pautaConfigurada(pauta)) {
         caixa.appendChild(vazio({
           compacto: true, icone: "calendario", titulo: "A pauta ainda não foi configurada",
           texto: "Sincronize com o e-SAJ e o eProc para ver aqui as audiências do dia.",
           acoes: [botao({ rotulo: "Configurar a pauta", tipo: "tonal", tamanho: "pequeno", acao: () => H.app.ir("pauta") })],
+        }));
+      } else if (nuncaSincronizou) {
+        caixa.appendChild(vazio({
+          compacto: true, icone: "calendario", titulo: "A pauta ainda não foi sincronizada",
+          texto: "A fonte está cadastrada: sincronize na tela Pauta para ver aqui as audiências do dia.",
         }));
       } else {
         const p = pauta.proxima;
@@ -126,23 +155,31 @@
   // ---------------------------------------------------- primeiros passos
   function primeirosPassos(estado) {
     const pendencias = (estado && estado.pendencias) || [];
+    const pauta = (estado && estado.resumo && estado.resumo.pauta) || {};
     const porChave = new Map(pendencias.map((p) => [p.chave, p]));
     const extras = pendencias.filter((p) => !PASSOS.some((s) => s.chave === p.chave));
-    if (!pendencias.length) return null;
     const itens = [];
     for (const p of extras) itens.push({ feito: false, titulo: p.titulo || "Atenção", sub: p.mensagem, acao: p.acao, rotuloAcao: "Resolver" });
     for (const s of PASSOS) {
       const p = porChave.get(s.chave);
-      itens.push(p
-        ? { feito: false, titulo: p.titulo || s.titulo, sub: p.mensagem || s.sub, acao: p.acao || s.acao, rotuloAcao: "Resolver" }
-        : { feito: true, titulo: s.titulo, sub: s.sub });
+      if (p) {
+        itens.push({ feito: false, chave: s.chave, titulo: p.titulo || s.titulo, sub: p.mensagem || s.sub, acao: p.acao || s.acao, rotuloAcao: "Resolver" });
+      } else if (s.chave === "pauta") {
+        itens.push(pautaConfigurada(pauta)
+          ? { feito: true, chave: s.chave, titulo: s.titulo, sub: subPautaFeita(pauta) }
+          : { feito: false, chave: s.chave, titulo: s.titulo, sub: s.sub, acao: s.acao, rotuloAcao: "Configurar" });
+      } else {
+        itens.push({ feito: true, chave: s.chave, titulo: s.titulo, sub: s.sub });
+      }
     }
+    // Tudo em ordem: o cartão sai da tela.
+    if (itens.every((i) => i.feito)) return null;
     const feitos = itens.filter((i) => i.feito).length;
     return cartao({ classe: "primeiros-passos", aria: { label: "Primeiros passos" } },
       cabecalhoCartao("Primeiros passos", "check-circulo",
         el("span", { classe: "progresso-passos", texto: `${feitos} de ${itens.length}` })),
       el("div", { classe: "passos" }, itens.map((i) =>
-        el("div", { classe: "passo" + (i.feito ? " feito" : "") },
+        el("div", { classe: "passo" + (i.feito ? " feito" : ""), dados: i.chave ? { passo: i.chave } : null },
           el("span", { classe: "passo-marca", "aria-hidden": "true" }, i.feito ? icone("check") : null),
           el("span", { classe: "passo-texto" },
             el("span", { classe: "passo-titulo", texto: i.titulo }),
@@ -156,7 +193,8 @@
     const r = resumo || {};
     const itens = [];
     for (const l of r.ultimos_lotes || []) {
-      const sub = `${fmt.numero(l.baixados)} de ${fmt.plural(l.total, "processo", "processos")} baixados` + (l.falhas ? ` · ${fmt.plural(l.falhas, "falha", "falhas")}` : "");
+      // "0 de 1 processo baixado", "45 de 48 processos baixados": o particípio concorda com o total.
+      const sub = `${fmt.numero(l.baixados)} de ${fmt.plural(l.total, "processo baixado", "processos baixados")}` + (l.falhas ? ` · ${fmt.plural(l.falhas, "falha", "falhas")}` : "");
       itens.push({
         quando: l.quando, icone: "doc-baixar", cor: "navy", titulo: `Lote “${l.nome}”`, sub,
         acao: () => api.abrir("pasta", l.pasta), rotulo: `Abrir a pasta do lote ${l.nome}`,

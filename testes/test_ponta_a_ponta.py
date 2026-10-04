@@ -4,10 +4,12 @@ Sobe ``python -m helestron --servidor --sem-janela`` com as pastas de dados
 numa pasta temporária, abre a URL que ele imprime no Chromium (Playwright) e
 percorre o que o usuário faz, pela interface:
 
-* Início;
+* Início: numa instalação nova, "Configurar a pauta de audiências" está por
+  fazer (e passa a feito depois que a pauta é importada);
 * Ajustes: grava um campo (vai para o config.ini), troca uma pasta, tenta uma
-  pasta que poria os sigilosos dentro do acervo (recusada, com a frase) e
-  guarda o acesso a um portal com senha;
+  pasta que poria os sigilosos dentro do acervo (recusada, com a frase),
+  guarda o acesso a um portal com senha e testa o do eProc do TJAL (testa o
+  eProc, e não o e-SAJ do mesmo tribunal, sem abrir a folha da senha);
 * Processos: cola uma relação com números CNJ válidos do TJAL, do TJSP e do
   TRF4, revisa e baixa com o MOTOR REAL. Os portais são falsos e locais
   (enderecos-locais.json): o do TJAL recusa a conexão, o do TJSP nunca
@@ -324,6 +326,8 @@ class PontaAPonta(unittest.TestCase):
             self.etapa_audiencias()
         with self.subTest(etapa="pauta"):
             self.etapa_pauta()
+        with self.subTest(etapa="início depois da pauta"):
+            self.etapa_inicio_com_pauta()
         with self.subTest(etapa="compartilhar"):
             self.etapa_compartilhar()
         with self.subTest(etapa="ajuda"):
@@ -339,7 +343,24 @@ class PontaAPonta(unittest.TestCase):
         self.assertRegex(pg.locator(".titulo-grande").inner_text(), r"^(Bom dia|Boa tarde|Boa noite)")
         self.assertEqual(pg.locator(".cartao-funcao").count(), 4)
         self.assertIn("Primeiros passos", pg.locator("#pagina").inner_text())
+        # Instalação nova, sem fonte nem sincronização: a pauta está por fazer
+        # (e não "Feito. Sincronizada…" ao lado de "ainda não foi configurada").
+        passo = pg.locator(".passo[data-passo='pauta']")
+        self.assertEqual(passo.count(), 1)
+        self.assertNotIn("feito", passo.get_attribute("class"))
+        self.assertIn("A pauta ainda não foi configurada", pg.locator("#pagina").inner_text())
+        self.assertIs(self.api("/api/estado")["resumo"]["pauta"]["configurada"], False)
         self.capturar("01-inicio")
+
+    def etapa_inicio_com_pauta(self):
+        """Depois de importar a pauta, o passo dela está feito."""
+        pg = self.pg
+        self.ir("inicio")
+        self.assertIs(self.api("/api/estado")["resumo"]["pauta"]["configurada"], True)
+        passo = pg.locator(".passo[data-passo='pauta']")
+        if passo.count():
+            self.assertIn("feito", passo.get_attribute("class"))
+        self.capturar("09b-inicio-com-pauta")
 
     def etapa_ajustes(self):
         pg = self.pg
@@ -388,6 +409,31 @@ class PontaAPonta(unittest.TestCase):
         self.assertTrue(acessos["esaj:TJAL"]["tem_senha"])
         self.assertTrue((self.local / "credenciais.json").is_file())
         self.capturar("03-ajustes-acessos")
+
+        # O eProc do mesmo tribunal: o Testar da linha testa o eProc (o portal
+        # falso dele recusa a conexão) - e não o e-SAJ -, sem abrir a folha.
+        pg.click("#adicionar-acesso")
+        pg.select_option("#acesso-portal", "eproc:TJAL")
+        pg.fill("#acesso-usuario", "AL123")
+        pg.fill("#acesso-senha", "outra senh@")
+        pg.click(".folha button:has-text('Salvar')")
+        linha = pg.locator("[data-portal='eproc:TJAL']:has-text('Senha guardada')")
+        linha.wait_for()
+        linha.locator("button:has-text('Testar')").click()
+        pg.wait_for_selector("[data-portal='eproc:TJAL'] .resultado-teste")
+        self.assertEqual(pg.locator(".folha-fundo").count(), 0, "o Testar abriu a folha da senha")
+        testes = [t for t in self.api("/api/tarefas") if t["tipo"] == "teste_login"]
+        self.assertEqual([t["titulo"] for t in testes], ["Testar o acesso ao TJAL · eProc"])
+        # O navegador do motor fica livre antes do download.
+        limite = time.monotonic() + 120
+        while time.monotonic() < limite and any(
+                t["estado"] == "rodando" for t in self.api("/api/tarefas") if t["tipo"] == "teste_login"):
+            time.sleep(0.5)
+        # O portal falso do eProc recusa a conexão: a falha (dele, e não do
+        # e-SAJ) aparece na linha, ao lado do botão.
+        pg.wait_for_selector("[data-portal='eproc:TJAL'] .resultado-teste.erro", timeout=30000)
+        self.assertIn("eProc", pg.locator("[data-portal='eproc:TJAL'] .resultado-teste").inner_text())
+        self.capturar("03a-ajustes-acesso-eproc-testado")
 
         # Endereço do portal: as correções (aqui, os portais falsos deste
         # teste) aparecem; a folha mostra o endereço de cada seção do TRF4.
@@ -456,6 +502,18 @@ class PontaAPonta(unittest.TestCase):
         # De volta à preparação, pronta para tentar de novo.
         pg.wait_for_selector("#botao-gravar")
         self.assertEqual(self.api("/api/transcricao/estado")["estado"], "erro")
+        # O pedido levou o microfone que a tela mostra ("" = padrão do Windows),
+        # e Ajustes › Transcrição escolhe o microfone numa lista (pelo nome).
+        self.ir("ajustes/transcricao")
+        campo = pg.locator("#cfg-transcricao-dispositivo")
+        campo.wait_for()
+        self.assertEqual(campo.evaluate("e => e.tagName"), "SELECT")
+        # A lista chega da API depois de a tela abrir: espera ela sair de
+        # "Carregando…" (se não sair, é defeito, e o prazo estoura).
+        pg.wait_for_function(
+            "() => !document.querySelector('#cfg-transcricao-dispositivo')"
+            ".innerText.includes('Carregando')", timeout=20000)
+        self.assertIn("Padrão do Windows", campo.inner_text())
 
     def etapa_pauta(self):
         pg = self.pg

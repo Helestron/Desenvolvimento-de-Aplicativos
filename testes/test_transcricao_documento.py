@@ -165,5 +165,48 @@ class TestGerarDocx(unittest.TestCase):
         self.assertTrue(caminho.exists())
 
 
+class TestSigiloPelaPasta(unittest.TestCase):
+    """processo_sigiloso: o que já está na pasta dos sigilosos decide."""
+
+    def setUp(self):
+        self.pasta = PastaTemporaria()
+        self.addCleanup(self.pasta.apagar)
+        self.cfg = self.pasta.config()
+        self.sig = self.pasta.raiz / "Sigilosos"
+        from helestron.nucleo import cnj
+
+        self.numero = cnj.ler(NUMERO)
+
+    def test_autos_na_pasta_dos_sigilosos(self):
+        self.assertFalse(documento.processo_sigiloso(self.cfg, self.numero))
+        (self.sig / "Lote 1").mkdir(parents=True)
+        (self.sig / "Lote 1" / f"{self.numero.nome_arquivo}-01.pdf").write_bytes(b"%PDF")
+        self.assertFalse(documento.processo_sigiloso(self.cfg, self.numero))   # o incidente
+        (self.sig / "Lote 1" / f"{self.numero.nome_arquivo}.pdf").write_bytes(b"%PDF")
+        self.assertTrue(documento.processo_sigiloso(self.cfg, self.numero))
+
+    def test_transcricao_ou_gravacao_ja_sigilosa(self):
+        """A audiência marcada sigilosa só pelo interruptor (sem os autos na
+        pasta): a retranscrição - inclusive pelo envio da página, que perde a
+        pasta de origem - continua fora do acervo."""
+        transcricoes = self.sig / "Transcricoes"
+        audio = transcricoes / "_audio" / f"{self.numero.nome_arquivo} 2026-09-15 14h00.flac"
+        audio.parent.mkdir(parents=True)
+        audio.write_bytes(b"fLaC")
+        self.assertTrue(documento.processo_sigiloso(self.cfg, self.numero))
+        self.assertEqual(documento.pasta_das_transcricoes(self.cfg, self.numero), transcricoes)
+        audio.unlink()
+        self.assertFalse(documento.processo_sigiloso(self.cfg, self.numero))
+        (transcricoes / f"{self.numero.nome_arquivo} (2).docx").write_bytes(b"PK")
+        self.assertTrue(documento.processo_sigiloso(self.cfg, self.numero))
+        # outro processo não é contaminado
+        from helestron.nucleo import cnj
+
+        outro = cnj.ler("0700124-68.2024.8.02.0001")
+        self.assertFalse(documento.processo_sigiloso(self.cfg, outro))
+        self.assertEqual(documento.pasta_das_transcricoes(self.cfg, outro),
+                         self.cfg.pasta_transcricoes)
+
+
 if __name__ == "__main__":
     unittest.main()

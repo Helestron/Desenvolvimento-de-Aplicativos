@@ -148,6 +148,33 @@ class TestSistemaEJanela(unittest.TestCase):
                 self.assertIn("modo aplicativo", item.acao)
                 self.assertIn("WebView2 Runtime", item.acao)
 
+    def test_webview2_antigo_e_aviso_com_orientacao(self):
+        """A pywebview 6 precisa do runtime 101.0.1210.39 ou mais recente: com
+        um mais velho a janela própria não abre (o programa vai para o Edge em
+        modo aplicativo) - a verificação avisa e diz como atualizar."""
+        self.assertEqual(verificar.VERSAO_MINIMA_WEBVIEW2, (101, 0, 1210, 39))
+        for versoes in (["100.0.1185.36"], ["86.0.622.38", None], ["101.0.1210.38"]):
+            with self.subTest(versoes=versoes):
+                item = verificar.avaliar_webview2(versoes)
+                self.assertEqual((item.situacao, item.obrigatorio), (AVISO, False))
+                self.assertIn("antigo", item.detalhe)
+                self.assertIn("101.0.1210.39", item.detalhe)
+                self.assertIn("modo aplicativo", item.acao)
+                self.assertIn("atualize", item.acao)
+                self.assertIn(verificar.URL_WEBVIEW2, item.acao)
+        # vale a maior instalada (a que a janela usa), e a mínima já serve
+        for versoes in (["86.0.622.38", "101.0.1210.39"], ["129.0.2792.65", "100.0.1185.36"]):
+            with self.subTest(versoes=versoes):
+                self.assertEqual(verificar.avaliar_webview2(versoes).situacao, OK)
+        # a mesma régua da janela (helestron.aplicativo.janela), se ela a tiver
+        try:
+            from helestron.aplicativo import janela
+        except Exception:                          # pragma: no cover - janela ausente
+            return
+        minima = getattr(janela, "VERSAO_MINIMA_WEBVIEW2", None)
+        if minima is not None:
+            self.assertEqual(tuple(minima), verificar.VERSAO_MINIMA_WEBVIEW2)
+
     def test_webview2_fora_do_windows(self):
         if sys.platform == "win32":
             self.skipTest("só fora do Windows")

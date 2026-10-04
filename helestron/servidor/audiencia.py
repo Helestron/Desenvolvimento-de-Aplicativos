@@ -61,6 +61,8 @@ class GerenteAudiencia:
         self._thread: threading.Thread | None = None
         self._controle = threading.Event()
         self._refinar = False
+        self._tipo = ""
+        self._participantes: dict[str, str] = {}
         self._ultimo_nivel = 0.0
         # A última sessão encerrada: a "revisão" retranscreve a gravação dela
         # com o modelo preciso, usando os falantes marcados ao vivo.
@@ -159,13 +161,17 @@ class GerenteAudiencia:
             raise erro_400(f"“{texto}” não é um número de processo no padrão CNJ "
                            "(0000000-00.0000.0.00.0000).", "numero_invalido") from erro
         cfg = self.app.cfg
-        dispositivo = dados.get("dispositivo")
-        if isinstance(dispositivo, str) and dispositivo.strip().lstrip("-").isdigit():
-            dispositivo = int(dispositivo)
-        if dispositivo in ("",):
-            dispositivo = None
-        sigiloso = dados.get("sigiloso")
-        sigiloso = servicos.processo_sigiloso(cfg, numero) if sigiloso is None else bool(sigiloso)
+        if self.ativa:
+            raise ErroApi(409, "sessao_ativa",
+                          "Já há uma audiência sendo transcrita. Encerre-a antes de começar "
+                          "outra.")
+        # O microfone vem pelo NOME (o que Ajustes guarda) ou pelo número; ""
+        # é o padrão do Windows. Sem a chave, vale o da configuração. Nome que
+        # não existe mais é erro claro, e não outro aparelho em silêncio.
+        dispositivo = dados["dispositivo"] if "dispositivo" in dados \
+            else cfg.texto("transcricao", "dispositivo")
+        dispositivo = servicos.conferir_microfone(dispositivo)
+        sigiloso, forcado, motivo = sigilo_da_audiencia(self.app, numero, dados.get("sigiloso"))
         participantes = dados.get("participantes") or {}
         if not isinstance(participantes, dict):
             raise erro_400("Os participantes devem vir como {\"F1\": \"Juiz(a)\", ...}.")
@@ -193,6 +199,8 @@ class GerenteAudiencia:
             self.id_sessao = secrets.token_hex(6)
             self.numero = numero
             self.sigiloso = sigiloso
+            self._tipo = tipo
+            self._participantes = dict(participantes)
             self.estado = "iniciando"
             self.texto_estado = "Preparando a gravação…"
             self.documento = None
@@ -209,7 +217,12 @@ class GerenteAudiencia:
                 log.debug("não consegui lembrar %s: %s", chave, erro)
         self._publicar("estado", {"texto": self.texto_estado, "estado": self.estado})
         self.app.hub.publicar("estado", {})
-        return {"sessao": self.id_sessao, "processo": numero.formatado, "sigiloso": sigiloso}
+        resposta = {"sessao": self.id_sessao, "processo": numero.formatado, "sigiloso": sigiloso,
+                    "sigiloso_forcado": forcado}
+        if forcado:
+            resposta["motivo"] = motivo
+            log.info("Audiência de %s transcrita como sigilosa: %s", numero.formatado, motivo)
+        return resposta
 
     def _rodar(self, sessao, controle: threading.Event) -> None:
         try:
@@ -251,11 +264,16 @@ class GerenteAudiencia:
             with self._trava:
                 self.documento = Path(documento)
                 self.estado = "encerrada"
+                meta = getattr(sessao, "meta", None)
                 self.ultima = {
                     "numero": self.numero, "audio": getattr(sessao, "caminho_audio", None),
                     "falas": list(getattr(sessao, "falas", []) or []),
                     "sigiloso": bool(getattr(sessao, "sigiloso", self.sigiloso)),
                     "documento": self.documento,
+                    # a revisão ("Revisar") mantém a ficha da audiência
+                    "tipo": str(getattr(meta, "tipo", "") or self._tipo or ""),
+                    "participantes": dict(getattr(meta, "participantes", None)
+                                          or self._participantes or {}),
                 }
             self._depois_de_salvar(self.documento)
         finally:
@@ -295,11 +313,13 @@ class GerenteAudiencia:
         self._sessao_ativa().definir_falante(str(falante or "").strip())
         return {"falante": str(falante or "").strip()}
 
-    def encerrar(self, refinar: bool | None = None, espera_s: float = ESPERA_ENCERRAR_S) -> dict:
+    def encerrar(self, refinar: bool | None = None, espera_s: float = ESPERA_ENCERRAR_S,
+                 tipo: str | None = None) -> dict:
         """Pede o fim e espera o documento final (o encerramento transcreve a
         fila atrasada; num computador lento leva minutos). Se demorar mais
         que 'espera_s', responde sem o documento - ele chega pelo evento
-        'transcricao' {tipo: "fim"}."""
+        'transcricao' {tipo: "fim"}. 'tipo': o tipo de audiência escolhido
+        na tela, que vai para a ficha do documento (e da revisão)."""
         with self._trava:
             thread = self._thread
             if thread is None or not thread.is_alive():
@@ -308,6 +328,12 @@ class GerenteAudiencia:
                 raise ErroApi(409, "sem_sessao", "Não há audiência sendo transcrita agora.")
             if refinar is not None:
                 self._refinar = bool(refinar)
+            tipo = str(tipo or "").strip()
+            if tipo:
+                self._tipo = tipo
+                meta = getattr(self.sessao, "meta", None)
+                if meta is not None and hasattr(meta, "tipo"):
+                    meta.tipo = tipo
             self._controle.set()
         thread.join(timeout=max(0.0, espera_s))
         with self._trava:
@@ -335,8 +361,13 @@ class GerenteAudiencia:
 
     # ---------------------------------------------------- teste do microfone
     def testar_microfone(self, dispositivo) -> dict:
-        if isinstance(dispositivo, str) and dispositivo.strip().lstrip("-").isdigit():
-            dispositivo = int(dispositivo)
+        """Liga o microfone só para o medidor. 'dispositivo': nome, número, ""
+        (o padrão do Windows) ou None (o da configuração)."""
+        if self.ativa:
+            raise ErroApi(409, "sessao_ativa", "O microfone está em uso pela audiência.")
+        if dispositivo is None:
+            dispositivo = self.app.cfg.texto("transcricao", "dispositivo")
+        dispositivo = servicos.conferir_microfone(dispositivo)
         with self._trava:
             if self.ativa:
                 raise ErroApi(409, "sessao_ativa", "O microfone está em uso pela audiência.")
@@ -387,6 +418,49 @@ class GerenteAudiencia:
     @property
     def testando(self) -> bool:
         return self._captura_teste is not None
+
+
+MOTIVO_AUTOS = ("Os autos deste processo (ou uma transcrição ou gravação dele) estão na pasta "
+                "dos sigilosos.")
+MOTIVO_PAUTA = "A pauta de audiências indica que este processo corre em segredo de justiça."
+
+
+def sigilo_conhecido(app, numero) -> str:
+    """Por que o programa já sabe que o processo é sigiloso ("" = não sabe).
+
+    Os arquivos na pasta dos sigilosos (autos, transcrição, gravação) ou a
+    pauta (o portal disse "segredo de justiça"). Nunca levanta: pauta
+    indisponível ou ocupada não impede a audiência.
+    """
+    if servicos.processo_sigiloso(app.cfg, numero):
+        return MOTIVO_AUTOS
+    try:
+        pauta = app.pauta_ou_none()
+        consulta = getattr(pauta, "processo_sigiloso", None) if pauta is not None else None
+        if callable(consulta) and consulta(numero.formatado):
+            return MOTIVO_PAUTA
+    except Exception as erro:
+        log.warning("não consegui conferir na pauta se %s é sigiloso: %s",
+                    getattr(numero, "formatado", numero), erro)
+    return ""
+
+
+def pedido_sigiloso(valor) -> bool | None:
+    """O interruptor da página: True, False ou None (não veio)."""
+    if isinstance(valor, str):
+        texto = valor.strip().lower()
+        return texto in ("1", "true", "sim", "on", "s", "yes") if texto else None
+    return None if valor is None else bool(valor)
+
+
+def sigilo_da_audiencia(app, numero, pedido, extra: str = "") -> tuple[bool, bool, str]:
+    """(sigiloso, forçado, motivo). O pedido da página só ACRESCENTA sigilo:
+    o que o programa já sabe (pasta dos sigilosos, pauta, 'extra') vale mesmo
+    com o interruptor desligado - "forçado", com o motivo para a tela."""
+    if pedido_sigiloso(pedido):
+        return True, False, ""
+    motivo = sigilo_conhecido(app, numero) or extra
+    return bool(motivo), bool(motivo), motivo
 
 
 def numero_da_gravacao(nome: str, processo: str | None):

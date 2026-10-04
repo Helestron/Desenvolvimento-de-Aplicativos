@@ -185,14 +185,28 @@ def nova_sessao(numero, cfg, eventos: Callable[[str, object], None], *, tipo: st
         from .transcricao.ao_vivo import SessaoAoVivo
     except ImportError as erro:
         raise _ausente(erro, "transcrição") from erro
-    extra = {} if dispositivo in (None, "") else {"dispositivo": dispositivo}
+    # "" é escolha da tela ("Padrão do Windows") e vai explícito: sem isso, a
+    # sessão caía no microfone do config.ini, que a tela não mostrava.
+    extra = {} if dispositivo is None else {"dispositivo": dispositivo}
     return SessaoAoVivo(numero, cfg, eventos, tipo=tipo, participantes=participantes,
                         falante=falante, sigiloso=sigiloso, **extra)
 
 
+def conferir_microfone(dispositivo):
+    """O microfone escolhido (nome, número ou "" = padrão do Windows), conferido
+    agora: nome que não existe mais levanta MicrofoneNaoEncontrado com a frase
+    para o usuário, em vez de gravar em silêncio por outro aparelho."""
+    try:
+        from .transcricao import microfone
+    except ImportError as erro:
+        raise _ausente(erro, "microfone") from erro
+    return microfone.conferir(dispositivo)
+
+
 def processo_sigiloso(cfg, numero) -> bool:
-    """Os autos do processo estão na pasta de sigilosos? Pré-marca a caixa
-    "Processo em segredo de justiça" das transcrições. Nunca levanta."""
+    """O processo já se sabe sigiloso pelos arquivos: os autos estão na pasta de
+    sigilosos, ou uma transcrição (ou gravação) dele já foi para lá. Pré-marca a
+    caixa "Processo em segredo de justiça" das transcrições. Nunca levanta."""
     if numero is None:
         return False
     try:
@@ -211,6 +225,29 @@ def na_pasta_dos_sigilosos(cfg, caminho) -> bool:
         return Path(caminho).resolve().is_relative_to(pasta)
     except Exception:
         return False
+
+
+def copia_na_pasta_dos_sigilosos(cfg, nome: str, tamanho: int | None) -> bool:
+    """Há na pasta de sigilosos um arquivo com este nome (e este tamanho)?
+
+    É como se reconhece, no envio pela página (modos Edge e navegador, sem o
+    caminho real), a gravação guardada na pasta dos sigilosos: o servidor só
+    recebe uma cópia temporária. Nunca levanta."""
+    nome = Path(str(nome or "")).name
+    if not nome:
+        return False
+    try:
+        import glob as _glob
+
+        for p in Path(cfg.pasta_sigilosos).rglob(_glob.escape(nome)):
+            try:
+                if p.is_file() and (tamanho is None or p.stat().st_size == tamanho):
+                    return True
+            except OSError:
+                continue
+    except Exception as erro:
+        log.debug("não consegui procurar %s na pasta de sigilosos: %s", nome, erro)
+    return False
 
 
 def recuperaveis(cfg) -> list[Path]:
@@ -288,18 +325,23 @@ def baixar_modelo(nome: str, progresso: Callable[[float, str], None] | None = No
 
 def transcrever_gravacao(origem: Path, numero, cfg, progresso, cancelado, *,
                          rotulos_manuais=None, destino: Path | None = None, tipo: str = "",
-                         participantes: dict | None = None, sigiloso: bool = False) -> Path:
+                         participantes: dict | None = None, sigiloso: bool = False,
+                         gravacao: str = "", data: datetime | None = None) -> Path:
+    """Transcreve a gravação (bloqueia). 'gravacao' e 'data': o nome e a data
+    do arquivo do usuário, quando 'origem' é só a cópia temporária do envio
+    pela página - senão a ficha diria "envio-3d29….wav" e a data de hoje."""
     try:
         from .transcricao import arquivo
     except ImportError as erro:
         raise _ausente(erro, "transcrição de gravações") from erro
     meta = None
-    if tipo:
+    if tipo or participantes or gravacao or data is not None:
         try:
             from .transcricao.documento import MetaAudiencia
 
             meta = MetaAudiencia(numero=numero.formatado if numero else "", tipo=tipo,
-                                 participantes=dict(participantes or {}))
+                                 participantes=dict(participantes or {}), data=data,
+                                 gravacao=gravacao)
         except Exception:
             meta = None
     extra = {"meta": meta} if meta is not None else {}
@@ -495,7 +537,7 @@ def pendencias(cfg) -> list[Pendencia]:
                   else "Faltam os componentes do programa: ")
         saida.append(Pendencia("pacotes", "Instalação incompleta",
                                inicio + ", ".join(faltam) + ". " + DICA_INSTALAR,
-                               "ajustes#diagnostico"))
+                               "ajustes#sobre"))
     modelo = cfg.texto("transcricao", "modelo_ao_vivo") or "small"
     if _pacote_presente("faster_whisper") and not modelo_instalado(modelo):
         # A sessão ao vivo baixa o modelo que faltar ao começar (o áudio é
@@ -583,6 +625,32 @@ def problema_nas_pastas(acervo, sigilosos, pauta=None) -> str | None:
     if dentro_ou_igual(caminhos.LOCAL, acervo):
         return ("O acervo não pode conter a pasta em que o programa guarda as senhas e os "
                 f"perfis do navegador ({caminhos.LOCAL}). Escolha uma pasta só para o acervo.")
+    return None
+
+
+SUBPASTA_NUVEM = "Helestron - Acervo"      # a de compartilhar.nuvem (sem importá-lo aqui)
+
+
+def conflito_da_nuvem(nuvem, acervo) -> str | None:
+    """Por que esta pasta da nuvem não pode receber o espelho do acervo, ou None.
+
+    O espelho copia o acervo para '<nuvem>/Helestron - Acervo'. Com a nuvem
+    dentro do acervo (ou igual a ele), cada espelho copiaria a cópia
+    anterior: o acervo cresceria sem fim, e a IA veria os autos em dobro. Com
+    a nuvem contendo o acervo, ele já está na nuvem - o espelho só o
+    duplicaria lá (e, se o acervo for a própria subpasta, copiaria o acervo
+    sobre ele mesmo).
+    """
+    texto = str(nuvem or "").strip()
+    if not texto:
+        return None
+    if dentro_ou_igual(texto, acervo):
+        return ("A pasta da nuvem não pode ficar dentro do acervo (nem ser o próprio acervo): "
+                "cada espelho copiaria a cópia anterior, e o acervo cresceria sem fim. Escolha "
+                "a pasta do OneDrive ou do Google Drive, fora do acervo.")
+    if dentro_ou_igual(acervo, texto):
+        return ("O acervo já está dentro desta pasta da nuvem: o espelho só o duplicaria lá. "
+                "Escolha outra pasta da nuvem, ou deixe em branco para não espelhar.")
     return None
 
 

@@ -127,14 +127,27 @@ def _pendencias(app) -> list[dict]:
 
 
 def _resumo_pauta(app) -> dict | None:
+    """O resumo da pauta para o Início, com 'fontes' (quantas cadastradas) e
+    'configurada' (há fonte, ou já houve sincronização ou importação): o
+    passo "Pauta" dos Primeiros passos só se dá por feito com configurada."""
     pauta = app.pauta_ou_none()
     if pauta is None:
         return None
     try:
-        return pauta.resumo_inicio()
+        resumo = dict(pauta.resumo_inicio() or {})
     except Exception as erro:
         log.warning("resumo da pauta indisponível: %s", erro)
         return None
+    if "fontes" not in resumo:
+        try:
+            resumo["fontes"] = len(pauta.fontes())
+        except Exception:
+            resumo["fontes"] = 0
+    if "configurada" not in resumo:
+        resumo["configurada"] = bool(resumo.get("fontes") or resumo.get("ultima_sincronizacao"))
+    resumo["fontes"] = int(resumo.get("fontes") or 0)
+    resumo["configurada"] = bool(resumo.get("configurada"))
+    return resumo
 
 
 def estado(p: Pedido) -> dict:
@@ -396,9 +409,14 @@ def credenciais_de(app, portal: str) -> tuple[str, str] | None:
 
 
 def testar_acesso(p: Pedido) -> dict:
+    """Testa exatamente o portal da linha: {tribunal, sistema} ("esaj" ou
+    "eproc"). Sem o sistema, o principal do tribunal (o e-SAJ no TJAL) - por
+    isso a tela manda o sistema: senão o "Testar" do eProc testava o e-SAJ."""
     app = p.app
-    t = tribunal_pedido(p.campo("tribunal", obrigatorio=True, tipo=str),
-                        p.campo("sistema", padrao="", tipo=str))
+    sistema_ = (p.campo("sistema", padrao="", tipo=str) or "").strip().lower()
+    if sistema_ and sistema_ not in tribunais.SUPORTADOS:
+        raise erro_400("Sistema inválido (use esaj ou eproc).", "valor_invalido")
+    t = tribunal_pedido(p.campo("tribunal", obrigatorio=True, tipo=str), sistema_)
     opcoes = servicos.opcoes_download(app.cfg)
     credenciais = credenciais_de(app, t.portal)
 
@@ -466,7 +484,8 @@ def pastas_permitidas(app) -> list[Path]:
     lista = [cfg.pasta_acervo, cfg.pasta_sigilosos, servicos.pasta_pauta(cfg), caminhos.LOGS,
              servicos.base_usuario()]
     nuvem = cfg.texto("compartilhar", "pasta_nuvem")
-    if nuvem:
+    # A raiz de uma unidade (D:\ ou /) nunca: abriria qualquer arquivo dela.
+    if nuvem and len(Path(nuvem).parts) > 1:
         lista.append(Path(nuvem))
     return [Path(x) for x in lista]
 

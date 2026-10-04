@@ -240,5 +240,278 @@ class TestParserHTML(unittest.TestCase):
         self.assertEqual(r.audiencias[0].tribunal, "TJAL", "o tribunal vem do número")
 
 
+# ======================================================= revisão adversarial
+def _tabela(*linhas, **extra) -> Tabela:
+    return Tabela.de_textos([list(x) for x in linhas], **extra)
+
+
+def _relatorio(*tabelas, contexto=""):
+    return Reconhecedor(R, "arquivo", estrito=False, agora=datetime(2026, 10, 3, 9, 0)) \
+        .reconhecer(list(tabelas), contexto)
+
+
+class TestDataEmUmaLinhaSo(unittest.TestCase):
+    """A data escrita uma vez para as audiências do dia (rowspan, célula mesclada,
+    "suprimir se duplicado", linha de grupo com a contagem): nenhuma se perde."""
+
+    N = [ap.numero(f"070090{i}") for i in range(1, 5)]
+
+    def esperado(self):
+        n = self.N
+        return [(date(2026, 10, 5), "09:00", n[0]), (date(2026, 10, 5), "10:00", n[1]),
+                (date(2026, 10, 5), "11:00", n[2]), (date(2026, 10, 6), "09:00", n[3])]
+
+    def test_rowspan_na_data(self):
+        n = self.N
+        html = ("<table><tr><th>Data</th><th>Hora</th><th>Processo</th><th>Tipo</th>"
+                "<th>Partes</th></tr>"
+                f"<tr><td rowspan='3'>05/10/2026</td><td>09:00</td><td>{n[0]}</td>"
+                "<td>Conciliação</td><td>A x B</td></tr>"
+                f"<tr><td>10:00</td><td>{n[1]}</td><td>Una</td><td>C x D</td></tr>"
+                f"<tr><td>11:00</td><td>{n[2]}</td><td>Instrução</td><td>E x F</td></tr>"
+                f"<tr><td>06/10/2026</td><td>09:00</td><td>{n[3]}</td><td>Una</td>"
+                "<td>G x H</td></tr></table>")
+        for estrito in (True, False):
+            with self.subTest(estrito=estrito):
+                r = reconhecer_html(html, "esaj", estrito=estrito)
+                self.assertEqual([(a.data, a.hora, a.processo) for a in r.audiencias],
+                                 self.esperado())
+                self.assertEqual([a.partes for a in r.audiencias],
+                                 ["A x B", "C x D", "E x F", "G x H"], "nada escorregou de coluna")
+                self.assertEqual(r.ignoradas, 0)
+
+    def test_rowspan_na_hora_nao_desloca_as_colunas(self):
+        n = self.N
+        html = ("<table><tr><th>Data</th><th>Hora</th><th>Processo</th><th>Tipo</th>"
+                "<th>Partes</th></tr>"
+                f"<tr><td>05/10/2026</td><td rowspan='2'>09:00</td><td>{n[0]}</td>"
+                "<td>Conciliação</td><td>A x B</td></tr>"
+                f"<tr><td>05/10/2026</td><td>{n[1]}</td><td>Una</td><td>C x D</td></tr>"
+                "</table>")
+        r = reconhecer_html(html, "esaj")
+        self.assertEqual([(a.hora, a.processo, a.tipo, a.partes) for a in r.audiencias], [
+            ("09:00", n[0], "Conciliação", "A x B"), ("09:00", n[1], "Una", "C x D")])
+
+    def test_rowspan_vindo_do_navegador_e_moldura_que_nao_se_repete(self):
+        dados = {"linhas": [
+            [{"texto": "Data"}, {"texto": "Hora"}, {"texto": "Processo"}],
+            [{"texto": "05/10/2026", "rowspan": 2}, {"texto": "09:00"}, {"texto": self.N[0]}],
+            [{"texto": "10:00"}, {"texto": self.N[1]}],
+            [{"texto": "menu", "rowspan": 2, "aninhada": True}, {"texto": "x"}],
+            [{"texto": "y"}]]}
+        t = Tabela.de_js(dados)
+        self.assertEqual([c.texto for c in t.linhas[2]], ["05/10/2026", "10:00", self.N[1]])
+        self.assertEqual([(c.texto, c.aninhada) for c in t.linhas[4]], [("", False), ("y", False)])
+
+    def test_data_so_na_primeira_linha_do_dia(self):
+        """Planilha com a coluna Data mesclada (o openpyxl devolve None) ou com a data
+        escrita uma vez por dia."""
+        n = self.N
+        r = _relatorio(_tabela(
+            ["Data", "Hora", "Processo", "Tipo"],
+            [datetime(2026, 10, 5), "09:00", n[0], "Conciliação"],
+            [None, "10:00", n[1], "Una"],
+            ["", "11:00", n[2], "Instrução"],
+            [datetime(2026, 10, 6), "09:00", n[3], "Una"]))
+        self.assertEqual([(a.data, a.hora, a.processo) for a in r.audiencias], self.esperado())
+        self.assertEqual((r.ignoradas, r.avisos), (0, []))
+
+    def test_continuacao_da_linha_de_cima_nao_vira_audiencia(self):
+        n = self.N
+        r = _relatorio(_tabela(["Data", "Hora", "Processo", "Partes"],
+                               ["05/10/2026", "09:00", n[0], "Maria x Banco do"],
+                               ["", "", "", "Brasil S.A."],
+                               ["", "10:00", n[1], "C x D"]))
+        self.assertEqual([(a.data, a.processo) for a in r.audiencias],
+                         [(date(2026, 10, 5), n[0]), (date(2026, 10, 5), n[1])])
+
+    def test_texto_que_nao_e_data_nao_herda_a_de_cima(self):
+        n = self.N
+        r = _relatorio(_tabela(["Data", "Processo", "Tipo"],
+                               ["05/10/2026", n[0], "Una"],
+                               ["a definir", n[1], "Una"]))
+        self.assertEqual([a.processo for a in r.audiencias], [n[0]])
+        self.assertEqual(r.ignoradas, 1)
+
+    def test_linha_de_grupo_com_a_contagem_ao_lado(self):
+        n = self.N
+        for grupo in (["05/10/2026 - Segunda-feira", "", "3 audiências", ""],
+                      ["Segunda-feira", "", "", "05/10/2026"],
+                      ["Data: 05/10/2026", "Total: 3", "", ""],
+                      ["05/10/2026", "(3)", "", ""]):
+            with self.subTest(grupo=grupo):
+                r = _relatorio(_tabela(
+                    ["Data", "Hora", "Partes", "Processo"], grupo,
+                    ["", "09:00", "A x B", n[0]], ["", "10:00", "C x D", n[1]],
+                    ["", "11:00", "E x F", n[2]],
+                    ["06/10/2026 - Terça-feira", "", "1 audiência", ""],
+                    ["", "09:00", "G x H", n[3]]))
+                self.assertEqual([(a.data, a.hora, a.processo) for a in r.audiencias],
+                                 self.esperado())
+                self.assertFalse(any("audiênc" in a.partes for a in r.audiencias),
+                                 "a contagem não vira audiência")
+
+
+class TestCabecalhoDepoisDoPreambulo(unittest.TestCase):
+    N = [ap.numero(f"070091{i}") for i in range(1, 4)]
+
+    def linhas(self):
+        n = self.N
+        return [["Data", "Hora", "Processo", "Tipo de audiência", "Partes"],
+                ["05/10/2026", "09:00", n[0], "Conciliação", "A x B"],
+                ["05/10/2026", "10:00", n[1], "Una", "C x D"],
+                ["06/10/2026", "11:00", n[2], "Instrução", "E x F"]]
+
+    def confere(self, r):
+        self.assertTrue(r.reconhecida)
+        self.assertEqual([a.processo for a in r.audiencias], self.N)
+        self.assertEqual(r.audiencias[1].tipo, "Una")
+
+    def test_preambulo_rotulo_e_valor(self):
+        for preambulo in ([["Relatório de audiências"],
+                           ["Data:", "03/10/2026", "Hora:", "10:15"]],
+                          [["Vara:", "2ª Vara Cível", "Data de emissão:", "03/10/2026"]],
+                          [["Data:", datetime(2026, 10, 3), "Emitido por:", "Fulano"]]):
+            with self.subTest(preambulo=preambulo):
+                self.confere(_relatorio(_tabela(*preambulo, [], *self.linhas())))
+
+    def test_preambulo_longo(self):
+        titulo = [["Poder Judiciário"], ["Tribunal de Justiça de Alagoas"],
+                  ["Comarca de Maceió"], [], ["2ª Vara Cível da Capital"],
+                  ["Pauta de audiências"], [],
+                  ["Período: 05/10/2026 a 16/10/2026"], ["Emitido em 03/10/2026 por Fulano"]]
+        self.confere(_relatorio(_tabela(*titulo, *self.linhas())))
+        # sem o cabeçalho: a regra dos 50 % não conta as linhas do título
+        sem_cabecalho = _relatorio(_tabela(*titulo, *self.linhas()[1:]))
+        self.assertEqual([a.processo for a in sem_cabecalho.audiencias], self.N)
+        self.assertEqual(sem_cabecalho.ignoradas, 0)
+
+    def test_cabecalho_em_duas_linhas(self):
+        html = ("<table><tr><th colspan='2'>Audiência</th><th rowspan='2'>Processo</th>"
+                "<th rowspan='2'>Partes</th><th rowspan='2'>Situação</th></tr>"
+                "<tr><th>Data</th><th>Hora</th></tr>"
+                + "".join(f"<tr><td>{d}</td><td>{h}</td><td>{p}</td><td>{x}</td><td>Designada</td>"
+                          "</tr>" for d, h, p, _t, x in self.linhas()[1:]) + "</table>")
+        r = reconhecer_html(html, "arquivo", "", estrito=False)
+        self.assertEqual([(a.data, a.hora, a.processo, a.partes) for a in r.audiencias], [
+            (date(2026, 10, 5), "09:00", self.N[0], "A x B"),
+            (date(2026, 10, 5), "10:00", self.N[1], "C x D"),
+            (date(2026, 10, 6), "11:00", self.N[2], "E x F")])
+        # sem o rowspan (planilha: célula vazia embaixo dos rótulos de cima)
+        r = _relatorio(_tabela(["Audiência", "", "Processo", "Partes"], ["Data", "Hora", "", ""],
+                               *[[d, h, p, x] for d, h, p, _t, x in self.linhas()[1:]]))
+        self.assertEqual([a.processo for a in r.audiencias], self.N)
+
+    def test_intimacoes_continuam_fora(self):
+        r = _relatorio(*tabelas_do_html(ap.html_intimacoes()))
+        self.assertFalse(r.reconhecida)
+
+
+class TestSoAPropriaTabelaDizQueEPauta(unittest.TestCase):
+    """O título da página ("Pauta de Audiências") não transforma em pauta a tabela
+    de intimações ao lado; a fila de processos e o "Último movimento" não são pauta."""
+
+    N = [ap.numero(f"070092{i}") for i in range(1, 3)]
+
+    def test_intimacoes_na_pagina_da_pauta(self):
+        lista = ap.no_periodo(ap.audiencias_padrao("21"), ap.INICIO, ap.FIM)
+        html = ap.pagina(ap.html_intimacoes("21") + ap.html_eproc(lista[:4], total=8))
+        r = reconhecer_html(html, "eproc", "TJRS", contexto="Audiência > Pauta de Audiências")
+        self.assertEqual(r.tabelas, 1)
+        self.assertEqual(len(r.audiencias), 4, "as duas intimações não viraram audiência")
+        self.assertNotIn(ap.numero("0700901", "21"), {a.processo for a in r.audiencias})
+        sozinha = reconhecer_html(ap.html_intimacoes(), "esaj", contexto="Pauta de Audiências")
+        self.assertFalse(sozinha.reconhecida)
+
+    def test_fila_de_processos_e_ultimo_movimento(self):
+        n = self.N
+        casos = {
+            "fila": ("<table><tr><th>Processo</th><th>Classe</th><th>Assunto</th>"
+                     "<th>Data de recebimento</th><th>Local físico</th></tr>"
+                     f"<tr><td>{n[0]}</td><td>Monitória</td><td>Cobrança</td>"
+                     "<td>01/10/2026</td><td>Cartório</td></tr>"
+                     f"<tr><td>{n[1]}</td><td>Alimentos</td><td>Fixação</td>"
+                     "<td>02/10/2026</td><td>Gabinete</td></tr></table>"),
+            "último movimento": ("<table><tr><th>Data</th><th>Último movimento</th>"
+                                 f"<th>Processo</th></tr><tr><td>01/10/2026</td><td>Conclusos</td>"
+                                 f"<td>{n[0]}</td></tr></table>"),
+            "só data e processo": ("<table><tr><th>Data</th><th>Processo</th><th>Partes</th></tr>"
+                                   f"<tr><td>01/10/2026</td><td>{n[0]}</td><td>A x B</td></tr>"
+                                   "</table>"),
+        }
+        for nome, html in casos.items():
+            with self.subTest(nome=nome):
+                self.assertFalse(reconhecer_html(html, "esaj").reconhecida)
+        for nome in ("fila", "último movimento"):
+            with self.subTest(nome=nome, relatorio=True):
+                self.assertFalse(reconhecer_html(casos[nome], "arquivo", "", estrito=False)
+                                 .reconhecida)
+        # data e processo, numa página (ou legenda) de pauta: é pauta
+        self.assertTrue(reconhecer_html(casos["só data e processo"], "esaj",
+                                        contexto="Pauta de Audiências").reconhecida)
+        self.assertTrue(reconhecer_html(casos["só data e processo"].replace(
+            "<table>", "<table><caption>Audiências do dia</caption>"), "esaj").reconhecida)
+
+
+class TestPublicoNaoDesfazOSigilo(unittest.TestCase):
+    """"Ministério Público", "Defensoria Pública", "Ação Civil Pública" ao lado do
+    selo de segredo de justiça: o sigilo fica."""
+
+    N = ap.numero("0700931")
+
+    def com_cabecalho(self, processo="", partes="", classe="", local="", sigilo=None):
+        cab = "<th>Data</th><th>Hora</th><th>Processo</th><th>Classe</th><th>Partes</th>" \
+              "<th>Local</th>" + ("<th>Sigilo</th>" if sigilo is not None else "")
+        linha = (f"<td>05/10/2026</td><td>09:00</td><td>{self.N}{processo}</td><td>{classe}</td>"
+                 f"<td>{partes}</td><td>{local}</td>"
+                 + (f"<td>{sigilo}</td>" if sigilo is not None else ""))
+        return reconhecer_html(f"<table><tr>{cab}</tr><tr>{linha}</tr></table>", "esaj") \
+            .audiencias[0]
+
+    def test_com_cabecalho(self):
+        icone = "<img src='data:,' title='Segredo de Justiça'>"
+        casos = {
+            "ícone nas partes do MP": dict(partes=f"Ministério Público do Estado de Alagoas x "
+                                                  f"João da Silva {icone}"),
+            "classe da ACP": dict(classe="Ação Civil Pública - Segredo de Justiça"),
+            "Defensoria no local": dict(local=f"Sala da Defensoria Pública {icone}"),
+            "ícone no processo, MP nas partes": dict(processo=f" {icone}",
+                                                     partes="Ministério Público x João"),
+            "coluna Sigilo": dict(sigilo="Segredo de Justiça",
+                                  partes="Ministério Público x João"),
+            "nível 1": dict(sigilo="Nível 1"),
+        }
+        for nome, campos in casos.items():
+            with self.subTest(nome=nome):
+                self.assertTrue(self.com_cabecalho(**campos).sigiloso)
+        for nome, campos in {"coluna Sigilo: Público": dict(sigilo="Público"),
+                             "sem sigilo": dict(sigilo="Sem sigilo (Nível 0)"),
+                             "só o MP": dict(partes="Ministério Público x João")}.items():
+            with self.subTest(nome=nome):
+                self.assertFalse(self.com_cabecalho(**campos).sigiloso)
+
+    def test_sem_cabecalho_e_linhas_soltas(self):
+        rec = Reconhecedor(R, "esaj", "TJAL")
+        for outra in ("Ministério Público x João da Silva", "Sala da Defensoria Pública",
+                      "Fazenda Pública do Estado x Fulano"):
+            with self.subTest(outra=outra):
+                linha = [Celula(texto="05/10/2026 09:00"), Celula(texto=self.N),
+                         Celula(texto="Segredo de Justiça"), Celula(texto=outra)]
+                self.assertTrue(rec.linha_livre(linha).sigiloso)
+                linha[2] = Celula(texto="Público")
+                self.assertFalse(rec.linha_livre(linha).sigiloso)
+        html = ("<table>" + "".join(
+            f"<tr><td>05/10/2026 0{i}:00</td><td>{ap.numero(f'070094{i}')}</td>"
+            "<td>Segredo de Justiça</td><td>Ministério Público x Adolescente</td></tr>"
+            for i in range(1, 4)) + "</table>")
+        r = reconhecer_html(html, "esaj", contexto="Pauta de audiências")
+        self.assertEqual(len(r.audiencias), 3)
+        self.assertTrue(all(a.sigiloso for a in r.audiencias))
+
+    def test_regras_do_arquivo_e_embutidas_iguais(self):
+        self.assertEqual(R.dados["sem_sigilo"], regras.PADROES["sem_sigilo"])
+        self.assertEqual(R.dados["negativos"], regras.PADROES["negativos"])
+
+
 if __name__ == "__main__":
     unittest.main()

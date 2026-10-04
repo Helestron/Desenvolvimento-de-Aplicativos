@@ -27,6 +27,11 @@ from .mcp_servidor import _DO_CONFIG, Recorte, chaves_sigilosas, pasta_sigilosos
 log = logging.getLogger("compartilhar.nuvem")
 
 SUBPASTA = "Helestron - Acervo"
+# A subpasta do espelho da versão anterior (Assessor Integrado). Ninguém mais
+# copia para lá, mas o que ficou continua ao alcance dos conectores do
+# OneDrive e do Google Drive: dela também sai a cópia do processo que depois
+# foi para a pasta de sigilosos.
+SUBPASTAS_ANTIGAS = ("Assessor Integrado - Acervo",)
 _IGNORAR_PASTAS = {"_controle", "_audio", "__pycache__"}
 _IGNORAR_SUFIXOS = (".parcial", ".tmp", ".part", ".lock")
 
@@ -91,6 +96,10 @@ def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None,
     """
     origem = Path(origem)
     destino = Path(destino_raiz) / SUBPASTA
+    if _dentro_ou_igual(destino, origem) or _dentro_ou_igual(origem, destino):
+        # Defesa final (a API já recusa essa pasta): o espelho dentro do
+        # acervo copiaria a cópia anterior a cada vez, sem fim.
+        raise ValueError("a pasta da nuvem não pode ficar dentro do acervo, nem conter o acervo")
     if sigilosos is _DO_CONFIG:
         sigilosos = pasta_sigilosos_configurada()
     # Pasta de sigilosos e pastas do programa postas (por engano) dentro do
@@ -112,6 +121,8 @@ def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None,
             continue
         arquivos.append(p)
     _retirar_sigilosos(destino, sigilosas)
+    for antiga in SUBPASTAS_ANTIGAS:
+        _retirar_sigilosos(Path(destino_raiz) / antiga, sigilosas)
     copiados = iguais = 0
     total = len(arquivos)
     for i, p in enumerate(arquivos, 1):
@@ -137,6 +148,18 @@ def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None,
                 pass
     log.info("Espelho na nuvem (%s): %d copiado(s), %d sem mudança.", destino, copiados, iguais)
     return copiados, iguais
+
+
+def _dentro_ou_igual(filho: Path, pai: Path) -> bool:
+    def normal(p: Path) -> str:
+        try:
+            p = Path(p).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            p = Path(os.path.abspath(p))
+        return os.path.normcase(str(p))
+
+    f, p = normal(filho), normal(pai)
+    return f == p or f.startswith(p.rstrip(os.sep) + os.sep)
 
 
 def _retirar_sigilosos(destino: Path, sigilosas: set[str]) -> None:

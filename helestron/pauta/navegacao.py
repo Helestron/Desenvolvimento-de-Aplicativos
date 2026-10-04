@@ -87,7 +87,8 @@ JS_TABELAS = r"""() => {
         const proprio = c.getAttribute("title") || "";
         celulas.push({texto: limpar(c.innerText || c.textContent || ""), links,
                       dicas: limpar(proprio + " " + dicas), th: c.tagName === "TH",
-                      colspan: c.colSpan || 1, aninhada: !!c.querySelector("table")});
+                      colspan: c.colSpan || 1, rowspan: c.rowSpan || 1,
+                      aninhada: !!c.querySelector("table")});
       }
       linhas.push(celulas);
     }
@@ -286,6 +287,8 @@ class Leitura:
     menu: str = ""                     # o texto do menu que levou até ela
     total_informado: int | None = None
     avisos: list[str] = field(default_factory=list)
+    # por que a leitura parou antes do fim ("" = leu todas as páginas)
+    incompleta: str = ""
 
     @property
     def audiencias(self):
@@ -294,10 +297,16 @@ class Leitura:
     def cobertura(self, de: date, ate: date) -> tuple[date, date] | None:
         """O intervalo que esta leitura CONFERIU (para marcar as removidas).
 
-        Com o período preenchido no portal, é o pedido. Sem ele, o portal
-        mostrou o que quis: vale só o intervalo das datas que vieram, dentro
-        do pedido - e, se nada veio, nada se pode concluir.
+        Com o período preenchido no portal (e aceito por ele), é o pedido.
+        Sem ele, o portal mostrou o que quis: vale só o intervalo das datas
+        que vieram, dentro do pedido - e, se nada veio, nada se pode
+        concluir. Leitura INCOMPLETA (a página seguinte não abriu, a sessão
+        caiu no meio, o limite de páginas, o portal informou mais registros
+        do que vieram) também não conclui nada: a audiência de uma página
+        não lida não "saiu da pauta".
         """
+        if self.incompleta:
+            return None
         if self.periodo_aplicado:
             return de, ate
         datas = [a.data for a in self.audiencias if de <= a.data <= ate]
@@ -318,6 +327,7 @@ class LeitorDePauta:
         self.ctx = ctx
         self.espera_s = max(2.0, float(espera_s))
         self.nome = nome
+        self.aviso_periodo = ""          # o portal não aceitou o período pedido
 
     # ------------------------------------------------------------- apoio
     def _cancelado(self) -> None:
@@ -449,12 +459,32 @@ class LeitorDePauta:
             log.debug("  preencher %s: %s", seletor, str(erro)[:120])
         return bool(_avaliar(frame, JS_DEFINIR_VALOR, [campo["n"], valor]))
 
+    def _periodo_na_tela(self) -> tuple[date, date] | None:
+        """As datas que os campos do período mostram agora (None se não há como saber)."""
+        for _frame, dados in self.campos():
+            texto_da_pagina = normalizar_texto(dados.get("textoPagina"))
+            if not self.regras.contexto_audiencia.search(texto_da_pagina):
+                continue
+            inicio, fim = self.classificar_periodo(dados.get("campos") or [])
+            if inicio is None or fim is None:
+                continue
+            d1, d2 = modelos.ler_data(inicio.get("valor")), modelos.ler_data(fim.get("valor"))
+            if d1 is not None and d2 is not None:
+                return d1, d2
+        return None
+
     def preencher_periodo(self, de: date, ate: date) -> bool:
-        """Preenche Data inicial/final e envia a pesquisa. True se o fez.
+        """Preenche Data inicial/final e envia a pesquisa. True se o portal a aceitou.
 
         Só numa página que fala de audiência ou pauta: um formulário com
         campo de data em outra tela (designar, cadastrar) não é enviado.
+        ACEITOU = a página mudou depois de "Pesquisar" e os campos não
+        mostram outro período. O formulário que não envia (validação do
+        portal, "período máximo de 30 dias"), ou o portal que encurta o
+        período, deixa a pauta padrão da tela: tomá-la pelo período inteiro
+        daria como "fora da pauta" tudo o que ela não mostra.
         """
+        self.aviso_periodo = ""
         re_botao = re.compile(self.regras.periodo["botao"], re.I)
         for frame, dados in self.campos():
             texto_da_pagina = normalizar_texto(dados.get("textoPagina"))
@@ -480,8 +510,23 @@ class LeitorDePauta:
                     frame.press(f'[data-helestron-campo="{fim["n"]}"]', "Enter", timeout=5000)
                 except Exception:
                     pass
-            self.esperar_mudanca(antes)
+            mudou = self.esperar_mudanca(antes)
             self.esperar_carga()
+            if not mudou:
+                self.aviso_periodo = (
+                    f"O {self.nome} não aceitou o período de {de:%d/%m/%Y} a {ate:%d/%m/%Y} "
+                    "(a página não mudou depois de “Pesquisar”); só as datas que vieram na "
+                    "tela foram conferidas.")
+                log.info("  %s", self.aviso_periodo)
+                return False
+            na_tela = self._periodo_na_tela()
+            if na_tela is not None and na_tela != (de, ate):
+                self.aviso_periodo = (
+                    f"O {self.nome} mostrou o período de {na_tela[0]:%d/%m/%Y} a "
+                    f"{na_tela[1]:%d/%m/%Y}, e não o pedido ({de:%d/%m/%Y} a {ate:%d/%m/%Y}); só "
+                    "as datas que vieram na tela foram conferidas.")
+                log.info("  %s", self.aviso_periodo)
+                return False
             return True
         return False
 
@@ -529,19 +574,33 @@ class LeitorDePauta:
             raise SessaoPerdida(f"a sessão do {self.nome} caiu (o portal pediu a senha de novo)")
         if preencher:
             leitura.periodo_aplicado = self.preencher_periodo(de, ate)
+            if self.aviso_periodo:
+                leitura.avisos.append(self.aviso_periodo)
         vistas: set[str] = set()
+        ultima = ""
+        linhas_lidas = 0
+        motivos: list[str] = []
         limite = self.regras.limite_paginas
         while True:
             self._cancelado()
             rec, frame = self.reconhecer()
             if not rec.reconhecida:
-                if leitura.paginas == 0 and self.pede_login():
-                    raise SessaoPerdida(f"a sessão do {self.nome} caiu")
+                if self.pede_login():
+                    # no meio da paginação também: o serviço entra de novo e relê tudo
+                    raise SessaoPerdida(f"a sessão do {self.nome} caiu" + (
+                        f" na página {leitura.paginas + 1} da pauta" if leitura.paginas else ""))
+                if leitura.paginas:
+                    motivos.append(f"a página {leitura.paginas + 1} não mostrou a tabela da "
+                                   "pauta")
                 break
             marca = "|".join(sorted(a.id for a in rec.audiencias)) or self.assinatura()
             if marca in vistas:
+                if marca != ultima:
+                    motivos.append("o portal voltou a uma página já lida")
                 break
             vistas.add(marca)
+            ultima = marca
+            linhas_lidas += len(rec.audiencias) + rec.ignoradas
             leitura.reconhecimento.juntar(rec)
             leitura.reconhecimento.total_informado = None
             if rec.total_informado is not None:
@@ -553,18 +612,30 @@ class LeitorDePauta:
                     len(leitura.audiencias) >= leitura.total_informado:
                 break
             if leitura.paginas >= limite:
-                leitura.avisos.append(f"A pauta tem mais de {limite} páginas; li as {limite} "
-                                      "primeiras. Escolha um período menor.")
+                motivos.append(f"a pauta tem mais de {limite} páginas e li as {limite} primeiras "
+                               "(escolha um período menor)")
                 break
             antes = self.assinatura()
             if not self.proxima(frame):
                 break
             if not self.esperar_mudanca(antes):
+                motivos.append(f"a página {leitura.paginas + 1} não abriu a tempo")
                 break
         if leitura.total_informado and len(leitura.audiencias) < leitura.total_informado:
+            informou = (f"o {self.nome} informou {leitura.total_informado} audiências e foram "
+                        f"lidas {len(leitura.audiencias)}")
+            if linhas_lidas < leitura.total_informado:
+                motivos.append(informou)
+            else:            # linhas repetidas ou sem data: tudo foi lido, mas nem tudo serviu
+                leitura.avisos.append(informou[:1].upper() + informou[1:] +
+                                      ". Confira a pauta no portal.")
+        if motivos:
+            leitura.incompleta = "; ".join(motivos)
             leitura.avisos.append(
-                f"O {self.nome} informou {leitura.total_informado} audiências e foram lidas "
-                f"{len(leitura.audiencias)}. Confira a pauta no portal.")
+                f"A leitura da pauta do {self.nome} ficou incompleta: {leitura.incompleta}. Por "
+                "isso, nenhuma audiência foi dada como fora da pauta; sincronize de novo mais "
+                "tarde.")
+            log.info("  leitura incompleta: %s", leitura.incompleta)
         leitura.reconhecimento.tabelas = 1 if leitura.paginas else 0
         return leitura
 

@@ -58,6 +58,10 @@ log = logging.getLogger("download.motor")
 
 COLUNAS = ["ordem", "processo", "tribunal", "sistema", "situacao", "paginas", "documentos",
            "arquivo", "sigiloso", "incompleto", "detalhe", "data_hora"]
+MASCARA_SIGILOSO = "(processo sigiloso)"
+DETALHE_MASCARA = ("processo em segredo de justiça; o número e os detalhes estão no relatório da "
+                   "pasta de sigilosos")
+RELATORIOS = ("relatorio.csv", "relatorio (atualizado).csv")
 MAX_RELOGINS = 2                 # por processo
 MAX_INDISPONIVEL_SEGUIDOS = 3    # processos seguidos com o portal fora: desiste do grupo
 ESPERA_ENTRE_TENTATIVAS_S = 3.0  # cresce a cada tentativa (3 s, 6 s...), até 30 s
@@ -291,6 +295,15 @@ def _nome_livre_do_grupo(pasta: Path, grupo: list[Path]) -> str:
     return candidato
 
 
+def _chave_relatorio(texto) -> str | None:
+    """O processo de uma linha do relatório ("0700001-..."; o dependente
+    "-01" conta), ou None (linha mascarada, editada à mão)."""
+    try:
+        return cnj.ler_nome_arquivo(str(texto or "").strip()).nome_arquivo
+    except Exception:
+        return None
+
+
 # ------------------------------------------------------------------ motor
 class _Lote:
     def __init__(self, numeros, destino, opcoes, ctx, senhas, cofre,
@@ -350,6 +363,11 @@ class _Lote:
                 tribunal=t.sigla if t else n.chave_tribunal,
                 sistema=t.sistema if t else "?"))
         self.tribunal_de = {cnj.chave(n): tribunais.por_numero(n) for n in self.numeros}
+        # O relatório que esta pasta de lote já tinha (o "Tentar de novo" refaz
+        # só os que falharam, na mesma pasta): as linhas refeitas agora
+        # substituem as antigas, e as demais continuam - senão o relatório do
+        # lote, e os "Últimos lotes", ficavam só com os refeitos.
+        self._linhas_anteriores = self._ler_relatorio_anterior()
 
     # ------------------------------------------------------------ apoio
     @property
@@ -380,25 +398,118 @@ class _Lote:
     # ------------------------------------------------------- relatório
     def _linhas_csv(self, mascarar: bool = False) -> str:
         """O relatório. 'mascarar': o do acervo, que a IA lê, não diz qual
-        processo é sigiloso; o completo fica na pasta de sigilosos."""
+        processo é sigiloso; o completo fica na pasta de sigilosos.
+
+        Mescla com o relatório anterior da mesma pasta (_linhas_anteriores):
+        cada processo desta rodada fica no lugar da linha antiga dele, os
+        que não foram refeitos continuam como estavam, e os novos vêm no fim.
+        """
         saida = io.StringIO()
         w = csv.writer(saida, delimiter=";", lineterminator="\r\n")
         w.writerow(COLUNAS)
+        atuais = {}
         for r in self.itens:
+            atuais.setdefault(_chave_relatorio(r.numero), r)
+        linhas: list = []
+        usados: set = set()
+        for chave, antiga in self._linhas_anteriores:
+            if chave is not None and chave in atuais:
+                if chave not in usados:
+                    usados.add(chave)
+                    linhas.append(atuais[chave])
+                continue
+            linhas.append(antiga)
+        for r in self.itens:
+            chave = _chave_relatorio(r.numero)
+            if chave not in usados:
+                usados.add(chave)
+                linhas.append(r)
+        for ordem, item in enumerate(linhas, 1):
+            if isinstance(item, dict):
+                w.writerow(self._linha_antiga(item, ordem, mascarar))
+                continue
+            r = item
             if mascarar and r.sigiloso:
-                w.writerow([r.ordem, "(processo sigiloso)", r.tribunal, r.sistema,
-                            r.situacao or "PENDENTE", "", "", "", "sim", "",
-                            "processo em segredo de justiça; o número e os detalhes estão no "
-                            "relatório da pasta de sigilosos", r.data_hora])
+                w.writerow([ordem, MASCARA_SIGILOSO, r.tribunal, r.sistema,
+                            r.situacao or "PENDENTE", "", "", "", "sim", "", DETALHE_MASCARA,
+                            r.data_hora])
                 continue
             arquivo = Path(r.arquivo).name if r.arquivo else ""
             if r.arquivo and r.sigiloso and r.situacao in (OK, JA_BAIXADO) \
                     and not str(r.arquivo).startswith(str(self.destino)):
                 arquivo += " (na pasta de sigilosos)"
-            w.writerow([r.ordem, r.numero, r.tribunal, r.sistema, r.situacao or "PENDENTE",
+            w.writerow([ordem, r.numero, r.tribunal, r.sistema, r.situacao or "PENDENTE",
                         r.paginas or "", r.documentos or "", arquivo,
                         "sim" if r.sigiloso else "não", r.incompleto, r.detalhe, r.data_hora])
         return saida.getvalue()
+
+    @staticmethod
+    def _linha_antiga(linha: dict, ordem: int, mascarar: bool) -> list:
+        """A linha de um processo de rodada anterior, como estava (mascarada no
+        relatório do acervo, se for sigiloso)."""
+        sigiloso = (linha.get("sigiloso") or "").strip().lower() == "sim"
+        if mascarar and sigiloso:
+            return [ordem, MASCARA_SIGILOSO, linha.get("tribunal", ""), linha.get("sistema", ""),
+                    linha.get("situacao") or "PENDENTE", "", "", "", "sim", "", DETALHE_MASCARA,
+                    linha.get("data_hora", "")]
+        return [ordem] + [linha.get(c, "") or "" for c in COLUNAS[1:]]
+
+    @staticmethod
+    def _ler_csv(controle: Path) -> list[dict]:
+        """As linhas do relatório da pasta _controle (o mais recente dos dois:
+        o "(atualizado)" é o gravado quando o Excel prendia o outro)."""
+        candidatos = []
+        for nome in RELATORIOS:
+            try:
+                candidatos.append(((controle / nome).stat().st_mtime, controle / nome))
+            except OSError:
+                continue
+        if not candidatos:
+            return []
+        try:
+            dados = max(candidatos)[1].read_bytes()
+        except OSError:
+            return []
+        try:
+            texto = dados.decode("utf-8-sig")
+        except UnicodeDecodeError:       # salvo pelo Excel, em ANSI
+            texto = dados.decode("cp1252", errors="replace")
+        try:
+            return [{c: (linha.get(c) or "") for c in COLUNAS}
+                    for linha in csv.DictReader(texto.splitlines(), delimiter=";")
+                    if any((v or "").strip() for v in linha.values() if isinstance(v, str))]
+        except (csv.Error, ValueError, AttributeError) as erro:
+            log.warning("o relatório anterior do lote está ilegível (%s); começo um novo.", erro)
+            return []
+
+    def _ler_relatorio_anterior(self) -> list[tuple[str | None, dict]]:
+        """[(chave do processo ou None, linha)] do relatório que a pasta do lote
+        já tinha, na ordem dele. A linha mascarada do acervo ("(processo
+        sigiloso)") é trocada pela do relatório completo da pasta de
+        sigilosos, de mesma ordem; sem ele, fica como está."""
+        acervo = self._ler_csv(self.controle)
+        completo = self._ler_csv(self.pasta_sigilosos / "_controle")
+        por_ordem = {linha.get("ordem"): linha for linha in completo
+                     if _chave_relatorio(linha.get("processo")) is not None}
+        saida: list[tuple[str | None, dict]] = []
+        vistos: set[str] = set()
+        for linha in acervo or completo:
+            chave = _chave_relatorio(linha.get("processo"))
+            if chave is None and (linha.get("sigiloso") or "").strip().lower() == "sim":
+                real = por_ordem.get(linha.get("ordem"))
+                if real is not None:
+                    linha, chave = real, _chave_relatorio(real.get("processo"))
+            if chave is not None:
+                if chave in vistos:
+                    continue
+                vistos.add(chave)
+            saida.append((chave, linha))
+        for linha in completo:              # o que só o completo ainda tem
+            chave = _chave_relatorio(linha.get("processo"))
+            if chave is not None and chave not in vistos:
+                vistos.add(chave)
+                saida.append((chave, linha))
+        return saida
 
     def salvar_relatorio(self) -> None:
         """UTF-8 com BOM e ';' - o Excel brasileiro abre com acento e colunas
@@ -444,7 +555,9 @@ class _Lote:
         """O relatório completo, com os números dos sigilosos, na pasta de
         sigilosos do lote (fora do acervo). Só quando o lote tem sigiloso
         (ou a pasta já existe): lote sem sigiloso não cria pasta nenhuma."""
-        if not (any(r.sigiloso for r in self.itens) or self.pasta_sigilosos.is_dir()):
+        if not (any(r.sigiloso for r in self.itens) or self.pasta_sigilosos.is_dir()
+                or any((l.get("sigiloso") or "").strip().lower() == "sim"
+                       for _, l in self._linhas_anteriores)):
             return
         destino = self.relatorio_sigilosos
         tmp = destino.with_name(destino.name + ".tmp")

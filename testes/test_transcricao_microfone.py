@@ -150,6 +150,68 @@ class TestListaDeMicrofones(unittest.TestCase):
             self.assertIsNone(microfone.achar(""))
             self.assertEqual(microfone.achar(3), 3)
 
+    def test_conferir_o_microfone_escolhido(self):
+        """O nome que não existe mais é erro com a frase para o usuário - e não
+        o padrão do Windows em silêncio (achar() continua tolerante: é o que a
+        Captura usa para reabrir o aparelho no meio da audiência)."""
+        falso = _SoundDeviceFalso()
+        with mock.patch.object(microfone, "_sounddevice", return_value=falso):
+            nome = "Microfone USB (Conferência Jabra 510)"
+            self.assertEqual(microfone.conferir(nome), nome)
+            self.assertEqual(microfone.conferir("Microfone USB (Conferência Jab"),
+                             "Microfone USB (Conferência Jab")      # nome cortado do MME
+            self.assertEqual(microfone.conferir(""), "")
+            self.assertEqual(microfone.conferir("  "), "")
+            self.assertIsNone(microfone.conferir(None))
+            self.assertEqual(microfone.conferir("3"), 3)
+            self.assertEqual(microfone.conferir(8), 8)
+            with self.assertRaises(microfone.MicrofoneNaoEncontrado) as ctx:
+                microfone.conferir("Fone Jabra Evolve")
+            self.assertEqual(str(ctx.exception),
+                             "O microfone «Fone Jabra Evolve» não foi encontrado. Escolha outro "
+                             "em Audiências ou Ajustes › Transcrição.")
+            self.assertIsInstance(ctx.exception, MicrofoneIndisponivel)
+        # sem microfone nenhum: a frase de "nenhum microfone"
+        with mock.patch.object(microfone, "listar_entradas", return_value=[]), \
+                mock.patch.object(microfone, "_sounddevice", return_value=falso):
+            with self.assertRaises(MicrofoneIndisponivel) as ctx:
+                microfone.conferir("Microfone de mesa")
+            self.assertEqual(str(ctx.exception), microfone.SEM_MICROFONE)
+
+    def test_escolhido_que_nao_abre_cai_no_padrao_com_aviso(self):
+        """O microfone escolhido existe, mas não abre (ocupado): a gravação segue
+        pelo padrão do Windows - e a tela é avisada, em vez de gravar por outro
+        aparelho em silêncio."""
+        falso = _SoundDeviceFalso()
+        original = falso.InputStream
+
+        def abre_so_o_padrao(**kw):
+            if kw["device"] in (8, 2):          # o Jabra, por WASAPI e por MME
+                raise RuntimeError("Error opening InputStream: Device unavailable")
+            return original(**kw)
+
+        falso.InputStream = abre_so_o_padrao
+        avisos = []
+        with mock.patch.object(microfone, "_sounddevice", return_value=falso), \
+                self.assertLogs("transcricao.microfone", "WARNING"):
+            c = Captura("Microfone USB (Conferência Jabra 510)", lambda b: None,
+                        ao_aviso=avisos.append)
+            c._abrir()
+            self.assertEqual(falso.abertos[0]["device"], 7)
+            self.assertEqual(len(avisos), 1)
+            self.assertIn("«Microfone USB (Conferência Jabra 510)» não abriu", avisos[0])
+            self.assertIn("«Microfone (Realtek(R) Audio)»", avisos[0])
+            # o mesmo aparelho aberto por outra API (o MME corta o nome) não é troca
+            self.assertTrue(microfone._mesmo_aparelho("Microfone USB (Conferência Jabra 510)",
+                                                      "Microfone USB (Conferência Jab"))
+            self.assertFalse(microfone._mesmo_aparelho("Microfone USB (Conferência Jabra 510)",
+                                                       "Microfone (Realtek(R) Audio)"))
+            # o escolhido que abre não avisa nada
+            avisos.clear()
+            Captura("Microfone (Realtek(R) Audio)", lambda b: None, ao_aviso=avisos.append)._abrir()
+            Captura(None, lambda b: None, ao_aviso=avisos.append)._abrir()
+            self.assertEqual(avisos, [])
+
     def test_captura_abre_na_taxa_nativa_e_reamostra(self):
         falso = _SoundDeviceFalso()
         with mock.patch.object(microfone, "_sounddevice", return_value=falso):

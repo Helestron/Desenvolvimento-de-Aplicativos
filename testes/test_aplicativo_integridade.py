@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import shutil
 import tempfile
 import time
@@ -33,6 +34,21 @@ def instalacao_falsa(pasta: Path, arquivos: dict[str, bytes], formato: str = "di
     else:
         corpo = {"versao": "1.0.0", "arquivos": entradas}
     (pasta / "manifesto.json").write_text(json.dumps(corpo), encoding="utf-8")
+
+
+def instalador_falso(arquivo: Path, helestron: bool = True, nsis: bool = True) -> Path:
+    """Um Helestron-Setup "de verdade" para o Reparar: executável do Windows,
+    cabeçalho NSIS num limite de 512 bytes e a descrição do instalador."""
+    corpo = bytearray(b"MZ" + b"\0" * 4000)
+    if helestron:
+        corpo += "Instalador do Helestron".encode("utf-16-le")
+    corpo += b"\0" * (-len(corpo) % 512)
+    if nsis:
+        corpo += b"\0\0\0\0" + integridade.ASSINATURA_NSIS
+    corpo += b"\x5d" * 2048
+    arquivo.parent.mkdir(parents=True, exist_ok=True)
+    arquivo.write_bytes(bytes(corpo))
+    return arquivo
 
 
 ARQUIVOS = {
@@ -154,6 +170,53 @@ class TestVerificarInstalacao(unittest.TestCase):
         codigo, saida = self.rodar()
         self.assertEqual(codigo, 1)
         self.assertIn("helestron.servidor.rede", saida)
+
+    def test_sem_como_abrir_a_janela_codigo_9(self):
+        """Sem WebView2, sem Edge e com o Internet Explorer de navegador
+        padrão, o instalador não pode dizer "tudo certo": código próprio (9)."""
+        from helestron.aplicativo import janela
+
+        with mock.patch.object(verificacao, "conferir_janela", conferir_janela_real), \
+                mock.patch.object(verificacao, "NO_WINDOWS", True), \
+                mock.patch.object(janela, "versao_webview2", return_value=None), \
+                mock.patch.object(janela, "achar_edge", return_value=None), \
+                mock.patch.object(janela, "navegador_padrao_serve", return_value=False):
+            codigo, saida = self.rodar()
+        self.assertEqual(codigo, verificacao.CODIGO_SEM_JANELA, saida)
+        self.assertIn("Internet Explorer", saida)
+        self.assertIn("WebView2 Runtime", saida)
+        # com outra falha junto, o código é o de sempre
+        verificacao.conferir_modulos.return_value = verificacao.Resultado(
+            "Módulos do programa", verificacao.FALHA, "1 módulo não carrega.")
+        with mock.patch.object(verificacao, "conferir_janela", conferir_janela_real), \
+                mock.patch.object(verificacao, "NO_WINDOWS", True), \
+                mock.patch.object(janela, "versao_webview2", return_value=None), \
+                mock.patch.object(janela, "achar_edge", return_value=None), \
+                mock.patch.object(janela, "navegador_padrao_serve", return_value=False):
+            self.assertEqual(self.rodar()[0], 1)
+
+    def test_conferir_janela(self):
+        from helestron.aplicativo import janela
+
+        casos = [
+            ("120.0.2210.91", None, True, verificacao.OK, "120.0.2210.91"),
+            ("95.0.1020.53", "/edge", True, verificacao.AVISO, "antigo"),
+            (None, "/edge", True, verificacao.AVISO, "Microsoft Edge, em modo aplicativo"),
+            (None, None, True, verificacao.AVISO, "navegador padrão"),
+            (None, None, False, verificacao.FALHA, "Internet Explorer"),
+        ]
+        for versao, edge, serve, situacao, trecho in casos:
+            with self.subTest(versao=versao, edge=edge, serve=serve), \
+                    mock.patch.object(verificacao, "NO_WINDOWS", True), \
+                    mock.patch.object(janela, "versao_webview2", return_value=versao), \
+                    mock.patch.object(janela, "achar_edge", return_value=edge), \
+                    mock.patch.object(janela, "navegador_padrao_serve", return_value=serve):
+                r = conferir_janela_real()
+                self.assertEqual(r.situacao, situacao, r)
+                self.assertIn(trecho, r.detalhe)
+
+
+conferir_janela_real = verificacao.conferir_janela
 
 
 class TestVerificacaoRobusta(unittest.TestCase):
@@ -349,7 +412,12 @@ class TestTelaDeErro(unittest.TestCase):
         with mock.patch.object(integridade, "conferir_rapido", return_value=self.problemas), \
                 mock.patch.object(erro, "mostrar", return_value=1) as mostrar:
             self.assertEqual(inicio._abrir(None), 1)
-        mostrar.assert_called_once_with(self.problemas)
+        # grava o instancia.json (o --encerrar do instalador fala com a tela)
+        mostrar.assert_called_once_with(self.problemas, registrar=True)
+        with mock.patch.object(integridade, "conferir_rapido", return_value=self.problemas), \
+                mock.patch.object(erro, "mostrar", return_value=1) as mostrar:
+            inicio._abrir(Path(self.amb.raiz / "autoteste"))
+        mostrar.assert_called_once_with(self.problemas, registrar=False)
 
     def test_sem_nem_a_tela_de_erro_mensagem_nativa(self):
         with mock.patch.object(integridade, "conferir_rapido", return_value=self.problemas), \
@@ -364,11 +432,97 @@ class TestTelaDeErro(unittest.TestCase):
         casa = self.amb.raiz / "casa"
         (casa / "Downloads").mkdir(parents=True)
         with mock.patch.object(caminhos, "INSTALADO", False, create=True), \
-                mock.patch("pathlib.Path.home", return_value=casa):
+                mock.patch("pathlib.Path.home", return_value=casa), \
+                mock.patch.object(integridade, "NO_WINDOWS", False):
             self.assertIsNone(integridade.procurar_instalador())
-            (casa / "Downloads" / "Helestron-Setup-1.0.0.exe").write_bytes(b"MZ")
+            instalador_falso(casa / "Downloads" / "Helestron-Setup-1.0.0.exe")
             achado = integridade.procurar_instalador()
         self.assertEqual(achado, casa / "Downloads" / "Helestron-Setup-1.0.0.exe")
+
+    def test_downloads_redirecionada(self):
+        """Com a pasta Downloads redirecionada (GPO do tribunal) ou movida, o
+        Reparar procura onde o Windows diz que ela está (SHGetKnownFolderPath)."""
+        casa = self.amb.raiz / "casa"
+        casa.mkdir()
+        redirecionada = self.amb.raiz / "rede" / "Downloads"
+        instalador_falso(redirecionada / "Helestron-Setup-1.0.0.exe")
+        with mock.patch.object(caminhos, "INSTALADO", False, create=True), \
+                mock.patch("pathlib.Path.home", return_value=casa), \
+                mock.patch.object(integridade, "NO_WINDOWS", True), \
+                mock.patch.object(integridade, "_downloads_windows", return_value=redirecionada):
+            self.assertEqual(integridade.pastas_downloads(), [redirecionada, casa / "Downloads"])
+            achado = integridade.procurar_instalador()
+        self.assertEqual(achado, redirecionada / "Helestron-Setup-1.0.0.exe")
+
+    def test_so_um_instalador_do_helestron_de_verdade(self):
+        """Um executável qualquer com nome parecido, mais novo, não passa na frente."""
+        casa = self.amb.raiz / "casa"
+        baixados = casa / "Downloads"
+        bom = instalador_falso(baixados / "Helestron-Setup-1.0.0.exe")
+        antigo = time.time() - 3600
+        os.utime(bom, (antigo, antigo))
+        (baixados / "Helestron-Setup (atualização).exe").write_bytes(b"MZ" + b"\0" * 100)
+        instalador_falso(baixados / "Helestron-Setup-1.0.1.exe", nsis=False)      # não é NSIS
+        instalador_falso(baixados / "Helestron-Setup-1.0.2.exe", helestron=False)  # outro programa
+        corrompido = instalador_falso(baixados / "Helestron-Setup-1.0.3.exe")
+        (baixados / "Helestron-Setup-1.0.3.exe.sha256").write_text(
+            "0" * 64 + "  Helestron-Setup-1.0.3.exe\n", encoding="utf-8")
+        with mock.patch.object(caminhos, "INSTALADO", False, create=True), \
+                mock.patch("pathlib.Path.home", return_value=casa), \
+                mock.patch.object(integridade, "NO_WINDOWS", False), \
+                self.assertLogs("aplicativo.integridade", "WARNING") as registro:
+            self.assertEqual(integridade.procurar_instalador(), bom)
+        texto = "\n".join(registro.output)
+        self.assertIn("cabeçalho do instalador", texto)
+        self.assertIn("não é o instalador do Helestron", texto)
+        self.assertIn("código de conferência", texto)
+        self.assertNotIn("atualização", texto)               # nem chega a ser candidato
+        self.assertIsNone(integridade.conferir_instalador(bom))
+        (baixados / "Helestron-Setup-1.0.3.exe.sha256").write_text(
+            integridade.sha256_de(corrompido) + "  Helestron-Setup-1.0.3.exe\n", encoding="utf-8")
+        self.assertIsNone(integridade.conferir_instalador(corrompido))
+        # o nome que o navegador dá ao baixar de novo também vale
+        self.assertEqual(integridade.versao_do_instalador(Path("Helestron-Setup-1.2.3 (1).exe")),
+                         (1, 2, 3))
+        self.assertIsNone(integridade.versao_do_instalador(Path("Helestron-Setup (1).exe")))
+
+    def test_nunca_uma_versao_mais_velha_que_a_instalada(self):
+        pasta = self.amb.raiz / "programa"
+        instalacao_falsa(pasta, {"Lib/os.py": b"# os"})
+        manifesto = json.loads((pasta / "manifesto.json").read_text(encoding="utf-8"))
+        manifesto["versao"] = "1.2.0"
+        (pasta / "manifesto.json").write_text(json.dumps(manifesto), encoding="utf-8")
+        casa = self.amb.raiz / "casa"
+        instalador_falso(casa / "Downloads" / "Helestron-Setup-1.1.9.exe")
+        with mock.patch.object(integridade, "pasta_instalada", return_value=pasta), \
+                mock.patch("pathlib.Path.home", return_value=casa), \
+                mock.patch.object(integridade, "NO_WINDOWS", False):
+            self.assertIsNone(integridade.procurar_instalador())
+            novo = instalador_falso(casa / "Downloads" / "Helestron-Setup-1.2.0.exe")
+            self.assertEqual(integridade.procurar_instalador(), novo)
+
+    def test_reparar_pede_confirmacao_antes_de_abrir(self):
+        instalador = instalador_falso(self.amb.raiz / "Downloads" / "Helestron-Setup-1.0.0.exe")
+        with mock.patch.object(erro, "NO_WINDOWS", True), \
+                mock.patch.object(integridade, "procurar_instalador", return_value=instalador), \
+                mock.patch.object(erro, "_executar") as executar:
+            primeiro = self.cliente.dados("POST", "/api/integridade/reparar")
+            executar.assert_not_called()
+            self.assertTrue(primeiro["confirmar"])
+            self.assertFalse(primeiro["abriu"])
+            self.assertIn("Helestron-Setup-1.0.0.exe", primeiro["mensagem"])
+            self.assertIn("Abrir o instalador", primeiro["mensagem"])
+            outro = self.cliente.dados("POST", "/api/integridade/reparar",
+                                       {"arquivo": str(self.amb.raiz / "outro.exe")})
+            executar.assert_not_called()
+            self.assertFalse(outro["abriu"])
+            with mock.patch("threading.Timer"):
+                segundo = self.cliente.dados("POST", "/api/integridade/reparar",
+                                             {"arquivo": primeiro["arquivo"]})
+            executar.assert_called_once_with(instalador)
+            self.assertTrue(segundo["abriu"])
+        html = self.cliente.get("/", token=False)[1].decode("utf-8")
+        self.assertIn('id="abrir-instalador"', html)
 
 
 class TestAberturaSemPacote(unittest.TestCase):

@@ -159,6 +159,84 @@ class ArquivosDaInterface(unittest.TestCase):
         self.assertIn("<title>Helestron</title>", html)
 
 
+class TextosQueOUsuarioLe(unittest.TestCase):
+    """O que a tela diz confere com a própria tela e com as regras do programa."""
+
+    # Citações entre aspas que não são rótulos de botão ou de faixa desta
+    # interface (e por quê).
+    CITACOES_DE_FORA = {
+        "qualquer pessoa com o link",       # opção de compartilhamento do OneDrive/Google
+        ".xls",                             # extensão de arquivo
+        "(segredo de justiça)",             # o que a planilha da pauta mostra
+        "Permitir que aplicativos da área de trabalho acessem o microfone",  # Windows
+        "base",                             # nome de modelo de transcrição
+        "senha", "pauta", "microfone", "sigiloso", "código", "Excel",        # dicas de busca da Ajuda
+    }
+
+    @staticmethod
+    def _js_da_interface() -> dict[str, str]:
+        return {a.name: a.read_text(encoding="utf-8") for a in sorted((WEB / "js").glob("*.js"))
+                if a.name != "demo.js"}
+
+    def _rotulos(self) -> set[str]:
+        """Todo texto que a interface põe sozinho num elemento (string literal
+        inteira), as opções de Ajustes que o servidor descreve e a barra que a
+        captura da pauta injeta no portal."""
+        rotulos: set[str] = set()
+        for texto in self._js_da_interface().values():
+            rotulos |= set(re.findall(r'"([^"\\\n]+)"', texto))
+        for extra in (RAIZ / "helestron" / "servidor" / "esquema.py", RAIZ / "helestron" / "pauta" / "captura.py"):
+            if extra.is_file():
+                rotulos |= set(re.findall(r'"([^"\\\n]+)"', extra.read_text(encoding="utf-8")))
+                rotulos |= set(re.findall(r"“([^”]+)”", extra.read_text(encoding="utf-8")))
+        return rotulos
+
+    def test_rotulos_citados_existem(self):
+        # "use “Recuperar sessão interrompida”" mandava procurar um botão que
+        # não existe (o botão é “Recuperar”, na faixa “Uma transcrição foi
+        # interrompida”): toda citação de rótulo tem de ser um rótulo da tela.
+        rotulos = self._rotulos()
+        for nome, texto in self._js_da_interface().items():
+            for citado in re.findall(r"“([^”$]+)”", texto):
+                if citado in self.CITACOES_DE_FORA:
+                    continue
+                with self.subTest(arquivo=nome, citado=citado):
+                    self.assertIn(citado, rotulos, f"{nome} cita “{citado}”, que não é rótulo da interface")
+
+    def test_rotulos_que_as_mensagens_do_programa_citam(self):
+        # O motor e o servidor mandam o usuário a estes botões e faixas.
+        rotulos = self._rotulos()
+        for citado in ("Recuperar", "Uma transcrição foi interrompida", "Gerar o pacote",
+                       "Pacote para o ChatGPT", "Abrir no ChatGPT Work", "Abrir no Claude Code",
+                       "Tentar de novo", "Acesso aos portais", "Testar", "Alterar"):
+            with self.subTest(citado=citado):
+                self.assertIn(citado, rotulos)
+
+    def test_numeros_de_exemplo_com_digito_certo(self):
+        # Exemplo que o próprio Helestron recusaria ("dígito verificador
+        # errado") não ensina o formato: todo número CNJ escrito na interface
+        # passa no módulo 97.
+        cnj = re.compile(r"(?<!\d)(\d{7})-(\d{2})\.(\d{4})\.(\d)\.(\d{2})\.(\d{4})(?!\d)")
+        textos = dict(self._js_da_interface())
+        textos["index.html"] = (WEB / "index.html").read_text(encoding="utf-8")
+        achados = 0
+        for nome, texto in textos.items():
+            for m in cnj.finditer(texto):
+                n, dv, ano, j, tr, origem = m.groups()
+                if set(n + ano + j + tr + origem) == {"0"}:
+                    continue            # a máscara 0000000-00.0000.0.00.0000
+                achados += 1
+                with self.subTest(arquivo=nome, numero=m.group(0)):
+                    self.assertEqual(int(n + ano + j + tr + origem + dv) % 97, 1)
+        self.assertGreater(achados, 0)
+
+    def test_concordancia_dos_lotes(self):
+        # "0 de 1 processo baixados": o particípio concorda com o total.
+        for nome, texto in self._js_da_interface().items():
+            with self.subTest(arquivo=nome):
+                self.assertNotRegex(texto, r'"processo", "processos"\)\} baixados')
+
+
 class MarcaEFontes(unittest.TestCase):
     def test_fonte_inter_embutida_com_a_licenca(self):
         fonte = WEB / "fontes" / "InterVariable.woff2"

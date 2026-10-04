@@ -37,10 +37,11 @@ O que este módulo faz, e a armadilha que cada passo contorna:
   perderam a validade.
 
 Seletores: listas de alternativas por chave (SELETORES_PADRAO), com correção
-sem mexer no código em dados/seletores-eproc.json, no formato
+sem mexer no código em seletores-eproc.json, na pasta de dados do Helestron
+(%LOCALAPPDATA%\\Helestron, que a atualização não apaga), no formato
 {"pesquisa_rapida": ["#campoNovo"], ...} (ou {"eproc": {...}}, também aceito
-em dados/seletores.json). Os do usuário vêm na frente; os padrões ficam de
-reserva. As chaves usadas na leitura do HTML (eventos, capa, partes) aceitam
+no seletores.json da mesma pasta). Os do usuário vêm na frente; os padrões
+ficam de reserva. As chaves usadas na leitura do HTML (eventos, capa, partes) aceitam
 CSS simples: tag, #id, .classe, [atributo], [a=v], [a^=v], [a*=v], [a$=v],
 descendente e ">".
 """
@@ -152,22 +153,26 @@ SELETORES_PADRAO: dict[str, list[str]] = {
 def carregar_seletores(arquivo: Path | None = None) -> dict[str, list[str]]:
     """Seletores padrão, com os do usuário na frente.
 
-    Lê dados/seletores-eproc.json ({"chave": [...]} ou {"eproc": {...}}) e a
-    seção "eproc" de dados/seletores.json (o mesmo arquivo do e-SAJ).
-    Arquivo ausente é o normal; arquivo estragado é avisado e ignorado.
+    Lê seletores-eproc.json ({"chave": [...]} ou {"eproc": {...}}) e a
+    seção "eproc" de seletores.json (o mesmo arquivo do e-SAJ), na pasta de
+    dados do Helestron (e, de reserva, na pasta dados do programa: ver
+    esaj.arquivos_de_seletores). Arquivo ausente é o normal; arquivo
+    estragado é avisado e ignorado.
     """
+    from .esaj import arquivos_de_seletores
+
     sel = {k: list(v) for k, v in SELETORES_PADRAO.items()}
     if arquivo is not None:
         fontes = [Path(arquivo)]
     else:
-        fontes = [caminhos.DADOS / "seletores.json", caminhos.DADOS / "seletores-eproc.json"]
+        fontes = arquivos_de_seletores("seletores.json", "seletores-eproc.json")
     for alvo in fontes:
         try:
             dados = json.loads(alvo.read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
             continue
         except (OSError, ValueError) as erro:
-            log.warning("dados\\%s ilegível (%s); uso os seletores padrão.", alvo.name, erro)
+            log.warning("%s ilegível (%s); uso os seletores padrão.", alvo, erro)
             continue
         if not isinstance(dados, dict):
             continue
@@ -1581,16 +1586,17 @@ class PortalEProc:
 
         Depois de um endereço que não responde, o Chromium ainda está abrindo
         a própria página de erro, e o goto seguinte é "interrompido por outra
-        navegação": espera-se ela assentar e tenta-se de novo, uma vez.
+        navegação": espera-se ela assentar e tenta-se de novo (até duas vezes:
+        num computador ocupado, a página de erro demora a assentar).
         """
         self._checar_cancelado()
         pagina = pagina or self.pg
-        for tentativa in (1, 2):
+        for tentativa in (1, 2, 3):
             try:
                 pagina.goto(url, wait_until="domcontentloaded", timeout=self.espera_ms)
                 return
             except Exception as erro:
-                if tentativa == 2 or not re.search(
+                if tentativa == 3 or not re.search(
                         r"interrupted by another navigation|net::ERR_ABORTED", str(erro)):
                     raise
                 try:

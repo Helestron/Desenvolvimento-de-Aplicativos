@@ -10,7 +10,10 @@
  * (dígito verificador calculado); nomes e processos são fictícios.
  *
  * Variações pela URL: &pauta=vazia (pauta sem nada, sem fontes),
- * &sem_dialogo=1 (sem diálogo nativo: usa o <input type=file>).
+ * &sem_dialogo=1 (sem diálogo nativo: usa o <input type=file>),
+ * &lote=falhas (nenhum processo do lote é baixado),
+ * &claude_code=ausente (o Claude Code não está instalado),
+ * &microfone=<nome> (o microfone guardado em Ajustes, pelo nome).
  */
 (function () {
   "use strict";
@@ -21,6 +24,8 @@
 
   const PAUTA_VAZIA = params.get("pauta") === "vazia";
   const SEM_DIALOGO = params.get("sem_dialogo") === "1";
+  const LOTE_FALHA = params.get("lote") === "falhas";
+  const SEM_CLAUDE_CODE = params.get("claude_code") === "ausente";
   // &falantes=ausentes: construção sem os modelos de voz (a tela oferece baixá-los)
   let falantesProntos = params.get("falantes") !== "ausentes";
 
@@ -173,6 +178,27 @@
   }
 
   const pauta = PAUTA_VAZIA ? [] : gerarPauta();
+  // Uma audiência em segredo de justiça sempre presente (amanhã, 15:30): a
+  // pauta sabe do sigilo, e a tela Audiências liga o interruptor sozinha.
+  const PROCESSO_SIGILOSO = cnj(700888, 2025, 8, 2, 1);
+  if (!PAUTA_VAZIA) {
+    const amanha = dia(1);
+    pauta.push({
+      id: "a0f5e1c2d3b4a596", sistema: "esaj", tribunal: "TJAL", processo: PROCESSO_SIGILOSO, data: iso(amanha), hora: "15:30",
+      tipo: "Conciliação", situacao: "Designada", local: "Cejusc — sala 2", link: "", classe: "Guarda", partes: "R. S. M. x A. P. M.",
+      magistrado: "Conciliador Rafael Teixeira Lopes", sigiloso: true, observacoes: "", origem: "e-SAJ TJAL — Agenda de audiências",
+      capturada_em: isoHora(agoraMenos(95)), tipo_original: "Conciliação", situacao_original: "Designada",
+    });
+    pauta.sort((a, b) => (a.data + a.hora).localeCompare(b.data + b.hora));
+  }
+  const MOTIVO_PAUTA = "A pauta de audiências indica que este processo corre em segredo de justiça.";
+  const MOTIVO_AUTOS = "Os autos deste processo (ou uma transcrição ou gravação dele) estão na pasta dos sigilosos.";
+  /** Por que o programa já sabe que o processo é sigiloso ("" = não sabe). */
+  function sigiloConhecido(numero) {
+    if (recentes.some((r) => r.sigiloso && r.numero === numero)) return MOTIVO_AUTOS;
+    if (pauta.some((a) => a.sigiloso && a.processo === numero)) return MOTIVO_PAUTA;
+    return "";
+  }
 
   // Alterações recentes (as três primeiras ainda não vistas).
   function gerarAlteracoes() {
@@ -199,6 +225,7 @@
   ];
   let monitoramento = { ativo: !PAUTA_VAZIA, intervalo_horas: 6, proxima: isoHora(new Date(Date.now() + 5.3 * 3600000)) };
   let ultimaSincronizacao = PAUTA_VAZIA ? null : isoHora(agoraMenos(42));
+  let pautaImportada = false;
 
   // ============================================================== acervo
   const lotes = [
@@ -242,6 +269,7 @@
     ["transcricao", "modelo_ao_vivo", "escolha", "Modelo ao vivo", "Base para computador mais simples; small é o recomendado.", [["base", "Base"], ["small", "Small"], ["medium", "Medium"]]],
     ["transcricao", "modelo_revisao", "escolha", "Modelo da revisão", "Usado na revisão final e nas gravações.", [["small", "Small"], ["medium", "Medium"], ["large-v3-turbo", "Large v3 turbo"]]],
     ["transcricao", "refinar_ao_encerrar", "flag", "Revisar ao encerrar", "Refaz a transcrição inteira com o modelo de revisão (leva alguns minutos)."],
+    ["transcricao", "dispositivo", "texto", "Dispositivo", "Microfone. Em branco = o padrão do Windows."],
     ["transcricao", "separar_falantes", "flag", "Separar as vozes na revisão", "Os modelos de voz vêm com o instalador."],
     ["transcricao", "salvar_audio", "flag", "Guardar a gravação", "Arquivo FLAC ao lado da transcrição, na pasta _audio."],
     ["transcricao", "marcar_tempo", "flag", "Marcar o tempo de cada fala", "Mostra [hh:mm:ss] no documento."],
@@ -264,6 +292,7 @@
     download: { espera_login_minutos: "10", pular_baixados: "true", separar_sigilosos: "true", baixar_midias: "false", mostrar_navegador: "false", navegador: "auto", pausa_entre_processos: "3", tentativas: "2" },
     transcricao: {
       modelo_ao_vivo: "small", modelo_revisao: "medium", refinar_ao_encerrar: "false", separar_falantes: "true",
+      dispositivo: params.get("microfone") || "",
       salvar_audio: "true", marcar_tempo: "true",
       falantes: "Juiz(a);Promotor(a);Defensor(a);Advogado(a) do autor;Advogado(a) do réu;Testemunha;Parte;Outro",
       contexto: "Transcrição de audiência judicial. Participam o Juiz de Direito, o Ministério Público, advogados, partes e testemunhas. Vocabulário forense: Meritíssimo, Excelência, contraditado, compromissada, depoimento, oitiva, instrução.",
@@ -414,6 +443,8 @@
     return l;
   }
 
+  const relatoriosDosLotes = {};   // pasta do lote → {número: situação}
+
   async function simularDownload(t, numeros, nomeLote, opcoes) {
     const pasta = PASTAS.processos + "\\" + nomeLote;
     // Como o servidor: a tarefa guarda os itens (GET /api/tarefas/{id} os devolve).
@@ -455,25 +486,38 @@
       atualizar(t, { status: `Baixando ${n} no ${portal}`, progresso: { atual: n } });
       await pausa(650 + (i % 3) * 180);
       let item = { tarefa: t.id, numero: n, situacao: "OK", mensagem: `${entre(18, 412)} páginas`, arquivo: pasta + "\\" + n + ".pdf", sigiloso: false };
-      if (i === 2) item = Object.assign(item, { situacao: "JA_BAIXADO", mensagem: "O PDF já estava na pasta do lote." });
+      if (LOTE_FALHA) item = Object.assign(item, { situacao: "ERRO", mensagem: "O portal não respondeu (tempo esgotado).", arquivo: "" });
+      else if (i === 2) item = Object.assign(item, { situacao: "JA_BAIXADO", mensagem: "O PDF já estava na pasta do lote." });
       if (i === 4 && opcoes.separar_sigilosos !== false) item = Object.assign(item, { sigiloso: true, mensagem: "Segredo de justiça: salvo na pasta dos sigilosos.", arquivo: PASTAS.sigilosos + "\\" + nomeLote + "\\" + n + ".pdf" });
       if (i === 7) item = Object.assign(item, { situacao: "NAO_ENCONTRADO", mensagem: "Não achei o processo no e-SAJ do TJSP.", arquivo: "" });
       emitirItem(item);
       if (item.situacao === "OK") baixados++;
       if (item.situacao === "JA_BAIXADO") jaTinha++;
-      if (item.situacao === "NAO_ENCONTRADO") falhas++;
+      if (item.situacao === "NAO_ENCONTRADO" || item.situacao === "ERRO") falhas++;
       if (item.sigiloso) sigilosos++;
       atualizar(t, { progresso: { feitos: i + 1, percentual: (100 * (i + 1)) / numeros.length } });
     }
-    const partes = [`${baixados} baixados`];
-    if (jaTinha) partes.push(`${jaTinha} já existiam`);
+    const partes = [`${baixados} ${baixados === 1 ? "baixado" : "baixados"}`];
+    if (jaTinha) partes.push(`${jaTinha} ${jaTinha === 1 ? "já existia" : "já existiam"}`);
     if (falhas) partes.push(`${falhas} com falha`);
-    const aRefazer = numeros.filter((_n, i) => i === 7);
+    const aRefazer = LOTE_FALHA ? numeros.slice() : numeros.filter((_n, i) => i === 7);
     const resultado = { texto: partes.join(", "), pasta, relatorio: pasta + "\\_controle\\relatorio.csv", total: numeros.length, baixados, pulados: jaTinha, falhas, sigilosos, a_refazer: aRefazer };
     if (t._parar) {
       concluir(t, "parada", { status: "Parado a seu pedido: " + partes.join(", ") + ".", resultado });
     } else {
-      lotes.unshift({ nome: nomeLote, quando: isoHora(new Date()), total: numeros.length, baixados: baixados + jaTinha, falhas, pasta, relatorio: resultado.relatorio });
+      // Como o programa (C9): refazer parte de um lote na mesma pasta junta as
+      // linhas novas às do relatório do lote, sem apagar as dos já baixados.
+      const relatorio = (relatoriosDosLotes[pasta] = relatoriosDosLotes[pasta] || {});
+      for (const n of numeros) relatorio[n] = (t._itens[n] || {}).situacao || "";
+      const situacoes = Object.values(relatorio);
+      const linha = {
+        nome: nomeLote, quando: isoHora(new Date()), total: situacoes.length,
+        baixados: situacoes.filter((x) => x === "OK" || x === "JA_BAIXADO").length,
+        falhas: situacoes.filter((x) => x !== "OK" && x !== "JA_BAIXADO").length, pasta, relatorio: resultado.relatorio,
+      };
+      const antes = lotes.findIndex((l) => l.pasta === pasta);
+      if (antes >= 0) lotes.splice(antes, 1);
+      lotes.unshift(linha);
       concluir(t, "concluida", { status: partes.join(" · "), resultado });
     }
   }
@@ -554,6 +598,24 @@
   const atraso = () => pausa(70 + Math.floor(Math.random() * 120));
   const erro = (codigo, mensagem, detalhe) => new H.api.ErroApi(codigo, mensagem, detalhe, 400);
 
+  const MICROFONES = [
+    { indice: 1, nome: "Microfone (Realtek(R) Audio)", padrao: true },
+    { indice: 3, nome: "Microfone de mesa USB (Jabra Speak 510)", padrao: false },
+    { indice: 5, nome: "Matriz de microfones (Intel® Smart Sound)", padrao: false },
+  ];
+  /**
+   * Como o servidor (C2): o microfone vem pelo NOME (ou pelo número; "" é o
+   * padrão do Windows). Nome que não está mais ligado é erro claro, nunca
+   * outro aparelho em silêncio.
+   */
+  function conferirMicrofone(dispositivo) {
+    const texto = String(dispositivo === undefined || dispositivo === null ? "" : dispositivo).trim();
+    if (!texto || /^\d+$/.test(texto)) return;
+    if (MICROFONES.some((m) => m.nome === texto)) return;
+    throw new H.api.ErroApi("microfone_indisponivel",
+      `O microfone «${texto}» não foi encontrado. Escolha outro em Audiências ou Ajustes › Transcrição.`, "", 409);
+  }
+
   function filtrarPauta(c) {
     const de = c.de || "0000-00-00", ate = c.ate || "9999-99-99";
     const busca = (c.busca || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -594,9 +656,6 @@
     if (acessos.some((a) => a.portal === "eproc:TJAL" && !a.tem_senha)) {
       pendencias.push({ chave: "acessos", titulo: "Cadastre o acesso ao eProc do TJAL", mensagem: "Sem a senha, o navegador abre para você entrar a cada lote.", acao: "ajustes#acessos" });
     }
-    if (!fontes.length) {
-      pendencias.push({ chave: "pauta", titulo: "Configure a pauta de audiências", mensagem: "Sincronize com o e-SAJ e o eProc, ou capture a pauta no portal.", acao: "pauta" });
-    }
     return {
       nome: "Helestron", versao: "1.0.0", modo: "janela", usuario: valores.geral.nome_usuario, pastas: PASTAS, pendencias,
       audiencia: { ativa: !!sessao.id && sessao.estado !== "encerrada", estado: sessao.estado, processo: sessao.id ? sessao.processo : null },
@@ -609,11 +668,16 @@
           semana: pauta.filter((a) => a.data >= h && a.data <= iso(dia(7))).length,
           proxima, ultima_sincronizacao: ultimaSincronizacao,
           alteracoes_nao_vistas: alteracoes.filter((a) => !a.vista).length,
+          // Como o servidor (C5): quantas fontes há, e se a pauta já foi
+          // configurada (fonte cadastrada, sincronização ou importação).
+          fontes: fontes.length, configurada: fontes.length > 0 || !!ultimaSincronizacao || pautaImportada,
         },
       },
       tarefas: Array.from(tarefas.values()).filter((t) => t.estado === "rodando").map(semInternos),
     };
   }
+
+  const PROMPT_INICIAL = "Você vai trabalhar no acervo judicial desta pasta. Leia primeiro o CLAUDE.md (ou o AGENTS.md) e o INDICE.md. Depois, aguarde a minha tarefa.";
 
   function caminhoArquivo(nome) {
     return USUARIO + "\\Downloads\\" + nome;
@@ -669,13 +733,19 @@
       return enderecosDe(corpo.portal);
     },
     "POST /api/acessos/testar": ({ corpo }) => {
-      const t = novaTarefa("teste_login", `Testar o acesso ao ${corpo.tribunal}`, 0);
+      // Como o servidor: com 'sistema', testa exatamente aquele portal; sem
+      // ele, o sistema principal do tribunal.
+      const sigla = String(corpo.tribunal || "").toUpperCase();
+      const trib = TRIBUNAIS.find((x) => x.sigla === sigla);
+      const sistema = corpo.sistema || (trib ? trib.sistema : "esaj");
+      const nome = rotuloPortal(`${sistema}:${sigla}`);
+      const t = novaTarefa("teste_login", `Testar o acesso ao ${nome}`, 0);
       (async () => {
         atualizar(t, { status: "Abrindo o portal…" });
         await pausa(900);
         atualizar(t, { status: "Entrando com o usuário e a senha…" });
         await pausa(1100);
-        concluir(t, "concluida", { status: `Entrou no portal do ${corpo.tribunal}. O acesso está certo.` });
+        concluir(t, "concluida", { status: `Acesso ao ${nome} confirmado.` });
       })();
       return { tarefa: t.id };
     },
@@ -774,17 +844,14 @@
       const nome = corpo.nome_lote || "Lote";
       const t = novaTarefa("download", `Baixar “${nome}”`, numeros.length);
       simularDownload(t, numeros, nome, corpo.opcoes || {});
-      return { tarefa: t.id };
+      return { tarefa: t.id, pasta: PASTAS.processos + "\\" + nome };
     },
     "GET /api/download/lotes": () => lotes,
 
     // ----------------------------------------------------------- audiências
-    "GET /api/transcricao/microfones": () => [
-      { indice: 1, nome: "Microfone (Realtek(R) Audio)", padrao: true },
-      { indice: 3, nome: "Microfone de mesa USB (Jabra Speak 510)", padrao: false },
-      { indice: 5, nome: "Matriz de microfones (Intel® Smart Sound)", padrao: false },
-    ],
-    "POST /api/transcricao/microfone/teste": () => {
+    "GET /api/transcricao/microfones": () => MICROFONES,
+    "POST /api/transcricao/microfone/teste": ({ corpo }) => {
+      conferirMicrofone(corpo && corpo.dispositivo);
       clearInterval(sessao.teste);
       let f = 0;
       sessao.teste = setInterval(() => {
@@ -833,10 +900,18 @@
     },
     "POST /api/transcricao/iniciar": ({ corpo }) => {
       if (sessao.id && sessao.estado !== "encerrada") throw erro("sessao_ativa", "Já há uma audiência sendo transcrita. Encerre-a antes de começar outra.");
+      conferirMicrofone("dispositivo" in corpo ? corpo.dispositivo : valores.transcricao.dispositivo);
+      // O pedido só ACRESCENTA sigilo (C4): o que o programa já sabe vale
+      // mesmo com o interruptor desligado, e a resposta diz por quê.
+      const motivo = corpo.sigiloso ? "" : sigiloConhecido(corpo.processo);
+      const pedido = Object.assign({}, corpo, { sigiloso: !!corpo.sigiloso || !!motivo });
       sessao.documento = null;
+      sessao.tipo = corpo.tipo || "";
       clearInterval(sessao.teste);
-      iniciarSessao(corpo);
-      return { sessao: sessao.id };
+      iniciarSessao(pedido);
+      const resposta = { sessao: sessao.id, processo: corpo.processo, sigiloso: pedido.sigiloso, sigiloso_forcado: !!motivo };
+      if (motivo) resposta.motivo = motivo;
+      return resposta;
     },
     "POST /api/transcricao/pausar": () => {
       sessao.acumulado = tempoSessao();
@@ -854,7 +929,8 @@
       sessao.falante = corpo.falante;
       return {};
     },
-    "POST /api/transcricao/encerrar": async () => {
+    "POST /api/transcricao/encerrar": async ({ corpo }) => {
+      if (corpo && corpo.tipo) sessao.tipo = corpo.tipo;
       sessao.acumulado = tempoSessao();
       sessao.estado = "encerrando";
       emitirTranscricao("estado", { texto: "Concluindo a transcrição: 1 trecho na fila...", estado: "encerrando" });
@@ -868,7 +944,7 @@
       emitirTranscricao("estado", { texto: "Concluído", estado: "encerrada" });
       emitirTranscricao("fim", { documento });
       recentes.unshift({ numero: sessao.processo, arquivo: documento, quando: isoHora(new Date()), sigiloso: !!sessao.sigiloso });
-      sessao.ultima = { processo: sessao.processo, sigiloso: sessao.sigiloso };
+      sessao.ultima = { processo: sessao.processo, sigiloso: sessao.sigiloso, tipo: sessao.tipo || "" };
       emitir("estado", {});
       return { documento };
     },
@@ -885,20 +961,29 @@
       return { documento: PASTAS.transcricoes + "\\" + (r ? r.processo : "audiencia") + ".docx" };
     },
     "POST /api/transcricao/gravacao": ({ corpo, formulario }) => {
+      const campo = (k) => (formulario ? formulario.get(k) : corpo && corpo[k]);
       const revisao = !formulario && corpo && corpo.revisao === true;
       if (revisao && !sessao.ultima) throw Object.assign(erro("sem_audiencia", "Não há audiência encerrada para revisar."), { status: 409 });
-      const processo = revisao ? sessao.ultima.processo : formulario ? formulario.get("processo") : corpo.processo;
+      const processo = revisao ? sessao.ultima.processo : campo("processo");
+      // A ficha da revisão leva o tipo da audiência (o da tela, ou o da sessão).
+      const tipo = String(campo("tipo") || (revisao ? sessao.ultima.tipo : "") || "");
+      const pedido = campo("sigiloso");
+      const marcado = pedido === true || pedido === "true";
+      const motivo = marcado ? "" : revisao ? (sessao.ultima.sigiloso ? "A audiência ao vivo foi gravada como sigilosa." : "") : sigiloConhecido(processo);
+      const sigiloso = marcado || !!motivo;
       const t = novaTarefa("transcricao_arquivo", revisao ? "Revisar a audiência" : "Transcrever a gravação", 100);
       (async () => {
         for (let p = 0; p <= 100; p += 5) {
           atualizar(t, { status: p < 10 ? "Carregando o modelo medium…" : `${revisao ? "Revisando" : "Transcrevendo"}: ${p}%`, progresso: { feitos: p, percentual: p } });
           await pausa(220);
         }
-        const documento = PASTAS.transcricoes + "\\" + processo + ".docx";
-        recentes.unshift({ numero: processo, arquivo: documento, quando: isoHora(new Date()), sigiloso: false });
-        concluir(t, "concluida", { status: "Transcrição pronta.", resultado: { documento } });
+        const documento = (sigiloso ? PASTAS.sigilosos + "\\Transcricoes" : PASTAS.transcricoes) + "\\" + processo + ".docx";
+        recentes.unshift({ numero: processo, arquivo: documento, quando: isoHora(new Date()), sigiloso });
+        concluir(t, "concluida", { status: "Transcrição pronta.", resultado: { documento, tipo } });
       })();
-      return { tarefa: t.id };
+      const resposta = { tarefa: t.id, sigiloso, sigiloso_forcado: !!motivo };
+      if (motivo) resposta.motivo = motivo;
+      return resposta;
     },
     "GET /api/transcricao/recentes": () => recentes,
 
@@ -968,7 +1053,11 @@
       })();
       return { tarefa: t.id };
     },
-    "POST /api/pauta/importar": () => ({ novas: 6, atualizadas: 2, ignoradas: 1, total: 8, arquivo: "Pauta de outubro.xlsx", avisos: ["Linha 14: data ilegível (“32/10/2026”); a linha foi ignorada."] }),
+    "POST /api/pauta/importar": () => {
+      pautaImportada = true;
+      emitir("estado", {});
+      return { novas: 6, atualizadas: 2, ignoradas: 1, total: 8, arquivo: "Pauta de outubro.xlsx", avisos: ["Linha 14: data ilegível (“32/10/2026”); a linha foi ignorada."] };
+    },
     "POST /api/pauta/exportar": ({ corpo }) => ({ arquivo: `${PASTAS.pauta}\\Pauta de audiências ${corpo.de} a ${corpo.ate}.xlsx`, pasta: PASTAS.pauta }),
     "GET /api/pauta/alteracoes": ({ consulta }) => alteracoes
       .filter((a) => !consulta.desde || a.quando >= consulta.desde)
@@ -1015,9 +1104,18 @@
       return { tarefa: t.id };
     },
     "POST /api/compartilhar/claude-desktop": () => ({ mensagem: "Conector do acervo registrado no Claude Desktop. Feche e abra o Claude Desktop para ele aparecer.", abriu: false }),
-    "POST /api/compartilhar/cowork": () => ({ mensagem: "O Cowork abriu na pasta do acervo. Confirme o acesso quando o Claude perguntar e cole o pedido inicial (Ctrl+V): ele já está copiado.", abriu: true }),
-    "POST /api/compartilhar/claude-code": () => ({ mensagem: "O Claude Code abriu num terminal, já dentro do acervo.", abriu: true }),
-    "POST /api/compartilhar/chatgpt-work": () => ({ mensagem: "O ChatGPT abriu. No modo Work, tecle Ctrl+O e cole o caminho do acervo (já copiado): o ChatGPT passa a trabalhar na pasta e lê o AGENTS.md sozinho.", abriu: true }),
+    "POST /api/compartilhar/cowork": () => ({
+      abriu: true, resultado: "cowork", copiar: `Pasta do acervo: ${PASTAS.acervo}\n\n${PROMPT_INICIAL}`,
+      mensagem: "Abrindo o Cowork. O Claude vai pedir para confirmar o acesso à pasta do acervo; depois, cole o pedido inicial (Ctrl+V).",
+    }),
+    "POST /api/compartilhar/claude-code": () => (SEM_CLAUDE_CODE ? {
+      abriu: false, instalado: false, pagina_aberta: true, url: "https://docs.claude.com/pt-BR/docs/claude-code/overview",
+      mensagem: "O Claude Code não está instalado neste computador. Abri no navegador a página oficial que explica como instalá-lo (sem administrador). Depois de instalar, clique de novo em “Abrir no Claude Code”.",
+    } : { abriu: true, mensagem: "O Claude Code abriu numa janela própria, já na pasta do acervo. No primeiro uso, entre com a sua conta." }),
+    "POST /api/compartilhar/chatgpt-work": () => ({
+      abriu: true, resultado: "app", copiar: PASTAS.acervo,
+      mensagem: "No app do ChatGPT, escolha Work, tecle Ctrl+O e cole o caminho do acervo (Ctrl+V). O ChatGPT lê o AGENTS.md da pasta.",
+    }),
     "POST /api/compartilhar/codex": () => { throw erro("nao_instalado", "O Codex não está instalado neste computador. Instale-o pelo site da OpenAI e tente de novo."); },
     "POST /api/compartilhar/pacote": () => {
       const t = novaTarefa("pacote", "Gerar o pacote para o ChatGPT", 0);
@@ -1045,7 +1143,7 @@
       })();
       return { tarefa: t.id };
     },
-    "GET /api/compartilhar/prompt": () => ({ texto: "Você vai trabalhar no acervo judicial desta pasta. Leia primeiro o CLAUDE.md (ou o AGENTS.md) e o INDICE.md. Depois, aguarde a minha tarefa." }),
+    "GET /api/compartilhar/prompt": () => ({ texto: `Pasta do acervo: ${PASTAS.acervo}\n\n${PROMPT_INICIAL}` }),
 
     // ------------------------------------------------------------ autoteste
     "POST /api/autoteste/passo": () => ({}),

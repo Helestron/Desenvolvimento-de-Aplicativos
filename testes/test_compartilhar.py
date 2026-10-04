@@ -312,6 +312,21 @@ class TestSigilo(BaseAcervo):
         self.assertEqual(list(nuvem_dir.rglob(f"{SIGILOSO}*")), [])
         self.assertTrue(list(nuvem_dir.rglob(f"{NUM}.pdf")))    # o resto continua lá
 
+    def test_espelho_antigo_do_assessor_tambem_perde_o_sigiloso(self):
+        """Quem usava o espelho do Assessor Integrado na mesma nuvem: a cópia
+        antiga ("Assessor Integrado - Acervo") de processo que depois foi para a
+        pasta de sigilosos também sai - ela continua ao alcance dos conectores."""
+        nuvem_dir = Path(self.dir.name) / "Nuvem"
+        antiga = nuvem_dir / "Assessor Integrado - Acervo" / "Processos" / "Lote 1"
+        _pdf(antiga / f"{SIGILOSO}.pdf", ["DEPOIMENTO DA VÍTIMA - SEGREDO"])
+        (antiga / f"{SIGILOSO}.txt").write_text("SEGREDO", encoding="utf-8")
+        _pdf(antiga / f"{NUM}.pdf", ["Petição inicial"])
+        _pdf(self.sigilosos / "Lote 1" / f"{SIGILOSO}.pdf", ["DEPOIMENTO DA VÍTIMA - SEGREDO"])
+        self.assertIn("Assessor Integrado - Acervo", nuvem.SUBPASTAS_ANTIGAS)
+        nuvem.espelhar(self.raiz, nuvem_dir, sigilosos=self.sigilosos)
+        self.assertEqual(list(nuvem_dir.rglob(f"{SIGILOSO}*")), [])
+        self.assertTrue((antiga / f"{NUM}.pdf").exists())     # o resto não é apagado
+
     def test_copia_esquecida_no_acervo_nao_e_servida(self):
         # Copiou para a pasta de sigilosos, mas não conseguiu apagar do acervo.
         _pdf(self.raiz / "Processos" / "Lote 1" / f"{SIGILOSO}.pdf", ["SEGREDO"])
@@ -524,14 +539,77 @@ class TestClaude(BaseAcervo):
                              f'title Claude Code - Acervo& pushd "{Path(pasta)}" && "{exe}"')
 
     def test_windows_terminal_entra_na_pasta_de_rede(self):
-        chamada = self._terminal(Path(r"\\servidor\gabinete\Acervo"), r"C:\c\claude.exe",
-                                 r"C:\wt.exe")
+        rede = Path(r"\\servidor\gabinete\Acervo")
+        chamada = self._terminal(rede, r"C:\c\claude.exe", r"C:\wt.exe")
         args = chamada.args[0]
         self.assertNotIn("-d", args)
-        self.assertEqual(args[-5:], ["/k", "pushd", str(Path(r"\\servidor\gabinete\Acervo")),
-                                     "&&", r"C:\c\claude.exe"])
+        self.assertEqual(args[-4:], ["cmd.exe", "/s", "/k",
+                                     f'pushd "{rede}" && "C:\\c\\claude.exe"'])
         args = self._terminal(Path("C:/Acervo"), r"C:\c\claude.exe", r"C:\wt.exe").args[0]
         self.assertIn("-d", args)
+
+    @staticmethod
+    def _argv_do_windows(linha: str) -> list[str]:
+        """Como o CommandLineToArgvW do Windows lê uma linha de comando."""
+        args, atual, aspas, i, tem = [], [], False, 0, False
+        while i < len(linha):
+            c = linha[i]
+            if c == "\\":
+                n = 0
+                while i < len(linha) and linha[i] == "\\":
+                    n += 1
+                    i += 1
+                if i < len(linha) and linha[i] == '"':
+                    atual.append("\\" * (n // 2))
+                    if n % 2:
+                        atual.append('"')
+                        i += 1
+                    tem = True
+                    continue
+                atual.append("\\" * n)
+                tem = True
+                continue
+            if c == '"':
+                aspas = not aspas
+                tem = True
+            elif c in " \t" and not aspas:
+                if tem:
+                    args.append("".join(atual))
+                atual, tem = [], False
+            else:
+                atual.append(c)
+                tem = True
+            i += 1
+        if tem:
+            args.append("".join(atual))
+        return args
+
+    def test_windows_terminal_protege_e_comercial_sem_espaco(self):
+        """Usuário "M&M" (o Windows aceita "&" no nome da conta) ou acervo em
+        "D:\\P&D": sem espaço no caminho, o Windows Terminal não punha aspas, e o
+        cmd.exe partia o comando no "&" - o Claude Code (e o Codex) não abria."""
+        import subprocess
+
+        for pasta, exe in ((r"C:\Users\M&M\Documents\Helestron\Acervo",
+                            r"C:\Users\M&M\.local\bin\claude.exe"),
+                           (r"D:\P&D;x\Acervo", r"C:\Users\M&M\.local\bin\claude.exe")):
+            with self.subTest(pasta=pasta):
+                args = self._terminal(Path(pasta), exe, r"C:\wt.exe").args[0]
+                # o que o wt.exe recebe (o Python monta a linha) e lê de volta
+                lidos = self._argv_do_windows(subprocess.list2cmdline(args))
+                comando_wt = lidos[lidos.index("cmd.exe"):]
+                # o ";" vai escapado para o wt, que o desfaz
+                comando_wt = [a.replace("\\;", ";") for a in comando_wt]
+                # o Windows Terminal remonta a linha do cmd: aspas só onde há espaço
+                linha_cmd = " ".join(f'"{a}"' if " " in a else a for a in comando_wt)
+                self.assertTrue(linha_cmd.startswith('cmd.exe /s /k "'), linha_cmd)
+                # /s: o cmd tira só a primeira e a última aspa
+                interno = linha_cmd.split(" /k ", 1)[1][1:-1]
+                self.assertEqual(interno, f'pushd "{Path(pasta)}" && "{exe}"')
+                # todo "&" de caminho fica dentro de aspas; só o "&&" fica fora
+                fora = "".join(parte for i, parte in enumerate(interno.split('"')) if i % 2 == 0)
+                self.assertEqual(fora.replace("&&", ""), fora.replace("&", ""))
+                self.assertEqual(fora.count("&&"), 1)
 
     def test_achar_claude_code_pelo_caminho_nativo(self):
         casa = Path(self.dir.name) / "casa"
@@ -592,6 +670,20 @@ class TestChatGPT(BaseAcervo):
             with self.assertRaises(FileNotFoundError) as ctx:
                 chatgpt.abrir_codex(self.raiz)
         self.assertIn("“Abrir no ChatGPT Work”", str(ctx.exception))
+        # o botão do cartão "Pacote para o ChatGPT" se chama "Gerar o pacote"
+        self.assertIn("“Gerar o pacote”", str(ctx.exception))
+        self.assertNotIn("Gerar pacote para o ChatGPT", str(ctx.exception))
+        tela = (Path(chatgpt.__file__).resolve().parents[1] / "web" / "js"
+                / "secao-compartilhar.js").read_text(encoding="utf-8")
+        self.assertIn('rotulo: "Gerar o pacote"', tela)
+        self.assertIn('rotulo: "Abrir no ChatGPT Work"', tela)
+
+    def test_claude_code_ausente_nao_cita_botao_que_nao_existe(self):
+        with mock.patch.object(claude, "achar_claude_code", return_value=None):
+            with self.assertRaises(FileNotFoundError) as ctx:
+                claude.abrir_claude_code(self.raiz)
+        self.assertNotIn("Instalar o Claude Code", str(ctx.exception))
+        self.assertIn(claude.URL_DOC_CODE, str(ctx.exception))
 
     def test_pacote_respeita_texto_desligado(self):
         cfg = config.Config(Path(self.dir.name) / "config.ini")
@@ -649,6 +741,25 @@ class TestNuvem(BaseAcervo):
         extra.write_text("fica", encoding="utf-8")
         self.assertEqual(nuvem.espelhar(self.raiz, destino), (0, copiados))
         self.assertTrue(extra.exists())
+
+    def test_espelho_dentro_do_acervo_e_recusado(self):
+        """A pasta da nuvem dentro do acervo (ou o próprio acervo): cada espelho
+        copiava a cópia anterior ("Helestron - Acervo/Helestron - Acervo/..."),
+        e o acervo crescia sem fim."""
+        for destino in (self.raiz, self.raiz / "OneDrive"):
+            with self.subTest(destino=destino):
+                with self.assertRaises(ValueError):
+                    nuvem.espelhar(self.raiz, destino, sigilosos=None)
+                self.assertFalse((self.raiz / nuvem.SUBPASTA).exists())
+                self.assertFalse((self.raiz / "OneDrive" / nuvem.SUBPASTA).exists())
+        # o acervo dentro da própria subpasta do espelho também não
+        nuvem_dir = Path(self.dir.name) / "Nuvem"
+        acervo = nuvem_dir / nuvem.SUBPASTA / "Acervo"
+        _pdf(acervo / f"{NUM}.pdf", ["Petição inicial"])
+        with self.assertRaises(ValueError):
+            nuvem.espelhar(acervo, nuvem_dir, sigilosos=None)
+        self.assertEqual(sorted(p.name for p in (nuvem_dir / nuvem.SUBPASTA).iterdir()),
+                         ["Acervo"])
 
     def test_detectar_onedrive(self):
         pasta = Path(self.dir.name) / "OneDrive - Tribunal"

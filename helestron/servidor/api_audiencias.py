@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime
 from pathlib import Path
 
 from .. import servicos
 from ..nucleo import caminhos
 from ..tarefas import MODELO_REVISAO
-from .audiencia import numero_da_gravacao, quando
+from .audiencia import numero_da_gravacao, quando, sigilo_da_audiencia
 from .rede import ErroApi, Pedido, Roteador, erro_400
 
 log = logging.getLogger("servidor.audiencias")
@@ -134,8 +136,11 @@ def falante(p: Pedido) -> dict:
 
 
 def encerrar(p: Pedido) -> dict:
-    refinar = p.json().get("refinar")
-    return p.app.audiencia.encerrar(None if refinar is None else bool(refinar))
+    dados = p.json()
+    refinar = dados.get("refinar")
+    tipo = dados.get("tipo")
+    return p.app.audiencia.encerrar(None if refinar is None else bool(refinar),
+                                    tipo=str(tipo).strip() if tipo else None)
 
 
 def estado(p: Pedido) -> dict:
@@ -159,16 +164,57 @@ def recuperar(p: Pedido) -> dict:
     if str(Path(alvo)) not in validos:
         raise ErroApi(404, "nao_recuperavel",
                       "Esta transcrição não está entre as interrompidas (já foi recuperada?).")
-    documento = servicos.recuperar(Path(alvo))
+    documento = Path(servicos.recuperar(Path(alvo)))
+    # Como ao fim da audiência: o INDICE.md em dia (a IA o lê primeiro) e, se
+    # ligado, o espelho na nuvem. Não bloqueia (tarefa ou thread própria).
+    from .api_compartilhar import depois_de_salvar
+
+    depois_de_salvar(p.app, documento)
     p.app.hub.publicar("estado", {})
     return {"documento": str(documento)}
 
 
 # ================================================================== gravação
+_RE_DATA_NO_NOME = re.compile(r"(20\d\d)-(\d\d)-(\d\d)(?:[ _T]+(\d\d)h(\d\d))?")
+MOTIVO_PASTA = "A gravação está guardada na pasta dos sigilosos."
+MOTIVO_ULTIMA = "A audiência ao vivo foi gravada como sigilosa."
+
+
+def data_da_gravacao(valor, nome: str = "") -> datetime | None:
+    """A data da gravação que o envio pela página perderia (o arquivo chega
+    como um temporário de hoje): o 'data_arquivo' da página (File.lastModified,
+    em milissegundos, ou ISO 8601) ou, na falta dele, a data no nome do
+    arquivo ("<número> 2026-09-15 14h00.flac", como o Helestron grava)."""
+    texto = str(valor if valor is not None else "").strip()
+    if texto:
+        try:
+            numero = float(texto)
+            return datetime.fromtimestamp(numero / 1000 if numero > 1e11 else numero)
+        except (ValueError, OverflowError, OSError):
+            pass
+        try:
+            momento = datetime.fromisoformat(texto.replace("Z", "+00:00"))
+        except ValueError:
+            momento = None
+        if momento is not None:
+            # com fuso (o toISOString do navegador): na hora local, sem fuso
+            return momento.astimezone().replace(tzinfo=None) if momento.tzinfo else momento
+    m = _RE_DATA_NO_NOME.search(nome or "")
+    if m:
+        try:
+            ano, mes, dia = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            hora, minuto = (int(m.group(4)), int(m.group(5))) if m.group(4) else (0, 0)
+            return datetime(ano, mes, dia, hora, minuto)
+        except ValueError:
+            return None
+    return None
+
+
 def gravacao(p: Pedido) -> dict:
     app = p.app
     cfg = app.cfg
     enviado: Path | None = None
+    tamanho = None
     if p.tipo_corpo == "multipart/form-data":
         envio = p.envio(app.pasta_envios())
         arquivo = envio.arquivo("arquivo")
@@ -176,7 +222,16 @@ def gravacao(p: Pedido) -> dict:
         if arquivo is None:
             envio.apagar()
             raise erro_400("Envie a gravação no campo “arquivo”.", "campo_ausente")
-        origem, nome, enviado = arquivo.caminho, arquivo.nome, arquivo.caminho
+        # O motor vê só o temporário (envio-<hex>.wav, de hoje, fora da pasta
+        # dos sigilosos): o nome e a data que vão para a ficha, e o sigilo pela
+        # pasta de origem, saem daqui.
+        origem, enviado = arquivo.caminho, arquivo.caminho
+        nome = str(dados.get("nome_original") or arquivo.nome or arquivo.caminho.name).strip()
+        nome = Path(nome.replace("\\", "/")).name or arquivo.caminho.name
+        try:
+            tamanho = arquivo.caminho.stat().st_size
+        except OSError:
+            tamanho = None
     else:
         dados = p.json()
         origem = None
@@ -189,10 +244,9 @@ def gravacao(p: Pedido) -> dict:
         revisao = str(dados.get("revisao", "")).strip().lower() in ("1", "true", "sim", "on") \
             if not isinstance(dados.get("revisao"), bool) else dados["revisao"]
         rotulos = None
-        sigiloso_pedido = dados.get("sigiloso")
-        if isinstance(sigiloso_pedido, str):
-            sigiloso_pedido = sigiloso_pedido.strip().lower() in ("1", "true", "sim", "on") \
-                if sigiloso_pedido.strip() else None
+        participantes = None
+        tipo = str(dados.get("tipo") or "").strip()
+        data = None
         if revisao:
             ultima = app.audiencia.ultima
             if not ultima:
@@ -206,20 +260,27 @@ def gravacao(p: Pedido) -> dict:
                               "revisão.")
             numero = ultima["numero"]
             rotulos = ultima.get("falas")
+            # A ficha da revisão é a da audiência: o tipo escolhido agora na
+            # tela, ou o da sessão ao vivo, e os participantes dela.
+            tipo = tipo or str(ultima.get("tipo") or "").strip()
+            participantes = dict(ultima.get("participantes") or {}) or None
             # a revisão de audiência sigilosa continua fora do acervo
-            sigiloso = bool(ultima.get("sigiloso")) or bool(sigiloso_pedido)
+            extra = MOTIVO_ULTIMA if ultima.get("sigiloso") else ""
         else:
             if origem is None:
                 raise erro_400("Escolha a gravação da audiência.", "campo_ausente")
             if enviado is None and not origem.is_file():
                 raise ErroApi(404, "arquivo_inexistente", f"Não encontrei o arquivo {origem.name}.")
             numero = numero_da_gravacao(nome, str(dados.get("processo") or "").strip() or None)
-            if sigiloso_pedido is None:
-                sigiloso = servicos.processo_sigiloso(cfg, numero) or (
-                    enviado is None and servicos.na_pasta_dos_sigilosos(cfg, origem))
+            if enviado is None:
+                extra = MOTIVO_PASTA if servicos.na_pasta_dos_sigilosos(cfg, origem) else ""
             else:
-                sigiloso = bool(sigiloso_pedido)
-        tipo = str(dados.get("tipo") or "").strip()
+                extra = MOTIVO_PASTA if servicos.copia_na_pasta_dos_sigilosos(
+                    cfg, nome, tamanho) else ""
+                data = data_da_gravacao(dados.get("data_arquivo"), nome)
+        sigiloso, forcado, motivo = sigilo_da_audiencia(app, numero, dados.get("sigiloso"), extra)
+        if forcado:
+            log.info("Gravação de %s transcrita como sigilosa: %s", numero.formatado, motivo)
     except BaseException:
         if enviado is not None:
             enviado.unlink(missing_ok=True)
@@ -230,7 +291,8 @@ def gravacao(p: Pedido) -> dict:
             tw.definir_fracao(0.0, f"{nome} → {numero.nome_arquivo}.docx")
             documento = servicos.transcrever_gravacao(
                 origem, numero, cfg, lambda f, t="": tw.definir_fracao(f, t), tw.cancelado,
-                rotulos_manuais=rotulos, tipo=tipo, sigiloso=sigiloso)
+                rotulos_manuais=rotulos, tipo=tipo, participantes=participantes,
+                sigiloso=sigiloso, gravacao=nome if enviado is not None else "", data=data)
         finally:
             if enviado is not None:
                 try:
@@ -255,7 +317,10 @@ def gravacao(p: Pedido) -> dict:
         if enviado is not None:
             enviado.unlink(missing_ok=True)
         raise
-    return {"tarefa": tw.id}
+    resposta = {"tarefa": tw.id, "sigiloso": sigiloso, "sigiloso_forcado": forcado}
+    if forcado:
+        resposta["motivo"] = motivo
+    return resposta
 
 
 def recentes(p: Pedido) -> list[dict]:

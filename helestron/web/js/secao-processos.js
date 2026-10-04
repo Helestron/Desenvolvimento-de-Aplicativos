@@ -78,7 +78,7 @@
       const texto = await folha.entrada({
         titulo: "Colar a lista de processos", icone: "colar", multilinha: true,
         mensagem: "Cole os números, um ou vários por linha. Pode copiar direto do Excel, do e-mail ou do SAJ; o que não for número de processo é ignorado.",
-        placeholder: "0700123-83.2024.8.02.0001\n1004512-07.2024.8.26.0100", confirmar: "Ler a lista",
+        placeholder: "0700123-83.2024.8.02.0001\n1004512-63.2024.8.26.0100", confirmar: "Ler a lista",
         validar: (v) => (v ? "" : "Cole ao menos um número de processo."),
       });
       if (texto) await ler(api.relacao.texto(texto));
@@ -157,7 +157,7 @@
       trocar(lotes, H.ui.grupo({
         linhas: lista.slice(0, 8).map((l) => H.ui.linha({
           icone: "pasta", cor: "celeste", titulo: l.nome,
-          sub: `${fmt.numero(l.baixados)} de ${fmt.plural(l.total, "processo", "processos")} baixados` + (l.falhas ? ` · ${fmt.plural(l.falhas, "falha", "falhas")}` : "") + ` · ${fmt.quando(l.quando)}`,
+          sub: `${fmt.numero(l.baixados)} de ${fmt.plural(l.total, "processo baixado", "processos baixados")}` + (l.falhas ? ` · ${fmt.plural(l.falhas, "falha", "falhas")}` : "") + ` · ${fmt.quando(l.quando)}`,
           acessorio: el("span", { classe: "grupo-botoes" },
             l.relatorio ? botao({ icone: "planilha", titulo: "Abrir o relatório do lote", tamanho: "pequeno", tipo: "texto", acao: () => api.abrir("arquivo", l.relatorio) }) : null,
             botao({ rotulo: "Abrir", icone: "pasta", tamanho: "pequeno", tipo: "tonal", acao: () => api.abrir("pasta", l.pasta) })),
@@ -411,13 +411,22 @@
         titulo.textContent = total ? `Baixando ${fmt.numero(Math.min(feitos + 1, total))} de ${fmt.numero(total)}` : "Baixando…";
         status.textContent = t.status || "Começando…";
       } else {
-        anel.definir(100, t.estado === "falhou" ? "falhou" : "concluida");
-        titulo.textContent = { concluida: "Lote concluído", parada: "Lote interrompido", falhou: "O lote não terminou" }[t.estado] || "Lote encerrado";
+        // O anel e o título dizem o mesmo que o aviso do fim: verde só se
+        // tudo deu certo; âmbar com falhas; vermelho se nada foi baixado.
+        const res0 = t.resultado || {};
+        const falhas = Math.max(c.falhas, Number(res0.falhas) || 0);
+        const obtidos = Math.max(c.ok + c.ja, (Number(res0.baixados) || 0) + (Number(res0.pulados) || 0));
+        const nenhum = t.estado === "concluida" && falhas > 0 && obtidos === 0;
+        const comFalhas = t.estado === "concluida" && falhas > 0 && !nenhum;
+        anel.definir(100, t.estado === "falhou" || nenhum ? "falhou" : comFalhas ? "alerta" : t.estado === "concluida" ? "concluida" : null);
+        titulo.textContent = nenhum ? "Nenhum processo baixado" : comFalhas ? "Lote concluído com falhas"
+          : { concluida: "Lote concluído", parada: "Lote interrompido", falhou: "O lote não terminou" }[t.estado] || "Lote encerrado";
         status.textContent = t.estado === "falhou" ? (t.erro || t.status || "") : (t.status || "");
         topo.classList.add("lote-concluido");
       }
       trocar(contadores,
-        pilula(`${fmt.numero(c.ok)} ${c.ok === 1 ? "baixado" : "baixados"}`, "verde", "check"),
+        // Nada baixado num lote que terminou com falhas: sem a pílula verde.
+        c.ok || t.estado === "rodando" || !c.falhas ? pilula(`${fmt.numero(c.ok)} ${c.ok === 1 ? "baixado" : "baixados"}`, "verde", "check") : null,
         c.ja ? pilula(`${fmt.numero(c.ja)} já ${c.ja === 1 ? "existia" : "existiam"}`, "cinza") : null,
         c.sigilosos ? pilula(`${fmt.numero(c.sigilosos)} ${c.sigilosos === 1 ? "sigiloso" : "sigilosos"}`, "navy", "cadeado") : null,
         c.falhas ? pilula(`${fmt.numero(c.falhas)} com falha`, "vermelho", "aviso") : null);
@@ -433,10 +442,16 @@
         t.estado !== "rodando" && res.relatorio ? botao({ rotulo: "Relatório", icone: "planilha", acao: () => api.abrir("arquivo", res.relatorio) }) : null,
         t.estado !== "rodando" && Array.isArray(res.a_refazer) && res.a_refazer.length
           ? botao({ rotulo: `Tentar de novo (${res.a_refazer.length})`, icone: "recuperar", acao: async () => {
-            // Mesmo lote (mesma pasta): o que já foi baixado é pulado.
-            const resposta = await api.download.iniciar({ processos: res.a_refazer, nome_lote: r.nomeLote || String(res.pasta || "").split(/[\\/]/).pop(), opcoes: Object.assign({}, r.opcoes || {}, { rebaixar: false }) });
+            // O MESMO lote (a mesma pasta, pelo nome dela): o que já foi
+            // baixado é pulado, e o programa junta as linhas refeitas ao
+            // relatório do lote, sem apagar as dos que já estavam baixados.
+            // O nome vem da pasta do lote que terminou, e não do rascunho -
+            // que pode ser de outro lote (um começado pela Pauta, por exemplo).
+            const nomeLote = String(res.pasta || "").split(/[\\/]/).filter(Boolean).pop() || r.nomeLote;
+            const resposta = await api.download.iniciar({ processos: res.a_refazer, nome_lote: nomeLote, opcoes: Object.assign({}, r.opcoes || {}, { rebaixar: false }) });
             r.tarefaId = resposta.tarefa;
             r.numeros = res.a_refazer.slice();
+            r.nomeLote = nomeLote;
             desenhar();
           } }) : null,
         t.estado !== "rodando" ? botao({ rotulo: "Novo lote", icone: "mais", tipo: "primario", acao: () => {

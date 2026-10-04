@@ -16,7 +16,14 @@ Três abas:
 SIGILO: a planilha fica fora do acervo (não vai para a IA), mas circula -
 é impressa, vai por e-mail. Por isso as partes dos processos em segredo de
 justiça saem como "(segredo de justiça)", a menos que o usuário marque
-"incluir as partes dos sigilosos". Vale também para o histórico.
+"incluir as partes dos sigilosos". Vale também para o histórico e para o
+texto da busca no topo (o nome da parte procurada não aparece quando o
+resultado tem processo sigiloso).
+
+FÓRMULAS: os textos vêm de fora do gabinete (o nome da parte é digitado
+pelo advogado no peticionamento). Texto que começa com "=" é gravado como
+TEXTO (e com o apóstrofo do Excel), nunca como fórmula: a planilha não
+calcula =WEBSERVICE(...) nem =HYPERLINK(...) de ninguém ao ser aberta.
 """
 
 from __future__ import annotations
@@ -124,7 +131,9 @@ def descrever_campos(alteracao: dict, incluir_sigilosos: bool) -> str:
     return "; ".join(partes)
 
 
-def descrever_filtros(filtros: dict | None) -> str:
+def descrever_filtros(filtros: dict | None, ocultar_busca: bool = False) -> str:
+    """'ocultar_busca': o texto procurado não é escrito (pode ser o nome da
+    parte de um processo em segredo de justiça)."""
     filtros = filtros or {}
     partes = []
     if filtros.get("sistema"):
@@ -132,8 +141,21 @@ def descrever_filtros(filtros: dict | None) -> str:
     if filtros.get("situacao"):
         partes.append(f"situação {filtros['situacao']}")
     if filtros.get("busca"):
-        partes.append(f"busca “{filtros['busca']}”")
+        partes.append("busca por texto (omitido por causa do segredo de justiça)" if ocultar_busca
+                      else f"busca “{filtros['busca']}”")
     return ", ".join(partes)
+
+
+def _escrever(aba, linha: int, coluna: int, valor):
+    """Grava a célula; texto que começa com "=" fica TEXTO, nunca fórmula."""
+    c = aba.cell(row=linha, column=coluna, value=valor)
+    if isinstance(valor, str) and valor.startswith("="):
+        c.data_type = "s"
+        try:
+            c.quotePrefix = True       # o Excel não o transforma em fórmula nem ao editar
+        except Exception:
+            pass
+    return c
 
 
 # ================================================================ planilha
@@ -154,7 +176,10 @@ def exportar(audiencias: list[dict], alteracoes: list[dict], de: date, ate: date
     periodo = (f"De {de:%d/%m/%Y} a {ate:%d/%m/%Y}" if de != ate else f"{de:%d/%m/%Y}")
     total = len(audiencias)
     resumo_txt = f"{periodo} · {total} audiência{'s' if total != 1 else ''}"
-    filtros_txt = descrever_filtros(filtros)
+    # a busca pelo nome de uma parte, com processo sigiloso no resultado e as partes
+    # mascaradas, não pode reaparecer escrita no topo da planilha
+    filtros_txt = descrever_filtros(filtros, ocultar_busca=not incluir_partes_sigilosos and any(
+        a.get("sigiloso") for a in audiencias))
     if filtros_txt:
         resumo_txt += f" · filtros: {filtros_txt}"
 
@@ -209,7 +234,7 @@ def exportar(audiencias: list[dict], alteracoes: list[dict], de: date, ate: date
         fundo = fundo_hoje if d == hoje else (zebra if i % 2 else None)
         for j, (_t, chave, _mn, _mx) in enumerate(COLUNAS, start=1):
             valor = valores[chave]
-            c = aba.cell(row=linha, column=j, value=valor if valor not in ("",) else None)
+            c = _escrever(aba, linha, j, valor if valor not in ("",) else None)
             c.alignment = quebra if chave in ("partes", "observacoes", "classe", "local") else topo
             c.border = borda
             if fundo is not None:
@@ -272,7 +297,7 @@ def exportar(audiencias: list[dict], alteracoes: list[dict], de: date, ate: date
         for n, valores in enumerate(linhas):
             r += 1
             for k, valor in enumerate(valores):
-                c = resumo.cell(row=r, column=coluna + k, value=valor)
+                c = _escrever(resumo, r, coluna + k, valor)
                 c.border = borda
                 if n % 2:
                     c.fill = zebra
@@ -333,7 +358,7 @@ def exportar(audiencias: list[dict], alteracoes: list[dict], de: date, ate: date
                    aud.get("tribunal") or ""]
         formatos = ["dd/mm/yyyy hh:mm", None, None, "dd/mm/yyyy", "hh:mm", None, None, None]
         for k, valor in enumerate(valores, start=1):
-            c = hist.cell(row=r, column=k, value=valor if valor != "" else None)
+            c = _escrever(hist, r, k, valor if valor != "" else None)
             c.border = borda
             c.alignment = quebra if k == 6 else topo
             if n % 2:

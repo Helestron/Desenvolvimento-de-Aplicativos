@@ -15,7 +15,8 @@ Sem janela. O instalador roda isto ao final e, se o código de saída não for
      (carregado de verdade), navegador dos portais, microfone, pastas,
      cofre de senhas, catálogo de tribunais, separação de falantes e o
      conector do acervo (MCP);
-  4. a janela: WebView2 ou, na falta dele, o Edge.
+  4. a janela: WebView2 (101 ou mais recente) ou, na falta dele, o Edge, ou
+     um navegador padrão que rode a interface (não o Internet Explorer).
 
 Por que processos à parte: uma biblioteca nativa quebrada (DLL faltando,
 processador sem AVX, o numpy no Wine) derruba o processo sem exceção
@@ -28,7 +29,10 @@ instalador encontra o que já foi conferido e a marca de que a verificação
 não terminou.
 
 Relatório em texto UTF-8 (padrão: LOCAL\\Logs\\verificacao-instalacao.txt).
-Código de saída: 0 = pronto (talvez com avisos); 1 = falha.
+Código de saída: 0 = pronto (talvez com avisos); 1 = falha; 9 = os arquivos
+estão certos, mas o computador não tem como abrir a janela (sem WebView2,
+sem Edge e com o Internet Explorer de navegador padrão) - o instalador
+explica como instalar o WebView2, em vez de dizer "tudo certo".
 """
 
 from __future__ import annotations
@@ -53,6 +57,9 @@ from . import integridade
 log = logging.getLogger("aplicativo.verificacao")
 
 OK, AVISO, FALHA = "ok", "aviso", "falha"
+NOME_JANELA = "WebView2 (janela do programa)"
+CODIGO_SEM_JANELA = 9
+NO_WINDOWS = sys.platform == "win32"
 ROTULOS = {OK: "OK", AVISO: "AVISO", FALHA: "FALHA"}
 REINSTALAR = ("Instale o Helestron de novo com o Helestron-Setup: ele conserta a instalação sem "
               "apagar os seus dados. Se um arquivo sumiu logo depois da instalação, o antivírus "
@@ -66,6 +73,7 @@ class Resultado:
     detalhe: str = ""
     acao: str = ""
     linhas: tuple[str, ...] = ()
+    codigo: str = ""          # "sem_janela": o item que muda o código de saída para 9
 
 
 def arquivo_padrao() -> Path:
@@ -343,22 +351,33 @@ def conferir_motor(cfg=None, ao_resultado: Callable[[Resultado], None] | None = 
 def conferir_janela() -> Resultado:
     from . import janela
 
-    nome = "WebView2 (janela do programa)"
-    if sys.platform != "win32":
+    nome = NOME_JANELA
+    if not NO_WINDOWS:
         return Resultado(nome, AVISO, "Não se aplica fora do Windows.")
-    if janela.webview2_disponivel():
-        return Resultado(nome, OK, "Microsoft Edge WebView2 Runtime instalado.")
-    edge = janela.achar_edge()
-    if edge is not None:
+    versao = janela.versao_webview2()
+    if janela.versao_suficiente(versao):
+        return Resultado(nome, OK, f"Microsoft Edge WebView2 Runtime {versao} instalado.")
+    instalar = (f"Instale{' (ou atualize)' if versao else ''} o “Microsoft Edge WebView2 Runtime” "
+                f"(gratuito, da Microsoft, sem administrador): {janela.URL_WEBVIEW2}")
+    if versao:
+        falta = (f"O WebView2 Runtime instalado é antigo (versão {versao}; o {NOME} precisa da 101 "
+                 "ou de uma mais recente)")
+    else:
+        falta = "WebView2 ausente"
+    if janela.achar_edge() is not None:
         return Resultado(nome, AVISO,
-                         "WebView2 ausente: o Helestron abre no Microsoft Edge, em modo "
-                         "aplicativo.", "Para a janela própria do programa, instale o "
-                                        "“Microsoft Edge WebView2 Runtime” (gratuito, da "
-                                        "Microsoft, sem administrador).")
-    return Resultado(nome, AVISO,
-                     "Nem o WebView2 nem o Microsoft Edge foram encontrados: o Helestron abre "
-                     "no navegador padrão.",
-                     "Instale o “Microsoft Edge WebView2 Runtime” (gratuito, da Microsoft).")
+                         f"{falta}: o {NOME} abre no Microsoft Edge, em modo aplicativo.",
+                         f"Para a janela própria do programa: {instalar[0].lower()}{instalar[1:]}.")
+    if janela.navegador_padrao_serve():
+        return Resultado(nome, AVISO,
+                         f"{falta}, e o Microsoft Edge não foi encontrado: o {NOME} abre no "
+                         "navegador padrão.", instalar + ".")
+    return Resultado(nome, FALHA,
+                     f"{falta}, o Microsoft Edge não foi encontrado e o navegador padrão é o "
+                     f"Internet Explorer (ou o Edge antigo), que não roda o {NOME}: o programa "
+                     "não tem como abrir a janela.",
+                     instalar + ". Outra saída: instalar o Google Chrome e defini-lo como "
+                                "navegador padrão.", codigo="sem_janela")
 
 
 # ================================================================ relatório
@@ -463,6 +482,8 @@ def executar(relatorio: Path | None = None, saida: Callable[[str], None] | None 
         escrever(f"Não foi possível gravar o relatório em {destino}: {problema[0]}")
     else:
         escrever(f"Relatório: {destino}")
+    if falhas and all(r.codigo == "sem_janela" for r in falhas):
+        return CODIGO_SEM_JANELA
     return 1 if falhas else 0
 
 
@@ -470,4 +491,4 @@ NOMES_DOS_PASSOS = {"conferir_manifesto": "Arquivos do programa",
                     "conferir_modulos": "Módulos do programa",
                     "conferir_o_resto": "Componentes do programa",
                     "conferir_motor": "Componentes do programa",
-                    "conferir_janela": "WebView2 (janela do programa)"}
+                    "conferir_janela": NOME_JANELA}

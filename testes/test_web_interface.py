@@ -29,6 +29,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 
 RAIZ = Path(__file__).resolve().parents[1]
 WEB = RAIZ / "helestron" / "web"
@@ -44,6 +45,37 @@ except Exception:  # pragma: no cover - servidor ausente nesta árvore
            "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; "
            "media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; "
            "form-action 'none'")
+
+# Números de processo (ou o da audiência ao vivo) à vista e mais largos que a
+# caixa: cortados ("07001…"). Especificação 7.1: tudo cabe em 1100x720 e em
+# 1366x768 com zoom de 125 %.
+CORTADOS = """(() => [...document.querySelectorAll('#pagina .numero, #pagina .ao-vivo-processo')]
+  .filter(e => e.offsetParent && e.getClientRects().length && e.scrollWidth > e.clientWidth + 1)
+  .map(e => e.textContent.trim() + ' (' + e.clientWidth + '/' + e.scrollWidth + ')'))()"""
+
+# Pares de caixas da barra da audiência ao vivo que se sobrepõem (o texto do
+# tipo e o selo de sigilo passavam por cima do medidor e do botão Pausar).
+SOBREPOSTOS = """(() => { const t = document.querySelector('.ao-vivo-topo'); if (!t) return ['sem barra'];
+  const cx = [...t.querySelectorAll('.ao-vivo-sub > *, .ao-vivo-processo, .medidor, .grupo-botoes button, .cronometro, .selo-gravando')];
+  const r = [];
+  for (let i = 0; i < cx.length; i++) for (let j = i + 1; j < cx.length; j++) {
+    if (cx[i].contains(cx[j]) || cx[j].contains(cx[i])) continue;
+    const a = cx[i].getBoundingClientRect(), b = cx[j].getBoundingClientRect();
+    const x = Math.min(a.right, b.right) - Math.max(a.left, b.left), y = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+    if (x > 1 && y > 1) r.push(cx[i].className + ' × ' + cx[j].className);
+  }
+  return r; })()"""
+
+
+def numero_cnj(sequencial: int, ano: int, j: int, tr: int, origem: int) -> str:
+    """O número CNJ com o dígito verificador certo (como o cnj() do demo.js)."""
+    n, resto = f"{sequencial:07d}", f"{ano}{j}{tr:02d}{origem:04d}"
+    dv = 98 - int(n + resto + "00") % 97
+    return f"{n}-{dv:02d}.{ano}.{j}.{tr:02d}.{origem:04d}"
+
+
+# O processo que a pauta da demonstração marca como sigiloso (demo.js).
+PROCESSO_SIGILOSO = numero_cnj(700888, 2025, 8, 2, 1)
 
 # Palavras que, sem acento, denunciam texto mal escrito na tela.
 SEM_ACENTO = re.compile(
@@ -268,10 +300,10 @@ class InterfaceNoNavegador(unittest.TestCase):
             shutil.rmtree(cls.capturas, ignore_errors=True)
 
     # ---------------------------------------------------------- apoio
-    def abrir(self, largura=1280, altura=820, escala=1.0, extra="", secao="inicio"):
+    def abrir(self, largura=1280, altura=820, escala=1.0, extra="", secao="inicio", permissoes=None):
         contexto = self.nav.chromium.new_context(
             viewport={"width": largura, "height": altura}, device_scale_factor=escala,
-            locale="pt-BR", timezone_id="America/Maceio")
+            locale="pt-BR", timezone_id="America/Maceio", permissions=permissoes or [])
         pagina = contexto.new_page()
         problemas: list[str] = []
         pagina.on("console", lambda m: problemas.append(f"console.{m.type}: {m.text}")
@@ -307,6 +339,11 @@ class InterfaceNoNavegador(unittest.TestCase):
         """Os elementos que cada seção precisa ter."""
         q = pagina.locator
         self.assertEqual(q(".titulo-grande").count(), 1)
+        # Botão dentro de botão (ou de link) é HTML inválido, e o clique no de
+        # dentro dispara também o de fora (o "Testar" abria a folha da senha).
+        aninhados = pagina.evaluate(
+            "document.querySelectorAll('button button, button a[href], a[href] button, a[href] a[href]').length")
+        self.assertEqual(aninhados, 0, f"elemento interativo dentro de outro em {secao}")
         self.assertEqual(q(".nav-item[aria-current='page']").get_attribute("data-secao"), secao)
         if secao == "inicio":
             self.assertEqual(q(".cartao-funcao").count(), 4)
@@ -349,6 +386,11 @@ class InterfaceNoNavegador(unittest.TestCase):
         achado = SEM_ACENTO.search(texto.lower())
         self.assertIsNone(achado, f"texto sem acento em {secao}: …{achado and texto.lower()[max(0, achado.start() - 40):achado.end() + 40]}…")
 
+    def numeros_inteiros(self, pagina, secao):
+        """Nenhum número de processo à vista cortado com reticências."""
+        cortados = pagina.evaluate(CORTADOS)
+        self.assertEqual(cortados, [], f"números de processo cortados em {secao}")
+
     def sem_rolagem_horizontal(self, pagina, secao):
         larguras = pagina.evaluate(
             "[document.documentElement.scrollWidth, innerWidth, document.getElementById('conteudo').scrollWidth,"
@@ -372,6 +414,7 @@ class InterfaceNoNavegador(unittest.TestCase):
                     self.esperar_secao(pagina, secao)
                     self.conferir_secao(pagina, secao)
                     self.sem_rolagem_horizontal(pagina, secao)
+                    self.numeros_inteiros(pagina, secao)
                     if nome == "1280x820":
                         self.texto_em_portugues(pagina, secao)
                     self.capturar(pagina, f"{nome}-{secao}")
@@ -412,6 +455,7 @@ class InterfaceNoNavegador(unittest.TestCase):
     def test_audiencia_gravada_ate_o_documento(self):
         pagina = self.abrir(secao="audiencias")
         self.assertTrue(pagina.locator("#botao-gravar").is_disabled())
+        pagina.select_option("#tipo-audiencia", "Conciliação")
         pagina.fill("#processo-audiencia", "07002311520248020001")
         self.assertIn("Número válido", pagina.locator("#ajuda-processo").inner_text())
         pagina.click("#testar-microfone")
@@ -426,13 +470,19 @@ class InterfaceNoNavegador(unittest.TestCase):
         falantes = pagina.evaluate(
             "Helestron.demo.chamadas.filter(c => c.rota === 'POST /api/transcricao/falante').map(c => c.corpo.falante)")
         self.assertEqual(falantes, ["Defensor(a)"])
+        # "Ouvindo…" só enquanto o áudio é captado: pausada, nada é gravado.
+        self.assertTrue(pagina.locator(".ouvindo").is_visible())
         pagina.click("#botao-pausar")
         pagina.wait_for_selector(".selo-gravando.pausado")
+        self.assertTrue(pagina.locator(".ouvindo").is_hidden(), "“Ouvindo…” à vista com a gravação pausada")
+        self.capturar(pagina, "fluxo-pausado")
         pagina.click("#botao-pausar")
         pagina.wait_for_selector(".selo-gravando:not(.pausado)")
+        self.assertTrue(pagina.locator(".ouvindo").is_visible())
         pagina.click("#botao-encerrar")
         pagina.click(".folha button:has-text('Encerrar e salvar')")
         pagina.wait_for_selector(".documento-pronto", timeout=10000)
+        self.assertTrue(pagina.locator(".ouvindo").count() == 0 or pagina.locator(".ouvindo").is_hidden())
         self.assertIn("0700231-15.2024.8.02.0001.docx", pagina.locator(".documento-pronto").inner_text())
         self.capturar(pagina, "fluxo-documento")
         iniciou = pagina.evaluate(
@@ -440,6 +490,19 @@ class InterfaceNoNavegador(unittest.TestCase):
         self.assertEqual(iniciou["processo"], "0700231-15.2024.8.02.0001")
         self.assertEqual(iniciou["participantes"]["F1"], "Juiz(a)")
         self.assertIs(iniciou["sigiloso"], False)
+        self.assertEqual(iniciou["tipo"], "Conciliação")
+        # O tipo escolhido vai para a ficha do documento e da revisão.
+        encerrou = pagina.evaluate(
+            "Helestron.demo.chamadas.find(c => c.rota === 'POST /api/transcricao/encerrar').corpo")
+        self.assertEqual(encerrou, {"tipo": "Conciliação"})
+        pagina.click("#botao-revisar")
+        pagina.wait_for_function(
+            "() => Helestron.demo.chamadas.some(c => c.rota === 'POST /api/transcricao/gravacao')")
+        revisou = pagina.evaluate(
+            "Helestron.demo.chamadas.find(c => c.rota === 'POST /api/transcricao/gravacao').corpo")
+        self.assertIs(revisou["revisao"], True)
+        self.assertEqual(revisou["tipo"], "Conciliação")
+        pagina.wait_for_selector("button:has-text('Abrir a revisão')", timeout=15000)
         self.sem_problemas(pagina)
 
     def test_pauta_filtros_alteracoes_e_exportacao(self):
@@ -564,6 +627,323 @@ class InterfaceNoNavegador(unittest.TestCase):
         pagina.wait_for_selector("text=Nada encontrado")
         self.sem_problemas(pagina)
 
+
+    # ------------------------------------------------- correções da revisão
+    def chamadas(self, pagina, rota):
+        return pagina.evaluate("r => Helestron.demo.chamadas.filter(c => c.rota === r).map(c => c.corpo)", rota)
+
+    def avisos_por_cima(self, pagina, seletor):
+        """Os elementos de 'seletor' que algum aviso (toast) cobre."""
+        return pagina.evaluate("""s => { const av = [...document.querySelectorAll('.aviso:not(.saindo)')].map(a => a.getBoundingClientRect());
+          return [...document.querySelectorAll(s)].filter(e => { const r = e.getBoundingClientRect();
+            return r.width && av.some(a => Math.min(a.right, r.right) - Math.max(a.left, r.left) > 1 && Math.min(a.bottom, r.bottom) - Math.max(a.top, r.top) > 1); })
+          .map(e => e.textContent.trim().slice(0, 40)); }""", seletor)
+
+    def test_testar_o_acesso_do_eproc(self):
+        """Ajustes › Acessos: o Testar da linha do eProc do TJAL testa o eProc
+        (vai o sistema, e não só a sigla) e não abre a folha da senha junto."""
+        pagina = self.abrir(secao="ajustes")
+        linha = pagina.locator("[data-portal='eproc:TJAL']")
+        linha.wait_for()
+        linha.locator("button:has-text('Cadastrar')").click()
+        pagina.wait_for_selector(".folha:has-text('Acesso ao eProc · TJAL')")
+        pagina.fill("#acesso-usuario", "AL123")
+        pagina.fill("#acesso-senha", "senha do eproc")
+        pagina.click(".folha button:has-text('Salvar')")
+        pagina.wait_for_selector(".folha-fundo", state="detached")
+        linha = pagina.locator("[data-portal='eproc:TJAL']:has-text('Senha guardada')")
+        linha.wait_for()
+        linha.locator("button:has-text('Testar')").click()
+        pagina.wait_for_selector("[data-portal='eproc:TJAL'] .resultado-teste")
+        pagina.wait_for_timeout(300)
+        self.assertEqual(pagina.locator(".folha-fundo").count(), 0, "o Testar abriu também a folha da senha")
+        self.assertEqual(self.chamadas(pagina, "POST /api/acessos/testar"), [{"tribunal": "TJAL", "sistema": "eproc"}])
+        tarefa = pagina.evaluate("[...Helestron.loja.tarefas.values()].filter(t => t.tipo === 'teste_login').map(t => t.titulo)")
+        self.assertEqual(tarefa, ["Testar o acesso ao TJAL · eProc"])
+        # O resultado aparece na linha do portal, ao lado do botão, e não num
+        # aviso por cima da lista.
+        pagina.wait_for_selector("[data-portal='eproc:TJAL'] .resultado-teste.ok", timeout=10000)
+        self.assertIn("Acesso confirmado", pagina.locator("[data-portal='eproc:TJAL']").inner_text())
+        pagina.wait_for_timeout(300)
+        self.assertEqual(pagina.locator(".aviso:has-text('Testar o acesso')").count(), 0)
+        self.capturar(pagina, "ajustes-acesso-testado")
+        self.sem_problemas(pagina)
+
+    def test_primeiros_passos_da_pauta(self):
+        """A pauta só aparece como configurada quando está: sem fonte e sem
+        sincronização, o passo fica por fazer, com o botão para resolver."""
+        pagina = self.abrir(extra="&pauta=vazia")
+        passo = pagina.locator(".passo[data-passo='pauta']")
+        self.assertEqual(passo.count(), 1)
+        self.assertNotIn("feito", passo.get_attribute("class"))
+        self.assertTrue(passo.locator("button:has-text('Configurar')").is_visible())
+        texto = pagina.locator("#pagina").inner_text()
+        self.assertNotIn("Sincronizada com o e-SAJ e o eProc", texto)
+        self.assertIn("A pauta ainda não foi configurada", texto)
+        passo.locator("button:has-text('Configurar')").click()
+        self.esperar_secao(pagina, "pauta")
+        self.sem_problemas(pagina)
+        # Sincronizada: feito, com a data de verdade.
+        pagina = self.abrir()
+        passo = pagina.locator(".passo[data-passo='pauta']")
+        self.assertIn("feito", passo.get_attribute("class"))
+        self.assertIn("Última sincronização", passo.inner_text())
+        self.sem_problemas(pagina)
+
+    def test_audiencia_ao_vivo_no_tamanho_minimo(self):
+        """Em 1100x720 e em 1366x768 a 125 %, o número do processo gravado e
+        os das listas laterais aparecem inteiros, e nada da barra ao vivo
+        passa por cima do medidor ou dos botões, nem os avisos."""
+        for nome, largura, altura, escala in (("1100x720", 1100, 720, 1), ("1366x768-zoom125", 1093, 614, 1.25)):
+            with self.subTest(tamanho=nome):
+                pagina = self.abrir(largura, altura, escala, secao="audiencias")
+                pagina.wait_for_selector(".transcricoes-recentes .item-titulo")
+                self.numeros_inteiros(pagina, "audiências")
+                pagina.fill("#processo-audiencia", "07002311520248020001")
+                pagina.click("#sigilo-audiencia")
+                pagina.click("#botao-gravar")
+                pagina.wait_for_selector(".ao-vivo")
+                pagina.wait_for_selector(".fala", timeout=10000)
+                pagina.wait_for_selector(".aviso")          # "Processo em segredo de justiça…"
+                self.numeros_inteiros(pagina, "audiência ao vivo")
+                self.assertEqual(pagina.evaluate(SOBREPOSTOS), [])
+                self.assertEqual(self.avisos_por_cima(pagina, ".ao-vivo-topo button, .falante"), [])
+                self.capturar(pagina, f"{nome}-ao-vivo-sigilosa")
+                self.sem_problemas(pagina)
+
+    def test_avisos_da_pauta_sem_repeticao_e_sem_cobrir_botoes(self):
+        pagina = self.abrir(secao="pauta")
+        pagina.click("#botao-sincronizar")
+        pagina.wait_for_function("() => [...Helestron.loja.tarefas.values()].some(t => t.tipo === 'pauta_sincronizar')")
+        # Um aviso da própria sincronização (fonte com problema): na Pauta, ele
+        # vai para a faixa, não para um aviso por cima dos botões.
+        pagina.evaluate("""() => { const t = [...Helestron.loja.tarefas.values()].find(t => t.tipo === 'pauta_sincronizar');
+            Helestron.api.emitir('aviso', { titulo: 'Pauta: e-SAJ · TJAL', mensagem: 'O portal não respondeu.', nivel: 'aviso', tarefa: t.id }); }""")
+        pagina.wait_for_selector("#resultado-pauta .faixa", timeout=15000)
+        pagina.wait_for_timeout(500)
+        self.assertEqual(pagina.locator(".aviso").count(), 0, "o resultado da sincronização repetido num aviso")
+        # O aviso de fim da exportação não cobre Exportar Excel nem Sincronizar.
+        pagina.click("#botao-exportar")
+        pagina.click(".folha button:has-text('Exportar')")
+        pagina.wait_for_selector(".aviso:has-text('Planilha pronta')")
+        pagina.wait_for_timeout(400)
+        self.assertEqual(self.avisos_por_cima(pagina, "#botao-exportar, #botao-sincronizar"), [])
+        self.capturar(pagina, "pauta-aviso-abaixo-do-cabecalho")
+        # A mesma frase não aparece duas vezes.
+        pagina.evaluate("""() => { Helestron.ui.aviso({ titulo: 'Pauta: e-SAJ · TJAL', mensagem: 'Frase repetida de teste.', tipo: 'alerta' });
+            Helestron.ui.aviso({ titulo: 'Sincronizar a pauta — não deu certo', mensagem: 'Frase repetida de teste.', tipo: 'erro' }); }""")
+        self.assertEqual(pagina.locator(".aviso:not(.saindo):has-text('Frase repetida de teste.')").count(), 1)
+        # Nem quando o erro do fim da tarefa traz a frase da fonte dentro dele.
+        pagina.evaluate("""() => { Helestron.ui.aviso({ titulo: 'Pauta: e-SAJ · TJAC', mensagem: 'O portal não respondeu (tempo esgotado)', tipo: 'alerta' });
+            Helestron.ui.aviso({ titulo: 'Sincronizar a pauta — não deu certo', tipo: 'erro',
+              mensagem: 'Não consegui ler a pauta: e-SAJ · TJAC — O portal não respondeu (tempo esgotado).' }); }""")
+        self.assertEqual(pagina.locator(".aviso:not(.saindo):has-text('O portal não respondeu (tempo esgotado)')").count(), 1)
+        self.sem_problemas(pagina)
+
+    def test_lote_sem_nenhum_pdf_nao_aparece_como_sucesso(self):
+        pagina = self.abrir(extra="&lote=falhas", secao="processos")
+        pagina.click("#area-soltar button:has-text('Colar lista')")
+        pagina.fill(".folha textarea", "5004417-09.2024.8.21.0001\n" + numero_cnj(5012003, 2025, 8, 21, 10))
+        pagina.click(".folha button:has-text('Ler a lista')")
+        pagina.wait_for_selector(".revisao")
+        pagina.click("#botao-baixar")
+        pagina.wait_for_selector(".lote-concluido", timeout=20000)
+        texto = pagina.locator(".andamento").inner_text()
+        self.assertIn("Nenhum processo baixado", texto)
+        self.assertNotIn("Lote concluído", texto)
+        classes = pagina.locator(".andamento .anel").get_attribute("class")
+        self.assertIn("falhou", classes)
+        self.assertNotIn("concluido", classes)
+        self.capturar(pagina, "lote-sem-nenhum-pdf")
+        self.sem_problemas(pagina)
+
+    def test_lote_de_um_processo_concorda(self):
+        pagina = self.abrir(secao="processos")
+        pagina.click("#area-soltar button:has-text('Colar lista')")
+        pagina.fill(".folha textarea", "5004417-09.2024.8.21.0001")
+        pagina.click(".folha button:has-text('Ler a lista')")
+        pagina.wait_for_selector(".revisao")
+        pagina.click("#botao-baixar")
+        pagina.wait_for_selector(".lote-concluido", timeout=20000)
+        self.assertIn("1 baixado", pagina.locator(".andamento").inner_text())
+        pagina.click(".andamento button:has-text('Novo lote')")
+        pagina.wait_for_selector("#ultimos-lotes .linha")
+        lotes = pagina.locator("#ultimos-lotes").inner_text()
+        self.assertIn("1 de 1 processo baixado", lotes)
+        self.assertNotIn("processo baixados", lotes)
+        self.ir(pagina, "inicio")
+        self.assertNotIn("processo baixados", pagina.locator("#pagina").inner_text())
+        self.sem_problemas(pagina)
+
+    def test_tentar_de_novo_no_mesmo_lote(self):
+        """'Tentar de novo' refaz os que falharam NO MESMO lote (a mesma pasta,
+        cujo relatório o programa completa), mesmo quando o lote veio da Pauta
+        e o rascunho da tela Processos guarda o nome de outra relação."""
+        pagina = self.abrir(secao="processos")
+        pagina.click("#area-soltar button:has-text('Colar lista')")
+        pagina.fill(".folha textarea", "5004417-09.2024.8.21.0001")
+        pagina.click(".folha button:has-text('Ler a lista')")
+        pagina.wait_for_selector(".revisao")
+        self.ir(pagina, "pauta")
+        pagina.click("#acao-baixar-periodo")
+        pagina.click(".folha button:has-text('Baixar')")
+        pagina.wait_for_selector(".folha-pergunta", timeout=15000)
+        pagina.fill("#campo-codigo", "482193")
+        pagina.wait_for_selector(".folha-pergunta", state="detached")
+        self.ir(pagina, "processos")
+        pagina.wait_for_selector(".lote-concluido", timeout=30000)
+        pedido = self.chamadas(pagina, "POST /api/pauta/baixar-autos")[0]
+        lote = f"Pauta {pedido['de']} a {pedido['ate']}"
+        botao_refazer = pagina.locator(".andamento button:has-text('Tentar de novo')")
+        self.assertEqual(botao_refazer.count(), 1)
+        botao_refazer.click()
+        pagina.wait_for_function(
+            "() => Helestron.demo.chamadas.filter(c => c.rota === 'POST /api/download/iniciar').length === 1")
+        refazer = self.chamadas(pagina, "POST /api/download/iniciar")[0]
+        self.assertEqual(refazer["nome_lote"], lote)
+        self.assertEqual(len(refazer["processos"]), 1)
+        self.assertIs(refazer["opcoes"]["rebaixar"], False)
+        pagina.wait_for_selector(".lote-concluido", timeout=20000)
+        self.sem_problemas(pagina)
+
+    def test_microfone_pelo_nome(self):
+        nome = "Microfone de mesa USB (Jabra Speak 510)"
+        pagina = self.abrir(extra="&microfone=" + quote(nome), secao="audiencias")
+        pagina.wait_for_function("() => document.querySelector('#microfone').options.length > 1")
+        self.assertEqual(pagina.locator("#microfone").input_value(), nome)
+        pagina.click("#testar-microfone")
+        pagina.wait_for_function("() => document.querySelectorAll('.medidor span.aceso').length > 0")
+        self.assertEqual(self.chamadas(pagina, "POST /api/transcricao/microfone/teste"), [{"dispositivo": nome}])
+        pagina.click("#testar-microfone")
+        outro = "Matriz de microfones (Intel® Smart Sound)"
+        pagina.select_option("#microfone", outro)
+        pagina.wait_for_function("() => Helestron.demo.chamadas.some(c => c.rota === 'POST /api/config')")
+        self.assertEqual(self.chamadas(pagina, "POST /api/config")[-1],
+                         {"secao": "transcricao", "chave": "dispositivo", "valor": outro})
+        pagina.fill("#processo-audiencia", "07002311520248020001")
+        pagina.click("#botao-gravar")
+        pagina.wait_for_selector(".ao-vivo")
+        self.assertEqual(self.chamadas(pagina, "POST /api/transcricao/iniciar")[0]["dispositivo"], outro)
+        self.sem_problemas(pagina)
+
+    def test_microfone_que_sumiu_nao_vira_o_padrao_em_silencio(self):
+        pagina = self.abrir(extra="&microfone=" + quote("Fone que foi desligado"), secao="audiencias")
+        pagina.wait_for_function("() => document.querySelector('#microfone').options.length > 1")
+        self.assertEqual(pagina.locator("#microfone").input_value(), "Fone que foi desligado")
+        self.assertIn("não foi encontrado", pagina.locator(".medidor-caixa").inner_text())
+        pagina.fill("#processo-audiencia", "07002311520248020001")
+        pagina.click("#botao-gravar")
+        folha = pagina.locator(".folha:has-text('A gravação não começou')")
+        folha.wait_for()
+        self.assertIn("O microfone «Fone que foi desligado» não foi encontrado. Escolha outro em Audiências "
+                      "ou Ajustes › Transcrição.", folha.inner_text())
+        self.assertNotIn("Algo deu errado", folha.inner_text())
+        self.sem_problemas(pagina)
+        # Configuração antiga, pelo número: vira o nome do mesmo aparelho.
+        pagina = self.abrir(extra="&microfone=3", secao="audiencias")
+        pagina.wait_for_function("() => document.querySelector('#microfone').options.length > 1")
+        self.assertEqual(pagina.locator("#microfone").input_value(), "Microfone de mesa USB (Jabra Speak 510)")
+        pagina.wait_for_function("() => Helestron.demo.chamadas.some(c => c.rota === 'POST /api/config')")
+        self.assertEqual(self.chamadas(pagina, "POST /api/config")[-1]["valor"], "Microfone de mesa USB (Jabra Speak 510)")
+        # Ajustes › Transcrição: a mesma escolha, pelo nome.
+        self.ir(pagina, "ajustes")
+        pagina.click(".ajustes-indice a[data-grupo='transcricao']")
+        campo = pagina.locator("#cfg-transcricao-dispositivo")
+        campo.wait_for()
+        pagina.wait_for_function("() => document.querySelector('#cfg-transcricao-dispositivo').options.length > 1")
+        self.assertEqual(campo.evaluate("e => e.tagName"), "SELECT")
+        self.assertEqual(campo.input_value(), "Microfone de mesa USB (Jabra Speak 510)")
+        self.sem_problemas(pagina)
+
+    def test_compartilhar_copia_na_hora_do_clique(self):
+        pagina = self.abrir(secao="compartilhar", permissoes=["clipboard-read", "clipboard-write"])
+        pagina.evaluate("""() => { window.__ordem = [];
+            const escrever = navigator.clipboard.writeText.bind(navigator.clipboard);
+            navigator.clipboard.writeText = (t) => { window.__ordem.push('copia'); return escrever(t); };
+            const responder = Helestron.demo.responder;
+            Helestron.demo.responder = (rota, pedido) => { window.__ordem.push(rota); return responder(rota, pedido); }; }""")
+        pagina.click("#destino-cowork button:has-text('Abrir no Cowork')")
+        pagina.wait_for_selector(".folha:has-text('cole o pedido inicial')")
+        copiado = pagina.evaluate("navigator.clipboard.readText()")
+        self.assertTrue(copiado.startswith("Pasta do acervo: C:\\Users\\"), copiado)
+        self.assertIn("Leia primeiro o CLAUDE.md", copiado)
+        ordem = pagina.evaluate("window.__ordem")
+        self.assertLess(ordem.index("copia"), ordem.index("POST /api/compartilhar/cowork"), ordem)
+        pagina.click(".folha button:has-text('OK')")
+        pagina.wait_for_selector(".folha-fundo", state="detached")
+        pagina.evaluate("window.__ordem = []")
+        pagina.click("#destino-chatgpt-work button:has-text('Abrir no ChatGPT Work')")
+        pagina.wait_for_selector(".folha:has-text('cole o caminho do acervo')")
+        self.assertEqual(pagina.evaluate("navigator.clipboard.readText()"),
+                         "C:\\Users\\camila.albuquerque\\Documents\\Helestron\\Acervo")
+        ordem = pagina.evaluate("window.__ordem")
+        self.assertLess(ordem.index("copia"), ordem.index("POST /api/compartilhar/chatgpt-work"), ordem)
+        pagina.click(".folha button:has-text('OK')")
+        pagina.wait_for_selector(".folha-fundo", state="detached")
+        # Sem área de transferência: a folha mostra o texto para copiar à mão.
+        pagina.evaluate("""() => { navigator.clipboard.writeText = () => Promise.reject(new Error('negado'));
+            document.execCommand = () => false; }""")
+        pagina.click("#destino-cowork button:has-text('Abrir no Cowork')")
+        caixa = pagina.locator("#texto-para-copiar")
+        caixa.wait_for()
+        self.assertTrue(caixa.input_value().startswith("Pasta do acervo:"))
+        self.assertIn("Não consegui pôr o pedido inicial na área de transferência", pagina.locator(".folha").inner_text())
+        self.capturar(pagina, "compartilhar-copia-a-mao")
+        self.sem_problemas(pagina)
+
+    def test_claude_code_ausente_abre_a_pagina_oficial(self):
+        pagina = self.abrir(extra="&claude_code=ausente", secao="compartilhar")
+        pagina.click("#destino-claude-code button:has-text('Abrir no Claude Code')")
+        folha = pagina.locator(".folha:has-text('Claude Code')")
+        folha.wait_for()
+        self.assertIn("Abri no navegador a página oficial", folha.inner_text())
+        pagina.click(".folha button:has-text('OK')")
+        pagina.wait_for_selector(".folha-fundo", state="detached")
+        # O programa não conseguiu abrir o navegador: a folha oferece o botão.
+        pagina.evaluate("""() => { const responder = Helestron.demo.responder;
+            Helestron.demo.responder = (rota, pedido) => rota === 'POST /api/compartilhar/claude-code'
+              ? Promise.resolve({ abriu: false, instalado: false, pagina_aberta: false, url: 'https://docs.claude.com/pt-BR/docs/claude-code/overview',
+                  mensagem: 'O Claude Code não está instalado neste computador. A página oficial explica como instalá-lo (sem administrador): https://docs.claude.com/pt-BR/docs/claude-code/overview' })
+              : responder(rota, pedido); }""")
+        pagina.click("#destino-claude-code button:has-text('Abrir no Claude Code')")
+        pagina.click(".folha button:has-text('Abrir a página')")
+        pagina.wait_for_function("() => Helestron.demo.chamadas.some(c => c.rota === 'POST /api/abrir')")
+        self.assertEqual(self.chamadas(pagina, "POST /api/abrir")[-1],
+                         {"tipo": "url", "alvo": "https://docs.claude.com/pt-BR/docs/claude-code/overview"})
+        self.sem_problemas(pagina)
+
+    def test_sigilo_que_a_pauta_conhece(self):
+        """O número de um processo que a pauta marca como sigiloso liga o
+        segredo de justiça sozinho, com o motivo; desligado à mão, o programa
+        liga de novo ao começar e a tela mostra por quê."""
+        pagina = self.abrir(secao="audiencias")
+        pagina.fill("#processo-audiencia", PROCESSO_SIGILOSO.replace("-", "").replace(".", ""))
+        pagina.wait_for_function("() => document.querySelector('#sigilo-audiencia').checked")
+        self.assertIn("A pauta de audiências indica", pagina.locator("#motivo-sigilo").inner_text())
+        pagina.click("#sigilo-audiencia")
+        self.assertFalse(pagina.locator("#sigilo-audiencia").is_checked())
+        pagina.click("#botao-gravar")
+        pagina.wait_for_selector(".ao-vivo")
+        self.assertIs(self.chamadas(pagina, "POST /api/transcricao/iniciar")[0]["sigiloso"], False)
+        self.assertIn("Segredo de justiça", pagina.locator(".ao-vivo-sub").inner_text())
+        self.assertIn("A pauta de audiências indica", pagina.locator("#motivo-sigilo-ao-vivo").inner_text())
+        self.capturar(pagina, "ao-vivo-sigilo-da-pauta")
+        self.sem_problemas(pagina)
+        # A gravação: o número sigiloso liga o interruptor da folha, e o tipo vai junto.
+        pagina = self.abrir(secao="audiencias")
+        pagina.click("#transcrever-gravacao")
+        pagina.wait_for_selector(".folha:has-text('Transcrever a gravação')")
+        pagina.fill("#processo-gravacao", PROCESSO_SIGILOSO.replace("-", "").replace(".", ""))
+        pagina.wait_for_function("() => document.querySelector('#sigilo-gravacao').checked")
+        pagina.select_option("#tipo-gravacao", "Conciliação")
+        pagina.click("#sigilo-gravacao")            # desligado à mão: o programa liga de novo
+        pagina.click(".folha button:has-text('Transcrever')")
+        pagina.wait_for_selector("#motivo-sigilo-gravacao")
+        pedido = self.chamadas(pagina, "POST /api/transcricao/gravacao")[0]
+        self.assertEqual(pedido["tipo"], "Conciliação")
+        self.assertIs(pedido["sigiloso"], False)
+        self.assertIn("A pauta de audiências indica", pagina.locator("#motivo-sigilo-gravacao").inner_text())
+        self.sem_problemas(pagina)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1288,6 +1288,10 @@ a.linha:active {
   stroke: var(--vermelho);
 }
 
+.anel.alerta .anel-valor {
+  stroke: var(--ambar);
+}
+
 .girando {
   display: inline-block;
   width: 16px;
@@ -1971,6 +1975,31 @@ button.item-simples:hover {
   text-overflow: ellipsis;
 }
 
+/* Número de processo numa coluna estreita: quebra depois do ano (o <wbr>
+   de numeroQuebravel), em vez de virar "0702318-41.2024.…". */
+.item-titulo.numero,
+.item-sub.numero {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+
+/* Na coluna estreita das transcrições recentes, "Segredo de justiça · ontem,
+   14:05" também quebra linha em vez de perder a data. */
+.transcricoes-recentes .item-sub {
+  white-space: normal;
+}
+
+/* A faixa de recuperação: o botão desce quando o número não cabe ao lado. */
+.item-recuperar {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.item-recuperar .item-texto {
+  flex: 1 1 200px;
+}
+
 .item-sub {
   display: block;
   font-size: 13px;
@@ -2565,13 +2594,27 @@ button.item-simples:hover {
   text-overflow: ellipsis;
 }
 
+/* O tipo, o selo de sigilo e o atraso quebram linha dentro da coluna do
+   número: nunca passam por cima do medidor nem dos botões. */
 .ao-vivo-sub {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   margin-top: 3px;
+  min-width: 0;
   font-size: 13px;
   color: var(--texto-2);
+}
+
+.ao-vivo-sub > * {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.ao-vivo-tipo {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -2670,6 +2713,43 @@ button.item-simples:hover {
   font-size: 16px;
   line-height: 1.55;
   color: var(--texto);
+}
+
+.nota-sigilo {
+  display: block;
+  margin-top: 4px;
+  color: var(--navy-700);
+  font-weight: 550;
+}
+
+.ajuda-campo.nota-sigilo {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.medidor-caixa .erro,
+.linha-sub .erro {
+  color: var(--vermelho-texto);
+}
+
+/* O resultado do "Testar" de um acesso, na própria linha do portal. */
+.resultado-teste {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+
+.resultado-teste .icone,
+.resultado-teste .girando {
+  flex: none;
+  margin-top: 2px;
+}
+
+.resultado-teste.ok {
+  color: var(--verde-texto);
 }
 
 .ouvindo {
@@ -3472,6 +3552,22 @@ mark {
 
 /* ========================================================== responsivo */
 @media (max-width: 1240px) {
+  .ao-vivo-topo {
+    flex-wrap: wrap;
+    row-gap: 12px;
+  }
+
+  .ao-vivo-info {
+    flex: 1 0 100%;
+    order: 10;
+    padding-top: 10px;
+    border-top: 1px solid var(--separador);
+  }
+
+  .ao-vivo-botoes {
+    margin-left: auto;
+  }
+
   .pauta-grade {
     grid-template-columns: minmax(0, 1fr);
   }

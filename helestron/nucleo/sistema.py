@@ -64,10 +64,11 @@ def abrir_arquivo(caminho: Path) -> None:
         subprocess.Popen(["xdg-open", str(caminho)])
 
 
-def abrir_endereco(url: str) -> None:
+def abrir_endereco(url: str) -> bool:
+    """Abre o endereço no navegador padrão. False se nenhum navegador abriu."""
     import webbrowser
 
-    webbrowser.open(url)
+    return bool(webbrowser.open(url))
 
 
 def gravar_atomico(destino: Path, dados: bytes) -> None:

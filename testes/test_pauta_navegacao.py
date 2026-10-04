@@ -15,8 +15,10 @@ Pula sozinho se não houver Chromium que abra.
 
 from __future__ import annotations
 
+import time
 import unittest
 from dataclasses import replace
+from datetime import datetime, timedelta
 
 from helestron.download import eproc
 from helestron.download.eproc import PortalEProc
@@ -149,8 +151,13 @@ class TestPortalWeb(ComNavegador):
                          (2, 6, 8))
         self.assertTrue(any("mais de 2 páginas" in a for a in leitura.avisos))
         self.assertTrue(any("informou 8 audiências e foram lidas 6" in a for a in leitura.avisos))
+        # leitura incompleta: nada se conclui sobre o que não foi lido (nem entre as
+        # datas que vieram - a página 3 podia ter mais audiências do dia 9)
+        self.assertIn("mais de 2 páginas", leitura.incompleta)
+        self.assertTrue(any("nenhuma audiência foi dada como fora da pauta" in a
+                            for a in leitura.avisos))
         self.assertIsNone(leitura.cobertura(ap.INICIO, ap.INICIO.replace(day=4)))
-        self.assertEqual(leitura.cobertura(ap.INICIO, ap.FIM), (ap.INICIO, ap.INICIO.replace(day=9)))
+        self.assertIsNone(leitura.cobertura(ap.INICIO, ap.FIM))
 
 
 class TestEProc(ComNavegador):
@@ -220,6 +227,123 @@ class TestEProc(ComNavegador):
         s.sincronizar(apoio.ContextoGravador(codigos=[ae.CODIGO]), None, ap.INICIO, ap.FIM)
         self.assertEqual(self.falso.sem_assinatura, [])
         self.assertEqual(len(s.listar(ap.INICIO, ap.FIM)["audiencias"]), 8)
+
+
+class PortalComDefeitos(ap.PortalWebFalso):
+    """O e-SAJ de mentira com os tropeços do de verdade: página que demora, sessão
+    que cai no meio da paginação, formulário que recusa o período, período encurtado."""
+
+    lenta_s = 0.0            # a página 2 demora isto
+    recusar = False          # o formulário valida no navegador e não envia
+    encurtar_dias = 0        # o portal mostra no máximo N dias (e diz nos campos)
+
+    def _pauta(self, h, q):
+        if self.lenta_s and int(q.get("pagina") or 1) > 1:
+            time.sleep(self.lenta_s)
+        if self.recusar:
+            form = ("<form method='get' action='/pauta/consultar' onsubmit=\"alert('Período "
+                    "máximo: 30 dias'); return false;\"><label for='dataInicio'>Data inicial"
+                    "</label><input id='dataInicio' name='dataInicio' maxlength='10'>"
+                    "<label for='dataFim'>Data final</label><input id='dataFim' name='dataFim' "
+                    "maxlength='10'><input type='submit' value='Pesquisar'></form>")
+            hoje = [a for a in self.audiencias if a.data == ap.INICIO]
+            return self._html(h, self._menu() + "<h1>Pauta de Audiências</h1>" + form +
+                              ap.html_esaj(hoje, "Audiências de hoje"), "Pauta de Audiências")
+        if self.encurtar_dias and q.get("dataInicio"):
+            de = datetime.strptime(q["dataInicio"], "%d/%m/%Y").date()
+            ate = datetime.strptime(q["dataFim"], "%d/%m/%Y").date()
+            if (ate - de).days > self.encurtar_dias:
+                q = dict(q, dataFim=(de + timedelta(days=self.encurtar_dias)).strftime("%d/%m/%Y"))
+        return super()._pauta(h, q)
+
+
+class TestLeituraIncompletaNaoRemove(ComNavegador):
+    """Página não lida não é audiência "fora da pauta"."""
+
+    def setUp(self):
+        super().setUp()
+        self.web = PortalComDefeitos().iniciar()
+        self.addCleanup(self.web.parar)
+
+    def servico(self) -> ServicoPauta:
+        s = ServicoPauta(self.amb.cfg, self.tmp / "local" / "pauta.sqlite3",
+                         fabrica_navegador=lambda t, o: ap.navegador_web(self.tmp),
+                         fabrica_portal=lambda nav, t, o, ctx, cred: ap.PortalDeTeste(
+                             nav, self.web, ctx, cred),
+                         cofre=apoio.CofreFalso({"esaj:TJAL": (ap.USUARIO, ap.SENHA)}))
+        s.espera_pagina_s = 2
+        self.addCleanup(s.fechar)
+        s.salvar_fonte("TJAL", "esaj", "")
+        r = s.sincronizar(apoio.ContextoGravador(), None, ap.INICIO, ap.FIM)
+        self.assertEqual((r["novas"], r["total"]), (8, 8))
+        return s
+
+    def confere_nada_removido(self, s, r):
+        self.assertEqual(r["removidas"], 0, r["avisos"])
+        self.assertEqual([a for a in s.alteracoes() if a["tipo"] == "removida"], [])
+        self.assertEqual(len(s.listar(ap.INICIO, ap.FIM)["audiencias"]), 8)
+
+    def test_pagina_que_nao_abre_a_tempo(self):
+        s = self.servico()
+        self.web.lenta_s = 4
+        r = s.sincronizar(apoio.ContextoGravador(), None, ap.INICIO, ap.FIM)
+        self.confere_nada_removido(s, r)
+        self.assertIn("a página 2 não abriu a tempo", r["fontes"][0]["incompleta"])
+        self.assertTrue(any("nenhuma audiência foi dada como fora da pauta" in a
+                            for a in r["avisos"]))
+
+    def test_sessao_que_cai_na_pagina_2(self):
+        s = self.servico()
+        logins = self.web.logins
+        # 1: a rota lembrada; 2: a pesquisa (página 1); 3: a página 2 - a sessão cai
+        self.web.expirar_na_pauta(3)
+        r = s.sincronizar(apoio.ContextoGravador(), None, ap.INICIO, ap.FIM)
+        self.confere_nada_removido(s, r)
+        self.assertEqual(self.web.logins, logins + 1, "entrou de novo e releu a pauta inteira")
+        self.assertEqual((r["total"], r["fontes"][0]["incompleta"]), (8, ""))
+
+    def test_formulario_que_recusa_o_periodo(self):
+        s = self.servico()
+        self.web.recusar = True
+        r = s.sincronizar(apoio.ContextoGravador(), None, ap.INICIO, ap.FIM)
+        self.confere_nada_removido(s, r)
+        self.assertFalse(r["fontes"][0]["periodo_aplicado"])
+        self.assertTrue(any("não aceitou o período" in a for a in r["avisos"]), r["avisos"])
+
+    def test_portal_que_encurta_o_periodo(self):
+        s = self.servico()
+        self.web.encurtar_dias = 3          # pede 05 a 16/10; o portal mostra 05 a 08/10
+        r = s.sincronizar(apoio.ContextoGravador(), None, ap.INICIO, ap.FIM)
+        self.confere_nada_removido(s, r)
+        self.assertFalse(r["fontes"][0]["periodo_aplicado"])
+        self.assertTrue(any("mostrou o período de 05/10/2026 a 08/10/2026" in a
+                            for a in r["avisos"]), r["avisos"])
+        # o que estava dentro das datas mostradas e sumiu, sai da pauta (como sempre)
+        self.web.encurtar_dias = 0
+        sumiu = self.web.audiencias.pop(1)            # 05/10, 14:30
+        r = s.sincronizar(apoio.ContextoGravador(), None, ap.INICIO, ap.FIM)
+        self.assertEqual(r["removidas"], 1)
+        self.assertEqual([a["audiencia"]["processo"] for a in s.alteracoes()
+                          if a["tipo"] == "removida"], [sumiu.processo])
+
+
+class TestRowspanNoNavegador(ComNavegador):
+    def test_js_tabelas_leva_o_rowspan(self):
+        from helestron.pauta.navegacao import JS_TABELAS
+        from helestron.pauta.tabelas import Tabela
+
+        n1, n2 = ap.numero("0700951"), ap.numero("0700952")
+        html = ap.pagina("<table><tr><th>Data</th><th>Hora</th><th>Processo</th><th>Tipo</th>"
+                         "</tr><tr><td rowspan='2'>05/10/2026</td><td>09:00</td>"
+                         f"<td>{n1}</td><td>Una</td></tr><tr><td>10:00</td><td>{n2}</td>"
+                         "<td>Conciliação</td></tr></table>")
+        nav = ap.navegador_web(self.tmp)
+        with nav:
+            nav.pagina.set_content(html)
+            dados = nav.pagina.evaluate(JS_TABELAS)
+        t = Tabela.de_js(dados["tabelas"][0])
+        self.assertEqual([c.texto for c in t.linhas[2]], ["05/10/2026", "10:00", n2,
+                                                          "Conciliação"])
 
 
 if __name__ == "__main__":

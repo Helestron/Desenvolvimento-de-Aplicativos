@@ -17,6 +17,18 @@ espera um pouco; se está fechando, espera ela sair e abre.
 
 Os pedidos a 127.0.0.1 ignoram o proxy do sistema de propósito: na rede do
 tribunal, a variável HTTP_PROXY mandaria o pedido local para o proxy.
+
+O --encerrar (que o instalador e o desinstalador rodam antes de mexer nos
+arquivos) NÃO fecha o programa no meio de uma audiência sendo transcrita:
+sai com o código AUDIENCIA_EM_ANDAMENTO (10), sem tocar em nada. O
+instalador então pede ao usuário que encerre a audiência (o documento é
+salvo) e clique em Repetir; no modo silencioso (/S, a atualização empurrada
+pela TI), ele desiste com o código 7 e a audiência segue - melhor uma
+atualização adiada que a transcrição cortada no meio da sessão. Fora disso,
+pede que feche e espera: enquanto a instância responder que está fechando
+(a fila da audiência recém-encerrada sendo transcrita leva minutos num
+computador lento), espera até ESPERA_FECHANDO_S, em vez de desistir com ela
+salvando.
 """
 
 from __future__ import annotations
@@ -32,6 +44,15 @@ from pathlib import Path
 log = logging.getLogger("aplicativo.instancia")
 
 CABECALHO_TOKEN = "X-Helestron-Token"
+# Códigos de saída do --encerrar (o 3, o 4 e o 5 são do lançador
+# Helestron.exe: python312.dll ausente ou estranho, sem memória).
+ENCERROU, CONTINUA_ABERTA, AUDIENCIA_EM_ANDAMENTO = 0, 1, 10
+# A audiência ao vivo em curso (GerenteAudiencia.estado): não se fecha.
+ESTADOS_AUDIENCIA = ("iniciando", "gravando", "pausada")
+# Quanto se espera por uma instância que responde "fechando" (a audiência
+# termina de transcrever a fila: servidor.aplicacao.ESPERA_AUDIENCIA_S, mais
+# a parada das tarefas).
+ESPERA_FECHANDO_S = 18 * 60.0
 
 
 def _pasta_local() -> Path:
@@ -217,19 +238,49 @@ def chamar_a_aberta(espera_s: float = 20.0) -> str:
     return "fechou" if not outra_aberta() else "muda"
 
 
-def encerrar_aberta(espera_s: float = 60.0) -> int:
+def audiencia_em_andamento(registro: dict | None) -> bool:
+    """A instância registrada está transcrevendo uma audiência ao vivo?
+
+    (A tela de erro não tem a rota: 404, e a resposta é "não".)
+    """
+    if registro is None:
+        return False
+    dados = pedir(registro, "/api/transcricao/estado", espera_s=5.0)
+    if not dados or "_erro" in dados:
+        return False
+    return str(dados.get("estado") or "") in ESTADOS_AUDIENCIA
+
+
+def encerrar_aberta(espera_s: float = 60.0, recusar_audiencia: bool = True,
+                    espera_fechando_s: float = ESPERA_FECHANDO_S) -> int:
     """--encerrar: pede à instância aberta que feche e espera ela sair.
 
     0 = fechou (ou não havia nenhuma); 1 = continua aberta (não respondeu
-    ou demorou demais - o instalador avisa o usuário).
+    ou demorou demais - o instalador avisa o usuário); 10 = há uma audiência
+    sendo transcrita, e nada foi fechado (recusar_audiencia).
     """
     if not outra_aberta():
         apagar_registro()
-        return 0
+        return ENCERROU
     registro = ler_registro()
     if registro is not None:
+        if recusar_audiencia and audiencia_em_andamento(registro):
+            log.warning("--encerrar recusado: há uma audiência sendo transcrita no Helestron aberto")
+            return AUDIENCIA_EM_ANDAMENTO
         pedir(registro, "/api/encerrar", "POST")
     if not outra_aberta(espera_s):
-        return 0
+        return ENCERROU
+    # Ainda aberta: se ela responde que está fechando (salvando a audiência,
+    # parando as tarefas), espera mais - ela sai sozinha quando terminar.
+    limite = time.monotonic() + max(0.0, espera_fechando_s - espera_s)
+    while registro is not None and time.monotonic() < limite:
+        ping = responde(registro)
+        if ping is None or not ping.get("fechando"):
+            break
+        if not outra_aberta(min(5.0, max(0.0, limite - time.monotonic()))):
+            return ENCERROU
+    # (o servidor dela para um instante antes de o processo sair)
+    if not outra_aberta(min(10.0, espera_s)):
+        return ENCERROU
     log.warning("o Helestron aberto não fechou em %d s", int(espera_s))
-    return 1
+    return CONTINUA_ABERTA

@@ -398,7 +398,11 @@
     return grupo;
   }
 
-  /** Anel de progresso. definir(percentual | null = indeterminado). */
+  /**
+   * Anel de progresso. definir(percentual | null = indeterminado, estado):
+   * estado "concluida" (verde), "alerta" (âmbar: terminou com falhas) ou
+   * "falhou" (vermelho).
+   */
   function anel({ tamanho = 36, espessura = 3.5, rotulo = false } = {}) {
     const r = (36 - espessura) / 2;
     const circ = 2 * Math.PI * r;
@@ -428,6 +432,7 @@
     caixa.definir = (p, estado) => {
       caixa.classList.toggle("concluido", estado === "concluida");
       caixa.classList.toggle("falhou", estado === "falhou");
+      caixa.classList.toggle("alerta", estado === "alerta");
       if (p === null || p === undefined || isNaN(p)) {
         caixa.classList.add("indeterminado");
         valor.setAttribute("stroke-dashoffset", String(circ * 0.72));
@@ -590,17 +595,62 @@
 
   // ============================================================ avisos (toasts)
   let caixaAvisos = null;
+  const ALTURA_AVISO = 110;      // a altura típica de um aviso de duas linhas
+
+  /**
+   * Os avisos ficam no canto superior direito, mas sem cobrir as ações
+   * principais da tela: descem para logo abaixo dos botões do cabeçalho da
+   * página (Exportar Excel, Sincronizar...) e do que a tela marcar com
+   * data-livre-de-avisos (a barra da audiência ao vivo, os botões de quem
+   * está falando). Só conta o que está à vista, na faixa dos avisos.
+   */
+  function posicionarAvisos() {
+    if (!caixaAvisos) return;
+    const largura = Math.min(380, innerWidth - 32);
+    const esquerda = innerWidth - 16 - largura;
+    const alvos = Array.from(document.querySelectorAll("#pagina .cabecalho-acoes > *, #pagina [data-livre-de-avisos]"))
+      .map((n) => n.getBoundingClientRect())
+      .filter((r) => r.width && r.height && r.bottom > 0 && r.right > esquerda)
+      .sort((a, b) => a.top - b.top);
+    let topo = 16;
+    for (const r of alvos) {
+      if (r.top < topo + ALTURA_AVISO) topo = Math.max(topo, r.bottom + 10);
+    }
+    topo = Math.min(topo, Math.max(16, innerHeight - ALTURA_AVISO - 24));
+    caixaAvisos.style.top = Math.round(topo) + "px";
+  }
+  let posicionando = 0;
+  const reposicionar = () => {
+    if (posicionando || !caixaAvisos || !caixaAvisos.childElementCount) return;
+    posicionando = requestAnimationFrame(() => { posicionando = 0; posicionarAvisos(); });
+  };
+  addEventListener("resize", reposicionar);
+  addEventListener("hashchange", () => setTimeout(reposicionar, 350));
+  document.addEventListener("scroll", reposicionar, true);
 
   /**
    * Aviso discreto no canto superior direito.
    * tipo: info | sucesso | alerta | erro. acoes: [{rotulo, acao}].
+   * A mesma mensagem que já está à vista não aparece duas vezes: o aviso
+   * novo toma o lugar do antigo - também quando uma frase contém a outra (o
+   * erro de uma fonte da pauta, "O portal não respondeu", e o do fim da
+   * tarefa, "Não consegui ler a pauta: e-SAJ · TJAC — O portal não
+   * respondeu.").
    */
   function aviso({ titulo, mensagem, tipo = "info", acoes, duracao }) {
     if (!caixaAvisos) caixaAvisos = document.getElementById("avisos");
     if (!caixaAvisos) return null;
+    const normal = (t) => String(t || "").trim().replace(/[.\s]+$/, "");
+    const chave = normal(mensagem) || normal(titulo);
+    for (const antigo of Array.from(caixaAvisos.querySelectorAll(".aviso:not(.saindo)"))) {
+      const velha = antigo.dataset.chave || "";
+      const repete = chave && velha && (velha === chave ||
+        (velha.length >= 25 && chave.includes(velha)) || (chave.length >= 25 && velha.includes(chave)));
+      if (repete) antigo.remove();
+    }
     const nome = { sucesso: "check", alerta: "aviso", erro: "x", info: "info" }[tipo] || "info";
     const fechar = el("button", { type: "button", classe: "aviso-fechar", aria: { label: "Fechar aviso" } }, icone("x"));
-    const no = el("div", { classe: "aviso aviso-" + tipo, role: tipo === "erro" ? "alert" : "status" },
+    const no = el("div", { classe: "aviso aviso-" + tipo, role: tipo === "erro" ? "alert" : "status", dados: { chave } },
       el("span", { classe: "aviso-icone" }, icone(nome)),
       el("div", { classe: "aviso-corpo" },
         titulo ? el("strong", { classe: "aviso-titulo", texto: titulo }) : null,
@@ -620,10 +670,12 @@
     const agendar = () => { timer = setTimeout(remover, tempo); };
     no.addEventListener("mouseenter", () => clearTimeout(timer));
     no.addEventListener("mouseleave", agendar);
+    posicionarAvisos();
     caixaAvisos.prepend(no);
-    // No máximo quatro avisos à vista: o mais antigo sai.
+    // No máximo três avisos à vista (mais que isso desce sobre a tela): o
+    // mais antigo sai.
     const todos = caixaAvisos.querySelectorAll(".aviso:not(.saindo)");
-    if (todos.length > 4) todos[todos.length - 1].remove();
+    if (todos.length > 3) todos[todos.length - 1].remove();
     agendar();
     return { fechar: remover, elemento: no };
   }
@@ -816,20 +868,37 @@
   }
 
   // ============================================================ utilidades
-  /** Copia para a área de transferência (com reserva para o WebView antigo). */
-  async function copiar(texto, rotulo) {
-    let ok = false;
+  /**
+   * Põe o texto na área de transferência, sem aviso: Promise<boolean>.
+   * A escrita começa JÁ, na mesma volta do clique que a pediu (antes de
+   * qualquer espera de rede): depois, a janela pode ter perdido o foco para
+   * o app que se abriu, e o navegador recusa a cópia. Reserva para o
+   * WebView antigo: a seleção de um campo escondido e o "copiar" do
+   * documento.
+   */
+  function copiarTexto(texto) {
+    let escrita;
     try {
-      await navigator.clipboard.writeText(texto);
-      ok = true;
-    } catch (_e) {
+      escrita = navigator.clipboard && navigator.clipboard.writeText
+        ? navigator.clipboard.writeText(String(texto)) : Promise.reject(new Error("sem área de transferência"));
+    } catch (erro) {
+      escrita = Promise.reject(erro);
+    }
+    return escrita.then(() => true, () => {
       const t = el("textarea", { estilo: { position: "fixed", opacity: "0" } });
-      t.value = texto;
+      t.value = String(texto);
       document.body.appendChild(t);
       t.select();
-      try { ok = document.execCommand("copy"); } catch (_e2) { ok = false; }
+      let ok = false;
+      try { ok = document.execCommand("copy"); } catch (_e) { ok = false; }
       t.remove();
-    }
+      return ok;
+    });
+  }
+
+  /** Copia para a área de transferência e avisa (copiado, ou não deu). */
+  async function copiar(texto, rotulo) {
+    const ok = await copiarTexto(texto);
     aviso(ok
       ? { titulo: rotulo || "Copiado", mensagem: texto.length < 80 ? texto : "Cole com Ctrl+V onde precisar.", tipo: "sucesso", duracao: 2600 }
       : { titulo: "Não consegui copiar", mensagem: "Selecione o texto e use Ctrl+C.", tipo: "alerta" });
@@ -852,7 +921,7 @@
   H.ui = {
     el, anexar, trocar, icone, botao, logo, executarAcao, interruptor, segmentado, anel, medidor,
     pilula, pilulaSituacao, seloTipo, seloSistema, blocoIcone, linha, grupo, vazio, faixa,
-    esqueleto, cartao, cabecalhoCartao, cabecalho, aviso, folha, copiar, esperar, debounce,
+    esqueleto, cartao, cabecalhoCartao, cabecalho, aviso, folha, copiar, copiarTexto, esperar, debounce,
     situacaoDownload, nomeSistema, COR_TIPO, SITUACAO_PAUTA,
   };
   H.fmt = fmt;

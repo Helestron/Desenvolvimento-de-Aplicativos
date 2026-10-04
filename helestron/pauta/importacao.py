@@ -29,7 +29,7 @@ from xml.etree import ElementTree as ET
 from ..nucleo import cnj, listas
 from . import modelos
 from .tabelas import Celula, Reconhecedor, Reconhecimento, Tabela, mapear_cabecalho, \
-    tabelas_do_html
+    tabelas_do_html, tem_valores
 
 log = logging.getLogger("pauta.importacao")
 
@@ -56,11 +56,30 @@ class RelatorioInvalido(ValueError):
 
 
 # ================================================================ planilhas
+def _descer_mescladas(linhas: list[list], mescladas) -> None:
+    """Célula mesclada na VERTICAL (a data escrita uma vez para as audiências do
+    dia): o valor vale em todas as linhas que ela cobre, na primeira coluna da
+    mescla. Na horizontal (o título do dia na linha inteira), as outras colunas
+    ficam vazias - como o colspan do HTML. 'mescladas': (linha0, linha1,
+    coluna0), com a linha1 exclusiva, a partir de 0."""
+    for l0, l1, c0 in mescladas:
+        if l1 - l0 < 2 or l0 >= len(linhas) or c0 >= len(linhas[l0]):
+            continue
+        valor = linhas[l0][c0]
+        for i in range(l0 + 1, min(l1, len(linhas))):
+            while len(linhas[i]) <= c0:
+                linhas[i].append(None)
+            if linhas[i][c0] in (None, ""):
+                linhas[i][c0] = valor
+
+
 def _de_xlsx(caminho: Path) -> list[Tabela]:
     from openpyxl import load_workbook
 
     try:
-        livro = load_workbook(io.BytesIO(caminho.read_bytes()), read_only=True, data_only=True)
+        # sem read_only: só assim o openpyxl conta as células mescladas (o relatório
+        # da pauta é pequeno)
+        livro = load_workbook(io.BytesIO(caminho.read_bytes()), data_only=True)
     except Exception as erro:
         raise RelatorioInvalido(f"não consegui abrir a planilha ({str(erro)[:120]}).") from erro
     saida = []
@@ -74,6 +93,12 @@ def _de_xlsx(caminho: Path) -> list[Tabela]:
                 if i >= MAX_LINHAS:
                     break
                 linhas.append(list(linha))
+            try:
+                faixas = list(aba.merged_cells.ranges)
+            except AttributeError:
+                faixas = []
+            # iter_rows começa em A1
+            _descer_mescladas(linhas, [(f.min_row - 1, f.max_row, f.min_col - 1) for f in faixas])
             saida.append(Tabela.de_textos(linhas, origem=f"{caminho.name} › {nome}",
                                           identificador=nome))
     finally:
@@ -88,7 +113,10 @@ def _de_xls(caminho: Path) -> list[Tabela]:
     import xlrd
 
     try:
-        livro = xlrd.open_workbook(str(caminho))
+        try:
+            livro = xlrd.open_workbook(str(caminho), formatting_info=True)   # as mescladas
+        except NotImplementedError:
+            livro = xlrd.open_workbook(str(caminho))
     except Exception as erro:
         raise RelatorioInvalido(
             f"não consegui abrir a planilha antiga ({str(erro)[:120]}).") from erro
@@ -108,6 +136,8 @@ def _de_xls(caminho: Path) -> list[Tabela]:
                         pass
                 valores.append(c.value if c.value != "" else None)
             linhas.append(valores)
+        _descer_mescladas(linhas, [(l0, l1, c0) for l0, l1, c0, _c1 in
+                                   (getattr(aba, "merged_cells", None) or [])])
         saida.append(Tabela.de_textos(linhas, origem=f"{caminho.name} › {aba.name}",
                                       identificador=aba.name))
     return _sem_abas_de_apoio(saida)
@@ -151,19 +181,35 @@ def _de_ods(caminho: Path) -> list[Tabela]:
     saida = []
     for tabela in raiz.iter(f"{{{t}}}table"):
         linhas = []
+        # coluna -> [valor, linhas que ainda cobre]: a célula mesclada na vertical
+        descendo: dict[int, list] = {}
         for linha in tabela.iter(f"{{{t}}}table-row"):
             valores = []
             for celula in linha:
                 if not celula.tag.endswith("table-cell") and not celula.tag.endswith(
                         "covered-table-cell"):
                     continue
+                coluna = len(valores)
                 valor = _valor_ods(celula)
+                if celula.tag.endswith("covered-table-cell") and valor in (None, "") and \
+                        coluna in descendo:
+                    valor = descendo[coluna][0]
                 try:
                     repetir = int(celula.get(f"{{{t}}}number-columns-repeated") or 1)
                 except ValueError:
                     repetir = 1
+                try:
+                    altura = int(celula.get(f"{{{t}}}number-rows-spanned") or 1)
+                except ValueError:
+                    altura = 1
+                if altura > 1 and valor not in (None, ""):
+                    descendo[coluna] = [valor, altura]
                 # o LibreOffice "comprime" colunas repetidas (as vazias até o fim: 1024)
                 valores.extend([valor] * min(repetir, 50))
+            for coluna in list(descendo):
+                descendo[coluna][1] -= 1
+                if descendo[coluna][1] <= 0:
+                    del descendo[coluna]
             while valores and valores[-1] in (None, ""):
                 valores.pop()
             if valores:
@@ -270,7 +316,8 @@ def _de_pdf(caminho: Path, regras) -> tuple[list[Tabela], list[str]]:
                 soltas.append(" | ".join(textos))
                 rotulos = [Celula(texto=t) for t in textos]
                 mapa = mapear_cabecalho(rotulos, regras)
-                if "data" in mapa and len(mapa) >= 2:
+                # "Data: 03/10/2026  Hora: 10:15" da emissão é preâmbulo, não o cabeçalho
+                if "data" in mapa and len(mapa) >= 2 and not tem_valores(rotulos):
                     if colunas is None:
                         colunas = [c[0] for c in celulas]
                         linhas_tabela.append(rotulos)

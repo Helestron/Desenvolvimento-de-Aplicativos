@@ -47,6 +47,9 @@
     registros: [],           // últimos eventos 'log'
     gravando: false,         // há audiência sendo transcrita?
     processos: null,         // rascunho da seção Processos (relação lida, opções)
+    // Tarefas cujo resultado a tela aberta mostra no próprio lugar (o teste de
+    // um acesso, na linha do portal): o aviso do canto não o repete.
+    resultadosNaTela: new Set(),
   };
   H.loja = loja;
 
@@ -205,6 +208,11 @@
 
     api.on("aviso", (a) => {
       if (!a) return;
+      // Na tela da Pauta, o que a sincronização ou a captura tem a dizer já
+      // está na faixa de andamento e na de resultado (fontes com problema,
+      // avisos): o mesmo texto não se repete num aviso por cima dos botões.
+      const daTarefa = a.tarefa ? loja.tarefas.get(a.tarefa) : null;
+      if (daTarefa && resultadoNaTela(daTarefa)) return;
       const tipo = { erro: "erro", aviso: "alerta", alerta: "alerta", sucesso: "sucesso" }[a.nivel] || "info";
       aviso({ titulo: a.titulo, mensagem: a.mensagem, tipo });
     });
@@ -244,7 +252,19 @@
     });
   }
 
+  /**
+   * A tela aberta mostra o resultado desta tarefa por conta própria? A Pauta
+   * mostra o da sincronização e o da captura numa faixa que fica à vista até
+   * ser fechada; o aviso do canto só repetiria a mesma frase.
+   */
+  function resultadoNaTela(t) {
+    const tipo = t && t.tipo;
+    if (t && loja.resultadosNaTela.has(t.id)) return true;
+    return (tipo === "pauta_sincronizar" || tipo === "pauta_capturar") && document.documentElement.dataset.secao === "pauta";
+  }
+
   function avisarFimDeTarefa(t) {
+    if (resultadoNaTela(t)) return;
     const r = t.resultado || {};
     const acoes = [];
     if (r && typeof r === "object") {

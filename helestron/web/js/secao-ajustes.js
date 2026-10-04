@@ -153,8 +153,66 @@
     return (c.opcoes || []).map((o) => (typeof o === "object" ? { valor: String(o.valor), rotulo: o.rotulo || String(o.valor) } : { valor: String(o), rotulo: String(o) }));
   }
 
+  /**
+   * O microfone das audiências: uma lista com os microfones deste
+   * computador, guardado pelo NOME (o número muda quando se liga ou desliga
+   * um aparelho USB). Um nome guardado que não está mais ligado aparece como
+   * "não encontrado" - nunca troca em silêncio pelo padrão do Windows.
+   */
+  function campoMicrofone(c) {
+    const id = `cfg-${c.secao}-${c.chave}`;
+    const salvo = el("span");
+    const sel = el("select", { classe: "campo campo-pequeno", id, aria: { label: "Microfone" }, estilo: { width: "auto", maxWidth: "300px" } },
+      el("option", { value: "", texto: "Carregando os microfones…" }));
+    const nota = el("span", { id: "nota-microfone", texto: "Guardado pelo nome: trocar a porta USB não muda a escolha." });
+    let antes = String(valorDe(c) || "");
+    (async () => {
+      let lista = [];
+      try {
+        lista = await api.transcricao.microfones();
+      } catch (erro) {
+        trocar(sel, el("option", { value: "", texto: "Padrão do Windows" }));
+        nota.textContent = erro.message;
+        return;
+      }
+      const padrao = lista.find((m) => m.padrao);
+      const nomes = Array.from(new Set(lista.map((m) => String(m.nome || "")).filter(Boolean)));
+      const opcoes = [el("option", { value: "", texto: "Padrão do Windows" + (padrao ? ` — ${padrao.nome}` : "") })]
+        .concat(nomes.map((n) => el("option", { value: n, texto: n })));
+      let atual = String(valorDe(c) || "");
+      if (atual && !nomes.includes(atual)) {
+        const pelo = /^\d+$/.test(atual) ? lista.find((m) => String(m.indice) === atual) : null;
+        if (pelo) {
+          // Configuração antiga, pelo número: passa a guardar o nome.
+          atual = String(pelo.nome);
+          gravar(c, atual).catch(() => {});
+        } else {
+          opcoes.push(el("option", { value: atual, texto: `${atual} (não encontrado)` }));
+          nota.textContent = `O microfone «${atual}» não foi encontrado neste computador. Ligue-o ou escolha outro.`;
+          nota.classList.add("erro");
+        }
+      }
+      trocar(sel, opcoes);
+      sel.value = atual;
+      antes = atual;
+    })();
+    sel.addEventListener("change", async () => {
+      try {
+        antes = String(await gravar(c, sel.value));
+        nota.classList.remove("erro");
+        nota.textContent = "Guardado pelo nome: trocar a porta USB não muda a escolha.";
+        marcaSalvo(salvo);
+      } catch (erro) {
+        sel.value = antes;
+        folha.erro(erro);
+      }
+    });
+    return linha({ titulo: "Microfone", sub: nota, acessorio: el("span", { classe: "grupo-botoes", estilo: { flexWrap: "nowrap" } }, salvo, sel) });
+  }
+
   /** Uma linha de ajuste, conforme o tipo do campo. */
   function campo(c, ctx) {
+    if (c.secao === "transcricao" && c.chave === "dispositivo") return campoMicrofone(c);
     const id = `cfg-${c.secao}-${c.chave}`;
     const valor = valorDe(c);
     const salvo = el("span");
@@ -265,23 +323,65 @@
   // ================================================================ cada grupo
   async function telaAcessos(ctx, campos) {
     const lista = el("div", {}, H.ui.esqueleto(2));
-    const carregar = async () => {
-      let acessos = [];
-      try { acessos = await api.acessos.listar(); } catch (erro) { trocar(lista, H.ui.faixa({ tipo: "erro", texto: erro.message })); return; }
-      if (!ctx.vivo) return;
+    // O teste de cada portal (portal → id da tarefa), vivo enquanto a janela
+    // estiver aberta. O resultado aparece na própria linha, ao lado do botão,
+    // e não num aviso por cima da lista.
+    const testes = H.loja.testesAcesso || (H.loja.testesAcesso = new Map());
+    const naTela = H.loja.resultadosNaTela || new Set();
+    for (const id of testes.values()) naTela.add(id);
+    ctx.aoSair(() => { for (const id of testes.values()) naTela.delete(id); });
+    let acessos = [];
+
+    function situacaoDoTeste(portal) {
+      const id = testes.get(portal);
+      if (!id) return null;
+      const t = H.loja.tarefas.get(id) || { estado: "rodando" };
+      if (t.estado === "rodando") {
+        return el("span", { classe: "resultado-teste" }, el("span", { classe: "girando", estilo: { width: "12px", height: "12px", borderWidth: "1.5px" } }), "Testando o acesso…");
+      }
+      if (t.estado === "concluida") {
+        const hora = t.fim ? fmt.hora(t.fim) : "";
+        return el("span", { classe: "resultado-teste ok" }, icone("check-circulo", { tamanho: 14 }), hora ? `Acesso confirmado às ${hora}.` : "Acesso confirmado.");
+      }
+      if (t.estado === "falhou") {
+        return el("span", { classe: "resultado-teste erro" }, icone("aviso", { tamanho: 14 }), `O teste falhou. ${t.erro || t.status || "O portal não respondeu."}`);
+      }
+      return el("span", { classe: "resultado-teste" }, "Teste interrompido.");
+    }
+
+    const desenhar = () => {
       const linhas = acessos.map((a) => {
         const [sistema, tribunal] = String(a.portal).split(":");
-        const testar = a.tem_senha ? botao({ rotulo: "Testar", tamanho: "pequeno", tipo: "texto", acao: async () => {
-          await api.acessos.testar(tribunal);
-          aviso({ titulo: `Testando o acesso ao ${a.rotulo}`, mensagem: "O resultado aparece aqui em instantes.", tipo: "info" });
-        } }) : null;
+        const rotulo = a.rotulo || a.portal;
+        const id = testes.get(a.portal);
+        const t = id ? H.loja.tarefas.get(id) : null;
+        const testando = !!id && (!t || t.estado === "rodando");
+        // Testar e Alterar são botões irmãos numa linha que não é botão: um
+        // botão dentro de outro abria a folha da senha junto com o teste.
+        const testar = a.tem_senha ? botao({ rotulo: testando ? "Testando…" : "Testar", tamanho: "pequeno", tipo: "texto", desativado: testando,
+          atributos: { "aria-label": `Testar o acesso ao ${rotulo}` }, acao: async () => {
+            const r = await api.acessos.testar(tribunal, sistema);
+            testes.set(a.portal, r.tarefa);
+            naTela.add(r.tarefa);
+            desenhar();
+          } }) : null;
+        const temAlgo = a.tem_senha || a.usuario;
+        const alterar = botao({ rotulo: temAlgo ? "Alterar" : "Cadastrar", tamanho: "pequeno", tipo: temAlgo ? "texto" : "tonal",
+          atributos: { "aria-label": `${temAlgo ? "Alterar" : "Cadastrar"} o acesso ao ${rotulo}` },
+          acao: async () => {
+            if (await editarAcesso({ portal: a.portal, rotulo, usuario: a.usuario, sistema, temSenha: a.tem_senha })) {
+              testes.delete(a.portal);        // o resultado era da senha anterior
+              carregar();
+            }
+          } });
+        const sub = a.so_agora ? `Senha só até fechar o Helestron${a.usuario ? " · " + a.usuario : ""}`
+          : a.tem_senha ? `Senha guardada${a.usuario ? " · " + a.usuario : ""}` : "Sem senha guardada";
+        const teste = a.tem_senha ? situacaoDoTeste(a.portal) : null;
         const l = linha({
           icone: a.tem_senha ? "chave" : "pessoa", cor: a.tem_senha ? "verde" : "cinza",
-          titulo: a.rotulo || a.portal,
-          sub: a.so_agora ? `Senha só até fechar o Helestron${a.usuario ? " · " + a.usuario : ""}`
-            : a.tem_senha ? `Senha guardada${a.usuario ? " · " + a.usuario : ""}` : "Sem senha guardada",
-          acessorio: testar,
-          acao: async () => { if (await editarAcesso({ portal: a.portal, rotulo: a.rotulo || a.portal, usuario: a.usuario, sistema, temSenha: a.tem_senha })) carregar(); },
+          titulo: rotulo,
+          sub: teste ? el("span", {}, el("span", { estilo: { display: "block" }, texto: sub }), teste) : sub,
+          acessorio: el("span", { classe: "grupo-botoes", estilo: { flexWrap: "nowrap" } }, testar, alterar),
         });
         l.dataset.portal = a.portal;
         return l;
@@ -291,6 +391,14 @@
         el("span", { classe: "linha-texto" }, el("span", { classe: "linha-titulo", estilo: { color: "var(--azul-texto)" }, texto: "Adicionar acesso" })));
       trocar(lista, grupo({ titulo: "Portais", linhas: linhas.concat([adicionar]), rodape: RODAPES.acessos }));
     };
+    const carregar = async () => {
+      try { acessos = await api.acessos.listar(); } catch (erro) { trocar(lista, H.ui.faixa({ tipo: "erro", texto: erro.message })); return; }
+      if (!ctx.vivo) return;
+      desenhar();
+    };
+    ctx.on("tarefa", (t) => {
+      if (t && t.tipo === "teste_login" && Array.from(testes.values()).includes(t.id)) desenhar();
+    });
     await carregar();
     return [lista, campos.length ? grupo({ titulo: "Como entrar", linhas: campos.map((c) => campo(c, ctx)) }) : null, grupoEnderecos(ctx)];
   }

