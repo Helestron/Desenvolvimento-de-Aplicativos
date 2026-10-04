@@ -26,6 +26,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      publicar:
+        description: "Publicar a versao no GitHub (so no main): cria a tag vX.Y.Z da versao do programa"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -685,7 +690,9 @@ jobs:
   # --------------------------------------------------------------------------
   publicar:
     name: Publicar a versão (tags v*)
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Por tag (git push da tag vX.Y.Z) ou pelo disparo manual "publicar" no
+    # main, que cria a tag da versao do programa no proprio GitHub.
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publicar && github.ref == 'refs/heads/main')
     needs: [testes, windows]
     runs-on: ubuntu-latest
     permissions:
@@ -700,7 +707,6 @@ jobs:
       - name: Criar a versão no GitHub
         env:
           GH_TOKEN: ${{ github.token }}
-          TITULO: Helestron ${{ github.ref_name }}
           NOTAS: >-
             Baixe o Helestron-Setup e dê dois cliques: o assistente instala o Helestron
             só para o seu usuário, sem pedir administrador e sem precisar de internet
@@ -709,4 +715,12 @@ jobs:
             de conferência do instalador.
         run: |
           ls -l dist
-          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$TITULO" --notes "$NOTAS"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            ARQ=$(ls dist/Helestron-Setup-*.exe | head -n 1)
+            VERSAO=$(basename "$ARQ" .exe | sed 's/^Helestron-Setup-//')
+            TAG="v$VERSAO"
+          fi
+          echo "Versao: $TAG (commit $GITHUB_SHA)"
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Helestron $TAG" --notes "$NOTAS"
