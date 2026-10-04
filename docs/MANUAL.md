@@ -63,6 +63,12 @@ uma sincronização da pauta, o preparo do acervo), cada um com um anel de
 progresso; clique neles para ir à tela que os acompanha. Ali também ficam a
 versão do programa e a indicação “ligado” (ou “sem conexão”).
 
+As cores seguem uma regra simples. Os ícones são sempre em tons de azul e
+cinza, e cada assunto tem o seu tom em todas as telas (o download, por
+exemplo, é sempre azul-marinho, e a pauta, azul-ciano). Verde, âmbar e
+vermelho ficam reservados para dizer como as coisas estão (pronto, atenção,
+erro), para o botão de gravar e para os botões que encerram ou apagam algo.
+
 ### Para quem usava o Assessor Integrado
 
 O Helestron substitui o antigo Assessor Integrado. O que mudou:
@@ -75,9 +81,20 @@ O Helestron substitui o antigo Assessor Integrado. O que mudou:
   novas pastas, se você quiser;
 - as **senhas** guardadas no Assessor Integrado **não são aproveitadas**:
   cadastre-as de novo em **Ajustes › Acessos aos portais**;
-- o conector do acervo no Claude Desktop passou a se chamar **helestron**; o
-  antigo (*assessor-integrado*) é retirado sozinho quando você conecta o
-  acervo de novo;
+- o conector do acervo no Claude Desktop passou a se chamar **helestron**;
+- ao instalar o Helestron, o instalador **tira sozinho os restos do Assessor
+  Integrado**: o atalho **Assessor Integrado** da Área de Trabalho e do Menu
+  Iniciar (só o que abre mesmo o Assessor Integrado; um atalho de mesmo nome
+  que abra outra coisa fica) e o conector antigo do acervo
+  (*assessor-integrado*) no Claude Desktop e no Codex/ChatGPT Work. Os seus
+  outros conectores ficam, e o arquivo de configuração de cada programa é
+  guardado antes, ao lado, com “antes-do-helestron” e a data no nome. Se o
+  Claude Desktop estiver aberto, feche-o pela bandeja do Windows (perto do
+  relógio) e abra de novo para ele deixar de mostrar o conector antigo. Se a
+  verificação da instalação (**Ajustes › Sobre e diagnóstico › Verificar a
+  instalação**) acusar que “o Claude Desktop ainda tem o conector da
+  versão anterior (Assessor Integrado)”, clique em **Conectar o acervo** (ou
+  **Reconectar o acervo**), na tela Compartilhar: o antigo sai junto;
 - há uma função nova: a **Pauta de audiências**.
 
 ---
@@ -127,10 +144,10 @@ O Helestron substitui o antigo Assessor Integrado. O que mudou:
    | Tela | O que fazer |
    |---|---|
    | **Bem-vindo ao Helestron** | clique em **Próximo** |
-   | **Pasta do programa** | deixe a pasta sugerida e clique em **Próximo** (para usar outra, clique em **Procurar**; se não houver permissão para gravar nela, como em `C:\Program Files`, o assistente avisa e continua nesta tela) |
+   | **Pasta do programa** | deixe a pasta sugerida e clique em **Próximo**. Para usar outra, clique em **Procurar**. Se não houver permissão para gravar nela, como em `C:\Program Files`, o assistente avisa e continua nesta tela. Se a pasta escolhida já tiver outros arquivos (seus ou de outro programa), o assistente avisa que o Helestron será instalado numa pasta própria dentro dela, `<pasta>\Helestron`: **OK** aceita, e o campo passa a mostrar o caminho novo; **Cancelar** volta para você escolher outra. Se até essa subpasta já tiver outros arquivos, ele pede uma pasta vazia |
    | **Opções** | o programa é obrigatório; desmarque **Atalho na Área de Trabalho** se não quiser o ícone ali; clique em **Instalar** |
    | **Instalando** | aguarde: o Helestron é copiado e, no fim, conferido (pode levar até um minuto) |
-   | **Pronto!** | deixe marcado **Abrir o Helestron** e clique em **Concluir** |
+   | **Pronto!** | a página lembra que o Helestron abre pelo atalho no Menu Iniciar ou na Área de Trabalho e que, na primeira vez, o acesso ao e-SAJ e ao eProc é cadastrado em **Ajustes**; deixe marcado **Abrir o Helestron** e clique em **Concluir** |
 
 Se o Helestron estiver aberto (numa atualização, por exemplo), o instalador o
 fecha antes de copiar. Uma audiência sendo transcrita **não é interrompida**:
@@ -154,6 +171,14 @@ programa em **Aplicativos instalados**, de onde ele pode ser desinstalado.
 Os seus dados (configurações, senhas, processos, transcrições e pauta) ficam
 **em outras pastas** e não são tocados quando o programa é atualizado ou
 reinstalado.
+
+A pasta do programa é **só do Helestron**. Nela fica a lista
+`arquivos-instalados.txt`, com tudo o que a instalação pôs lá. A atualização
+e o desinstalador apagam **só os arquivos dessa lista**, um por vez, e uma
+pasta só sai se ficar vazia: nada do que você ou outro programa tiver posto
+ali é apagado (mesmo assim, guarde os seus arquivos em outro lugar). Pelo
+mesmo motivo, o instalador nunca põe o programa no meio de outros arquivos
+(veja a tela **Pasta do programa**, acima).
 
 ### Sem administrador
 
@@ -197,8 +222,9 @@ Runtime** (gratuito, da Microsoft) e pede que a equipe de informática o
 instale antes de abrir o Helestron.
 
 Além disso, **a cada abertura** o Helestron confere rapidamente se os seus
-arquivos essenciais estão lá. Se faltar algum, ele mostra uma tela própria em
-vez de quebrar no meio do uso (veja
+arquivos essenciais estão lá. Se faltar algum, ele mostra uma tela própria
+(ou, se faltar um dos arquivos sem os quais nem essa tela abre, uma caixa de
+mensagem que diz qual é) em vez de quebrar no meio do uso (veja
 [Problemas comuns](#o-helestron-não-pôde-abrir-antivírus)).
 
 ### Instalação silenciosa (para a equipe de informática)
@@ -214,7 +240,10 @@ Helestron-Setup-1.0.0.exe /S /D=D:\Programas\Helestron
   (`%LOCALAPPDATA%\Programs\Helestron`) ou, numa atualização, na mesma pasta
   da instalação anterior.
 - `/D=` escolhe a pasta. Tem de ser o **último** argumento e vai **sem
-  aspas**, mesmo que o caminho tenha espaços.
+  aspas**, mesmo que o caminho tenha espaços. Se a pasta já tiver outros
+  arquivos (do usuário ou de outro programa), o Helestron vai, sem
+  perguntar, para `<pasta>\Helestron`; se essa subpasta também tiver outros
+  arquivos, nada é copiado, e o instalador sai com o código 3.
 - A instalação é **por usuário**: rode o instalador **na conta de quem vai
   usar o programa**, e não como SYSTEM nem com outra conta, senão o Helestron
   vai para o perfil errado.
@@ -234,6 +263,7 @@ Códigos de saída:
 |---|---|
 | 0 | instalado e conferido |
 | 2 | copiado, mas a conferência final encontrou problema (veja o relatório) |
+| 3 | a pasta escolhida já tem arquivos de outro programa (ou do usuário), e a subpasta `Helestron` dentro dela também: nada foi copiado; use uma pasta vazia, como a padrão |
 | 4 | o Helestron não fechou a tempo e continuou prendendo os arquivos do programa; feche-o e rode de novo |
 | 5 | outro instalador do Helestron já estava aberto |
 | 6 | Windows incompatível (32 bits, ou anterior ao Windows 10) |
@@ -246,6 +276,33 @@ Para conferir a impressão digital do instalador, no PowerShell:
 arquivo `.sha256` da página de versões.
 
 A desinstalação silenciosa é descrita em [Desinstalar](#desinstalar).
+
+### Linha de comando (para a equipe de informática)
+
+O `Helestron.exe` abre a janela e não escreve texto. Para a linha de comando
+(diagnóstico, scripts), use o Python que vem na pasta do programa:
+
+```bat
+"%LOCALAPPDATA%\Programs\Helestron\python.exe" -I -m helestron --ajuda
+"%LOCALAPPDATA%\Programs\Helestron\python.exe" -I -m helestron verificar
+"%LOCALAPPDATA%\Programs\Helestron\python.exe" -I -m helestron pauta importar "C:\Relatorios\pauta.xlsx"
+```
+
+- `--ajuda` (ou `-h`) lista os comandos; cada comando tem a própria ajuda,
+  com `-h` (por exemplo, `pauta importar -h`).
+- A ajuda e as mensagens de erro saem em português, e um erro de uso termina
+  com o código 2, por exemplo:
+
+  ```
+  python -m helestron baixar: erro: argumento não reconhecido: --xyz
+  python -m helestron pauta: erro: comando desconhecido: 'xpto' (opções: sincronizar, exportar, importar, listar, fontes)
+  ```
+- `pauta importar` e `pauta sincronizar` aplicam o sigilo na hora, como a
+  janela: se a pauta mostrar em segredo de justiça um processo que tem
+  arquivos no acervo, a saída diz “Segredo de justiça: a pauta indica que o
+  processo … corre em segredo de justiça, e ele tinha arquivos no acervo.
+  Preparando o acervo...” e, depois, o que saiu (veja [Segredo de justiça na
+  pauta](#segredo-de-justiça-na-pauta)).
 
 ---
 
@@ -456,7 +513,8 @@ ao lado `relatorio (atualizado).csv`.
 
 - O que já foi baixado não é baixado de novo: pode deixar a relação crescer e
   baixar outra vez.
-- Processo dependente (incidente) sai com o sufixo: `...0001-01.pdf`.
+- Processo dependente (incidente) sai com o sufixo: `...0001-01.pdf`. O
+  incidente de um processo sigiloso também é sigiloso.
 - Se a relação trouxer a **senha do processo** (`número ; senha`, ou uma
   coluna “senha”), ela é usada, e a linha mostra **Senha na relação**.
 - **Tribunais em transição** do e-SAJ para o eProc (TJAL, TJSP e TJAC): o
@@ -480,14 +538,23 @@ Com **Separar os sigilosos** ligado (o padrão):
   Pasta Digital), porque o PDF a traz inteira;
 - o relatório do lote que fica no acervo **não identifica** os sigilosos: no
   lugar do número, a linha diz “(processo sigiloso)”. O relatório completo,
-  com os números, fica em `Sigilosos\<nome do lote>\_controle\relatorio.csv`;
+  com os números, fica em `Sigilosos\<nome do lote>\_controle\relatorio.csv`.
+  Vale também para o processo que se revela sigiloso depois do download:
+  quando o Helestron o leva para a pasta dos sigilosos, a linha dele no
+  relatório do acervo passa a dizer “(processo sigiloso)”, e a linha
+  completa vai para o relatório do lote na pasta dos sigilosos;
 - a transcrição de audiência que já estava no acervo quando o download
-  descobriu o sigilo é levada para `Sigilosos\Transcricoes`, com a gravação;
+  descobriu o sigilo é levada para `Sigilosos\Transcricoes`, com a gravação.
+  Se ela não puder sair (aberta no Word, ou a audiência sendo gravada
+  agora), o processo **não** é dado como falha: a linha dele mostra
+  “atenção: …”, com o arquivo e o que fazer, e o lote avisa **Arquivo de
+  processo sigiloso no acervo** (veja [Regras de sigilo](#regras-de-sigilo));
 - o processo que o Helestron **já sabe sigiloso** (os autos, uma transcrição
   ou uma gravação dele na pasta dos sigilosos, ou a pauta de audiências
   indicando segredo de justiça) vai para a pasta dos sigilosos mesmo que a
-  página do portal não mostre o selo; e o que um lote já deu como sigiloso
-  continua sigiloso quando você usa **Tentar de novo**.
+  página do portal não mostre o selo, e o mesmo vale para os incidentes dele
+  (`...0001-01`); e o que um lote já deu como sigiloso continua sigiloso
+  quando você usa **Tentar de novo**.
 
 A regra completa está em [Segredo de justiça](#segredo-de-justiça).
 
@@ -577,6 +644,15 @@ automática. A gravação fica em `Transcricoes\_audio`, para conferência. Se j
 houver uma transcrição do mesmo processo, a nova sai como
 `<número> (2).docx`: nada é sobrescrito.
 
+As propriedades do arquivo (no Word, **Arquivo › Informações**; no
+Explorador de Arquivos, **Propriedades › Detalhes**) são do próprio
+documento: o autor e o “modificado por” são **Helestron**, o título é
+“Transcrição de audiência — Processo nº …”, as palavras-chave trazem o
+número do processo, as datas de criação e de modificação são as do momento
+em que ele foi gerado, e o programa indicado é o Helestron. Nenhum dado
+herdado de outro programa aparece ali, o que importa num documento que pode
+ir aos autos.
+
 **Revisar com o modelo preciso**: o botão **Revisar** refaz o texto inteiro
 com um modelo maior e mais preciso, a partir da gravação e dos falantes que
 você marcou; a ficha mantém o tipo de audiência e os participantes. Leva
@@ -601,7 +677,10 @@ audiência de um processo que ele já sabe ser sigiloso:
 - os autos do processo estão na pasta dos sigilosos, ou uma transcrição ou
   gravação anterior dele já foi para lá;
 - a pauta de audiências indica segredo de justiça em alguma audiência desse
-  processo (vinda do portal ou de um relatório importado).
+  processo (vinda do portal ou de um relatório importado);
+- o processo é **incidente** (`...0001-01`) de um processo que se enquadra
+  num dos casos acima: a tela diz “Este processo é incidente de um processo
+  sigiloso: …”.
 
 É a regra única do Helestron, descrita em [Segredo de
 justiça](#segredo-de-justiça). Nesses casos, o interruptor se liga sozinho
@@ -845,6 +924,56 @@ texto (omitido por causa do segredo de justiça)”), porque poderia ser o nome
 de uma parte. E um texto que começa com “=” (num nome de parte ou numa
 observação) vai para a planilha como texto, nunca como fórmula.
 
+### Segredo de justiça na pauta
+
+Pela pauta, o Helestron só marca um processo como sigiloso quando ela **diz
+claramente** que ele corre em segredo de justiça. A marcação tem
+consequência séria (o processo sai do acervo e da IA de vez, como se vê
+abaixo), por isso a dúvida não marca:
+
+| Marca o processo como sigiloso | Não marca |
+|---|---|
+| o ícone “Segredo de Justiça” na linha da audiência | “Nível 1” ou “Nível 2” no **Local** (é o andar ou o bloco do fórum) |
+| “(Segredo de Justiça)” no lugar das partes | “Segredo de justiça: não”, “Segredo de Justiça? NÃO”, “Sem segredo de justiça” |
+| “Ação Civil Pública - Segredo de Justiça” | “Não sigiloso”, “Processo não é sigiloso”, “não corre em segredo de justiça” |
+| “Processo em segredo de justiça” | “Nível 0”, “Público”, “Sigilo retirado”, “Sigilo levantado” |
+| “Sigiloso” sozinho numa célula | “Pedido de segredo de justiça” (uma menção que não afirma nada) |
+| “Sim”, “X” ou “Nível 1” na coluna **Sigilo** | “Oitiva de testemunha sigilosa” (o sigilo é de outra coisa) |
+
+Cada célula vale por si: “Ministério Público” ou “Defensoria Pública” ao lado
+do selo não tiram o sigilo, e o “não” de uma célula não vale para outra. A
+regra é a mesma na sincronização, na captura e no relatório importado.
+
+**Quando a pauta revela o segredo de um processo do acervo.** Se a
+sincronização (inclusive a do monitoramento automático), a captura ou um
+relatório importado mostrar em segredo de justiça um processo que tem
+arquivos no acervo, o Helestron age **na hora**, sem esperar o próximo
+compartilhamento:
+
+- leva os autos e as transcrições dele (com as gravações) para a pasta dos
+  sigilosos;
+- apaga o texto dele que a IA lia (`_ia\texto`) e o tira do índice do acervo
+  (`INDICE.md`);
+- com **Espelhar sozinho ao fim de cada download e de cada transcrição**
+  ligado, tira também a cópia dele da nuvem; sem isso, ela sai no próximo
+  **Espelhar agora** (tela Compartilhar);
+- mostra o aviso **Processo em segredo de justiça** (ou **Processos em
+  segredo de justiça**), com o número e o que foi feito, por exemplo: “A
+  pauta indica que o processo 0700123-83.2024.8.02.0001 corre em segredo de
+  justiça. O Helestron está levando os autos e as transcrições dele para a
+  pasta dos sigilosos, e ele sai do índice e do texto lidos pela IA e do
+  espelho na nuvem.”
+
+Com **Separar os processos sigilosos** desligado, os arquivos continuam no
+acervo, mas o processo sai do índice e do texto lidos pela IA, e o aviso diz
+isso. Se houver arquivo de processo sigiloso preso no acervo (veja [Regras
+de sigilo](#regras-de-sigilo)), o aviso pede que você o feche primeiro: o
+processo sai assim que o acervo puder ser preparado de novo.
+
+O sigilo que a pauta indicou fica gravado, mesmo que a audiência saia da
+pauta: veja [Se um processo foi marcado como sigiloso por
+engano](#se-um-processo-foi-marcado-como-sigiloso-por-engano).
+
 ### Monitoramento automático
 
 No quadro **Monitoramento**, o interruptor **Conferir sozinho** (“e avisar o
@@ -976,15 +1105,43 @@ escolha e explica por quê.
   gravação na pasta dos sigilosos, ou a pauta de audiências.
 - Antes de entregar o acervo a qualquer ferramenta (e antes de espelhá-lo na
   nuvem), o Helestron confere o acervo e, com **Separar os processos
-  sigilosos** ligado (o padrão), leva para a pasta dos sigilosos a cópia de
-  processo sigiloso que ainda estiver nele. O conector do Claude Desktop e
-  do Codex aplica a mesma regra a cada consulta da IA.
-- Se essa cópia **ficar presa no acervo** (o PDF estava aberto, por
-  exemplo), o Helestron **suspende** o preparo, o pacote, os botões das
-  ferramentas e o espelho na nuvem até ela sair, e diz qual é o arquivo. O
-  Início mostra o aviso **Processo sigiloso no acervo**: feche o PDF e
-  clique de novo (o Helestron tenta levá-lo outra vez) ou mova-o você mesmo
-  para a pasta dos sigilosos.
+  sigilosos** ligado (o padrão), leva para a pasta dos sigilosos tudo o que
+  ainda estiver nele de processo sigiloso: os autos (com a capa e as
+  gravações baixadas), as transcrições, a minuta em `Produtos\` e qualquer
+  outro arquivo com o número do processo no nome, em qualquer pasta do
+  acervo (uma pasta `Minutas` sua, por exemplo). Cada arquivo vai para o
+  mesmo caminho dentro da pasta dos sigilosos (`Acervo\Processos\<lote>\`
+  vira `Sigilosos\<lote>\`, e `Acervo\Minutas\` vira `Sigilosos\Minutas\`),
+  sem substituir nada do que já estiver lá, e os incidentes do processo saem
+  junto. Quando é a pauta que revela o segredo, isso acontece na hora (veja
+  [Segredo de justiça na pauta](#segredo-de-justiça-na-pauta)). O conector
+  do Claude Desktop e do Codex aplica a mesma regra a cada consulta da IA.
+- **O que trava o compartilhamento.** Se os **autos** de um processo
+  sigiloso (um PDF dele fora de `Produtos\`) não puderem sair do acervo (o
+  PDF aberto em outro programa, ou a pasta dos sigilosos inacessível), o
+  Helestron **suspende** o preparo, o pacote, os botões das ferramentas e o
+  espelho na nuvem até eles saírem. A mensagem diz qual é o arquivo, por que
+  ele não saiu e para onde movê-lo, por exemplo: “Os autos do processo
+  0700123-83.2024.8.02.0001, que corre em segredo de justiça, não puderam
+  sair do acervo: Processos\Lote 1\0700123-83.2024.8.02.0001.pdf (está
+  aberto em outro programa?). Feche o arquivo e tente de novo, ou mova-o
+  para a pasta dos sigilosos (…). Até ele sair, nada do acervo é
+  compartilhado: os botões da tela Compartilhar, o pacote e o espelho na
+  nuvem ficam suspensos.” O Início mostra, nos **Primeiros passos**, o aviso
+  **Processo sigiloso no acervo**, e **Resolver** leva à tela Compartilhar:
+  feche o PDF e clique de novo (o Helestron tenta levá-lo outra vez) ou
+  mova-o você mesmo para a pasta dos sigilosos.
+- **O que não trava.** Os outros arquivos de um processo sigiloso que não
+  puderem sair (a transcrição aberta no Word, a de uma audiência sendo
+  gravada agora, a minuta em `Produtos\`, a capa, o relatório do lote aberto
+  no Excel) não suspendem nada: o índice, o conector, o pacote e a nuvem já
+  os deixam de fora. Mas o Claude Code, o Cowork e o ChatGPT abrem a pasta
+  inteira e **ainda podem vê-los** até eles saírem. Por isso, o Início
+  mostra o aviso **Arquivo de processo sigiloso no acervo**, com o caminho
+  de cada arquivo e o motivo: feche o arquivo e clique em **Preparar acervo
+  para a IA** (ou mova-o você mesmo para a pasta dos sigilosos) **antes** de
+  abrir essas ferramentas. O relatório aberto no Excel só precisa ser
+  fechado: o número do processo sai dele no próximo preparo.
 - O espelho na nuvem apaga a cópia de um processo que depois tenha se
   revelado sigiloso; fora isso, não apaga nada do que já está lá. Vale
   também para a subpasta `Assessor Integrado - Acervo`, do espelho da versão
@@ -1014,7 +1171,17 @@ Basta uma destas três situações:
 3. a **pauta de audiências** indica segredo de justiça em **qualquer**
    audiência desse processo, vinda do portal ou de um relatório importado,
    mesmo que ela já tenha saído da pauta: o sigilo é do processo, e não de
-   uma audiência só. Na pauta, o sigilo, uma vez apurado, não se desfaz.
+   uma audiência só. Só a indicação clara conta (o selo “Segredo de
+   Justiça”, “Processo em segredo de justiça”, “Sim” na coluna Sigilo);
+   “Nível 1” no local da audiência, “Segredo de justiça: não” ou “Sem
+   segredo de justiça” não marcam (veja [Segredo de justiça na
+   pauta](#segredo-de-justiça-na-pauta)). Na pauta, o sigilo, uma vez
+   apurado, não se desfaz.
+
+O **incidente** de um processo sigiloso (o `...0001-01`, como o cumprimento
+de sentença) também é sigiloso: as partes e o conteúdo são os mesmos. O
+contrário não vale: o processo principal não fica sigiloso só por causa de
+um incidente.
 
 ### O que muda para o processo sigiloso
 
@@ -1031,8 +1198,11 @@ Basta uma destas três situações:
   IA, do conector, do pacote e da nuvem. A cópia que ainda estiver no
   acervo (baixada antes de o segredo ser decretado, por exemplo, quando só
   a pauta o mostra) é levada para a pasta dos sigilosos, com as
-  transcrições do processo, antes de o acervo ser entregue a qualquer
-  ferramenta, e o texto dela para a IA é apagado. Veja [Regras de
+  transcrições e os outros arquivos do processo, e o texto dela para a IA é
+  apagado. Quando é a pauta que revela o segredo, isso acontece na hora,
+  com o aviso **Processo em segredo de justiça** (veja [Segredo de justiça
+  na pauta](#segredo-de-justiça-na-pauta)); nos outros casos, antes de o
+  acervo ser entregue a qualquer ferramenta. Veja [Regras de
   sigilo](#regras-de-sigilo).
 - **Pauta exportada**: as partes do processo saem como “(segredo de
   justiça)”, e a planilha fica fora do acervo (veja [Exportar para o
@@ -1053,6 +1223,47 @@ Basta uma destas três situações:
 > pasta pode conter processo em segredo de justiça; mas o Claude Code, o
 > Cowork e o ChatGPT abrem a pasta inteira e poderiam lê-lo. Deixe a opção
 > ligada (o padrão).
+
+### Se um processo foi marcado como sigiloso por engano
+
+A marcação de sigilo **não se desfaz sozinha**, e não há botão para
+desfazê-la: a pauta não esquece um sigilo já apurado, e os arquivos levados
+para a pasta dos sigilosos continuam lá (enquanto estiverem, o processo
+continua sigiloso). É de propósito: na dúvida, o processo fica do lado
+seguro, fora da IA e da nuvem, e nada vaza. Uma versão anterior do Helestron
+podia marcar por engano, por exemplo, o processo com “Nível 1” no local da
+audiência ou com “Segredo de justiça: não” na pauta. A regra atual não marca
+mais esses casos, mas a marcação já gravada continua.
+
+Se o processo é público e você precisa dele no acervo:
+
+1. Confirme no portal que o processo não corre em segredo de justiça.
+2. Feche o Helestron (**Ajustes › Sobre e diagnóstico › Encerrar o
+   Helestron**) e, se estiverem abertos, o Claude Desktop e o Codex.
+3. Se a marcação pode ter vindo da pauta (o processo tem, ou já teve,
+   audiência na pauta de audiências), abra a pasta
+   `%LOCALAPPDATA%\Helestron` e mova para outra pasta (a Área de Trabalho,
+   por exemplo) o arquivo `pauta.sqlite3` e, se existirem,
+   `pauta.sqlite3-wal` e `pauta.sqlite3-shm`. Guarde-os: para desfazer este
+   passo, basta pô-los de novo na pasta, com o Helestron fechado. A pauta
+   recomeça do zero: as audiências, o histórico de alterações e as fontes
+   cadastradas saem. Ao abrir o Helestron, cadastre as fontes de novo,
+   sincronize e importe de novo os relatórios que você tinha importado,
+   **antes** de baixar processos ou de transcrever audiências: até lá, o
+   Helestron também deixa de saber o sigilo dos outros processos que só a
+   pauta indicava.
+4. Leve de volta para o acervo o que o Helestron pôs na pasta dos sigilosos:
+   os autos, de `Sigilosos\<nome do lote>\` para
+   `Acervo\Processos\<nome do lote>\`; as transcrições, de
+   `Sigilosos\Transcricoes\` para `Acervo\Transcricoes\` (e as gravações, de
+   `Sigilosos\Transcricoes\_audio\` para `Acervo\Transcricoes\_audio\`); e o
+   que mais tiver o número dele no nome (uma minuta em
+   `Sigilosos\Produtos\`, por exemplo).
+5. Abra o Helestron e, na tela Compartilhar, clique em **Preparar acervo
+   para a IA**.
+
+Na dúvida, não faça nada: um processo público marcado por engano só fica
+fora da IA e da nuvem.
 
 ---
 
@@ -1080,10 +1291,10 @@ deixam de ser conferidas no portal.
 
 | O quê | Onde |
 |---|---|
-| **Programa** | `%LOCALAPPDATA%\Programs\Helestron\` (ou a pasta escolhida na instalação); depois de uma atualização, pode haver ali, por pouco tempo, a pasta `.antigos` (veja [Atualizar](#atualizar)) |
+| **Programa** | `%LOCALAPPDATA%\Programs\Helestron\` (ou a pasta escolhida na instalação; se ela já tinha outros arquivos, a subpasta `Helestron` dentro dela), com a lista `arquivos-instalados.txt` do que a instalação pôs lá; depois de uma atualização, pode haver ali, por pouco tempo, a pasta `.antigos` (veja [Atualizar](#atualizar)) |
 | **Configuração e registros** | `%LOCALAPPDATA%\Helestron\`: `config.ini` (a configuração), `Logs\` (registros, `diagnostico\` e o relatório da conferência da instalação), `credenciais.json` (senhas cifradas pelo Windows), `perfis\` (perfil do navegador dos portais), `pauta.sqlite3` (a pauta e o histórico de alterações), `modelos\` (modelos de transcrição baixados depois), `temp\` e, se houver, as correções feitas para o seu tribunal (`enderecos-locais.json`, `seletores.json` e `seletores-eproc.json`), que as atualizações não apagam |
 | **Acervo** (compartilhado com a IA) | `Documentos\Helestron\Acervo\`: `Processos\<nome do lote>\` (os PDFs e, em `_controle\`, o relatório), `Transcricoes\` (os DOCX e, em `_audio\`, as gravações), `_ia\` (textos para a IA; pode apagar, é refeito), `Produtos\` (o que a IA produzir), `CLAUDE.md`, `AGENTS.md` e `INDICE.md` |
-| **Sigilosos** (nunca compartilhados) | `Documentos\Helestron\Sigilosos\`: `<nome do lote>\` (processos em segredo de justiça) e `Transcricoes\` (as transcrições das audiências deles) |
+| **Sigilosos** (nunca compartilhados) | `Documentos\Helestron\Sigilosos\`: `<nome do lote>\` (processos em segredo de justiça), `Transcricoes\` (as transcrições das audiências deles) e, se o Helestron tirou do acervo outros arquivos de processo sigiloso, as mesmas pastas que eles tinham lá (como `Produtos\` ou `Minutas\`) |
 | **Pauta exportada** (fora do acervo) | `Documentos\Helestron\Pauta\` |
 | **Pacotes para o ChatGPT** | `Documentos\Helestron\Pacotes para IA\` |
 
@@ -1103,9 +1314,12 @@ deixam de ser conferidas no portal.
 2. Dê dois cliques nele e siga o assistente, como na primeira instalação.
 
 O instalador fecha o Helestron, se estiver aberto, troca **só o programa**,
-na mesma pasta da instalação anterior, e confere a instalação no fim.
-Configurações, senhas, processos, transcrições e pauta continuam onde
-estavam. A versão instalada aparece em **Ajustes › Sobre e diagnóstico**.
+na mesma pasta da instalação anterior, e confere a instalação no fim. Da
+versão anterior, ele apaga só os arquivos que a instalação dela pôs na pasta
+(a lista `arquivos-instalados.txt`); o que você ou outro programa tiver
+posto lá fica. Configurações, senhas, processos, transcrições e pauta
+continuam onde estavam. A versão instalada aparece em **Ajustes › Sobre e
+diagnóstico**.
 
 - **Audiência em andamento.** Se houver uma audiência sendo transcrita
   (gravando ou pausada), o instalador não fecha o Helestron: mostra “Há uma
@@ -1138,7 +1352,13 @@ pede, como o instalador, que você a encerre antes), remove o programa e os
 atalhos e retira os **dois conectores do acervo**: o do Claude Desktop e o do
 Codex/ChatGPT Work (no arquivo `%USERPROFILE%\.codex\config.toml`), que, sem
 o programa, só dariam erro. Um não depende do outro: se a retirada de um
-falhar, a do outro acontece assim mesmo. Depois, ele **pergunta** se você
+falhar, a do outro acontece assim mesmo. Saem também os conectores do
+Assessor Integrado, se ainda estiverem lá, e o arquivo de configuração de
+cada programa é guardado antes, ao lado (no Codex, como
+`config.antes-do-helestron-<data>.toml`). Do programa, saem só os arquivos
+que a instalação pôs na pasta (a lista `arquivos-instalados.txt`), e a pasta
+só é apagada se ficar vazia: o que você tiver posto nela fica. Depois, ele
+**pergunta** se você
 quer apagar também as configurações e as senhas guardadas
 (`%LOCALAPPDATA%\Helestron`: configurações, registros, senhas dos portais,
 perfis do navegador e a pauta monitorada). A resposta já vem em **Não**, que
@@ -1187,7 +1407,24 @@ foi interrompida no meio. **Os seus dados não foram afetados.**
   reinstale.
 
 Se nem essa tela puder ser mostrada, aparece uma caixa de mensagem do
-Windows com a mesma orientação.
+Windows, com o mesmo título, **O Helestron não pôde abrir**:
+
+- **“Falta um arquivo do programa:”**, seguido do caminho do arquivo (ou
+  “Falta o arquivo python312.dll na pasta do programa”, ou ainda “Falta uma
+  parte do programa (…)”, com o nome da parte). Antes de começar, o
+  Helestron confere os arquivos sem os quais nem a tela acima abriria. A
+  caixa explica a causa provável (o antivírus pôs o arquivo em quarentena,
+  ou a instalação foi interrompida) e pede que você **reinstale o Helestron
+  com o Helestron-Setup**, que conserta a instalação sem apagar os seus
+  dados. Se o problema voltar, peça à equipe de informática que libere a
+  pasta do programa no antivírus.
+- **“O Helestron fechou logo depois de começar, sem abrir a janela (código
+  N).”** O programa parou antes de mostrar qualquer janela, e o motivo
+  ficou anotado no registro do programa, na pasta
+  `%LOCALAPPDATA%\Helestron\Logs`. A caixa pergunta se você quer abrir essa
+  pasta (**Sim** a abre). Abra o Helestron de novo; se ele fechar outra
+  vez, reinstale-o com o Helestron-Setup (os seus dados são mantidos) ou
+  envie ao suporte os arquivos dessa pasta.
 
 ### A janela abriu no Microsoft Edge
 

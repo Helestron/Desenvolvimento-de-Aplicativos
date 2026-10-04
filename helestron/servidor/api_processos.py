@@ -288,7 +288,14 @@ def iniciar_lote(app, numeros: list, nome_lote: str, opcoes_pedido: dict | None 
 
 
 def _espelhar_ao_fim(app) -> None:
-    """Espelho automático na nuvem ao fim do lote, se ligado e sem sigiloso preso."""
+    """Espelho automático na nuvem ao fim do lote, se ligado e sem sigiloso preso.
+
+    Como no "Espelhar agora", o preparo rápido vem antes da cópia: o INDICE.md
+    passa a listar o lote que acabou de chegar e o processo que o programa já
+    sabe sigiloso (a pasta dos sigilosos, a pauta - que pode tê-lo revelado
+    durante o lote) sai do acervo antes de a nuvem receber a cópia. Se os
+    autos dele não puderem sair, a cópia não acontece: a tarefa termina com a
+    frase da tela Compartilhar, e o Início mostra a pendência."""
     cfg = app.cfg
     destino = cfg.texto("compartilhar", "pasta_nuvem")
     if not (destino and cfg.flag("compartilhar", "espelhar_automaticamente")) or app.fechando:
@@ -296,17 +303,25 @@ def _espelhar_ao_fim(app) -> None:
     if any(Path(p).exists() for p in app.sigilosos_presos):
         log.warning("Espelho na nuvem NÃO feito: há processo sigiloso no acervo.")
         return
-    from .api_compartilhar import nuvem_sem_conflito
+    from .api_compartilhar import nuvem_sem_conflito, preparar_e_conferir
 
     if not nuvem_sem_conflito(cfg, destino):
         return
     from ..compartilhar import nuvem
 
     def alvo(tw):
+        tw.definir_status("Atualizando o índice do acervo…")
+        preparar_e_conferir(app, extrair_texto=False)
+        if tw.cancelado():
+            return {"copiados": 0, "iguais": 0}
+        tw.definir_status("Copiando o acervo para a nuvem…")
         copiados, iguais = nuvem.espelhar(cfg.pasta_acervo, Path(destino),
                                           lambda f, t, n: tw.definir_progresso(f, t, n),
                                           tw.cancelado)
-        return {"copiados": copiados, "iguais": iguais}
+        tw.definir_status(f"{copiados} copiado{'s' if copiados != 1 else ''}, {iguais} sem "
+                          "mudança.")
+        return {"copiados": copiados, "iguais": iguais,
+                "pasta": str(Path(destino) / nuvem.SUBPASTA)}
 
     try:
         app.tarefas.iniciar("nuvem", "Espelhar o acervo na nuvem", alvo, (NUVEM,), chave="nuvem")

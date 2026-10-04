@@ -857,7 +857,9 @@ Section "Uninstall"
   ; os conectores do acervo no Claude Desktop e no Codex/ChatGPT Work
   ; (%USERPROFILE%\.codex\config.toml) apontam para o python.exe daqui: sem
   ; o programa, eles só dariam erro. Um de cada vez: a falha de um não
-  ; impede o outro.
+  ; impede o outro. As duas funções tiram o "helestron" e também os nomes
+  ; da versão anterior (assessor-integrado e assessor_integrado), caso a
+  ; limpeza da instalação não tenha rodado.
   ${If} ${FileExists} "$INSTDIR\python.exe"
     DetailPrint "Removendo os conectores do Claude Desktop e do Codex/ChatGPT Work..."
     nsExec::Exec '"$INSTDIR\python.exe" -I -c "from helestron.compartilhar import claude; claude.remover_mcp()"'

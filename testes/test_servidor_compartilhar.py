@@ -18,6 +18,8 @@ class TestCompartilhar(ServidorDeTeste):
             dados = self.cliente.dados("GET", "/api/compartilhar/estado")
         self.assertEqual(dados["nuvens"], {"OneDrive": "/x"})
         self.assertEqual(dados["sigilosos_no_acervo"], [])
+        self.assertEqual((dados["sigilosos_avisos"], dados["sigilosos_mensagem"],
+                          dados["sigilosos_avisos_mensagem"]), ([], "", ""))
         self.assertEqual(dados["pasta_acervo"], str(self.amb.dados / "Acervo"))
         texto = self.cliente.dados("GET", "/api/compartilhar/prompt")["texto"]
         self.assertIn("CLAUDE.md", texto)
@@ -346,6 +348,91 @@ class TestSigiloAoCompartilhar(ServidorDeTeste):
                          (self.acervo / "INDICE.md").read_text(encoding="utf-8"))
         self.assertEqual(self.cliente.dados("GET", "/api/compartilhar/estado")
                          ["sigilosos_no_acervo"], [])
+
+    def test_estado_traz_a_frase_do_que_ficou_no_acervo(self):
+        """A tela Compartilhar mostra o que do sigiloso ficou no acervo com a
+        mesma frase das pendências do Início: os autos (travam) e o resto (só
+        avisa), cada um com o caminho dentro do acervo e o motivo."""
+        from helestron.servidor import api_compartilhar
+
+        pdf = self.lote / f"{self.x.nome_arquivo}.pdf"
+        minuta = self.acervo / "Minutas" / f"{self.y.nome_arquivo}.docx"
+        minuta.parent.mkdir()
+        minuta.write_bytes(b"minuta")
+        api_compartilhar.registrar_presos(self.app, [pdf])
+        api_compartilhar.registrar_pendentes(self.app, [minuta, pdf],
+                                             {minuta: "está aberto no Word?"})
+        dados = self.cliente.dados("GET", "/api/compartilhar/estado")
+        self.assertEqual(dados["sigilosos_no_acervo"], [str(pdf)])
+        # o PDF preso não se repete entre os avisos
+        self.assertEqual(dados["sigilosos_avisos"], [str(minuta)])
+        trava = dados["sigilosos_mensagem"]
+        self.assertIn(str(Path("Processos") / "Lote 1" / pdf.name), trava)
+        self.assertIn("não puderam sair do acervo", trava)
+        self.assertIn("ficam suspensos", trava)
+        aviso = dados["sigilosos_avisos_mensagem"]
+        self.assertIn(str(Path("Minutas") / minuta.name), aviso)
+        self.assertIn("(está aberto no Word?)", aviso)
+        self.assertIn("O compartilhamento continua", aviso)
+        pendencias = {p["chave"]: p for p in self.cliente.dados("GET", "/api/estado")["pendencias"]}
+        self.assertEqual(pendencias["sigilo"]["mensagem"], trava)
+        self.assertEqual(pendencias["sigilo-arquivos"]["mensagem"], aviso)
+        # o arquivo saiu: a frase some
+        minuta.unlink()
+        dados = self.cliente.dados("GET", "/api/compartilhar/estado")
+        self.assertEqual((dados["sigilosos_avisos"], dados["sigilosos_avisos_mensagem"]), ([], ""))
+
+    def espelho_ao_fim_do_lote(self) -> dict:
+        """O espelho automático que o fim de um lote dispara (api_processos)."""
+        from helestron.servidor import api_processos
+
+        self.cfg.definir("compartilhar", "espelhar_automaticamente", True)
+        self.cfg.definir("compartilhar", "pasta_nuvem", str(self.nuvem))
+        antes = {t.id for t in self.app.tarefas.listar()}
+        api_processos._espelhar_ao_fim(self.app)
+        novas = [t for t in self.app.tarefas.listar() if t.tipo == "nuvem" and t.id not in antes]
+        self.assertEqual(len(novas), 1)
+        return self.esperar_tarefa(novas[0].id)
+
+    def test_espelho_ao_fim_do_lote_prepara_antes_de_copiar(self):
+        """Antes, o espelho do fim do lote copiava o acervo como estava: o
+        INDICE.md da nuvem ficava sem o lote novo, e o processo que a pauta
+        revelou sigiloso durante o lote ia para a nuvem."""
+        from testes.test_nucleo import pauta_com_sigiloso
+
+        pauta_com_sigiloso(self.amb.local / "pauta.sqlite3", self.x)
+        tarefa = self.espelho_ao_fim_do_lote()
+        self.assertEqual(tarefa["estado"], "concluida", tarefa)
+        self.assertEqual(list(self.nuvem.rglob(f"{self.x.nome_arquivo}*")), [])
+        self.assertTrue(list(self.nuvem.rglob(f"{self.y.nome_arquivo}.pdf")))
+        indice = self.indice_da_nuvem()
+        self.assertNotIn(self.x.nome_arquivo, indice)
+        self.assertIn(self.y.nome_arquivo, indice)
+        self.assertTrue((self.amb.dados / "Sigilosos" / "Lote 1"
+                         / f"{self.x.nome_arquivo}.pdf").exists())
+
+    def test_espelho_ao_fim_do_lote_espera_os_autos_presos(self):
+        from helestron.download import motor
+        from testes.test_nucleo import pauta_com_sigiloso
+
+        pauta_com_sigiloso(self.amb.local / "pauta.sqlite3", self.x)
+        pdf = self.lote / f"{self.x.nome_arquivo}.pdf"
+        original = motor._mover
+
+        def preso(origem, destino, *a):
+            if Path(origem) == pdf:
+                raise PermissionError(13, "O arquivo está aberto em outro programa")
+            return original(origem, destino, *a)
+
+        with mock.patch.object(motor, "_mover", preso), \
+                mock.patch("helestron.compartilhar.nuvem.espelhar") as espelhar, \
+                self.assertLogs("compartilhar", "ERROR"):
+            tarefa = self.espelho_ao_fim_do_lote()
+        self.assertEqual(tarefa["estado"], "falhou", tarefa)
+        self.assertIn(pdf.name, tarefa["erro"])
+        espelhar.assert_not_called()
+        self.assertEqual(self.cliente.dados("GET", "/api/compartilhar/estado")
+                         ["sigilosos_no_acervo"], [str(pdf)])
 
 
 if __name__ == "__main__":

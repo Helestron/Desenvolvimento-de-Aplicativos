@@ -239,8 +239,22 @@ def estado(p: Pedido) -> dict:
     dados = servicos.estado_ia(app.cfg)
     dados["pasta_acervo"] = str(app.cfg.pasta_acervo)
     dados["pasta_nuvem"] = app.cfg.texto("compartilhar", "pasta_nuvem")
-    dados["sigilosos_no_acervo"] = [str(x) for x in presos(app)]
-    dados["sigilosos_avisos"] = [str(x) for x in pendentes(app)]
+    # O que de processo sigiloso ficou no acervo, com a frase da tela (a mesma
+    # das pendências do Início): os autos travam; o resto só avisa.
+    autos = presos(app)
+    resto = [x for x in pendentes(app) if x not in autos]
+    dados["sigilosos_no_acervo"] = [str(x) for x in autos]
+    dados["sigilosos_avisos"] = [str(x) for x in resto]
+    dados["sigilosos_mensagem"] = ""
+    dados["sigilosos_avisos_mensagem"] = ""
+    if autos or resto:
+        from ..compartilhar.preparo import frase_sigilosos_no_acervo
+
+        if autos:
+            dados["sigilosos_mensagem"] = frase_sigilosos_no_acervo(autos, app.cfg, _motivos(app))
+        if resto:
+            dados["sigilosos_avisos_mensagem"] = frase_sigilosos_no_acervo(
+                resto, app.cfg, _motivos(app), trava=False)
     dados["pasta_pacotes"] = str(pasta_pacotes())
     return dados
 

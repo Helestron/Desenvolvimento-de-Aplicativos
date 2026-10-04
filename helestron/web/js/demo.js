@@ -16,6 +16,11 @@
  * &microfone=<nome> (o microfone guardado em Ajustes, pelo nome),
  * &presenca=certificado (as fontes da pauta entram pelo certificado digital:
  *   o monitoramento não as sincroniza sozinho),
+ * &sigilo=arquivos (a minuta de um processo sigiloso, aberta no Word, ficou
+ *   no acervo: a pendência “sigilo-arquivos” do Início e a faixa âmbar da tela
+ *   Compartilhar, que só avisa),
+ * &sigilo=autos (os autos dele ficaram presos no acervo: a pendência “sigilo”
+ *   e a faixa vermelha; até saírem, o compartilhamento responde 409),
  * &modo=edge|navegador (a página aberta no Edge ou no navegador padrão, sem a
  *   janela do aplicativo).
  */
@@ -205,6 +210,36 @@
     if (recentes.some((r) => r.sigiloso && r.numero === numero)) return MOTIVO_AUTOS;
     if (pauta.some((a) => a.sigiloso && a.processo === numero)) return MOTIVO_PAUTA;
     return "";
+  }
+
+  // ----------------------------------- o que do sigiloso ficou no acervo
+  // As frases são as do servidor (preparo.frase_sigilosos_no_acervo): a
+  // pendência do Início e a faixa da tela Compartilhar dizem o mesmo.
+  const SIGILO = ["arquivos", "autos"].includes(params.get("sigilo")) ? params.get("sigilo") : "";
+  const LOTE_DO_SIGILOSO = "Pauta da semana";
+  const NO_ACERVO = {
+    arquivos: {
+      arquivos: [PASTAS.acervo + "\\Minutas\\" + PROCESSO_SIGILOSO + ".docx"],
+      titulo: "Arquivo de processo sigiloso no acervo",
+      mensagem: `Um arquivo do processo ${PROCESSO_SIGILOSO}, que corre em segredo de justiça, ficou no acervo: Minutas\\${PROCESSO_SIGILOSO}.docx (está aberto em outro programa?). Feche-o e prepare o acervo para a IA de novo, ou mova-o você mesmo para a pasta dos sigilosos (${PASTAS.sigilosos}\\Minutas). O compartilhamento continua: o índice, o conector, o pacote e a nuvem já deixam o processo de fora, mas o Claude Code, o Cowork e o ChatGPT, que abrem a pasta inteira, ainda podem vê-lo.`,
+    },
+    autos: {
+      arquivos: [PASTAS.processos + "\\" + LOTE_DO_SIGILOSO + "\\" + PROCESSO_SIGILOSO + ".pdf"],
+      titulo: "Processo sigiloso no acervo",
+      mensagem: `Os autos do processo ${PROCESSO_SIGILOSO}, que corre em segredo de justiça, não puderam sair do acervo: Processos\\${LOTE_DO_SIGILOSO}\\${PROCESSO_SIGILOSO}.pdf (está aberto em outro programa?). Feche o arquivo e tente de novo, ou mova-o para a pasta dos sigilosos (${PASTAS.sigilosos}\\${LOTE_DO_SIGILOSO}). Até ele sair, nada do acervo é compartilhado: os botões da tela Compartilhar, o pacote e o espelho na nuvem ficam suspensos.`,
+    },
+  };
+  // Com os autos presos, todo compartilhamento é recusado (409), como no
+  // servidor (api_compartilhar.exigir_sem_sigiloso).
+  const SUSPENSOS_COM_OS_AUTOS = new Set([
+    "POST /api/compartilhar/preparar", "POST /api/compartilhar/claude-desktop", "POST /api/compartilhar/cowork",
+    "POST /api/compartilhar/claude-code", "POST /api/compartilhar/chatgpt-work", "POST /api/compartilhar/codex",
+    "POST /api/compartilhar/pacote", "POST /api/compartilhar/nuvem/espelhar",
+  ]);
+  function exigirSemSigiloso(rota) {
+    if (SIGILO === "autos" && SUSPENSOS_COM_OS_AUTOS.has(rota)) {
+      throw new H.api.ErroApi("sigiloso_no_acervo", NO_ACERVO.autos.mensagem, rota, 409);
+    }
   }
 
   // Alterações recentes (as três primeiras ainda não vistas).
@@ -672,6 +707,11 @@
     if (acessos.some((a) => a.portal === "eproc:TJAL" && !a.tem_senha)) {
       pendencias.push({ chave: "acessos", titulo: "Cadastre o acesso ao eProc do TJAL", mensagem: "Sem a senha, o navegador abre para você entrar a cada lote.", acao: "ajustes#acessos" });
     }
+    // Como o servidor (api_geral._pendencias): o sigiloso no acervo vem antes.
+    if (SIGILO) {
+      const n = NO_ACERVO[SIGILO];
+      pendencias.unshift({ chave: SIGILO === "autos" ? "sigilo" : "sigilo-arquivos", titulo: n.titulo, mensagem: n.mensagem, acao: "compartilhar", arquivos: n.arquivos.slice() });
+    }
     return {
       nome: "Helestron", versao: "1.0.0", modo: MODO_JANELA, usuario: valores.geral.nome_usuario, pastas: PASTAS, pendencias,
       audiencia: { ativa: !!sessao.id && sessao.estado !== "encerrada", estado: sessao.estado, processo: sessao.id ? sessao.processo : null },
@@ -1107,6 +1147,11 @@
       nuvens: { "OneDrive (instituição)": USUARIO + "\\OneDrive - Tribunal de Justiça de Alagoas", "Google Drive": "G:\\Meu Drive" },
       mcp_acervo: true,
       acervo: { processos: 312, transcricoes: 47, preparado: isoHora(agoraMenos(60 * 26)) },
+      pasta_acervo: PASTAS.acervo,
+      sigilosos_no_acervo: SIGILO === "autos" ? NO_ACERVO.autos.arquivos.slice() : [],
+      sigilosos_avisos: SIGILO === "arquivos" ? NO_ACERVO.arquivos.arquivos.slice() : [],
+      sigilosos_mensagem: SIGILO === "autos" ? NO_ACERVO.autos.mensagem : "",
+      sigilosos_avisos_mensagem: SIGILO === "arquivos" ? NO_ACERVO.arquivos.mensagem : "",
     }),
     "POST /api/compartilhar/preparar": () => {
       const t = novaTarefa("preparo", "Preparar o acervo para a IA", 312);
@@ -1115,7 +1160,17 @@
           atualizar(t, { status: `Extraindo o texto dos autos (${i} de 312)…`, progresso: { feitos: i, percentual: (100 * i) / 312 } });
           await pausa(200);
         }
-        concluir(t, "concluida", { status: "Acervo pronto: 312 processos, 47 transcrições, índice e instruções atualizados.", resultado: { pasta: PASTAS.acervo } });
+        if (SIGILO === "arquivos") {
+          // O que o preparo conta (preparo.atualizar_contexto): a cópia que ele
+          // levou para a pasta dos sigilosos e o arquivo que não pôde levar.
+          const avisos = [
+            `Processo ${PROCESSO_SIGILOSO}, em segredo de justiça: Produtos\\${PROCESSO_SIGILOSO}.docx foi levado para a pasta dos sigilosos (${PASTAS.sigilosos}\\Produtos\\${PROCESSO_SIGILOSO}.docx).`,
+            NO_ACERVO.arquivos.mensagem,
+          ];
+          concluir(t, "concluida", { status: "312 processos, 47 transcrições, 1 arquivo de processo sigiloso ficou no acervo.", resultado: { resumo: "312 processos, 47 transcrições, 1 arquivo de processo sigiloso ficou no acervo", processos: 312, transcricoes: 47, erros: [], avisos } });
+          return;
+        }
+        concluir(t, "concluida", { status: "Acervo pronto: 312 processos, 47 transcrições, índice e instruções atualizados.", resultado: { pasta: PASTAS.acervo, processos: 312, transcricoes: 47, erros: [], avisos: [] } });
       })();
       return { tarefa: t.id };
     },
@@ -1192,6 +1247,7 @@
     if (chamadas.length > 500) chamadas.splice(0, 100);
     await atraso();
     if (!fn) throw new H.api.ErroApi("nao_encontrado", "Esta função não existe na demonstração.", rota, 404);
+    exigirSemSigiloso(rota);
     // Cópia profunda: a tela não pode mexer nos dados guardados aqui.
     const r = await fn(pedido);
     return r === undefined ? {} : JSON.parse(JSON.stringify(r));

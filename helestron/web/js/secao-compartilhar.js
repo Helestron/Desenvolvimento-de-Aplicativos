@@ -4,7 +4,12 @@
  * autos, índice, regras de trabalho) e aberto no Claude Code, no Cowork, no
  * ChatGPT Work ou no Codex; o conector do acervo é registrado no Claude
  * Desktop; o pacote para anexar e o espelho na nuvem também saem daqui.
- * Os processos sigilosos nunca entram em nada disso.
+ * Os processos sigilosos nunca entram em nada disso. O que deles ficou no
+ * acervo (arquivo aberto em outro programa) aparece no alto da tela, com a
+ * frase do servidor: os autos travam o compartilhamento; o resto só avisa.
+ * O que o preparo fez e quer contar (arquivo levado para a pasta dos
+ * sigilosos, número tirado do relatório de um lote, texto que não pôde ser
+ * extraído) fica numa faixa abaixo dele, até ser fechada.
  */
 (function () {
   "use strict";
@@ -56,6 +61,35 @@
     return el("span", { classe: "estado-linha" }, el("span", { classe: "ponto ponto-" + cor }), texto);
   }
 
+  const lista = (v) => (Array.isArray(v) ? v.filter(Boolean).map(String) : []);
+  const pastaDe = (caminho) => String(caminho || "").replace(/[\\/][^\\/]*$/, "");
+  const NUMERO_CNJ = /\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/;
+
+  /** Quantos processos (pelo número no nome do arquivo) a lista tem. */
+  function quantosProcessos(arquivos) {
+    const numeros = new Set(arquivos.map((a) => (String(a).split(/[\\/]/).pop().match(NUMERO_CNJ) || [a])[0]));
+    return numeros.size;
+  }
+
+  /**
+   * A frase de reserva, se o servidor não mandar a dele ('sigilosos_mensagem',
+   * 'sigilosos_avisos_mensagem' — as mesmas das pendências do Início).
+   */
+  function fraseDeReserva(arquivos, trava, acervo) {
+    const relativo = (c) => (acervo && c.startsWith(acervo) ? c.slice(acervo.length).replace(/^[\\/]+/, "") : c);
+    const um = arquivos.length === 1;
+    let nomes = arquivos.slice(0, 5).map(relativo).join("; ");
+    if (arquivos.length > 5) nomes += `; e mais ${arquivos.length - 5}`;
+    if (trava) {
+      return (um ? `Os autos de um processo em segredo de justiça não puderam sair do acervo: ${nomes}. Feche o arquivo e tente de novo, ou mova-o para a pasta dos sigilosos. Até ele sair`
+        : `${arquivos.length} arquivos dos autos de processos em segredo de justiça não puderam sair do acervo: ${nomes}. Feche os arquivos e tente de novo, ou mova-os para a pasta dos sigilosos. Até eles saírem`)
+        + ", nada do acervo é compartilhado: os botões desta tela, o pacote e o espelho na nuvem ficam suspensos.";
+    }
+    return (um ? `Um arquivo de processo em segredo de justiça ficou no acervo: ${nomes}. Feche-o e prepare o acervo para a IA de novo, ou mova-o você mesmo para a pasta dos sigilosos.`
+      : `${arquivos.length} arquivos de processos em segredo de justiça ficaram no acervo: ${nomes}. Feche-os e prepare o acervo para a IA de novo, ou mova-os você mesmo para a pasta dos sigilosos.`)
+      + ` O compartilhamento continua: o índice, o conector, o pacote e a nuvem já ${um ? "o deixam" : "os deixam"} de fora, mas o Claude Code, o Cowork e o ChatGPT, que abrem a pasta inteira, ainda podem ${um ? "vê-lo" : "vê-los"}.`;
+  }
+
   H.secoes = H.secoes || {};
   H.secoes.compartilhar = {
     async montar(ctx) {
@@ -66,10 +100,19 @@
       let pedidoInicial = "";
       const lerPedido = api.compartilhar.prompt().then((r) => { pedidoInicial = (r && r.texto) || ""; return pedidoInicial; }).catch(() => "");
 
-      const botaoPreparar = botao({ rotulo: "Preparar acervo para a IA", icone: "brilho", tipo: "primario", acao: async () => {
-        const r = await api.compartilhar.preparar();
-        acompanharPreparo(r.tarefa);
-      } });
+      // O preparo começa tentando de novo levar para a pasta dos sigilosos o
+      // que ficou preso; se os autos continuarem lá, a recusa (409) vira a
+      // folha de erro, e as faixas do alto se atualizam.
+      async function preparar() {
+        try {
+          const r = await api.compartilhar.preparar();
+          acompanharPreparo(r.tarefa);
+        } catch (erro) {
+          await carregar();
+          throw erro;
+        }
+      }
+      const botaoPreparar = botao({ rotulo: "Preparar acervo para a IA", icone: "brilho", tipo: "primario", acao: preparar });
       botaoPreparar.id = "botao-preparar";
       const copiarPedido = botao({ rotulo: "Copiar pedido inicial", icone: "copiar", acao: async () => {
         const texto = pedidoInicial || await lerPedido;
@@ -87,7 +130,9 @@
         texto: "Processos em segredo de justiça ficam na pasta dos sigilosos e nunca vão para a IA, para o pacote nem para a nuvem. A IA é ferramenta de apoio: resumos e minutas são sugestões para conferência e decisão do magistrado (Resolução CNJ nº 615/2025).",
       });
       const destinos = el("div", { classe: "destinos", id: "destinos" });
-      raiz.append(cab, acervo, el("div", { estilo: { height: "14px" } }), sigilo,
+      const alertas = el("div", { id: "sigilosos-no-acervo" });
+      const resultadoPreparo = el("div", { id: "resultado-preparo" });
+      raiz.append(cab, alertas, acervo, resultadoPreparo, el("div", { estilo: { height: "14px" } }), sigilo,
         el("h2", { classe: "secao-titulo" }, "Onde usar o acervo"), destinos);
 
       let estado = null;
@@ -122,16 +167,78 @@
             botao({ rotulo: "Copiar o caminho", icone: "copiar", tamanho: "pequeno", tipo: "texto", acao: () => H.ui.copiar(pastas.acervo || "", "Caminho copiado") })));
       }
 
+      // ------------------------------------------------ sigilosos no acervo
+      function desenharAlertas() {
+        const e = estado || {};
+        const presos = lista(e.sigilosos_no_acervo);
+        const restos = lista(e.sigilosos_avisos).filter((a) => !presos.includes(a));
+        // A frase e, embaixo dela (não ao lado: o texto é longo), o que fazer.
+        const corpo = (frase, arquivos, rotuloTentar) => {
+          const acoes = [botao({ rotulo: rotuloTentar, icone: "brilho", tipo: "tonal", tamanho: "pequeno", acao: preparar })];
+          const ondeEstao = Array.from(new Set(arquivos.map(pastaDe))).filter(Boolean);
+          if (ondeEstao.length === 1) {
+            acoes.push(botao({ rotulo: arquivos.length === 1 ? "Abrir a pasta do arquivo" : "Abrir a pasta dos arquivos", icone: "pasta", tamanho: "pequeno", acao: () => api.abrir("pasta", ondeEstao[0]) }));
+          }
+          if (pastas.sigilosos) {
+            acoes.push(botao({ rotulo: "Abrir a pasta dos sigilosos", icone: "cadeado", tamanho: "pequeno", tipo: "texto", acao: () => api.abrir("pasta", pastas.sigilosos) }));
+          }
+          return el("div", {},
+            el("span", { classe: "faixa-frase", estilo: { display: "block" }, texto: frase }),
+            el("div", { classe: "grupo-botoes", estilo: { marginTop: "10px" } }, acoes));
+        };
+        const faixas = [];
+        if (presos.length) {
+          faixas.push(faixa({
+            tipo: "erro", icone: "cadeado",
+            titulo: quantosProcessos(presos) === 1 ? "Processo sigiloso no acervo" : "Processos sigilosos no acervo",
+            texto: corpo(e.sigilosos_mensagem || fraseDeReserva(presos, true, pastas.acervo), presos, "Tentar de novo"),
+          }));
+        }
+        if (restos.length) {
+          faixas.push(faixa({
+            tipo: "aviso", icone: "cadeado",
+            titulo: restos.length === 1 ? "Arquivo de processo sigiloso no acervo" : "Arquivos de processos sigilosos no acervo",
+            texto: corpo(e.sigilosos_avisos_mensagem || fraseDeReserva(restos, false, pastas.acervo), restos, "Preparar de novo"),
+          }));
+        }
+        trocar(alertas, faixas.map((f) => el("div", { estilo: { marginBottom: "14px" } }, f)));
+      }
+
+      // ------------------------------------------------ o que o preparo contou
+      function mostrarResultadoPreparo(t) {
+        const r = (t && t.resultado) || {};
+        // A frase do que ficou no acervo já está na faixa do alto.
+        const jaNoAlto = (estado && estado.sigilosos_avisos_mensagem) || "";
+        const avisos = lista(r.avisos).filter((a) => a !== jaNoAlto);
+        const erros = lista(r.erros);
+        // Cada faixa fica à vista até ser fechada (ou até o próximo preparo).
+        const caixa = (opcoes, itens) => {
+          const envoltorio = el("div", { estilo: { marginTop: "14px" } });
+          const fechar = botao({ icone: "x", titulo: "Fechar este aviso", tamanho: "pequeno", tipo: "texto", acao: () => envoltorio.remove() });
+          envoltorio.appendChild(faixa(Object.assign({}, opcoes, {
+            texto: el("ul", { classe: "lista-avisos" }, itens.map((x) => el("li", { texto: x }))),
+            acoes: [fechar],
+          })));
+          return envoltorio;
+        };
+        trocar(resultadoPreparo,
+          avisos.length ? caixa({ tipo: "aviso", titulo: avisos.length === 1 ? "Um aviso do preparo" : `${fmt.numero(avisos.length)} avisos do preparo` }, avisos) : null,
+          erros.length ? caixa({ tipo: "erro", titulo: erros.length === 1 ? "Um arquivo com problema" : `${fmt.numero(erros.length)} arquivos com problema` }, erros) : null);
+      }
+
       function acompanharPreparo(id) {
         tarefaPreparo = id;
+        trocar(resultadoPreparo);
         desenharAcervo();
       }
       ctx.on("tarefa", (t) => {
         if (t.tipo === "preparo") {
           if (!tarefaPreparo && t.estado === "rodando") tarefaPreparo = t.id;
           if (t.id === tarefaPreparo) {
-            if (t.estado !== "rodando") { tarefaPreparo = null; carregar(); }
-            else desenharAcervo();
+            if (t.estado !== "rodando") {
+              tarefaPreparo = null;
+              carregar().then(() => { if (ctx.vivo && t.estado === "concluida") mostrarResultadoPreparo(t); });
+            } else desenharAcervo();
           }
         }
       });
@@ -262,6 +369,7 @@
         if (!ctx.vivo) return;
         estado = e || {};
         nuvens = Array.isArray(n) ? n : [];
+        desenharAlertas();
         desenharAcervo();
         desenharDestinos();
       }

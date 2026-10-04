@@ -832,6 +832,136 @@ class TestScriptNsis(unittest.TestCase):
         self.assertEqual(self.saida.read_bytes()[:2], b"MZ")
 
 
+# ============================================ chamadas do instalador ao Python
+class TestChamadasDoInstaladorNoPython(unittest.TestCase):
+    """As linhas de comando que o instalador e o desinstalador passam ao
+    Python da instalação ('"$INSTDIR\\python(w).exe" -I -c "from
+    helestron.compartilhar import ..."'), tiradas do helestron.nsi e rodadas
+    de verdade, com o Python daqui, num Python "instalado" à parte: o pacote
+    em site-packages, como na pasta do programa (com -I, nem a pasta atual
+    nem o PYTHONPATH contam). Quem vinha do Assessor Integrado tem os
+    conectores antigos no Claude Desktop (o instalador clássico e o da
+    Microsoft Store) e no Codex: a instalação tira só os antigos, e a
+    desinstalação, também o do Helestron. Os outros servidores ficam."""
+
+    CHAMADA = re.compile(r"""(?:nsExec::)?Exec '"\$INSTDIR\\(pythonw?\.exe)" -I -c "([^"]+)"'""")
+    ANTIGO = {"command": "C:\\Assessor Antigo\\runtime\\python\\python.exe",
+              "args": ["-E", "-s", "-m", "assessor.mcp"]}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp())
+        script = construcao.MODELO_NSIS.read_text(encoding="utf-8")
+        inicio = script.index('Section "Helestron (programa)"')
+        instalar = script[inicio:script.index("SectionEnd", inicio)]
+        inicio = script.index('Section "Uninstall"')
+        desinstalar = script[inicio:script.index("SectionEnd", inicio)]
+        cls.na_instalacao = cls.CHAMADA.findall(instalar)
+        cls.na_desinstalacao = cls.CHAMADA.findall(desinstalar)
+        cls.python = cls._python_instalado(cls.tmp / "programa")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    @staticmethod
+    def _python_instalado(pasta: Path) -> Path:
+        """Um ambiente virtual sem pip cujo site-packages enxerga o pacote
+        helestron (e as dependências do Python que roda os testes) por um
+        .pth - o Lib\\site-packages da pasta do programa, em miniatura."""
+        import site
+        import venv
+
+        venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt", clear=True).create(pasta)
+        exe = pasta / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        r = subprocess.run([str(exe), "-I", "-c",
+                            "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+                           capture_output=True, text=True, check=True)
+        caminhos = [str(REPOSITORIO)] + [p for p in site.getsitepackages() if Path(p).is_dir()]
+        (Path(r.stdout.strip()) / "helestron-teste.pth").write_text(
+            "\n".join(caminhos) + "\n", encoding="utf-8")
+        return exe
+
+    def preparar_casa(self, nome: str):
+        casa = self.tmp / nome
+        roaming, local = casa / "AppData" / "Roaming", casa / "AppData" / "Local"
+        jsons = [roaming / "Claude" / "claude_desktop_config.json",
+                 local / "Packages" / "Claude_pzs8sxrjxfjjc" / "LocalCache" / "Roaming" / "Claude"
+                 / "claude_desktop_config.json"]
+        for arq in jsons:
+            arq.parent.mkdir(parents=True)
+            arq.write_text(json.dumps({"mcpServers": {
+                "assessor-integrado": self.ANTIGO, "assessor_integrado": self.ANTIGO,
+                "helestron": {"command": "C:\\Helestron\\python.exe", "args": []},
+                "outro": {"command": "npx", "args": ["outro"]}}, "preferencias": {"x": 1}}),
+                encoding="utf-8")
+        toml = casa / ".codex" / "config.toml"
+        toml.parent.mkdir(parents=True)
+        toml.write_text('model = "o4"\n\n[mcp_servers.assessor_integrado]\ncommand = "v"\n'
+                        '[mcp_servers.assessor_integrado.env]\nA = "1"\n\n'
+                        "[mcp_servers.assessor-integrado]\ncommand = \"v\"\n\n"
+                        '[mcp_servers.helestron]\ncommand = "h"\n\n'
+                        '[mcp_servers.outro]\ncommand = "y"\n', encoding="utf-8")
+        env = {k: v for k, v in os.environ.items() if k not in ("CODEX_HOME", "PYTHONPATH")}
+        env.update(APPDATA=str(roaming), LOCALAPPDATA=str(local), HOME=str(casa),
+                   USERPROFILE=str(casa))
+        return jsons, toml, env
+
+    def rodar(self, chamadas, env) -> None:
+        for executavel, codigo in chamadas:
+            with self.subTest(executavel=executavel, codigo=codigo):
+                r = subprocess.run([str(self.python), "-I", "-c", codigo], capture_output=True,
+                                   text=True, env=env, cwd=str(self.tmp), timeout=120)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertNotIn("Traceback", r.stderr)
+
+    @staticmethod
+    def servidores(jsons, toml) -> list[set[str]]:
+        import tomllib
+
+        return ([set(json.loads(a.read_text(encoding="utf-8"))["mcpServers"]) for a in jsons]
+                + [set(tomllib.loads(toml.read_text(encoding="utf-8"))["mcp_servers"])])
+
+    def test_as_chamadas_existem_no_script(self):
+        self.assertEqual(self.na_instalacao, [
+            ("pythonw.exe", "from helestron.compartilhar import migracao; "
+                            "migracao.limpar_restos_antigos()")])
+        self.assertEqual([e for e, _ in self.na_desinstalacao], ["python.exe", "python.exe"])
+
+    def test_python_instalado_isolado_acha_o_pacote(self):
+        # Com -I, a pasta atual não entra no sys.path: o pacote vem do
+        # site-packages, como na pasta do programa.
+        r = subprocess.run([str(self.python), "-I", "-c",
+                            "import helestron.compartilhar.migracao as m; print(m.__name__)"],
+                           capture_output=True, text=True, cwd=str(self.tmp), timeout=120)
+        self.assertEqual(r.stdout.strip(), "helestron.compartilhar.migracao", r.stderr)
+
+    def test_instalar_tira_os_antigos_e_desinstalar_tira_tambem_o_helestron(self):
+        jsons, toml, env = self.preparar_casa("migracao")
+        self.rodar(self.na_instalacao, env)
+        self.assertEqual(self.servidores(jsons, toml), [{"helestron", "outro"}] * 3)
+        for arq in jsons:
+            self.assertEqual(json.loads(arq.read_text(encoding="utf-8"))["preferencias"], {"x": 1})
+            self.assertEqual(len(list(arq.parent.glob("*antes-do-helestron*"))), 1, arq)
+        self.assertIn('model = "o4"', toml.read_text(encoding="utf-8"))
+        self.assertEqual(len(list(toml.parent.glob("config.antes-do-helestron-*"))), 1)
+        # de novo (a reinstalação): nada a fazer
+        self.rodar(self.na_instalacao, env)
+        self.assertEqual(self.servidores(jsons, toml), [{"helestron", "outro"}] * 3)
+        self.rodar(self.na_desinstalacao, env)
+        self.assertEqual(self.servidores(jsons, toml), [{"outro"}] * 3)
+
+    def test_desinstalar_sem_ter_migrado_tira_os_nomes_antigos(self):
+        # Instalação feita por uma construção sem a limpeza (ou que falhou):
+        # a desinstalação tira também os conectores da versão anterior.
+        jsons, toml, env = self.preparar_casa("so-desinstalar")
+        self.rodar(self.na_desinstalacao, env)
+        self.assertEqual(self.servidores(jsons, toml), [{"outro"}] * 3)
+        texto = toml.read_text(encoding="utf-8")
+        self.assertNotIn("assessor", texto)
+        self.assertIn('model = "o4"', texto)
+
+
 # ============================================================ instalador no Wine
 _STUB_C = r"""
 /* Helestron.exe e python.exe falsos: registram a chamada em chamadas.txt e

@@ -579,11 +579,18 @@ def main(argv: list[str] | None = None) -> int:
     # Também no nível do sistema operacional: biblioteca em C (o MuPDF, por
     # exemplo) escreve direto no descritor 1. O protocolo passa a usar uma
     # cópia dele, e o 1 vira o stderr.
+    # A cópia é deste servidor: fecha-se quando a conversa acaba (a entrada
+    # fechou, ou deu erro), sem esperar o fim do Python; o stdout de sempre,
+    # usado na reserva, fica como está.
+    copia = None
     try:
         sys.stdout.flush()
-        canal = os.fdopen(os.dup(1), "wb")
+        copia = os.fdopen(os.dup(1), "wb")
         os.dup2(2, 1)
+        canal = copia
     except (OSError, ValueError, AttributeError):
+        _fechar_canal(copia)
+        copia = None
         canal = sys.stdout.buffer
     sys.stdout = sys.stderr
     try:
@@ -593,8 +600,26 @@ def main(argv: list[str] | None = None) -> int:
         pymupdf.TOOLS.mupdf_display_warnings(False)
     except Exception:
         pass
-    servir(args.pasta, saida=canal)
+    try:
+        servir(args.pasta, saida=canal)
+    finally:
+        _fechar_canal(copia)
     return 0
+
+
+def _fechar_canal(canal) -> None:
+    """Fecha a cópia do canal do protocolo. Quem conversava pode já ter
+    fechado o outro lado (o Claude Desktop encerrou): o que faltava enviar
+    se perde sem erro, como se perderia de qualquer jeito."""
+    if canal is None:
+        return
+    try:
+        canal.close()
+    except (OSError, ValueError):
+        try:
+            os.close(canal.fileno())
+        except (OSError, ValueError):
+            pass
 
 
 if __name__ == "__main__":

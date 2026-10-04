@@ -131,6 +131,71 @@ class TestServidorMCP(BaseAcervo):
             self.assertEqual(mcp_servidor.main([]), 0)
         self.assertEqual((lidos, servidos), ([False], [self.raiz]))
 
+    def test_canal_do_protocolo_fechado_no_fim(self):
+        # A cópia do descritor 1 (o canal das respostas) é fechada quando a
+        # conversa acaba: nada de "unclosed file" (ResourceWarning).
+        import gc
+        import warnings
+
+        canais = []
+        with warnings.catch_warnings(record=True) as avisos, \
+                mock.patch.object(mcp_servidor, "servir",
+                                  side_effect=lambda raiz, saida=None: canais.append(saida)), \
+                mock.patch.object(mcp_servidor.os, "dup2"), \
+                mock.patch.object(mcp_servidor.sys, "stdout", io.StringIO()):
+            warnings.simplefilter("always")
+            self.assertEqual(mcp_servidor.main(["--pasta", str(self.raiz)]), 0)
+            gc.collect()
+        self.assertEqual(len(canais), 1)
+        self.assertTrue(canais[0].closed)
+        self.assertEqual([str(a.message) for a in avisos
+                          if issubclass(a.category, ResourceWarning)], [])
+
+    def test_canal_fechado_tambem_quando_a_conversa_falha(self):
+        canais = []
+
+        def servir(raiz, saida=None):
+            canais.append(saida)
+            raise BrokenPipeError("o outro lado fechou")
+
+        with mock.patch.object(mcp_servidor, "servir", side_effect=servir), \
+                mock.patch.object(mcp_servidor.os, "dup2"), \
+                mock.patch.object(mcp_servidor.sys, "stdout", io.StringIO()):
+            with self.assertRaises(BrokenPipeError):
+                mcp_servidor.main(["--pasta", str(self.raiz)])
+        self.assertTrue(canais[0].closed)
+
+    def test_processo_de_verdade_responde_pelo_stdout(self):
+        # Como o Claude Desktop o chama: um processo, as mensagens pelo stdin
+        # e as respostas pelo stdout. O print de biblioteca vai para o stderr,
+        # as respostas chegam inteiras (o fechamento do canal não as perde) e
+        # nenhum ResourceWarning aparece no fim (-X dev os mostra).
+        import subprocess
+        import sys
+
+        casa = Path(self.dir.name) / "casa"
+        casa.mkdir()
+        env = dict(os.environ, HELESTRON_LOCAL=str(casa / "local"),
+                   HELESTRON_DADOS=str(casa / "dados"), HOME=str(casa),
+                   APPDATA=str(casa), LOCALAPPDATA=str(casa))
+        mensagens = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": "2025-06-18", "capabilities": {}}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        ]
+        r = subprocess.run(
+            [sys.executable, "-X", "dev", "-m", "helestron", "mcp", "--pasta", str(self.raiz)],
+            input="".join(json.dumps(m) + "\n" for m in mensagens).encode(),
+            capture_output=True, cwd=str(Path(__file__).resolve().parents[1]), env=env,
+            timeout=120)
+        erros = r.stderr.decode("utf-8", "replace")
+        self.assertEqual(r.returncode, 0, erros)
+        linhas = [json.loads(l) for l in r.stdout.decode("utf-8").splitlines() if l.strip()]
+        self.assertEqual([x["id"] for x in linhas], [1, 2], erros)
+        self.assertEqual(linhas[0]["result"]["serverInfo"]["name"], "helestron")
+        self.assertNotIn("ResourceWarning", erros)
+
     def test_json_invalido(self):
         saida = io.BytesIO()
         mcp_servidor.servir(self.raiz, entrada=io.BytesIO(b"{quebrado\n"), saida=saida)

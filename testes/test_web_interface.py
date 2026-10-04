@@ -1428,6 +1428,66 @@ class InterfaceNoNavegador(unittest.TestCase):
         self.assertIn(url, erro.inner_text())
         self.sem_problemas(pagina)
 
+    def test_resto_de_sigiloso_no_acervo_avisado_no_inicio_e_no_compartilhar(self):
+        """A pendência “sigilo-arquivos” do Início leva à tela Compartilhar,
+        que mostra a mesma frase (o arquivo, o motivo, o que fazer) sem travar
+        nada; o preparo conta o que fez numa faixa que fica até ser fechada."""
+        pagina = self.abrir(1100, 720, extra="&sigilo=arquivos")
+        passo = pagina.locator(".primeiros-passos .passo:has-text('Arquivo de processo sigiloso no acervo')")
+        self.assertEqual(passo.count(), 1)
+        self.assertIn("ficou no acervo", passo.inner_text())
+        passo.locator("button:has-text('Resolver')").click()
+        self.esperar_secao(pagina, "compartilhar")
+        faixa = pagina.locator("#sigilosos-no-acervo .faixa")
+        faixa.wait_for()
+        self.assertEqual(faixa.count(), 1)
+        self.assertIn("faixa-aviso", faixa.get_attribute("class"))
+        texto = faixa.inner_text()
+        for trecho in ("Arquivo de processo sigiloso no acervo", f"Minutas\\{PROCESSO_SIGILOSO}.docx",
+                       "está aberto em outro programa?", "O compartilhamento continua"):
+            self.assertIn(trecho, texto)
+        for rotulo in ("Preparar de novo", "Abrir a pasta do arquivo", "Abrir a pasta dos sigilosos"):
+            self.assertEqual(faixa.locator(f"button:has-text('{rotulo}')").count(), 1, rotulo)
+        # não trava: os destinos continuam funcionando
+        self.assertFalse(pagina.locator("#destino-codex button").is_disabled())
+        self.capturar(pagina, "compartilhar-sigiloso-arquivos")
+        faixa.locator("button:has-text('Preparar de novo')").click()
+        resultado = pagina.locator("#resultado-preparo .faixa")
+        resultado.wait_for(timeout=15000)
+        # o aviso do que ficou não se repete embaixo: já está no alto
+        self.assertEqual(resultado.count(), 1)
+        texto = resultado.inner_text()
+        self.assertIn("Um aviso do preparo", texto)
+        self.assertIn("foi levado para a pasta dos sigilosos", texto)
+        self.assertNotIn("O compartilhamento continua", texto)
+        self.capturar(pagina, "compartilhar-resultado-do-preparo")
+        resultado.locator("button[title='Fechar este aviso']").click()
+        self.assertEqual(pagina.locator("#resultado-preparo .faixa").count(), 0)
+        self.assertEqual(pagina.locator("#sigilosos-no-acervo .faixa").count(), 1)
+        self.texto_em_portugues(pagina, "compartilhar")
+        self.sem_problemas(pagina)
+
+    def test_autos_de_sigiloso_presos_suspendem_o_compartilhamento(self):
+        pagina = self.abrir(1100, 720, extra="&sigilo=autos", secao="compartilhar")
+        faixa = pagina.locator("#sigilosos-no-acervo .faixa")
+        faixa.wait_for()
+        self.assertIn("faixa-erro", faixa.get_attribute("class"))
+        texto = faixa.inner_text()
+        for trecho in ("Processo sigiloso no acervo", "não puderam sair do acervo",
+                       f"{PROCESSO_SIGILOSO}.pdf", "ficam suspensos"):
+            self.assertIn(trecho, texto)
+        self.assertEqual(faixa.locator("button:has-text('Tentar de novo')").count(), 1)
+        self.capturar(pagina, "compartilhar-sigiloso-autos")
+        # a recusa (409) vira a folha de erro com a mesma frase
+        pagina.click("#destino-claude-code button:has-text('Abrir no Claude Code')")
+        folha = pagina.locator(".folha:has-text('não puderam sair do acervo')")
+        folha.wait_for()
+        self.assertIn(f"{PROCESSO_SIGILOSO}.pdf", folha.inner_text())
+        self.ir(pagina, "inicio")
+        self.assertEqual(pagina.locator(
+            ".primeiros-passos .passo:has-text('Processo sigiloso no acervo')").count(), 1)
+        self.sem_problemas(pagina)
+
     def test_fonte_sem_endereco_salvo_sem_jargao(self):
         """“Sem rota” é o nome interno (a URL guardada da pauta): a tela diz
         o que isso quer dizer para quem usa."""
