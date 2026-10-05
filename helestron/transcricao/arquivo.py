@@ -22,9 +22,7 @@ argumento `metadata_errors` sumiu do `av.open`). Por isso a decodificação
 from __future__ import annotations
 
 import logging
-import re
 import time
-from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -259,24 +257,20 @@ def preparar_audio(audio: np.ndarray, taxa: int = TAXA, copiar: bool = True) -> 
 
 
 # ------------------------------------------------------------ transcrever
-# O próprio programa grava o processo dependente com "-NN" no nome (o Windows
-# não aceita "/"): "0700123-45.2024.8.02.0001-01 2026-09-16 14h00.flac", a
-# pasta "_controle/midias/0700123-45.2024.8.02.0001-01". O "-inc0001" é da
-# base. Sem isto, a gravação do incidente virava a transcrição do principal.
-_DEPENDENTE_NO_NOME = re.compile(r"-(?:inc)?0*(\d{1,4})(?=$|[\s._()\[\]])", re.I)
-
-
 def numero_do_nome(texto: str) -> cnj.Numero | None:
-    """O número CNJ escrito num nome de arquivo ou pasta (com o dependente)."""
-    m = cnj._PADRAO.search(texto or "")
-    if not m:
+    """O número CNJ escrito num nome de arquivo ou pasta (com o dependente).
+
+    O próprio programa grava o processo dependente com "-NN" no nome (o
+    Windows não aceita "/"): "0700123-45.2024.8.02.0001-01 2026-09-16
+    14h00.flac", a pasta "_controle/midias/0700123-45.2024.8.02.0001-01". O
+    "-inc0001" é da base. Sem isto, a gravação do incidente virava a
+    transcrição do principal. A leitura é a do núcleo (cnj.ler_nome_arquivo),
+    a mesma do download e do compartilhamento, para as leituras não divergirem.
+    """
+    try:
+        return cnj.ler_nome_arquivo(texto or "")
+    except cnj.NumeroInvalido:
         return None
-    numero = cnj.ler(m.group(0))
-    if not numero.dependente:
-        d = _DEPENDENTE_NO_NOME.match(texto[m.end():])
-        if d:
-            numero = replace(numero, dependente=(d.group(1).lstrip("0") or "0").zfill(2))
-    return numero
 
 
 def numero_do_caminho(caminho: Path | str) -> cnj.Numero | None:
@@ -298,12 +292,20 @@ def _numero_do_arquivo(origem: Path, numero) -> cnj.Numero:
     if isinstance(numero, cnj.Numero):
         return numero
     if numero:
-        return cnj.ler(str(numero))
+        # o número digitado pode vir como o do nome do DOCX ("...0001-01")
+        return cnj.ler_nome_arquivo(str(numero))
     achado = numero_do_caminho(origem)
     if achado is not None:
         return achado
     raise ProcessoNaoInformado(
         f"Não encontrei o número do processo no nome '{origem.name}'. Informe o número.")
+
+
+def _destino_padrao(cfg, numero: cnj.Numero, sigiloso: bool) -> Path:
+    """<pasta das transcrições>/<número>.docx, com nome livre ("(2)")."""
+    pasta = pasta_das_transcricoes(cfg, numero, sigiloso)
+    pasta.mkdir(parents=True, exist_ok=True)
+    return sistema.destino_livre(pasta, numero.nome_arquivo, ".docx")
 
 
 def _dentro_de(caminho: Path, pasta) -> bool:
@@ -420,8 +422,9 @@ def _transcrever(origem, numero, cfg, progresso, cancelado, rotulos_manuais, des
         avisar(0.08 + (fim_transcricao - 0.08) * fracao,
                f"Transcrevendo: {fracao:.0%}" + (f" (faltam ~{int(restante // 60) + 1} min)"
                                                  if restante else ""))
-    log.info("%s: %d trecho(s) reconhecido(s), %d descartado(s) pelo filtro.",
-             origem.name, len(falas), filtro.descartados)
+    log.info("%s: %d trecho(s) reconhecido(s), %d descartado(s) pelo filtro "
+             "(%d por repetição emendada).",
+             origem.name, len(falas), filtro.descartados, filtro.repeticoes)
     if not falas:
         raise SemFala("Nenhuma fala foi reconhecida. O áudio pode estar mudo, com volume "
                       "muito baixo ou conter apenas ruído.")
@@ -481,17 +484,27 @@ def _transcrever(origem, numero, cfg, progresso, cancelado, rotulos_manuais, des
     meta.modelo = nome_modelo
     meta.duracao = duracao
     meta.gravacao = meta.gravacao or origem.name
+    # A gravação guardada na pasta de sigilosos (a de uma audiência
+    # sigilosa, no "Revisar agora", ou a mídia baixada com os autos) é
+    # sigilosa, mesmo sem os autos lá.
+    sigiloso = sigiloso or _dentro_de(origem, getattr(cfg, "pasta_sigilosos", None))
+    marcar_tempo = cfg.flag("transcricao", "marcar_tempo")
     if destino is None:
-        # A gravação guardada na pasta de sigilosos (a de uma audiência
-        # sigilosa, no "Revisar agora", ou a mídia baixada com os autos) é
-        # sigilosa, mesmo sem os autos lá.
-        sigiloso = sigiloso or _dentro_de(origem, getattr(cfg, "pasta_sigilosos", None))
-        pasta = pasta_das_transcricoes(cfg, numero, sigiloso)
-        pasta.mkdir(parents=True, exist_ok=True)
-        destino = sistema.destino_livre(pasta, numero.nome_arquivo, ".docx")
-    caminho = gerar_docx(Path(destino), falas, meta,
-                         marcar_tempo=cfg.flag("transcricao", "marcar_tempo"),
-                         legenda_automatica=False)
+        caminho = gerar_docx(_destino_padrao(cfg, numero, sigiloso), falas, meta,
+                             marcar_tempo=marcar_tempo, legenda_automatica=False)
+    else:
+        try:
+            caminho = gerar_docx(Path(destino), falas, meta, marcar_tempo=marcar_tempo,
+                                 legenda_automatica=False)
+        except OSError as erro:
+            # Horas de trabalho não se perdem por causa do destino (pasta no
+            # lugar do arquivo, pasta sem permissão, disco removido): o
+            # documento vai para a pasta das transcrições - a dos sigilosos,
+            # se for o caso, nunca o acervo para um processo sigiloso.
+            caminho = gerar_docx(_destino_padrao(cfg, numero, sigiloso), falas, meta,
+                                 marcar_tempo=marcar_tempo, legenda_automatica=False)
+            log.warning("não consegui gravar a transcrição em %s (%s); gravada em %s.",
+                        destino, erro, caminho)
     avisar(1.0, f"Transcrição pronta: {caminho.name}")
     log.info("transcrição gravada em %s", caminho)
     return caminho

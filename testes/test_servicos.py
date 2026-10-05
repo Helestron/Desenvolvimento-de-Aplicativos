@@ -134,6 +134,44 @@ class TestPontesDoMotor(unittest.TestCase):
                                           None)
             self.assertNotIn("meta", transcrever.call_args.kwargs)
 
+    def test_revisar_leva_a_ficha_da_audiencia(self):
+        """Achado 38: o "Revisar" da tela criava a ficha só com o tipo e os
+        participantes - sem início, término nem a data da audiência."""
+        from datetime import datetime
+
+        from helestron.transcricao.documento import MetaAudiencia
+
+        sessao = MetaAudiencia(numero=NUMERO, tipo="Instrução", origem="ao vivo",
+                               data=datetime(2026, 9, 15, 23, 30),
+                               inicio=datetime(2026, 9, 15, 23, 30),
+                               fim=datetime(2026, 9, 16, 0, 40),
+                               participantes={"Testemunha": "Beltrano"},
+                               gravacao="_audio\\x.flac", observacao="1 trecho não transcrito.")
+        with mock.patch("helestron.transcricao.arquivo.transcrever_arquivo") as transcrever:
+            servicos.transcrever_gravacao(Path("/tmp/x.flac"), cnj.ler(NUMERO), object(), None,
+                                          None, meta=sessao)
+            meta = transcrever.call_args.kwargs["meta"]
+            self.assertIsNot(meta, sessao)
+            self.assertIsNot(meta.participantes, sessao.participantes)
+            self.assertEqual((meta.data, meta.inicio, meta.fim, meta.gravacao),
+                             (sessao.data, sessao.inicio, sessao.fim, "_audio\\x.flac"))
+            self.assertEqual((meta.origem, meta.observacao, meta.tipo), ("revisão", "", "Instrução"))
+            self.assertEqual(sessao.origem, "ao vivo")       # a da sessão não muda
+            # o que a tela escolheu agora prevalece
+            servicos.transcrever_gravacao(Path("/tmp/x.flac"), cnj.ler(NUMERO), object(), None,
+                                          None, meta=sessao, tipo="Una",
+                                          participantes={"F1": "Juiz(a)"})
+            meta = transcrever.call_args.kwargs["meta"]
+            self.assertEqual(meta.tipo, "Una")
+            self.assertEqual(meta.participantes, {"Testemunha": "Beltrano", "F1": "Juiz(a)"})
+            self.assertEqual(sessao.participantes, {"Testemunha": "Beltrano"})
+            # uma ficha que não é a de sessão ao vivo segue como veio
+            gravada = MetaAudiencia(numero=NUMERO, origem="gravação", observacao="Obs.")
+            servicos.transcrever_gravacao(Path("/tmp/x.flac"), cnj.ler(NUMERO), object(), None,
+                                          None, meta=gravada)
+            meta = transcrever.call_args.kwargs["meta"]
+            self.assertEqual((meta.origem, meta.observacao), ("gravação", "Obs."))
+
     def test_componente_ausente_tem_frase(self):
         erro = servicos._ausente(ImportError("x", name="faster_whisper"), "transcrição")
         self.assertIn("faster_whisper", str(erro))

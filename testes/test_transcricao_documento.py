@@ -199,6 +199,71 @@ class TestGerarDocx(unittest.TestCase):
         self.assertTrue(caminho.exists())
 
 
+    def test_destino_que_e_pasta_nao_vira_copia(self):
+        """Achado 36: no Windows, a troca sobre uma pasta dá PermissionError
+        e a "cópia" saía ao lado dela, sem extensão e com a mensagem falsa
+        de arquivo aberto."""
+        pasta = self.pasta.raiz / "Saida"
+        pasta.mkdir()
+        with self.assertRaises(IsADirectoryError):
+            gerar_docx(pasta, [Fala(0, 1, "Juiz(a)", "Oi.")], meta_exemplo())
+        self.assertEqual(list(pasta.iterdir()), [])
+        self.assertFalse(list(self.pasta.raiz.glob("*cópia*")))
+
+    def test_copia_de_destino_sem_extensao_termina_em_docx(self):
+        destino = self.pasta.raiz / "Ata.2024"
+        original = sistema.gravar_atomico
+
+        def tranca(alvo, dados):
+            if Path(alvo) == destino:
+                raise PermissionError(13, "O arquivo está aberto em outro programa")
+            return original(alvo, dados)
+
+        with mock.patch.object(documento.sistema, "gravar_atomico", side_effect=tranca), \
+                mock.patch.object(documento, "ESPERAS_TRAVA_S", (0.0,)), \
+                self.assertLogs("transcricao.documento", "WARNING"):
+            caminho = gerar_docx(destino, [Fala(0, 1, "Juiz(a)", "Oi.")], meta_exemplo())
+        self.assertEqual(caminho.name, "Ata.2024 (cópia).docx")
+        self.assertEqual(documento._nome_da_copia(self.destino), (f"{NUMERO} (cópia)", ".docx"))
+
+
+class TestParticipantesDaFicha(unittest.TestCase):
+    """Achado 37: a ficha listava o mapa dos botões ("F1: Juiz(a)" ... "F8:
+    Outro"), e não quem participou."""
+
+    MAPA = {"F1": "Juiz(a)", "F2": "Promotor(a)", "F3": "Defensor(a)",
+            "F4": "Advogado(a) do autor", "F5": "Advogado(a) do réu", "F6": "Testemunha",
+            "F7": "Parte", "F8": "Outro"}
+
+    def test_mapa_das_teclas_vira_quem_falou(self):
+        meta = MetaAudiencia(numero="x", participantes=dict(self.MAPA))
+        linhas = dict(documento._linhas_da_ficha(meta, ["Juiz(a)", "Promotor(a)", "Testemunha"]))
+        self.assertEqual(linhas["Participantes"], "Juiz(a)\nPromotor(a)\nTestemunha")
+        # sem falas, o mapa sozinho não é lista de presença
+        self.assertEqual(dict(documento._linhas_da_ficha(meta))["Participantes"], "—")
+
+    def test_nome_informado_e_quem_nao_falou(self):
+        participantes = {"Testemunha": "Beltrano", "Preposto(a)": "Sicrano", "F1": "Juiz(a)"}
+        self.assertEqual(documento.participantes_da_ficha(
+            participantes, ["Juiz(a)", "Testemunha", "Juiz(a)", " "]),
+            ["Juiz(a)", "Testemunha: Beltrano", "Preposto(a): Sicrano"])
+        self.assertTrue(documento.tecla("F12"))
+        self.assertFalse(documento.tecla("Fulano"))
+
+    def test_documento_com_o_mapa_como_a_tela_manda(self):
+        pasta = PastaTemporaria()
+        self.addCleanup(pasta.apagar)
+        falas = [Fala(0, 2, "Juiz(a)", "Aberta a audiência."),
+                 Fala(3, 5, "FALANTE 2", "Sem rótulo marcado."),
+                 Fala(6, 6, "", "(Gravação pausada às 10:00:00 e retomada às 10:05:00.)"),
+                 Fala(7, 9, "Testemunha", "Eu vi.")]
+        meta = meta_exemplo(participantes=dict(self.MAPA))
+        _, tabelas, _ = ler_docx(gerar_docx(pasta.raiz / "x.docx", falas, meta))
+        participantes = ficha(tabelas)["Participantes"]
+        self.assertEqual(participantes, "Juiz(a)\nTestemunha")   # FALANTE 2 vai para a legenda
+        self.assertNotIn("F1", participantes)
+
+
 class TestSigiloPelaPasta(unittest.TestCase):
     """processo_sigiloso: o que já está na pasta dos sigilosos decide."""
 
