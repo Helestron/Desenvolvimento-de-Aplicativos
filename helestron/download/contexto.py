@@ -15,13 +15,22 @@ uma chamada explícita, que bloqueia a thread até a resposta.
 
 A classe base é utilizável como está (não faz nada e nunca cancela): serve
 para testes e para usos sem acompanhamento.
+
+Além das frases para gente, o motor e os portais emitem EVENTOS legíveis por
+máquina (``evento(tipo, **dados)``): o início de cada grupo, o login que
+espera o usuário na janela, o login recusado, a sessão que caiu, o fim. A
+base os ignora; o terminal, com ``eventos=True`` (``baixar --eventos``), os
+imprime numa linha própria - ``HELESTRON-EVENTO {json}`` - e os repassa ao
+acompanhamento em JSON (``baixar --json``, download/acompanhamento.py).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 import threading
+from datetime import datetime
 
 from .modelos import ResultadoProcesso, rotulo
 
@@ -64,19 +73,61 @@ class Contexto:
         janela do navegador")."""
         log.warning("%s: %s", titulo, mensagem)
 
+    def evento(self, tipo: str, **dados) -> None:
+        """Um acontecimento legível por máquina (tipos em EVENTOS). Na base,
+        nada: a tela e os testes não precisam dele. Nunca deve levantar."""
+
+
+# Os eventos que o motor e os portais emitem, com os dados de cada um:
+#   lote_inicio       destino, relatorio, sigilosos_do_lote, total
+#   grupo_inicio      sistema, tribunal, alternativo (bool), ordens (lista)
+#   navegador_ocupado sistema, tribunal, ate (ISO): esperando outro download
+#   login_aguardando  sistema, tribunal, modo, prazo_min, ate (ISO), motivo
+#   acao_na_janela    sistema, tribunal, motivo (captcha, perfil...)
+#   login_concluido   sistema, tribunal
+#   login_falhou      sistema, tribunal, detalhe
+#   sessao_caiu       sistema, tribunal, ordem
+#   fim               total, baixados, ja_baixados, falhas, pendentes, sigilosos
+EVENTOS = ("lote_inicio", "grupo_inicio", "navegador_ocupado", "login_aguardando",
+           "acao_na_janela", "login_concluido", "login_falhou", "sessao_caiu", "fim")
+PREFIXO_EVENTO = "HELESTRON-EVENTO "
+
+
+def linha_de_evento(tipo: str, dados: dict) -> str:
+    """'HELESTRON-EVENTO {"tipo": ..., "momento": ..., ...}' numa linha só."""
+    corpo = {"tipo": tipo, "momento": datetime.now().isoformat(timespec="seconds")}
+    corpo.update({k: v for k, v in dados.items() if k not in corpo})
+    return PREFIXO_EVENTO + json.dumps(corpo, ensure_ascii=False, default=str)
+
 
 class ContextoTerminal(Contexto):
     """Acompanhamento pelo console: print e input().
 
     Ctrl+C durante o lote é tratado pelo motor como "parar": o item em curso
     volta para a fila e o relatório é gravado.
+
+    ``eventos``: imprime cada evento como ``HELESTRON-EVENTO {json}`` (sem
+    ele, a saída é a de sempre). ``acompanhamento``: quem mais quer saber de
+    cada item, evento e aviso (o JSON de ``baixar --json``); falha dele nunca
+    derruba o lote.
     """
 
-    def __init__(self, saida=None, entrada=None):
+    def __init__(self, saida=None, entrada=None, eventos: bool = False, acompanhamento=None):
         self._saida = saida
         self._entrada = entrada          # para testes: função que faz as vezes de input()
         self._parar = threading.Event()
         self._ultimo_status = ""
+        self.eventos = bool(eventos)
+        self.acompanhamento = acompanhamento
+
+    def _repassar(self, metodo: str, *args, **kwargs) -> None:
+        alvo = getattr(self.acompanhamento, metodo, None) if self.acompanhamento else None
+        if alvo is None:
+            return
+        try:
+            alvo(*args, **kwargs)
+        except Exception:        # o acompanhamento nunca derruba o lote
+            log.debug("acompanhamento.%s falhou", metodo, exc_info=True)
 
     # --------------------------------------------------------------- saída
     def _print(self, texto: str) -> None:
@@ -91,14 +142,16 @@ class ContextoTerminal(Contexto):
     def status(self, texto: str) -> None:
         if texto and texto != self._ultimo_status:
             self._ultimo_status = texto
+            self._repassar("status", texto)
             self._print(f"  {texto}")
 
     def progresso(self, feitos: int, total: int, atual: str) -> None:
         # O motor já registra "[n/total] número" no log, que no terminal
         # aparece na tela; repetir aqui só duplicaria a linha.
-        pass
+        self._repassar("progresso", feitos, total, atual)
 
     def item(self, r: ResultadoProcesso) -> None:
+        self._repassar("item", r)
         if not r.situacao:
             return
         extra = []
@@ -116,10 +169,19 @@ class ContextoTerminal(Contexto):
         self._print(f"    -> {r.numero}: {r.rotulo}{sufixo}")
 
     def avisar(self, titulo: str, mensagem: str) -> None:
+        self._repassar("aviso", titulo, mensagem)
         self._print("")
         self._print(f"  *** {titulo} ***")
         self._print(f"  {mensagem}")
         self._print("")
+
+    def evento(self, tipo: str, **dados) -> None:
+        if self.eventos:
+            try:
+                self._print(linha_de_evento(tipo, dados))
+            except Exception:     # dado que não vira JSON nunca derruba o lote
+                log.debug("evento %s não impresso", tipo, exc_info=True)
+        self._repassar("evento", tipo, **dados)
 
     # -------------------------------------------------------------- parar
     def parar(self) -> None:

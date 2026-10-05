@@ -48,7 +48,7 @@ from urllib.parse import urlsplit
 
 from ..nucleo import caminhos, cofre_senhas, sistema
 from ..nucleo.registro import censurar
-from .modelos import AJUSTES_ACESSOS, ENTRAR_MANUALMENTE, PortalIndisponivel
+from .modelos import AJUSTES_ACESSOS, ENTRAR_MANUALMENTE, NavegadorOcupado, PortalIndisponivel
 
 log = logging.getLogger("download.navegador")
 
@@ -890,7 +890,7 @@ class Navegador:
                 msg = str(erro)
                 if perfil_em_uso(msg):
                     self.fechar()
-                    raise PortalIndisponivel(
+                    raise NavegadorOcupado(
                         "o navegador do programa já está aberto em outra janela "
                         "(outro download em andamento?). Feche-a, ou espere o outro "
                         "download terminar, e tente de novo.") from erro

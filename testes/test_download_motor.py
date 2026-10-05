@@ -706,9 +706,10 @@ class TestRelatorio(BaseMotor):
                             roteiro={TJAL2.formatado: ["ok_sigiloso"]})
         self.assertEqual(resumo.relatorio, self.destino / "_controle" / "relatorio.csv")
         linhas = ler_relatorio(resumo.relatorio)
+        # "causa" entrou no FIM (1.0.2): quem lê pelo nome da coluna não muda
         self.assertEqual(linhas[0], ["ordem", "processo", "tribunal", "sistema", "situacao",
                                      "paginas", "documentos", "arquivo", "sigiloso",
-                                     "incompleto", "detalhe", "data_hora"])
+                                     "incompleto", "detalhe", "data_hora", "causa"])
         # o relatório do acervo (que a IA lê) não diz QUAL processo é sigiloso
         self.assertEqual([l[1] for l in linhas[1:]],
                          [TJAL1.formatado, TJBA1.formatado, "(processo sigiloso)"])
@@ -832,13 +833,55 @@ class TestRetentativas(BaseMotor):
         self.assertEqual(resumo.falhas, [r])
         self.assertIn(TJAL1.formatado, resumo.a_refazer())
 
-    def test_pdf_aberto_no_leitor_explica_e_nao_insiste(self):
+    def test_arquivo_preso_na_area_provisoria_e_passageiro(self):
+        """O portal grava na área provisória, que ninguém abre: quem segura o
+        PDF recém-gravado ali é o antivírus ou o indexador, por instantes. Era
+        tratado como 'PDF aberto no leitor', sem nova tentativa."""
         resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["pdf_aberto", "ok"]},
                             tentativas=3)
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+        self.assertEqual(len(apoio.PortalFalso.todos[0].chamadas), 2)
+        resumo = self.rodar([TJAL2], roteiro={TJAL2.formatado: ["pdf_aberto"] * 5},
+                            tentativas=2)
         r = resumo.itens[0]
         self.assertEqual(r.situacao, modelos.ERRO)
+        self.assertEqual(r.causa, modelos.CAUSA_FALHA)
+        self.assertIn("preso por outro programa", r.detalhe)
+        self.assertNotIn("leitor de PDF", r.detalhe)
+        self.assertEqual(len(apoio.PortalFalso.todos[0].chamadas), 2)
+        self.assertTrue(r.refazer)
+
+    def test_pdf_aberto_fora_da_area_provisoria_nao_insiste(self):
+        fora = self.tmp / "aberto no leitor.pdf"
+        original = apoio.PortalFalso.baixar
+
+        def baixar(portal, numero, destino_pdf, senha=None):
+            portal.chamadas.append((numero.formatado, senha))
+            raise PermissionError(13, "Acesso negado", str(fora))
+        with mock.patch.object(apoio.PortalFalso, "baixar", baixar):
+            resumo = self.rodar([TJAL1], tentativas=3)
+        self.assertIs(apoio.PortalFalso.baixar, original)
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.ERRO)
+        self.assertEqual(r.causa, modelos.CAUSA_PDF_ABERTO)
         self.assertIn("aberto em outro programa", r.detalhe)
         self.assertEqual(len(apoio.PortalFalso.todos[0].chamadas), 1)
+
+    def test_pdf_do_lote_aberto_no_leitor_explica(self):
+        """Gravar NA PASTA DO LOTE, onde o usuário abre o PDF, é que pede
+        'feche o leitor de PDF'."""
+        original = motor._mover
+
+        def preso(origem, destino, *a, **k):
+            if Path(destino).suffix == ".pdf" and motor._dentro(destino, self.destino):
+                raise PermissionError(13, "Acesso negado", str(destino))
+            return original(origem, destino, *a, **k)
+        with mock.patch.object(motor, "_mover", preso):
+            resumo = self.rodar([TJAL1])
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.ERRO)
+        self.assertEqual(r.causa, modelos.CAUSA_PDF_ABERTO)
+        self.assertIn("leitor de PDF", r.detalhe)
 
     def test_nao_encontrado_nao_e_repetido(self):
         # TJRS: só eProc, sem sistema alternativo (o TJAL procuraria no eProc)
