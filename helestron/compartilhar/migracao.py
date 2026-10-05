@@ -24,6 +24,12 @@ import sys
 
 log = logging.getLogger("compartilhar.migracao")
 
+# O programa anterior e o nome do conector dele. O preparo do acervo os usa
+# para reconhecer o CLAUDE.md/AGENTS.md que ele gravou e o usuário não editou
+# (e trocá-lo pelo do Helestron, com as regras de citação de agora).
+NOME_ANTERIOR = "Assessor Integrado"
+CONECTOR_ANTERIOR = "assessor-integrado"
+
 
 def limpar_restos_antigos() -> list[str]:
     """Tira os conectores da versão anterior do Claude Desktop e do
