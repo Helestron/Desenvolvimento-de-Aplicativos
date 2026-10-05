@@ -198,11 +198,80 @@ class TestCLI(apoio.PastaTemporaria):
         self.assertIn("removida", saida)
 
     def test_sincronizar_falha_com_frase(self):
-        self.rodar("fontes", "--adicionar", "TJRS", "esaj")
+        # A fonte errada já gravada (uma versão anterior aceitava): a linha de
+        # comando hoje a recusa (test_fontes_invalidas).
+        from helestron.pauta.armazem import Armazem
+
+        banco = Armazem(self.tmp / "local" / "pauta.sqlite3")
+        banco.salvar_fonte("TJRS", "esaj")
+        banco.fechar()
         codigo, _, erro = self.rodar("sincronizar", "--de", "2026-10-01", "--ate", "2026-10-31")
         self.assertEqual(codigo, 1)
         self.assertIn("Falhou: Não consegui ler a pauta", erro)
         self.assertIn("O TJRS não usa o e-SAJ", erro)
+
+    def test_listar_json_mascara_os_sigilosos(self):
+        """A lista em JSON (que um script ou a IA lê) não leva as partes nem as
+        observações dos processos em segredo de justiça, salvo com a opção - e a
+        busca pelo nome da parte não diz que ela é de um deles."""
+        (self.tmp / "sig.csv").write_text(
+            "Data;Hora;Processo;Partes;Observações;Sigilo\n"
+            f"05/10/2026;09:00;{N1};Maria x José;Vítima: Maria;Segredo de Justiça\n"
+            f"06/10/2026;10:00;{N2};João x Município;Testemunha: Pedro;\n", encoding="utf-8")
+        self.assertEqual(self.rodar("importar", str(self.tmp / "sig.csv"))[0], 0)
+        base = ["listar", "--de", "2026-10-01", "--ate", "2026-10-31"]
+        codigo, saida, _ = self.rodar(*base, "--json")
+        self.assertEqual(codigo, 0)
+        por = {a["processo"]: a for a in json.loads(saida)["audiencias"]}
+        self.assertTrue(por[N1]["sigiloso"])
+        self.assertEqual((por[N1]["partes"], por[N1]["observacoes"]),
+                         ("(segredo de justiça)", "(segredo de justiça)"))
+        self.assertEqual((por[N2]["partes"], por[N2]["observacoes"]),
+                         ("João x Município", "Testemunha: Pedro"))
+        self.assertNotIn("Maria", saida)
+        codigo, saida, _ = self.rodar(*base, "--json", "--busca", "Maria")
+        self.assertEqual(json.loads(saida)["audiencias"], [])
+        codigo, saida, _ = self.rodar(*base, "--json", "--incluir-partes-sigilosos")
+        por = {a["processo"]: a for a in json.loads(saida)["audiencias"]}
+        self.assertEqual((por[N1]["partes"], por[N1]["observacoes"]),
+                         ("Maria x José", "Vítima: Maria"))
+        # o texto também
+        codigo, saida, _ = self.rodar(*base)
+        self.assertNotIn("Maria", saida)
+        self.assertIn("[segredo de justiça]", saida)
+        codigo, saida, _ = self.rodar(*base, "--incluir-partes-sigilosos")
+        self.assertIn("Maria x José", saida)
+
+    def test_fontes_invalidas(self):
+        for argv, trecho in ((("TJXX", "esaj"), "Tribunal desconhecido: TJXX"),
+                             (("TJRS", "esaj"), "O TJRS não usa o e-SAJ"),
+                             (("TRF4", "esaj"), "O TRF4 não usa o e-SAJ")):
+            with self.subTest(argv=argv):
+                codigo, saida, erro = self.rodar("fontes", "--adicionar", *argv)
+                self.assertEqual(codigo, 2, saida)
+                self.assertIn(trecho, erro)
+        self.assertIn("Nenhuma fonte configurada", self.rodar("fontes")[1])
+        codigo, saida, erro = self.rodar("fontes", "--remover", "esaj-tjzz")
+        self.assertEqual(codigo, 1)
+        self.assertNotIn("removida", saida)
+        self.assertIn("A fonte esaj-tjzz não existe", erro)
+
+    def test_sigilo_revelado_com_ctrl_c(self):
+        """Ctrl+C no meio da sincronização: o que já foi gravado e revelado sigiloso
+        sai do acervo do mesmo jeito."""
+        from helestron.pauta.servico import ServicoPauta
+
+        def sincronizar(servico, ctx, fontes, de, ate):
+            servico._entregar_revelados([N1])        # a 1ª fonte gravou e revelou
+            raise KeyboardInterrupt
+
+        with mock.patch.object(ServicoPauta, "sincronizar", sincronizar), \
+                mock.patch.object(cli, "_aplicar_sigilo_revelado") as aplicar:
+            codigo, saida, _ = self.rodar("sincronizar", "--de", "2026-10-01", "--ate",
+                                          "2026-10-31")
+        self.assertEqual(codigo, 1)
+        self.assertIn("Interrompido.", saida)
+        self.assertEqual(aplicar.call_args.args[1], [N1])
 
     def test_pelo_modulo_principal(self):
         from helestron import __main__ as principal

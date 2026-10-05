@@ -116,6 +116,21 @@ class TestTiposESituacoes(unittest.TestCase):
         self.assertEqual(normalizar_texto("N. do processo"), "n do processo")
         self.assertEqual(normalizar_texto("SITUAÇÃO\xa0da   Audiência"), "situacao da audiencia")
 
+    def test_limpar_tira_caracteres_de_controle(self):
+        """Achado 28: o que o Excel não aceita sai na entrada (os outros viram espaço)."""
+        self.assertEqual(modelos.limpar("a\x02b"), "ab")
+        self.assertEqual(modelos.limpar("JOSE\x00 DA\x07 SILVA\x1b\x7f"), "JOSE DA SILVA")
+        self.assertEqual(modelos.limpar("a\tb\nc\x0bd\x0ce\x1ff"), "a b c d e f")
+
+    def test_mascarar_sigiloso(self):
+        publico = {"sigiloso": False, "partes": "A x B", "observacoes": "obs"}
+        self.assertIs(modelos.mascarar_sigiloso(publico), publico)
+        sig = {"sigiloso": True, "partes": "", "observacoes": "", "link": "https://sala"}
+        self.assertEqual(modelos.mascarar_sigiloso(sig),
+                         {"sigiloso": True, "partes": "(segredo de justiça)", "observacoes": "",
+                          "link": "https://sala"})
+        self.assertEqual(sig["partes"], "", "a original não muda")
+
 
 class TestAudiencia(unittest.TestCase):
     def test_processo(self):

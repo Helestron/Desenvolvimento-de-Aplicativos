@@ -319,7 +319,14 @@ def exportar(p: Pedido) -> dict:
     if problema:
         raise ErroApi(409, "pastas_em_conflito", problema)
     destino.mkdir(parents=True, exist_ok=True)
-    arquivo = servico.exportar(de, ate, destino, **filtros)
+    try:
+        arquivo = servico.exportar(de, ate, destino, **filtros)
+    except RuntimeError as erro:
+        if type(erro).__name__ != "ErroPauta":
+            raise
+        # a frase do serviço (sem o texto de nenhuma célula); o erro original já
+        # foi registrado lá, só com o tipo e o lugar
+        raise ErroApi(500, "planilha_falhou", str(erro)) from None
     return {"arquivo": str(arquivo), "pasta": str(destino)}
 
 

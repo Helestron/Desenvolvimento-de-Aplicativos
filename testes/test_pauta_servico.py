@@ -662,5 +662,217 @@ class TestSenhaSoPorAgora(Base):
         self.assertEqual(PortalFalso.instancias[-1].credenciais, ("u", "s"))
 
 
+class TestSigiloPelaRegraUnica(Base):
+    """Achado 22: a lista, o Início, o histórico e a planilha usam a regra única
+    do sigilo - o incidente herda o sigilo do principal, e a gravação em
+    Sigilosos/Transcricoes/_audio também conta."""
+
+    D = date(2026, 10, 6)
+
+    def setUp(self):
+        super().setUp()
+        self.agora = datetime(2026, 10, 6, 8, 0)
+        self.principal = ap.numero("0700105")
+        self.incidente = f"{self.principal}/01"
+        self.so_audio = ap.numero("0700106")
+        self.publico = ap.numero("0700107")
+        lote = self.amb.sigilosos / "Lote 1"
+        lote.mkdir(parents=True)
+        (lote / f"{self.principal}.pdf").write_bytes(apoio.pdf_bytes(1))
+        audio = self.amb.sigilosos / "Transcricoes" / "_audio"
+        audio.mkdir(parents=True)
+        (audio / f"{self.so_audio} 2026-10-05 14h00.flac").write_bytes(b"fLaC")
+
+        def a(processo, hora, partes, **extra):
+            return modelos.nova(sistema="esaj", tribunal="TJAL", data_=self.D,
+                                processo=processo, hora=hora, tipo_original="Conciliação",
+                                situacao_original="Designada", partes=partes, **extra)
+
+        self.a = a
+        self.servico.armazem.gravar([
+            a(self.incidente, "09:00", "Fulana de Tal x Beltrano", observacoes="Ré: Fulana"),
+            a(self.so_audio, "10:00", "Cicrana x Banco"),
+            a(self.publico, "11:00", "João x Município", observacoes="Testemunha: Pedro"),
+        ], "esaj-tjal", None, registrar_novas=False)
+
+    def sigilo_por_processo(self, lista):
+        return {a["processo"]: a["sigiloso"] for a in lista}
+
+    def test_lista_inicio_historico_e_planilha(self):
+        from openpyxl import load_workbook
+
+        esperado = {self.incidente: True, self.so_audio: True, self.publico: False}
+        self.assertEqual(self.sigilo_por_processo(
+            self.servico.listar(self.D, self.D)["audiencias"]), esperado)
+        self.assertTrue(self.servico.resumo_inicio()["proxima"]["sigiloso"])
+        # o histórico: as partes mudaram
+        self.servico.armazem.gravar([
+            self.a(self.incidente, "09:00", "Fulana de Tal x Sicrano"),
+            self.a(self.so_audio, "10:00", "Cicrana x Banco S/A"),
+            self.a(self.publico, "11:00", "João x Município de Maceió")], "esaj-tjal", None)
+        self.assertEqual({x["audiencia"]["processo"]: x["audiencia"]["sigiloso"]
+                          for x in self.servico.alteracoes()}, esperado)
+        arquivo = self.servico.exportar(self.D, self.D, self.amb.pauta)
+        livro = load_workbook(arquivo)
+        textos = " ".join(str(c.value or "") for aba in livro for linha in aba.iter_rows()
+                          for c in linha)
+        for nome in ("Fulana", "Beltrano", "Sicrano", "Cicrana"):
+            self.assertNotIn(nome, textos)
+        self.assertIn("João x Município", textos)
+        self.assertIn("Testemunha: Pedro", textos, "as observações do público ficam")
+        aba = livro["Pauta"]
+        linhas = {aba.cell(r, 4).value: r for r in range(5, aba.max_row + 1)
+                  if aba.cell(r, 4).value}
+        self.assertEqual(aba.cell(linhas[self.incidente], 14).value, "(segredo de justiça)")
+
+    def test_o_principal_nao_herda_do_incidente(self):
+        inc = ap.numero("0700108")
+        (self.amb.sigilosos / "Lote 1" / f"{inc}-01.pdf").write_bytes(apoio.pdf_bytes(1))
+        self.servico.armazem.gravar([self.a(inc, "15:00", "A x B")], "esaj-tjal", None,
+                                    registrar_novas=False)
+        self.servico._fora_do_banco = (0.0, "", self.servico._fora_do_banco[2])   # relê a pasta
+        self.assertFalse(self.sigilo_por_processo(
+            self.servico.listar(self.D, self.D)["audiencias"])[inc])
+
+    def test_o_que_a_pauta_ja_apurou_vale_com_o_banco_refeito(self):
+        from helestron.nucleo import sigilo
+
+        n = ap.numero("0700109")
+        sigilo.lembrar_da_pauta([n], self.servico.arquivo_banco)
+        self.servico._fora_do_banco = (0.0, "", self.servico._fora_do_banco[2])
+        self.servico.armazem.gravar([self.a(n, "16:00", "A x B")], "esaj-tjal", None,
+                                    registrar_novas=False)
+        self.assertTrue(self.sigilo_por_processo(
+            self.servico.listar(self.D, self.D)["audiencias"])[n])
+
+    def test_lista_mascarada_e_a_busca(self):
+        dados = self.servico.listar(self.D, self.D, mascarar_sigilosos=True)
+        por = {a["processo"]: a for a in dados["audiencias"]}
+        self.assertEqual((por[self.incidente]["partes"], por[self.incidente]["observacoes"]),
+                         ("(segredo de justiça)", "(segredo de justiça)"))
+        self.assertEqual(por[self.so_audio]["observacoes"], "", "a vazia fica vazia")
+        self.assertEqual(por[self.publico]["partes"], "João x Município")
+        # a busca pelo nome da parte não revela que ela é de um processo sigiloso
+        self.assertEqual(self.servico.listar(self.D, self.D, busca="Fulana",
+                                             mascarar_sigilosos=True)["audiencias"], [])
+        self.assertEqual(len(self.servico.listar(self.D, self.D, busca="Fulana")["audiencias"]),
+                         1)
+        self.assertEqual(len(self.servico.listar(self.D, self.D, busca="0700105",
+                                                 mascarar_sigilosos=True)["audiencias"]), 1)
+
+
+class TestSigiloReveladoNaParada(Base):
+    """Achado 25: parar a sincronização (ou Ctrl+C) depois de uma fonte gravar não
+    perde o sigilo que ela revelou."""
+
+    PERIODO = (date(2026, 10, 1), date(2026, 10, 31))
+
+    def setUp(self):
+        super().setUp()
+        self.revelados: list[list[str]] = []
+        self.servico.salvar_fonte("TJAL", "esaj", "")
+        self.servico.salvar_fonte("TJRS", "eproc", "")
+        self.n = ap.numero("0700106")
+
+    def roteiro(self, parada):
+        ExtratorFalso.roteiro["esaj-tjal"] = [
+            ([aud("0700106", date(2026, 10, 6), "09:00", sigiloso=True)], True, "")]
+        ExtratorFalso.roteiro["eproc-tjrs"] = [parada]
+
+    def test_parar_na_segunda_fonte(self):
+        self.servico.quando_revelar_sigilo(self.revelados.append)
+        self.roteiro(mdl.Cancelado())
+        with self.assertRaises(mdl.Cancelado):
+            self.servico.sincronizar(apoio.ContextoGravador(), None, *self.PERIODO)
+        self.assertEqual(self.revelados, [[self.n]])
+
+    def test_ctrl_c_na_segunda_fonte_e_ninguem_ouvindo_ainda(self):
+        self.roteiro(KeyboardInterrupt())
+        with self.assertRaises(KeyboardInterrupt):
+            self.servico.sincronizar(apoio.ContextoGravador(), None, *self.PERIODO)
+        self.servico.quando_revelar_sigilo(self.revelados.append)
+        self.assertEqual(self.revelados, [[self.n]], "guardado até alguém ouvir")
+
+
+class TestNoAcervoComIncidente(Base):
+    """Achado 26: o arquivo do incidente no acervo conta para o principal que a
+    pauta revela sigiloso (o incidente herda o sigilo)."""
+
+    def test_incidente_no_lote_e_no_texto_da_ia(self):
+        from helestron.pauta.servico import no_acervo
+
+        n, m = ap.numero("0700105"), ap.numero("0700106")
+        lote = self.amb.acervo / "Processos" / "Lote 1"
+        lote.mkdir(parents=True)
+        (lote / f"{n}-01.pdf").write_bytes(apoio.pdf_bytes(1))
+        self.assertEqual(no_acervo(self.amb.cfg, [n, m]), [n])
+        texto = self.amb.acervo / "_ia" / "texto"
+        texto.mkdir(parents=True)
+        (texto / f"{m}-02.txt").write_text("x", encoding="utf-8")
+        self.assertEqual(no_acervo(self.amb.cfg, [n, m]), [n, m])
+        # o principal no acervo não faz o incidente revelado ter arquivos lá
+        (lote / f"{n}-01.pdf").unlink()
+        (lote / f"{n}.pdf").write_bytes(apoio.pdf_bytes(1))
+        self.assertEqual(no_acervo(self.amb.cfg, [f"{n}/03"]), [])
+
+
+class TestFontesValidadas(Base):
+    """Achado 30: a fonte inválida é recusada como na API, e remover diz se havia."""
+
+    def test_tribunal_e_sistema(self):
+        with self.assertRaisesRegex(ValueError, "Tribunal desconhecido: TJXX"):
+            self.servico.salvar_fonte("TJXX", "esaj", "")
+        with self.assertRaisesRegex(ValueError, "O TJRS não usa o e-SAJ"):
+            self.servico.salvar_fonte("TJRS", "esaj", "")
+        self.assertEqual(self.servico.fontes(), [])
+        f = self.servico.salvar_fonte(" tjal ", "ESAJ", "")
+        self.assertEqual((f["id"], f["tribunal"], f["rotulo"]), ("esaj-tjal", "TJAL",
+                                                                 "TJAL · e-SAJ"))
+        self.assertTrue(self.servico.remover_fonte("esaj-tjal"))
+        self.assertFalse(self.servico.remover_fonte("esaj-tjal"))
+
+
+class TestExportarComFiltros(Base):
+    """Achado 29: a aba Alterações segue os filtros da planilha e leva o período
+    inteiro, sem o corte da tela."""
+
+    D = date(2026, 10, 6)
+
+    def alteracoes_na_planilha(self, **filtros):
+        from openpyxl import load_workbook
+
+        arquivo = self.servico.exportar(self.D, self.D, self.amb.pauta, **filtros)
+        aba = load_workbook(arquivo)["Alterações"]
+        self.topo_alteracoes = aba["A2"].value
+        return [(aba.cell(r, 3).value, aba.cell(r, 6).value) for r in range(5, aba.max_row + 1)
+                if aba.cell(r, 3).value]
+
+    def test_busca_e_situacao_valem_para_as_alteracoes(self):
+        a = lambda seq, partes, **x: aud(seq, self.D, "09:00" if seq.endswith("1")  # noqa: E731
+                                          else "10:00", partes=partes, **x)
+        self.servico.armazem.gravar([a("0700101", "Ana x Banco"), a("0700102", "Bia x Banco")],
+                                    "esaj-tjal", None, registrar_novas=False)
+        self.servico.armazem.gravar([a("0700101", "Ana Maria da Silva x Banco"),
+                                     a("0700102", "Bia Souza x Banco")], "esaj-tjal", None)
+        linhas = self.alteracoes_na_planilha(busca="0700102", situacao="Designada")
+        self.assertEqual([p for p, _ in linhas], [ap.numero("0700102")])
+        self.assertNotIn("Ana", " ".join(str(t) for _, t in linhas))
+        self.assertIn("filtros: situação Designada, busca “0700102”", self.topo_alteracoes)
+        self.assertEqual(len(self.alteracoes_na_planilha()), 2)
+        self.assertEqual(len(self.alteracoes_na_planilha(sistema="eproc")), 0)
+
+    def test_mais_de_500_alteracoes(self):
+        from helestron.pauta.armazem import LIMITE_ALTERACOES
+
+        self.servico.armazem.gravar([aud("0700101", self.D, "09:00", partes="Parte 0 x Banco")],
+                                    "esaj-tjal", None, registrar_novas=False)
+        for i in range(1, LIMITE_ALTERACOES + 21):
+            self.servico.armazem.gravar([aud("0700101", self.D, "09:00",
+                                             partes=f"Parte {i} x Banco")], "esaj-tjal", None)
+        linhas = self.alteracoes_na_planilha(incluir_partes_sigilosos=True)
+        self.assertEqual(len(linhas), LIMITE_ALTERACOES + 20)
+        self.assertIn("Parte 0 x Banco → Parte 1 x Banco", " ".join(t for _, t in linhas))
+
+
 if __name__ == "__main__":
     unittest.main()

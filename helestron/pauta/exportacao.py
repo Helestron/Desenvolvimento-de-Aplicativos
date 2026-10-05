@@ -14,11 +14,17 @@ Três abas:
 * Alterações - o histórico das audiências do período.
 
 SIGILO: a planilha fica fora do acervo (não vai para a IA), mas circula -
-é impressa, vai por e-mail. Por isso as partes dos processos em segredo de
-justiça saem como "(segredo de justiça)", a menos que o usuário marque
-"incluir as partes dos sigilosos". Vale também para o histórico e para o
-texto da busca no topo (o nome da parte procurada não aparece quando o
-resultado tem processo sigiloso).
+é impressa, vai por e-mail. Por isso as partes e as observações (onde o
+portal costuma pôr o nome do réu preso, da vítima, do advogado) dos
+processos em segredo de justiça saem como "(segredo de justiça)", a menos
+que o usuário marque "incluir as partes dos sigilosos". Vale também para o
+histórico e para o texto da busca no topo (o nome da parte procurada não
+aparece quando o resultado tem processo sigiloso).
+
+CARACTERES DE CONTROLE: o texto que vem do PDF, do HTML ou da planilha do
+portal pode trazer um caractere de controle (o de código 2, por exemplo)
+que o Excel não aceita; ele é tirado da célula (e não derruba a planilha
+inteira).
 
 FÓRMULAS: os textos vêm de fora do gabinete (o nome da parte é digitado
 pelo advogado no peticionamento). Texto que começa com "=" é gravado como
@@ -30,12 +36,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tempfile
 from datetime import date, datetime, time
 from pathlib import Path
 
 from . import modelos
-from .modelos import MASCARA_SIGILO, NOMES_SISTEMA
+from .modelos import CAMPOS_MASCARADOS, MASCARA_SIGILO, NOMES_SISTEMA
 
 log = logging.getLogger("pauta.exportacao")
 
@@ -67,6 +74,8 @@ COLUNAS = [
     ("Observações", "observacoes", 14, 44),
 ]
 LINHA_CABECALHO = 4
+# O que o formato do Excel não aceita numa célula (openpyxl ILLEGAL_CHARACTERS_RE)
+_ILEGAIS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 COR_SITUACAO = {"Redesignada": AMBAR, "Suspensa": AMBAR, "Realizada": VERDE,
                 "Não realizada": VERMELHO, "Cancelada": CINZA_TEXTO}
 NOMES_ALTERACAO = {"nova": "Nova", "alterada": "Alterada", "cancelada": "Cancelada",
@@ -106,10 +115,9 @@ def _hora(texto) -> time | None:
     return time(int(h[:2]), int(h[3:5]))
 
 
-def _partes(a: dict, incluir_sigilosos: bool) -> str:
-    if a.get("sigiloso") and not incluir_sigilosos:
-        return MASCARA_SIGILO
-    return a.get("partes") or ""
+def _seguro(valor):
+    """O texto sem os caracteres de controle que o Excel não aceita."""
+    return _ILEGAIS.sub("", valor) if isinstance(valor, str) else valor
 
 
 def _br(valor: str) -> str:
@@ -124,7 +132,7 @@ def descrever_campos(alteracao: dict, incluir_sigilosos: bool) -> str:
     for c in alteracao.get("campos") or []:
         campo = c.get("campo", "")
         antes, depois = c.get("antes") or "", c.get("depois") or ""
-        if campo == "partes" and audiencia.get("sigiloso") and not incluir_sigilosos:
+        if campo in CAMPOS_MASCARADOS and audiencia.get("sigiloso") and not incluir_sigilosos:
             antes = depois = MASCARA_SIGILO
         nome = NOMES_CAMPO.get(campo, campo.capitalize())
         partes.append(f"{nome}: {_br(antes)} → {_br(depois)}")
@@ -147,7 +155,9 @@ def descrever_filtros(filtros: dict | None, ocultar_busca: bool = False) -> str:
 
 
 def _escrever(aba, linha: int, coluna: int, valor):
-    """Grava a célula; texto que começa com "=" fica TEXTO, nunca fórmula."""
+    """Grava a célula; texto que começa com "=" fica TEXTO, nunca fórmula, e
+    sem os caracteres de controle que o Excel não aceita."""
+    valor = _seguro(valor)
     c = aba.cell(row=linha, column=coluna, value=valor)
     if isinstance(valor, str) and valor.startswith("="):
         c.data_type = "s"
@@ -182,6 +192,7 @@ def exportar(audiencias: list[dict], alteracoes: list[dict], de: date, ate: date
         a.get("sigiloso") for a in audiencias))
     if filtros_txt:
         resumo_txt += f" · filtros: {filtros_txt}"
+    resumo_txt = _seguro(resumo_txt)          # o texto da busca vem de quem digitou
 
     fina = Side(style="thin", color=CINZA_BORDA)
     borda = Border(bottom=fina)
@@ -219,16 +230,19 @@ def exportar(audiencias: list[dict], alteracoes: list[dict], de: date, ate: date
     for i, a in enumerate(audiencias):
         linha += 1
         d = _data(a.get("data"))
+        if not incluir_partes_sigilosos:
+            a = modelos.mascarar_sigiloso(a)          # partes e observações
         valores = {
             "data": d, "dia_semana": modelos.dia_da_semana(d) if d else "",
             "hora": _hora(a.get("hora")), "processo": a.get("processo") or "",
-            "classe": a.get("classe") or "", "partes": _partes(a, incluir_partes_sigilosos),
+            "classe": a.get("classe") or "", "partes": a.get("partes") or "",
             "tipo": a.get("tipo") or "", "situacao": a.get("situacao") or "",
             "local": a.get("local") or "", "magistrado": a.get("magistrado") or "",
             "sistema": NOMES_SISTEMA.get(a.get("sistema") or "", a.get("sistema") or ""),
             "tribunal": a.get("tribunal") or "", "link": a.get("link") or "",
             "observacoes": a.get("observacoes") or "",
         }
+        valores = {k: _seguro(v) for k, v in valores.items()}
         situacao = valores["situacao"]
         cancelada = situacao == "Cancelada"
         fundo = fundo_hoje if d == hoje else (zebra if i % 2 else None)
@@ -334,8 +348,11 @@ def exportar(audiencias: list[dict], alteracoes: list[dict], de: date, ate: date
     hist = livro.create_sheet("Alterações")
     hist["A1"] = "Alterações da pauta"
     hist["A1"].font = titulo_fonte
-    hist["A2"] = (f"Audiências marcadas de {de:%d/%m/%Y} a {ate:%d/%m/%Y}" if de != ate
-                  else f"Audiências marcadas para {de:%d/%m/%Y}")
+    hist_txt = (f"Audiências marcadas de {de:%d/%m/%Y} a {ate:%d/%m/%Y}" if de != ate
+                else f"Audiências marcadas para {de:%d/%m/%Y}")
+    if filtros_txt:                 # o histórico segue os mesmos filtros da aba Pauta
+        hist_txt += f" · filtros: {filtros_txt}"
+    hist["A2"] = _seguro(hist_txt)
     hist["A2"].font = sub_fonte
     titulos = ["Quando", "Alteração", "Processo", "Data da audiência", "Hora", "O que mudou",
                "Sistema", "Tribunal"]
