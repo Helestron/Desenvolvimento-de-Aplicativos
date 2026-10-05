@@ -236,6 +236,13 @@ def _analisar(leitor: _Leitor, marca: bytes, delimitador: bytes, pasta: Path,
         nome_campo = params.get("name", "")
         nome_arquivo = params.get("filename")
         if nome_arquivo is not None:
+            # Campo de arquivo repetido: a segunda parte tomaria o lugar da
+            # primeira no dicionário, e o arquivo da primeira (a relação pode
+            # trazer senhas) ficaria esquecido no disco - o apagar() só vê o
+            # que está no dicionário. Recusa-se o envio: a primeira parte
+            # ainda está lá, e o ler() a apaga antes de a exceção subir.
+            if nome_campo in envio.arquivos:
+                raise EnvioInvalido(f"o campo de arquivo {nome_campo!r} veio repetido")
             destino = _novo_destino(pasta, nome_arquivo)
             enviado = ArquivoEnviado(nome_campo, nome_exibivel(nome_arquivo), destino,
                                      tipo=cabecalhos.get("content-type", ""))
