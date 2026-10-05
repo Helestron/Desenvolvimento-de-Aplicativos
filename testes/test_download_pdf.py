@@ -13,12 +13,38 @@ from unittest import mock
 import pymupdf
 
 from helestron.download import pdf
+from helestron.nucleo import paginacao
 
 from testes import apoio_download as apoio
 
 
 def abrir(caminho):
     return pymupdf.open(str(caminho))
+
+
+def pdf_com_sumario(paginas, sumario, texto="página"):
+    doc = pymupdf.open(stream=apoio.pdf_bytes(paginas, texto))
+    doc.set_toc(sumario)
+    dados = doc.tobytes()
+    doc.close()
+    return dados
+
+
+def pdf_carimbado(folhas, texto="servidor"):
+    """PDF com o carimbo do e-SAJ ("fls. N", numa linha só) em cada página."""
+    doc = pymupdf.open()
+    for i, f in enumerate(folhas, 1):
+        pagina = doc.new_page()
+        pagina.insert_text((500, 30), f"fls. {f}")
+        pagina.insert_text((72, 120), f"{texto} {i}")
+    dados = doc.tobytes()
+    doc.close()
+    return dados
+
+
+def primeiras_linhas(caminho):
+    with pymupdf.open(caminho) as doc:
+        return [(doc[i].get_text().splitlines() or [""])[0] for i in range(len(doc))]
 
 
 class TestConversoes(unittest.TestCase):
@@ -209,16 +235,42 @@ class TestGravarEAnexar(apoio.PastaTemporaria):
             pdf.gravar(self.tmp / "x.pdf", b"<html>sessao expirada</html>")
         self.assertFalse((self.tmp / "x.pdf").exists())
 
-    def test_anexar_ao_fim(self):
-        alvo = self.tmp / "autos.pdf"
-        pdf.juntar([pdf.Parte("Inicial", apoio.pdf_bytes(2))], alvo)
-        total = pdf.anexar(alvo, [apoio.pdf_bytes(1, "nova"), b"lixo"], ["Decisão", "Ofício"])
-        self.assertEqual(total, 4)
-        with abrir(alvo) as doc:
-            self.assertIn("nova 1", doc[2].get_text())
-            self.assertIn("não pôde ser incluído", doc[3].get_text())
-            self.assertEqual([t[1] for t in doc.get_toc()], ["Inicial", "Decisão", "Ofício"])
-        self.assertFalse((self.tmp / "autos.pdf.parcial").exists())
+    def test_anexar_saiu(self):
+        """Acrescentar documentos ao fim de um PDF do e-SAJ criaria páginas
+        depois da última folha, que pareceriam folhas que não existem."""
+        self.assertFalse(hasattr(pdf, "anexar"))
+
+    def test_gravar_sem_marcadores_mantem_o_sumario_do_arquivo(self):
+        """O arquivo inteiro do eProc entra intacto: sumário próprio,
+        páginas e bytes; metadados e manifesto vão por salvamento incremental."""
+        original = pdf_com_sumario(4, [[1, "Evento 1 - INIC1", 1], [1, "Evento 2 - SENT1", 3]])
+        destino = self.tmp / "completo.pdf"
+        manifesto = paginacao.manifesto_eproc("5001234-56.2024.8.21.0001", [], modo="completo",
+                                              tribunal="TJRS")
+        n = pdf.gravar(destino, original, metadados={"title": "Processo 5001234",
+                                                     "subject": "Autos do eProc"},
+                       manifesto=manifesto)
+        self.assertEqual(n, 4)
+        self.assertTrue(destino.read_bytes().startswith(original))
+        with abrir(destino) as doc:
+            self.assertEqual(doc.get_toc(), [[1, "Evento 1 - INIC1", 1],
+                                             [1, "Evento 2 - SENT1", 3]])
+            self.assertEqual(doc.metadata["title"], "Processo 5001234")
+            self.assertEqual(doc.metadata["subject"], "Autos do eProc")
+            self.assertIn("modo=completo", doc.metadata["keywords"])
+            m = paginacao.ler_do_doc(doc)
+        self.assertEqual(m["partes"], [{"inicio": 1, "paginas": 4}])
+        self.assertEqual(m["documentos"], [])
+
+    def test_gravar_preservando_o_sumario_que_ja_existe(self):
+        destino = self.tmp / "p.pdf"
+        com = pdf_com_sumario(2, [[1, "Próprio", 1]])
+        pdf.gravar(destino, com, [("Autos completos", 1)], preservar_sumario=True)
+        with abrir(destino) as doc:
+            self.assertEqual(doc.get_toc(), [[1, "Próprio", 1]])
+        pdf.gravar(destino, apoio.pdf_bytes(2), [("Autos completos", 1)], preservar_sumario=True)
+        with abrir(destino) as doc:
+            self.assertEqual(doc.get_toc(), [[1, "Autos completos", 1]])
 
     def test_arquivo_preso_por_um_instante_nao_derruba_a_gravacao(self):
         """OneDrive, indexador e antivírus seguram o arquivo recém-gravado por
@@ -260,6 +312,302 @@ class TestGravarEAnexar(apoio.PastaTemporaria):
         self.assertTrue(pdf.valido(bom))
         self.assertFalse(pdf.valido(ruim))
         self.assertFalse(pdf.valido(self.tmp / "nao-existe.pdf"))
+
+
+class TestJuntarComPaginacaoPropria(apoio.PastaTemporaria):
+    """O que a montagem do eProc usa: rótulos de página com a paginação de
+    cada documento, sumário próprio, metadados e manifesto."""
+
+    def partes(self):
+        return [
+            pdf.Parte("Evento 1 — PETIÇÃO INICIAL — INIC1 (10/01/2024)",
+                      pdf_com_sumario(2, [[1, "Dos fatos", 1], [2, "Do pedido", 2]], "inicial"),
+                      rotulo_pagina="Ev. 1 INIC1 p. ", manter_sumario=True,
+                      info={"evento": 1, "rotulo": "INIC1", "origem": "pdf"}),
+            pdf.Parte("Evento 3 — DESPACHO — DESPADEC1", b"<p>Cite-se.</p>", "html",
+                      rotulo_pagina="Ev. 3 DESPADEC1", numerar=False,
+                      info={"evento": 3, "rotulo": "DESPADEC1", "origem": "html"}),
+            pdf.Parte("Evento 4 — PETIÇÃO — PET1", b"nao e pdf", rotulo_pagina="Ev. 4 PET1 p. ",
+                      info={"evento": 4, "rotulo": "PET1", "origem": "pdf"}),
+            pdf.Parte("Evento 7 — ÁUDIO1", apoio.pdf_bytes(2, "audio"),
+                      rotulo_pagina="Ev. 7 ÁUDIO1 (x) p. ",
+                      info={"evento": 7, "rotulo": "ÁUDIO1", "origem": "pdf"}),
+        ]
+
+    def test_rotulos_inicio_e_falha(self):
+        partes = self.partes()
+        destino = self.tmp / "eproc.pdf"
+        manifesto = paginacao.manifesto_eproc("5001234-56.2024.8.21.0001", [], tribunal="TJRS")
+        n = pdf.juntar(partes, destino, metadados={"title": "Processo 5001234-56",
+                                                   "creator": "Helestron"},
+                       manifesto=manifesto)
+        self.assertEqual(n, 6)
+        self.assertEqual([(p.inicio, p.paginas, p.falhou) for p in partes],
+                         [(1, 2, False), (3, 1, False), (4, 1, True), (5, 2, False)])
+        with abrir(destino) as doc:
+            self.assertEqual([pg.get_label() for pg in doc],
+                             ["Ev. 1 INIC1 p. 1", "Ev. 1 INIC1 p. 2", "Ev. 3 DESPADEC1",
+                              "Ev. 4 PET1 nao incluido", "Ev. 7 AUDIO1 x p. 1",
+                              "Ev. 7 AUDIO1 x p. 2"])
+            self.assertEqual(doc.metadata["title"], "Processo 5001234-56")
+            self.assertEqual(doc.metadata["creator"], "Helestron")
+            self.assertIn("sistema=eproc", doc.metadata["keywords"])
+            m = paginacao.ler_do_doc(doc)
+        docs = [(d["evento"], d["inicio"], d["paginas"], d["situacao"]) for d in m["documentos"]]
+        self.assertEqual(docs, [(1, 1, 2, "ok"), (3, 3, 1, "ok"), (4, 4, 1, "ausente"),
+                                (7, 5, 2, "ok")])
+
+    def test_sumario_proprio_vira_nivel_2(self):
+        destino = self.tmp / "eproc.pdf"
+        pdf.juntar(self.partes(), destino)
+        with abrir(destino) as doc:
+            toc = doc.get_toc()
+        self.assertEqual(toc[:3], [[1, "Evento 1 — PETIÇÃO INICIAL — INIC1 (10/01/2024)", 1],
+                                   [2, "Dos fatos", 1], [3, "Do pedido", 2]])
+        self.assertEqual([t[2] for t in toc if t[0] == 1], [1, 3, 4, 5])
+
+    def test_sumario_proprio_recusado_cai_no_simples(self):
+        real = pymupdf.Document.set_toc
+        chamadas = []
+
+        def set_toc(doc, toc, *a, **k):
+            chamadas.append(len(toc))
+            if any(t[0] > 1 for t in toc):
+                raise ValueError("bad hierarchy level")
+            return real(doc, toc, *a, **k)
+        destino = self.tmp / "eproc.pdf"
+        partes = self.partes()
+        with mock.patch.object(pymupdf.Document, "set_toc", set_toc):
+            pdf.juntar(partes, destino)
+        with abrir(destino) as doc:
+            self.assertEqual([t[0] for t in doc.get_toc()], [1, 1, 1, 1])
+        self.assertEqual(chamadas, [6, 4])
+
+    def test_manifesto_com_documentos_ja_listados(self):
+        """O manifesto pode trazer as entradas (cópias, não o info das
+        partes): são completadas pelo evento e rótulo."""
+        partes = self.partes()[:2]
+        copias = [dict(p.info) for p in partes] + [{"evento": 5, "rotulo": "x",
+                                                    "situacao": "midia"}]
+        m = paginacao.manifesto_eproc("1", copias)
+        pdf.juntar(partes, self.tmp / "a.pdf", manifesto=m)
+        self.assertEqual([(d.get("inicio"), d.get("paginas")) for d in m["documentos"]],
+                         [(1, 2), (3, 1), (None, None)])
+
+    def test_completo_em_varias_partes(self):
+        partes = [pdf.Parte("Autos completos - parte 1", apoio.pdf_bytes(3), rotulo_pagina="Parte 1 p. "),
+                  pdf.Parte("Autos completos - parte 2", apoio.pdf_bytes(2), rotulo_pagina="Parte 2 p. ")]
+        m = paginacao.manifesto_eproc("1", [], modo="completo")
+        pdf.juntar(partes, self.tmp / "c.pdf", manifesto=m)
+        with abrir(self.tmp / "c.pdf") as doc:
+            self.assertEqual(doc[3].get_label(), "Parte 2 p. 1")
+            m2 = paginacao.ler_do_doc(doc)
+        self.assertEqual(m2["partes"], [{"inicio": 1, "paginas": 3}, {"inicio": 4, "paginas": 2}])
+        self.assertEqual(m2["documentos"], [])
+
+    def test_sem_rotulo_nenhum_nao_grava_regras(self):
+        destino = self.tmp / "x.pdf"
+        pdf.juntar([pdf.Parte("A", apoio.pdf_bytes(2)), pdf.Parte("B", apoio.pdf_bytes(1))], destino)
+        with abrir(destino) as doc:
+            self.assertEqual(doc.get_page_labels(), [])
+            self.assertEqual(doc[2].get_label(), "")
+
+    def test_rotulo_seguro(self):
+        self.assertEqual(pdf.rotulo_seguro("Ev. 7 ÁUDIO1 (x) p. "), "Ev. 7 AUDIO1 x p. ")
+        self.assertEqual(pdf.rotulo_seguro("Ev. 2 CERTIDÃO — ofício nº 3"),
+                         "Ev. 2 CERTIDAO oficio no 3")
+        self.assertEqual(len(pdf.rotulo_seguro("x" * 200)), 60)
+        self.assertTrue(pdf.rotulo_seguro("ação").isascii())
+
+
+ARVORE_FAIXAS = [(1, 2, [1, 2]), (3, 4, [3, 4]), (5, 5, [5]), (8, 8, [8])]
+
+
+def acabamento_de_teste(ausentes, notas):
+    sumario = [[1, "Peça", 1]] + [[1, f"Fl. {f} — não disponibilizada pelo e-SAJ", f]
+                                   for f in sorted(ausentes)]
+    return sumario, paginacao.manifesto_esaj("0700001-00.2024.8.02.0001", 8, ausentes,
+                                             origem="servidor", notas=notas)
+
+
+class TestAlinhamento(apoio.PastaTemporaria):
+    """e-SAJ: a página N do PDF é sempre a folha N."""
+
+    def test_paginas_de_aviso(self):
+        dados = pdf.paginas_de_aviso([(6, "N", ""), (7, "B", "Laudo pericial (fl. 7) - 01/02/2024")])
+        with pymupdf.open(stream=dados) as doc:
+            self.assertEqual(len(doc), 2)
+            t6 = doc[0].get_text()
+            t7 = " ".join(doc[1].get_text().split())
+        self.assertEqual(t6.splitlines()[0], "Folha 6 — não disponibilizada pelo e-SAJ")
+        self.assertIn("Pasta Digital não ofereceu esta folha", " ".join(t6.split()))
+        self.assertTrue(t7.startswith("Folha 7 — não disponibilizada pelo e-SAJ"))
+        self.assertIn("não pôde ser baixada", t7)
+        self.assertIn("Peça: Laudo pericial (fl. 7) - 01/02/2024.", t7)
+        self.assertIn("a página N deste arquivo seja sempre a folha N", t7)
+
+    def test_muitas_paginas_de_aviso_num_documento_so(self):
+        dados = pdf.paginas_de_aviso([(f, "N", "") for f in range(1, 301)])
+        with pymupdf.open(stream=dados) as doc:
+            self.assertEqual(len(doc), 300)
+            self.assertEqual(doc[299].get_text().splitlines()[0],
+                             "Folha 300 — não disponibilizada pelo e-SAJ")
+        self.assertLess(len(dados), 400_000)
+
+    def test_servidor_com_folhas_nao_oferecidas(self):
+        destino = self.tmp / "p.pdf"
+        original = apoio.pdf_bytes(6, "servidor")
+        m = pdf.gravar_alinhado(destino, original, ARVORE_FAIXAS, 8, {}, acabamento_de_teste)
+        self.assertEqual((m.paginas, m.ausentes, m.notas), (8, {6: "N", 7: "N"}, []))
+        self.assertTrue(destino.read_bytes().startswith(original), "salvamento incremental")
+        linhas = primeiras_linhas(destino)
+        self.assertEqual(linhas, ["servidor 1", "servidor 2", "servidor 3", "servidor 4",
+                                  "servidor 5", "Folha 6 — não disponibilizada pelo e-SAJ",
+                                  "Folha 7 — não disponibilizada pelo e-SAJ", "servidor 6"])
+        with abrir(destino) as doc:
+            self.assertEqual([t[2] for t in doc.get_toc()], [1, 6, 7])
+        self.assertEqual(paginacao.ausentes(paginacao.ler_do_pdf(destino)), {6: "N", 7: "N"})
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["p.pdf"])
+
+    def test_aviso_com_motivo_e_titulo_informados(self):
+        destino = self.tmp / "p.pdf"
+        pdf.gravar_alinhado(destino, apoio.pdf_bytes(6), ARVORE_FAIXAS, 8,
+                            {6: ("S", "Procuração"), 7: ("S", "Procuração")})
+        with abrir(destino) as doc:
+            texto = " ".join(doc[5].get_text().split())
+        self.assertIn("listou uma peça sem numeração", texto)
+        self.assertIn("Peça: Procuração.", texto)
+
+    def test_contagem_que_nao_bate_nao_grava(self):
+        destino = self.tmp / "p.pdf"
+        bom = apoio.pdf_bytes(2, "anterior")
+        destino.write_bytes(bom)
+        with self.assertRaises(pdf.Desalinhado) as caso:
+            pdf.gravar_alinhado(destino, apoio.pdf_bytes(5), ARVORE_FAIXAS, 8)
+        self.assertIn("5 páginas para 6 folhas", str(caso.exception))
+        self.assertEqual(destino.read_bytes(), bom)
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["p.pdf"])
+
+    def test_carimbos(self):
+        destino = self.tmp / "p.pdf"
+        with self.assertRaises(pdf.Desalinhado) as caso:
+            pdf.gravar_alinhado(destino, pdf_carimbado([1, 2, 3, 5, 4, 8]), ARVORE_FAIXAS, 8)
+        self.assertIn("folha carimbada não confere", str(caso.exception))
+        self.assertFalse(destino.exists())
+        m = pdf.gravar_alinhado(destino, pdf_carimbado([1, 2, 3, 4, 5, 8]), ARVORE_FAIXAS, 8)
+        self.assertEqual(m.paginas, 8)
+        with abrir(destino) as doc:
+            self.assertIn("fls. 8", doc[7].get_text())
+
+    def test_poucos_carimbos_nao_decidem(self):
+        """Só com quase todas as páginas carimbadas o carimbo dá veredito:
+        "conforme fls. 4" no meio do texto não é carimbo."""
+        doc = pymupdf.open()
+        for i in range(6):
+            pg = doc.new_page()
+            pg.insert_text((72, 72), f"página {i + 1}")
+            if i == 0:
+                pg.insert_text((500, 30), "fls. 99")
+            pg.insert_text((72, 100), "conforme fls. 4 dos autos")
+        dados = doc.tobytes()
+        doc.close()
+        self.assertEqual(pdf.gravar_alinhado(self.tmp / "p.pdf", dados, ARVORE_FAIXAS, 8).paginas, 8)
+
+    def test_faixas_sobrepostas(self):
+        """[1-3] e [3-4]: o servidor manda a fl. 3 duas vezes; fica a primeira."""
+        destino = self.tmp / "p.pdf"
+        m = pdf.gravar_alinhado(destino, apoio.pdf_bytes(5, "servidor"),
+                                [(1, 3, [1, 2, 3]), (3, 4, [4])], 4)
+        self.assertEqual(m.paginas, 4)
+        self.assertEqual(primeiras_linhas(destino),
+                         ["servidor 1", "servidor 2", "servidor 3", "servidor 5"])
+
+    def test_o_que_nao_e_pdf_nao_substitui_nada(self):
+        destino = self.tmp / "p.pdf"
+        bom = apoio.pdf_bytes(2)
+        destino.write_bytes(bom)
+        with self.assertRaises(ValueError):
+            pdf.gravar_alinhado(destino, b"<html>sessao expirada</html>", ARVORE_FAIXAS, 8)
+        with self.assertRaises(ValueError) as caso:
+            pdf.gravar_alinhado(destino, b"%PDF-1.4\n" + b"\x00lixo" * 40, ARVORE_FAIXAS, 8)
+        self.assertNotIsInstance(caso.exception, pdf.Desalinhado)
+        self.assertEqual(destino.read_bytes(), bom)
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["p.pdf"])
+
+    def test_pdf_aberto_no_leitor(self):
+        destino = self.tmp / "p.pdf"
+        bom = apoio.pdf_bytes(2)
+        destino.write_bytes(bom)
+
+        def replace(origem, alvo):
+            raise PermissionError(13, "Acesso negado")
+        with mock.patch.object(pdf, "ESPERA_TROCA_S", 0), \
+                mock.patch.object(pdf.os, "replace", replace):
+            with self.assertRaises(PermissionError):
+                pdf.gravar_alinhado(destino, apoio.pdf_bytes(6), ARVORE_FAIXAS, 8)
+        self.assertEqual(destino.read_bytes(), bom)
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["p.pdf"])
+
+    def peca(self, proprias, ini, fim, dados, titulo="Peça", **k):
+        return pdf.PecaDeFolhas(proprias=proprias, ini=ini, fim=fim, titulo=titulo,
+                                dados=dados, **k)
+
+    def test_juntar_folhas_com_todo_tipo_de_falta(self):
+        documento = apoio.pdf_bytes(4, "laudo")           # o documento inteiro (fls. 9-12)
+        itens = [
+            self.peca([3, 4, 5], 3, 5, apoio.pdf_bytes(1, "curta"), "Curta (fls. 3-5)"),
+            self.peca([6, 7], 6, 7, apoio.pdf_bytes(5, "longa"), "Longa (fls. 6-7)"),
+            self.peca([8], 8, 8, b"%PDF-1.4 quebrado" + b"x" * 300, "Quebrada (fl. 8)"),
+            self.peca([9, 10], 9, 10, documento, "Laudo (fls. 9-10)", total_documento=4,
+                      deslocamento=0),
+            self.peca([11, 12], 11, 12, documento, "Laudo (fls. 11-12)", total_documento=4,
+                      deslocamento=2),
+            self.peca([13], 13, 13, None, "Sumida (fl. 13)"),
+            self.peca([14, 15], 14, 15, apoio.pdf_bytes(2, "fim")),
+        ]
+        destino = self.tmp / "p.pdf"
+        m = pdf.juntar_folhas(itens, 15, destino, {1: ("N", ""), 2: ("N", "")},
+                              acabamento_de_teste)
+        self.assertEqual(m.paginas, 15)
+        self.assertEqual(m.ausentes, {1: "N", 2: "N", 4: "C", 5: "C", 8: "I", 13: "B"})
+        self.assertEqual(m.notas, ["fls. 6-7: o arquivo da peça tinha 5 páginas; mantidas as 2 "
+                                   "primeiras"])
+        linhas = primeiras_linhas(destino)
+        self.assertEqual(len(linhas), 15)
+        for f in (1, 2, 4, 5, 8, 13):
+            self.assertEqual(linhas[f - 1], f"Folha {f} — não disponibilizada pelo e-SAJ")
+        self.assertEqual([linhas[i] for i in (2, 5, 6, 8, 9, 10, 11, 13, 14)],
+                         ["curta 1", "longa 1", "longa 2", "laudo 1", "laudo 2", "laudo 3",
+                          "laudo 4", "fim 1", "fim 2"])
+        with abrir(destino) as doc:
+            self.assertIn("Quebrada (fl. 8)", doc[7].get_text())
+            self.assertIn("veio inválido", " ".join(doc[7].get_text().split()))
+            m2 = paginacao.ler_do_doc(doc)
+        self.assertEqual(m2["ausentes"], {"N": "1-2", "B": "13", "I": "8", "C": "4-5"})
+        self.assertEqual(m2["notas"], m.notas)
+
+    def test_juntar_folhas_aparando_pelo_carimbo(self):
+        """Arquivo com páginas a mais e carimbadas: ficam as das folhas do bloco."""
+        itens = [self.peca([1, 2], 1, 2, pdf_carimbado([7, 1, 2, 9], "peça"))]
+        m = pdf.juntar_folhas(itens, 2, self.tmp / "p.pdf")
+        self.assertEqual(primeiras_linhas(self.tmp / "p.pdf"), ["fls. 1", "fls. 2"])
+        self.assertIn("carimbadas", m.notas[0])
+
+    def test_juntar_folhas_gravacao_atomica(self):
+        destino = self.tmp / "p.pdf"
+        bom = apoio.pdf_bytes(1)
+        destino.write_bytes(bom)
+        with mock.patch.object(pymupdf.Document, "save", side_effect=OSError("disco cheio")):
+            with self.assertRaises(OSError):
+                pdf.juntar_folhas([self.peca([1], 1, 1, apoio.pdf_bytes(1))], 1, destino)
+        self.assertEqual(destino.read_bytes(), bom)
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["p.pdf"])
+
+    def test_pdf_sem_manifesto_e_de_versao_anterior(self):
+        antigo = self.tmp / "antigo.pdf"
+        antigo.write_bytes(apoio.pdf_bytes(3))
+        self.assertIsNone(paginacao.ler_do_pdf(antigo))
+        self.assertIn("versão anterior", paginacao.resumo(paginacao.ler_do_pdf(antigo)))
 
 
 if __name__ == "__main__":

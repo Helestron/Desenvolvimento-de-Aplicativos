@@ -41,6 +41,7 @@ P1_INC = apoio.numero("0700001", tr="02", origem="0001", dependente="01")
 P2 = apoio.numero("0700002", tr="02", origem="0001")     # sigiloso, servidor falha
 P3 = apoio.numero("0700003", tr="02", origem="0001")     # inexistente
 P5 = apoio.numero("0700005", tr="02", origem="0001")     # busca devolve lista
+P6 = apoio.numero("0700006", tr="02", origem="0001")     # fls. 3-4 ocultas pela Pasta Digital
 OUTRO = apoio.numero("0700099", tr="02", origem="0001")
 
 
@@ -86,10 +87,14 @@ class PortalDeMentira:
             "1K0005EEE0000": dict(numero=P5, arvore=[
                 _doc("Petição Inicial", 501, "05/01/2024", [_par(P5, 501, 1, 1)]),
             ]),
+            "1K0006FFF0000": dict(numero=P6, arvore=[
+                _doc("Petição Inicial", 601, "06/01/2024", [_par(P6, 601, 1, 2)]),
+                _doc("Sentença", 605, "06/06/2024", [_par(P6, 605, 5, 5)]),
+            ]),
             "1K0099ZZZ0000": dict(numero=OUTRO, arvore=[]),
         }
         self.por_numero = {"0700001": "1K0001AAA0000", "0700002": "1K0002BBB0000",
-                           "0700005": "lista"}
+                           "0700005": "lista", "0700006": "1K0006FFF0000"}
 
 
 def _pdf(paginas, rotulo):
@@ -432,7 +437,7 @@ class TestPortaADentro(apoio.PastaTemporaria):
         ctx = apoio.ContextoGravador(codigos=["000000", CODIGO])
         cofre = apoio.CofreFalso({"esaj:TJAL": (USUARIO, SENHA)})
         fp, fn = self.fabricas()
-        lista = [P1, P2, P3, P1_INC, P5]
+        lista = [P1, P2, P3, P1_INC, P5, P6]
         resumo = motor.executar(lista, destino, opcoes, ctx, senhas={P2.formatado: "abc123"},
                                 cofre=cofre, fabrica_portal=fp, fabrica_navegador=fn)
         r = {x.numero: x for x in resumo.itens}
@@ -449,9 +454,12 @@ class TestPortaADentro(apoio.PastaTemporaria):
         self.assertEqual(r1.documentos, 3)
         self.assertFalse(r1.sigiloso, "'retirado o segredo' nas movimentações não é sigilo")
         import pymupdf
+        from helestron.nucleo import paginacao
         with pymupdf.open(destino / f"{P1.nome_arquivo}.pdf") as doc:
             self.assertEqual(len(doc), 6)
             self.assertEqual([t[2] for t in doc.get_toc()], [1, 3, 6])
+            m1 = paginacao.ler_do_doc(doc)
+        self.assertEqual((m1["ultima"], m1["ausentes"], m1["origem"]), (6, {}, "servidor"))
         capa = (destino / "_controle" / f"{P1.nome_arquivo}_capa.txt").read_text(encoding="utf-8")
         self.assertIn("Classe: Procedimento Comum Cível", capa)
         self.assertIn("Maria da Silva", capa)
@@ -473,7 +481,11 @@ class TestPortaADentro(apoio.PastaTemporaria):
         self.assertFalse((destino / f"{P2.nome_arquivo}.pdf").exists())
         with pymupdf.open(sig / f"{P2.nome_arquivo}.pdf") as doc:
             self.assertEqual(len(doc), 3)
+            self.assertTrue(doc[2].get_text().startswith(
+                "Folha 3 — não disponibilizada pelo e-SAJ"))
             self.assertIn("não pôde ser baixada", doc[2].get_text())
+            self.assertEqual(paginacao.ausentes(paginacao.ler_do_doc(doc)), {3: "B"},
+                             "o manifesto vai com o PDF para a pasta de sigilosos")
         self.assertTrue((sig / "_controle" / "midias" / P2.nome_arquivo / "audiencia1.mp3").exists())
         self.assertFalse((destino / "_controle" / f"{P2.nome_arquivo}_capa.txt").exists())
 
@@ -489,11 +501,23 @@ class TestPortaADentro(apoio.PastaTemporaria):
                             if "show.do" in c))
         self.assertFalse(any("processo.foro=56" in c for _, c in self.portal.pedidos))
 
+        # P6: a Pasta Digital oculta as fls. 3-4 - a página 5 continua a fl. 5
+        r6 = r[P6.formatado]
+        self.assertEqual(r6.situacao, modelos.OK, r6.detalhe)
+        self.assertEqual((r6.paginas, r6.incompleto), (5, "3-4"))
+        self.assertNotIn("peça a peça", r6.detalhe)
+        with pymupdf.open(destino / f"{P6.nome_arquivo}.pdf") as doc:
+            self.assertEqual(len(doc), 5)
+            self.assertEqual([t[2] for t in doc.get_toc()], [1, 3, 5])
+            self.assertTrue(doc[2].get_text().startswith("Folha 3 — não disponibilizada pelo e-SAJ"))
+            self.assertIn("servidor 3", doc[4].get_text(), "a sentença (fl. 5) na página 5")
+            self.assertEqual(paginacao.ausentes(paginacao.ler_do_doc(doc)), {3: "N", 4: "N"})
+
         # sessão guardada para a próxima vez (fora do acervo)
         self.assertTrue((self.tmp / "perfis" / "esaj-TJAL" / "sessao.json").exists())
         self.assertEqual(sorted(p.name for p in destino.iterdir() if p.is_file()),
                          sorted([f"{P1.nome_arquivo}.pdf", f"{P1.principal}-01.pdf",
-                                 f"{P5.nome_arquivo}.pdf"]))
+                                 f"{P5.nome_arquivo}.pdf", f"{P6.nome_arquivo}.pdf"]))
 
         # segunda rodada: pula o que já tem e NÃO pede código de novo
         ctx2 = apoio.ContextoGravador(codigos=[])
@@ -505,6 +529,7 @@ class TestPortaADentro(apoio.PastaTemporaria):
         self.assertEqual(sit[P1.formatado], modelos.JA_BAIXADO)
         self.assertEqual(sit[P2.formatado], modelos.JA_BAIXADO)
         self.assertEqual(sit[P3.formatado], modelos.NAO_ENCONTRADO)
+        self.assertEqual(sit[P6.formatado], modelos.JA_BAIXADO)
 
     def test_senha_errada_e_avisada_sem_esperar(self):
         import time

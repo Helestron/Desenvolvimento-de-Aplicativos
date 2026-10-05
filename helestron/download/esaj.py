@@ -13,8 +13,13 @@ na leitura do código):
 * o PDF era gravado direto sobre o anterior (queda no meio = autos
   corrompidos); agora a gravação é atômica;
 * se o servidor não montasse o PDF único, o processo ficava sem autos;
-  agora ele é montado peça a peça (getPDF.do), com página de aviso no lugar
-  de peça que não vier;
+  agora ele é montado peça a peça (getPDF.do);
+* a página N do PDF é SEMPRE a folha N da Pasta Digital: a folha que não
+  veio (não oferecida, peça que não baixou, arquivo inválido ou com páginas
+  a menos) tem uma página de aviso no lugar, uma por folha, e o manifesto
+  de paginação (nucleo.paginacao) vai dentro do PDF dizendo quais e por
+  quê; o PDF do servidor que não confere com o índice nunca é gravado - o
+  processo é montado peça a peça;
 * erro 5xx e tempo esgotado não eram repetidos; agora são, com espera
   crescente, antes de trocar de canal;
 * a checagem de segredo custava ~4,8 s em TODO processo; agora espera a
@@ -41,10 +46,11 @@ import re
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from ..nucleo import caminhos, sistema
+from ..nucleo import caminhos, paginacao, sistema
 from ..nucleo.cnj import Numero
 from . import pdf
 from .contexto import Contexto
@@ -363,37 +369,8 @@ def _inteiro(valor) -> int | None:
         return None
 
 
-def paginas_da_peca(p: dict) -> int | None:
-    ini, fim = _inteiro(p.get("pagina_inicial")), _inteiro(p.get("pagina_final"))
-    if ini is not None and fim is not None and fim >= ini:
-        return fim - ini + 1
-    return _inteiro(p.get("num_paginas"))
-
-
-def conferir_numeracao(pecas: list[dict]) -> tuple[list[tuple[int, int]], int]:
-    """Saltos na numeração das folhas -> (faixas que faltam, páginas somadas).
-
-    Folha que a Pasta Digital não oferece (peça sigilosa oculta, por
-    exemplo) faz o PDF NÃO ser o inteiro teor: isso tem de aparecer.
-    """
-    faixas = []
-    for p in pecas:
-        ini, fim = _inteiro(p.get("pagina_inicial")), _inteiro(p.get("pagina_final"))
-        if ini is not None and fim is not None:
-            faixas.append((ini, fim))
-    if not faixas:
-        return [], 0
-    faixas.sort()
-    baixadas = sum(f - i + 1 for i, f in faixas)
-    buracos, esperada = [], 1
-    for ini, fim in faixas:
-        if ini > esperada:
-            buracos.append((esperada, ini - 1))
-        esperada = max(esperada, fim + 1)
-    return buracos, baixadas
-
-
 def descrever_buracos(buracos) -> str:
+    """[(6, 7), (10, 10)] -> "6-7, 10"."""
     return ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in buracos)
 
 
@@ -417,29 +394,260 @@ def titulo_da_peca(p: dict, ini=None, fim=None) -> str:
     return f"{titulo} - {data}" if data else titulo
 
 
-def marcadores_das_pecas(pecas: list[dict]) -> tuple[list[tuple[str, int]], int]:
-    """Marcadores do PDF do servidor: um por documento, na página em que
-    ele começa DENTRO DO ARQUIVO (que não é a folha, se houver buraco).
-    Devolve (marcadores, total de páginas previsto); ([], 0) se a árvore
-    não permitir a conta."""
-    docs: list[list] = []          # [peça, ini, fim, páginas]
-    ultimo = None
-    for i, p in enumerate(pecas):
-        n = paginas_da_peca(p)
-        if n is None:
-            return [], 0
-        chave = p.get("cdDocumento") or f"#{i}"
-        if chave == ultimo and docs:
-            docs[-1][2] = p.get("pagina_final") or docs[-1][2]
-            docs[-1][3] += n
+def _fls(folhas) -> str:
+    """{8} -> "fl. 8"; {6, 7, 40} -> "fls. 6-7, 40"."""
+    lista = sorted(set(folhas))
+    return (f"fl. {lista[0]}" if len(lista) == 1
+            else f"fls. {paginacao.descrever_folhas(lista)}")
+
+
+# ------------------------------------------------ página N = folha N
+# A Pasta Digital numera as folhas dos autos; o PDF do Helestron reproduz essa
+# numeração: a página N é sempre a folha N. O plano diz que bloco da árvore
+# fornece cada folha, de 1 até a última que a Pasta Digital oferece; a folha
+# que nenhum bloco fornece ganha uma página de aviso no lugar.
+LIMITE_FAIXA = 100_000       # folhas num bloco só: acima disso o índice está estragado
+
+
+@dataclass
+class Bloco:
+    """Um bloco de folhas da Pasta Digital (um filho da árvore)."""
+    peca: dict
+    ini: int
+    fim: int
+    ordem: int                                          # posição na árvore
+    proprias: list[int] = field(default_factory=list)   # as folhas que ele fornece
+
+    @property
+    def n(self) -> int:
+        return self.fim - self.ini + 1
+
+    @property
+    def documento(self) -> str:
+        return str(self.peca.get("cdDocumento") or f"#{self.ordem}")
+
+
+class ListaDeEnvio(list):
+    """As peças pedidas ao servidor, em ordem de folha. Leva o cdDocumento
+    da última peça DA ÁRVORE, que vai no pedido como a própria página o
+    manda (a ordem mudou; o pedido, não)."""
+    cd_documento = ""
+
+
+def _cd_do_pedido(pecas: list[dict]) -> str:
+    """O cdDocumento que vai no pedido do PDF único: o da última peça da
+    árvore (a lista pode estar em ordem de folha), como a página manda."""
+    return getattr(pecas, "cd_documento", "") or str(pecas[-1].get("cdDocumento") or "")
+
+
+@dataclass
+class PlanoFolhas:
+    """Que bloco fornece cada folha, de 1 a ``ultima``."""
+    pecas: list[dict]                                   # as da árvore, como vieram
+    blocos: list[Bloco]                                 # em ordem de folha, sem repetidos
+    ultima: int
+    dono: dict[int, int]                                # folha -> índice em blocos
+    nao_oferecidas: dict[int, tuple[str, str]]          # folha -> ("N" | "S", título)
+    sem_numeracao: list[dict]                           # peças que ficaram de fora
+    anomalias: list[str]
+
+    def pecas_envio(self) -> ListaDeEnvio:
+        lista = ListaDeEnvio(b.peca for b in self.blocos)
+        lista.cd_documento = str((self.pecas[-1] if self.pecas else {}).get("cdDocumento") or "")
+        return lista
+
+    def faixas(self) -> list[tuple[int, int, list[int]]]:
+        return [(b.ini, b.fim, list(b.proprias)) for b in self.blocos]
+
+    def no_documento(self, i: int) -> tuple[int, int]:
+        """(folhas do documento inteiro do bloco i, onde o bloco começa nele):
+        para quando o getPDF.do devolve o documento todo, e não só o bloco."""
+        alvo = self.blocos[i]
+        mesmos = [b for b in self.blocos if b.documento == alvo.documento]
+        antes = sum(b.n for b in mesmos[:mesmos.index(alvo)])
+        return sum(b.n for b in mesmos), antes
+
+
+def _posicionar_sem_numeracao(pecas: list[dict], sem: list[int], numerados: list[Bloco],
+                              anomalias: list[str]) -> tuple[list[Bloco], dict[int, str]]:
+    """Peças sem numeração de folhas: só entram no PDF quando o lugar delas
+    é inequívoco - entre dois blocos numerados (na ordem da árvore), o vão
+    livre tem exatamente as páginas que elas declaram. Senão ficam de fora,
+    e as folhas do vão ganham aviso com o motivo "S".
+
+    Devolve (blocos posicionados, folha -> título das folhas "S").
+    """
+    if not sem:
+        return [], {}
+    ocupadas: set[int] = set()
+    for b in numerados:
+        ocupadas.update(range(b.ini, b.fim + 1))
+    por_ordem = {b.ordem: b for b in numerados}
+    posicionados: list[Bloco] = []
+    folhas_s: dict[int, str] = {}
+    fora = 0
+    grupos: list[list[int]] = []
+    for i in sem:
+        if grupos and grupos[-1][-1] == i - 1:
+            grupos[-1].append(i)
         else:
-            docs.append([p, p.get("pagina_inicial"), p.get("pagina_final"), n])
-            ultimo = chave
-    marcas, pagina = [], 1
-    for p, ini, fim, n in docs:
-        marcas.append((titulo_da_peca(p, ini, fim), pagina))
-        pagina += n
-    return marcas, pagina - 1
+            grupos.append([i])
+    for grupo in grupos:
+        antes = next((por_ordem[j] for j in range(grupo[0] - 1, -1, -1) if j in por_ordem), None)
+        depois = next((por_ordem[j] for j in range(grupo[-1] + 1, len(pecas)) if j in por_ordem),
+                      None)
+        de = antes.fim + 1 if antes else 1
+        ate = depois.ini - 1 if depois else None
+        declarados = [_inteiro(pecas[j].get("num_paginas")) for j in grupo]
+        vao = list(range(de, ate + 1)) if ate is not None and ate >= de else []
+        if (vao and all(d is not None and d >= 1 for d in declarados)
+                and sum(declarados) == len(vao) and not ocupadas.intersection(vao)):
+            inicio = de
+            for j, d in zip(grupo, declarados):
+                posicionados.append(Bloco(pecas[j], inicio, inicio + d - 1, j))
+                inicio += d
+            continue
+        fora += len(grupo)
+        titulo = titulo_da_peca(pecas[grupo[0]], "", "")
+        for f in vao:
+            if f not in ocupadas:
+                folhas_s.setdefault(f, titulo)
+    if fora:
+        anomalias.append("1 peça listada sem numeração de folhas ficou fora do PDF" if fora == 1
+                         else f"{fora} peças listadas sem numeração de folhas ficaram fora do PDF")
+    return posicionados, folhas_s
+
+
+def planejar_folhas(pecas: list[dict]) -> PlanoFolhas:
+    """O plano página = folha a partir das peças da Pasta Digital.
+
+    * blocos em ordem de folha (a árvore pode vir fora de ordem), sem o
+      bloco repetido;
+    * cada folha tem UM dono - o primeiro bloco que a traz; faixas
+      sobrepostas não a repetem;
+    * a última folha é a maior que algum bloco fornece; as folhas de 1 até
+      ela que nenhum bloco fornece são "não oferecidas" (aviso "N", ou "S"
+      quando o vão é de uma peça listada sem numeração).
+
+    Sem bloco numerado nenhum, ``blocos`` sai vazio: quem chama não pode
+    garantir a numeração e não grava.
+    """
+    anomalias: list[str] = []
+    numerados: list[Bloco] = []
+    sem: list[int] = []
+    vistos: set = set()
+    invalidas = 0
+    for i, p in enumerate(pecas):
+        ini, fim = _inteiro(p.get("pagina_inicial")), _inteiro(p.get("pagina_final"))
+        if ini is None or fim is None or ini < 1 or fim < ini or fim - ini >= LIMITE_FAIXA:
+            if ini is not None or fim is not None:
+                invalidas += 1
+            sem.append(i)
+            continue
+        chave = (ini, fim, p.get("cdDocumento") or p.get("parametros"))
+        if chave in vistos:
+            anomalias.append(f"{_fls(range(ini, fim + 1))} "
+                             f"{'listada' if ini == fim else 'listadas'} duas vezes na Pasta "
+                             "Digital (entrou uma)")
+            continue
+        vistos.add(chave)
+        declarado = _inteiro(p.get("num_paginas"))
+        if declarado is not None and declarado != fim - ini + 1:
+            anomalias.append(f"{_fls(range(ini, fim + 1))}: a Pasta Digital diz {declarado} "
+                             f"página{'s' if declarado != 1 else ''}")
+        numerados.append(Bloco(p, ini, fim, i))
+    if invalidas:
+        anomalias.append("1 peça com numeração de folhas inválida" if invalidas == 1
+                         else f"{invalidas} peças com numeração de folhas inválida")
+    inferidos, folhas_s = _posicionar_sem_numeracao(pecas, sem, numerados, anomalias)
+    posicionados = {b.ordem for b in inferidos}
+    blocos: list[Bloco] = []
+    dono: dict[int, int] = {}
+    for b in sorted(numerados + inferidos, key=lambda x: (x.ini, x.fim, x.ordem)):
+        proprias = [f for f in range(b.ini, b.fim + 1) if f not in dono]
+        if len(proprias) < b.n:
+            repetidas = [f for f in range(b.ini, b.fim + 1) if f not in proprias]
+            anomalias.append(f"{_fls(repetidas)} também na faixa de outra peça (entrou a "
+                             "primeira)")
+        if not proprias:
+            continue
+        b.proprias = proprias
+        blocos.append(b)
+        for f in proprias:
+            dono[f] = len(blocos) - 1
+    ultima = max(dono) if dono else 0
+    nao_oferecidas = {f: (("S", folhas_s[f]) if f in folhas_s else ("N", ""))
+                      for f in range(1, ultima + 1) if f not in dono}
+    return PlanoFolhas(list(pecas), blocos, ultima, dono, nao_oferecidas,
+                       [pecas[i] for i in sem if i not in posicionados], anomalias)
+
+
+def marcadores_de(plano: PlanoFolhas, ausentes: dict[int, str]) -> list[list]:
+    """Sumário do PDF em folhas: a página de cada marcador é a folha.
+
+    Um marcador por trecho seguido de folhas de um mesmo documento, e um
+    para cada trecho seguido de páginas de aviso (de um mesmo motivo e de
+    uma mesma peça): sem ele, a página de aviso seria tomada pela peça do
+    marcador anterior.
+    """
+    trechos: list[list] = []                 # [chave, primeira, última, bloco]
+    for f in range(1, plano.ultima + 1):
+        i = plano.dono.get(f)
+        bloco = plano.blocos[i] if i is not None else None
+        documento = bloco.documento if bloco is not None else None
+        if f in ausentes or bloco is None:
+            chave = ("aviso", ausentes.get(f, "N"), documento)
+        else:
+            chave = ("doc", documento)
+        if trechos and trechos[-1][0] == chave:
+            trechos[-1][2] = f
+        else:
+            trechos.append([chave, f, f, bloco])
+    marcas = []
+    for chave, a, b, bloco in trechos:
+        if chave[0] == "doc":
+            marcas.append([1, titulo_da_peca(bloco.peca, a, b), a])
+            continue
+        titulo = (f"Fl. {a} — não disponibilizada pelo e-SAJ" if a == b
+                  else f"Fls. {a}-{b} — não disponibilizadas pelo e-SAJ")
+        peca = (titulo_da_peca(bloco.peca, "", "") if bloco is not None
+                else plano.nao_oferecidas.get(a, ("", ""))[1])
+        marcas.append([1, f"{titulo} ({peca})" if peca else titulo, a])
+    return marcas
+
+
+def frases_das_ausencias(plano: PlanoFolhas, ausentes: dict[int, str]) -> list[str]:
+    """Uma frase por motivo, para o detalhe do relatório."""
+    por_codigo: dict[str, list[int]] = {}
+    for f, codigo in ausentes.items():
+        por_codigo.setdefault(codigo, []).append(f)
+    frases = []
+    for codigo in paginacao.ORDEM_MOTIVOS:
+        folhas = por_codigo.get(codigo)
+        if not folhas:
+            continue
+        fls = _fls(folhas)
+        if codigo == "N":
+            frases.append(f"{fls} não {'oferecida' if len(folhas) == 1 else 'oferecidas'} pela "
+                          "Pasta Digital (página de aviso no lugar)")
+            continue
+        if codigo == "S":
+            frases.append(f"{fls}: a Pasta Digital listou peça sem numeração de folhas "
+                          "(página de aviso no lugar)")
+            continue
+        k = len({plano.blocos[plano.dono[f]].documento for f in folhas if f in plano.dono}) or 1
+        if codigo == "B":
+            frases.append(f"{fls}: " + ("1 peça não veio e tem página de aviso no lugar" if k == 1
+                                        else f"{k} peças não vieram e têm página de aviso no lugar"))
+        elif codigo == "I":
+            frases.append(f"{fls}: " + ("o arquivo de 1 peça veio inválido" if k == 1
+                                        else f"os arquivos de {k} peças vieram inválidos")
+                          + " (página de aviso no lugar)")
+        else:
+            frases.append(f"{fls}: " + ("o arquivo de 1 peça veio" if k == 1
+                                        else f"os arquivos de {k} peças vieram")
+                          + " com páginas a menos (página de aviso no lugar)")
+    return frases
 
 
 def formatar_capa(info: dict, numero: Numero, sigla: str, sigiloso: bool = False) -> str:
@@ -859,10 +1067,25 @@ class PortalESAJ:
                 if self._sessao_no_contexto() or self._sondar_sessao():
                     log.info("Código aceito na janela do navegador.")
                     return True
+                if getattr(self.nav, "visivel", False) and limite > time.monotonic():
+                    # Sem quem digite o código aqui (a linha de comando sem
+                    # terminal, como a da skill do Claude, ou o diálogo
+                    # fechado): com a janela do navegador à vista, o usuário
+                    # o digita lá, no campo do próprio portal, dentro do prazo.
+                    self._esperar_login_na_janela(
+                        f"Digite o código na janela do {self.nome}",
+                        f"O {self.nome} enviou um código de verificação para o seu e-mail "
+                        "(o cadastrado no portal). Digite-o na janela do navegador que se "
+                        "abriu, no campo do código, e clique em Enviar.",
+                        "esaj-codigo-prazo", motivo="codigo", limite=limite)
+                    log.info("Código aceito na janela do navegador.")
+                    return True
                 self.nav.diagnosticar("esaj-codigo-nao-informado")
                 raise LoginFalhou(
                     "o código de verificação enviado por e-mail não foi informado. "
-                    f"Clique em “{TENTAR_DE_NOVO}” quando estiver com ele em mãos.")
+                    f"Clique em “{TENTAR_DE_NOVO}” quando estiver com ele em mãos (pela linha "
+                    "de comando sem terminal, use --visivel e digite o código na janela do "
+                    "navegador).")
             codigo = re.sub(r"\s+", "", codigo)
             if not codigo:
                 recado = ("Pedi um código novo ao portal; confira o e-mail. "
@@ -1020,27 +1243,63 @@ class PortalESAJ:
                 f"escolha “{ENTRAR_MANUALMENTE}” em {AJUSTES_ACESSOS}.")
         log.info("Login concluído.")
 
-    def _esperar_login_na_janela(self, titulo: str, mensagem: str, rotulo: str) -> None:
+    def _evento(self, tipo: str, **dados) -> None:
+        """Evento legível por máquina para quem acompanha (a skill do Claude,
+        pela linha de comando): "login_aguardando", "login_concluido"...
+        Contexto sem ``evento`` (versão anterior) não recebe nada."""
+        ev = getattr(self.ctx, "evento", None)
+        if not callable(ev):
+            return
+        try:
+            ev(tipo, **dados)
+        except Exception as erro:          # o evento é aviso, nunca derruba o login
+            log.debug("evento %s não publicado: %s", tipo, erro)
+
+    def _esperar_login_na_janela(self, titulo: str, mensagem: str, rotulo: str,
+                                 motivo: str = "", limite: float | None = None) -> None:
+        """Espera o usuário concluir o login na janela do navegador.
+
+        ``limite`` (time.monotonic) é o fim do prazo, quando ele já corre
+        (o código por e-mail); sem ele, o prazo é o dos Ajustes, a contar daqui.
+        """
         minutos = max(1, int(self.opcoes.espera_login_min))
-        prazo = f"{minutos} minuto{'s' if minutos != 1 else ''}"
+        if limite is None:
+            limite = time.monotonic() + minutos * 60
+        restante = max(1, -int(-(limite - time.monotonic()) // 60))     # minutos, para cima
+        prazo = f"{restante} minuto{'s' if restante != 1 else ''}"
+        self._evento("login_aguardando", sistema=self.sistema, tribunal=self.tribunal.sigla,
+                     modo=self.modo, prazo_min=restante,
+                     ate=(datetime.now() + timedelta(seconds=max(0.0, limite - time.monotonic())))
+                     .isoformat(timespec="seconds"),
+                     motivo=motivo or self.modo)
         self.ctx.avisar(titulo, f"{mensagem} Aguardo até {prazo} e sigo sozinho.")
-        limite = time.monotonic() + minutos * 60
         while time.monotonic() < limite:
             self._dormir(3)
             if self.sessao_ativa() or self._sessao_no_contexto():
                 log.info("Login concluído.")
                 self.ctx.status("Login concluído.")
+                self._evento("login_concluido", sistema=self.sistema,
+                             tribunal=self.tribunal.sigla)
                 return
         self.nav.diagnosticar(rotulo)
+        prazo = f"{minutos} minuto{'s' if minutos != 1 else ''}"
         raise LoginFalhou(
             f"{'passou-se' if minutos == 1 else 'passaram-se'} {prazo} sem o login na janela "
             f"do navegador. Tente de novo (o prazo se ajusta em {CAMPO_PRAZO_LOGIN}).")
 
     def _entrar_por_certificado(self) -> None:
-        if self.sessao_ativa():
+        # Como no login manual: primeiro a porta de entrada do portal, e só
+        # então a pergunta pela sessão. Na rede do fórum, o canal direto não
+        # alcança o portal, e a aba em about:blank também não responde - a
+        # sessão válida pareceria perdida, e o magistrado receberia um pedido
+        # de login falso a cada chamada.
+        self.ctx.status(f"Abrindo o {self.nome}...")
+        self.nav.ir(URL_ENTRADA.format(base=self.base))
+        if self._esta_logado() or self.sessao_ativa():
             log.info("Sessão do %s ainda válida - login dispensado.", self.nome)
             return
-        self.nav.ir(f"{self.base}/sajcas/login")
+        if "sajcas/login" not in (self.pg.url or ""):
+            self.nav.ir(f"{self.base}/sajcas/login")
         mensagem = (f"Na janela do Chrome que se abriu, entre no {self.nome} com o "
                     "certificado digital: aba 'Certificado digital', escolha o certificado "
                     "e digite o PIN do token.")
@@ -1050,7 +1309,7 @@ class PortalESAJ:
                         "pela Chrome Web Store na janela que se abriu (procure "
                         "'Web Signer'). " + mensagem)
         self._esperar_login_na_janela("Entre com o certificado digital", mensagem,
-                                      "esaj-certificado-prazo")
+                                      "esaj-certificado-prazo", motivo="certificado")
 
     def _entrar_manualmente(self) -> None:
         self.nav.ir(URL_ENTRADA.format(base=self.base))
@@ -1063,7 +1322,7 @@ class PortalESAJ:
             f"Entre no {self.nome}",
             "Conclua o login na janela do navegador que se abriu (usuário e senha, "
             "código por e-mail ou certificado, como de costume).",
-            "esaj-manual-prazo")
+            "esaj-manual-prazo", motivo="manual")
 
     # ------------------------------------------------------- diagnóstico
     def _tela_sigilosa(self, numero: Numero | None = None,
@@ -1176,42 +1435,43 @@ class PortalESAJ:
         # Peça marcada como sigilosa (quebra de sigilo bancário, laudo
         # psicossocial...) num processo público: o PDF a traz inteira, e ele
         # não pode ir para o acervo da IA - vai para a pasta de sigilosos.
-        pecas_sigilosas = len({p["cdDocumento"] or p["parametros"] for p in pecas
-                               if p.get("sigiloso")})
-        if pecas_sigilosas:
-            r.sigiloso = True
-            log.info("    %d peça(s) marcada(s) como sigilosa(s) na Pasta Digital.",
-                     pecas_sigilosas)
+        pecas_sigilosas = self._marcar_sigilosas(pecas, r)
         r.documentos = contar_documentos(pecas)
-        buracos, soma = conferir_numeracao(pecas)
-        if buracos:
-            r.incompleto = descrever_buracos(buracos)
-            log.warning("    ATENÇÃO: a Pasta Digital não ofereceu as folhas %s; o PDF NÃO é "
-                        "o inteiro teor.", r.incompleto)
-        log.info("    %d documento(s), %d página(s) no índice", r.documentos, soma)
-        marcas, previsto = marcadores_das_pecas(pecas)
+        plano = planejar_folhas(pecas)
+        if not plano.blocos:
+            # Sem a numeração não há como pôr a folha N na página N: gravar
+            # assim mesmo daria à IA folhas erradas para citar.
+            raise RuntimeError(
+                "a Pasta Digital não informou a numeração das folhas: não é possível garantir "
+                "que a página N do PDF seja a folha N (o portal mudou?)")
+        self._registrar_plano(plano)
+        inicial = plano
+        celula = {"plano": plano}
 
         def reabrir(_n=numero, _cd=cd, _s=senha):
             principal = self.achar_codigo(_n)
             if _n.e_dependente:
                 self.achar_codigo_incidente(int(_n.dependente), principal, _s, _n)
-            return extrair_pecas(self.abrir_pasta(_cd))
+            # o índice reaberto pode ter peça nova: o plano (e a conferência
+            # do PDF) passa a ser o dele
+            novo = planejar_folhas(extrair_pecas(self.abrir_pasta(_cd)))
+            if novo.blocos:
+                celula["plano"] = novo
+            return celula["plano"].pecas_envio()
 
         detalhes: list[str] = []
-        if pecas_sigilosas:
-            detalhes.append("contém 1 peça sigilosa" if pecas_sigilosas == 1
-                            else f"contém {pecas_sigilosas} peças sigilosas")
         try:
-            url = self.gerar_pdf(pecas, cd, reabrir)
+            url = self.gerar_pdf(plano.pecas_envio(), cd, reabrir)
+            plano = celula["plano"]
             self.ctx.status(f"{rotulo}: baixando o PDF...")
             dados = self.pedir_arquivo(url)
             if not pdf.e_pdf(dados):
                 pista = " (veio uma página da web: a sessão pode ter caído)" if pdf.e_html(dados) else ""
                 raise RuntimeError("o arquivo entregue pelo servidor não é um PDF" + pista)
-            paginas = pdf.gravar(destino, dados, marcas, exigir_paginas=previsto)
+            montagem = pdf.gravar_alinhado(destino, dados, plano.faixas(), plano.ultima,
+                                           plano.nao_oferecidas,
+                                           self._acabamento(plano, numero, "servidor"))
             log.info("    salvo: %s (%.1f MB)", destino.name, len(dados) / 1048576)
-            if soma and paginas and paginas != soma:
-                detalhes.append(f"o índice soma {soma} páginas e o PDF tem {paginas}: confira")
         except (Cancelado, SessaoPerdida, LoginFalhou, SemAcesso, PortalIndisponivel,
                 PermissionError):
             raise           # PDF aberto em outro programa: peça a peça também não gravaria
@@ -1219,19 +1479,31 @@ class PortalESAJ:
             motivo = str(erro) or type(erro).__name__
             if cheira_a_sessao(motivo) and not self.sessao_ativa():
                 raise SessaoPerdida(f"a sessão do {self.nome} caiu ({motivo[:160]})") from erro
-            log.warning("    o servidor não entregou o PDF único (%s); montando peça a peça.",
-                        motivo[:200])
-            paginas, faltaram = self.montar_peca_a_peca(pecas, destino, rotulo)
-            detalhes.append("montado peça a peça (o PDF único do servidor falhou)")
-            if faltaram:
-                fls = descrever_buracos([(_inteiro(p.get("pagina_inicial")) or 0,
-                                          _inteiro(p.get("pagina_final")) or 0) for p in faltaram])
-                detalhes.append("1 peça não veio e tem página de aviso no lugar"
-                                if len(faltaram) == 1 else
-                                f"{len(faltaram)} peças não vieram e têm página de aviso no lugar")
-                r.incompleto = ", ".join(x for x in (r.incompleto, fls) if x)
-
-        r.paginas = paginas or 0
+            if isinstance(erro, pdf.Desalinhado):
+                log.warning("    o PDF único do servidor não confere com o índice (%s); "
+                            "montando peça a peça.", motivo[:200])
+                detalhes.append(f"montado peça a peça ({motivo[:160]})")
+            else:
+                log.warning("    o servidor não entregou o PDF único (%s); montando peça a peça.",
+                            motivo[:200])
+                detalhes.append("montado peça a peça (o PDF único do servidor falhou)")
+            plano = celula["plano"]
+            montagem = self.montar_peca_a_peca(plano, destino, rotulo,
+                                               self._acabamento(plano, numero, "peca_a_peca"))
+        if plano is not inicial:          # a Pasta Digital foi reaberta no meio
+            self._registrar_plano(plano)
+            pecas_sigilosas = max(pecas_sigilosas, self._marcar_sigilosas(plano.pecas, r))
+            r.documentos = contar_documentos(plano.pecas)
+        if pecas_sigilosas:
+            detalhes.insert(0, "contém 1 peça sigilosa" if pecas_sigilosas == 1
+                            else f"contém {pecas_sigilosas} peças sigilosas")
+        r.paginas = montagem.paginas
+        r.incompleto = paginacao.descrever_folhas(montagem.ausentes)
+        if r.incompleto:
+            log.warning("    ATENÇÃO: as folhas %s não vieram; o PDF tem página de aviso no "
+                        "lugar delas (a página N continua sendo a folha N).", r.incompleto)
+        detalhes += frases_das_ausencias(plano, montagem.ausentes)
+        detalhes += montagem.notas + plano.anomalias
         midias = extrair_midias(arvore)
         if midias:
             fls = ", ".join(str(m["folha"]) for m in midias if m["folha"])
@@ -1251,6 +1523,38 @@ class PortalESAJ:
             sistema.gravar_atomico(alvo, texto.encode("utf-8"))
         except Exception as erro:     # capa é conveniência, não dever
             log.debug("capa não gravada: %s", erro)
+
+    @staticmethod
+    def _marcar_sigilosas(pecas: list[dict], r: ResultadoProcesso) -> int:
+        """Quantas peças a Pasta Digital marca como sigilosas; com alguma, o
+        processo passa a ser tratado como sigiloso."""
+        n = len({p["cdDocumento"] or p["parametros"] for p in pecas if p.get("sigiloso")})
+        if n:
+            r.sigiloso = True
+            log.info("    %d peça(s) marcada(s) como sigilosa(s) na Pasta Digital.", n)
+        return n
+
+    @staticmethod
+    def _registrar_plano(plano: PlanoFolhas) -> None:
+        if plano.nao_oferecidas:
+            log.warning("    ATENÇÃO: a Pasta Digital não ofereceu as folhas %s; no PDF elas "
+                        "têm página de aviso no lugar.",
+                        paginacao.descrever_folhas(plano.nao_oferecidas))
+        for anomalia in plano.anomalias:
+            log.warning("    índice da Pasta Digital: %s", anomalia)
+        log.info("    %d documento(s), folhas 1 a %d no índice",
+                 contar_documentos(plano.pecas), plano.ultima)
+
+    def _acabamento(self, plano: PlanoFolhas, numero: Numero, origem: str):
+        """O sumário (em folhas) e o manifesto de paginação, que só se fazem
+        depois de saber que folhas ficaram com página de aviso."""
+        def acabar(ausentes: dict[int, str], notas: list[str]):
+            sumario = marcadores_de(plano, ausentes)
+            manifesto = paginacao.manifesto_esaj(
+                numero.formatado, plano.ultima, ausentes, origem=origem,
+                tribunal=self.tribunal.sigla, notas=[*notas, *plano.anomalias])
+            return sumario, manifesto
+        return acabar
 
     def _liberar(self, senha: str | None, r: ResultadoProcesso, numero: Numero,
                  cd_principal: str | None) -> None:
@@ -1592,7 +1896,7 @@ class PortalESAJ:
         # o corpo reproduz, byte a byte, o que a própria página envia
         corpo = "&".join("itensPdfSelecionados=" + urllib.parse.quote(p["parametros"], safe="-_.!~*'()")
                          .replace("%20", "+") for p in pecas)
-        corpo += (f"&cdProcesso={cd_processo}&cdDocumento={pecas[-1]['cdDocumento']}"
+        corpo += (f"&cdProcesso={cd_processo}&cdDocumento={_cd_do_pedido(pecas)}"
                   "&separarDocumentos=false&acessoPeloPetsg=")
         return self._buscar_texto(
             "/pastadigital/salvarDocumentoPreparado.do", "POST", corpo,
@@ -1611,7 +1915,7 @@ class PortalESAJ:
             raise RuntimeError(f"o servidor não devolveu o localizador do PDF (HTTP {status}: "
                                f"{' '.join((localizador or '').split())[:120]})")
         corpo = (f"localizador={localizador}&cdProcesso={cd_processo}"
-                 f"&cdDocumento={pecas[-1]['cdDocumento']}")
+                 f"&cdDocumento={_cd_do_pedido(pecas)}")
         inicio = time.monotonic()
         erros = 0
         rotulo = self.numero_atual.formatado if self.numero_atual else ""
@@ -1755,38 +2059,49 @@ class PortalESAJ:
                 return dados
         return None
 
-    def montar_peca_a_peca(self, pecas: list[dict], destino: Path, rotulo: str = ""):
-        """Baixa cada peça e junta num PDF só. Devolve (páginas, peças que faltaram)."""
-        partes: list[pdf.Parte] = []
-        faltaram: list[dict] = []
-        vieram = 0
-        for i, p in enumerate(pecas, 1):
+    def montar_peca_a_peca(self, plano: PlanoFolhas, destino: Path, rotulo: str = "",
+                           acabamento=None) -> pdf.Montagem:
+        """Baixa cada bloco da Pasta Digital e monta o PDF com a página N = folha N.
+
+        A peça que não vem, o arquivo que não abre ou que tem páginas a
+        menos deixam página de aviso no lugar de cada folha (pdf.juntar_folhas).
+        Quando o getPDF.do devolve o documento inteiro, e não só o bloco, os
+        demais blocos do documento usam o mesmo arquivo, sem baixá-lo de novo.
+        """
+        itens: list[pdf.PecaDeFolhas] = []
+        inteiros: dict[str, bytes] = {}        # cdDocumento -> o documento inteiro
+        vieram = faltaram = 0
+        total = len(plano.blocos)
+        for i, bloco in enumerate(plano.blocos):
             self._checar_cancelado()
-            self.ctx.status(f"{rotulo}: baixando peça {i} de {len(pecas)}...")
-            titulo = titulo_da_peca(p)
-            dados = self.baixar_peca(p["parametros"])
+            self.ctx.status(f"{rotulo}: baixando peça {i + 1} de {total}...")
+            no_documento, deslocamento = plano.no_documento(i)
+            dados = inteiros.get(bloco.documento)
+            if dados is None:
+                dados = self.baixar_peca(bloco.peca["parametros"])
+                if dados and no_documento > bloco.n \
+                        and pdf.contar_paginas_de(dados) == no_documento:
+                    inteiros[bloco.documento] = dados
             if dados:
                 vieram += 1
-                partes.append(pdf.Parte(titulo, dados, "pdf"))
             else:
-                faltaram.append(p)
-                if not vieram and len(faltaram) >= MAX_PECAS_SEGUIDAS_FALHANDO \
-                        and len(pecas) > MAX_PECAS_SEGUIDAS_FALHANDO:
+                faltaram += 1
+                if not vieram and faltaram >= MAX_PECAS_SEGUIDAS_FALHANDO \
+                        and total > MAX_PECAS_SEGUIDAS_FALHANDO:
                     # Servidor fora: cada peça custa até ~40 s de insistência
                     # (dois endereços, três tentativas). Num processo de 200
                     # peças seriam horas para concluir que nada vem.
                     raise RuntimeError(
                         f"nem o PDF único nem as peças avulsas puderam ser baixados (as "
-                        f"{len(faltaram)} primeiras peças falharam; o servidor do tribunal "
+                        f"{faltaram} primeiras peças falharam; o servidor do tribunal "
                         "parece fora do ar)")
-                partes.append(pdf.Parte(
-                    "Documento não incluído",
-                    (f"A peça \"{titulo}\" não pôde ser baixada do {self.nome}. "
-                     "Consulte-a diretamente no portal.").encode("utf-8"),
-                    "aviso"))
-        if len(faltaram) == len(pecas):
+            itens.append(pdf.PecaDeFolhas(
+                proprias=list(bloco.proprias), ini=bloco.ini, fim=bloco.fim,
+                titulo=titulo_da_peca(bloco.peca, bloco.ini, bloco.fim), dados=dados or None,
+                total_documento=no_documento, deslocamento=deslocamento))
+        if faltaram == total:
             raise RuntimeError("nem o PDF único nem as peças avulsas puderam ser baixados")
-        return pdf.juntar(partes, destino), faltaram
+        return pdf.juntar_folhas(itens, plano.ultima, destino, plano.nao_oferecidas, acabamento)
 
     # -------------------------------------------------------------- mídias
     def baixar_midias(self, midias: list[dict], pasta: Path) -> list[str]:
