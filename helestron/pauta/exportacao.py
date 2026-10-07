@@ -17,9 +17,9 @@ SIGILO: a planilha fica fora do acervo (não vai para a IA), mas circula -
 é impressa, vai por e-mail. Por isso as partes e as observações (onde o
 portal costuma pôr o nome do réu preso, da vítima, do advogado) dos
 processos em segredo de justiça saem como "(segredo de justiça)", a menos
-que o usuário marque "incluir as partes dos sigilosos". Vale também para o
-histórico e para o texto da busca no topo (o nome da parte procurada não
-aparece quando o resultado tem processo sigiloso).
+que o usuário marque "incluir as partes e as observações dos sigilosos".
+Vale também para o histórico e para o texto da busca no topo (o nome da
+parte procurada não aparece quando o resultado tem processo sigiloso).
 
 CARACTERES DE CONTROLE: o texto que vem do PDF, do HTML ou da planilha do
 portal pode trazer um caractere de controle (o de código 2, por exemplo)

@@ -433,6 +433,23 @@ class TestAbrirEDialogos(ServidorDeTeste):
             abrir_endereco.assert_called_once_with("https://claude.ai")
             self.assertEqual(abrir_arquivo.call_count, 1)
 
+    def test_erro_do_windows_nao_mostra_o_caminho(self):
+        """O PermissionError/FileNotFoundError do sistema traz o caminho (que
+        pode ser o de um processo sigiloso): a página recebe a frase geral; a
+        frase escrita pelo programa segue como está."""
+        caminho = r"C:\Sigilosos\1234567-89.2024.8.26.0100\autos.pdf"
+        with self.assertLogs("servidor", "WARNING"):
+            preso = self.app.traduzir_erro(PermissionError(13, "Permission denied", caminho))
+        self.assertEqual((preso.status, preso.codigo), (409, "arquivo_preso"))
+        self.assertNotIn("Sigilosos", preso.mensagem)
+        self.assertIn("aberto em outro programa", preso.mensagem)
+        with self.assertLogs("servidor", "WARNING"):
+            sumiu = self.app.traduzir_erro(FileNotFoundError(2, "No such file", caminho))
+        self.assertEqual((sumiu.status, sumiu.codigo), (404, "arquivo_inexistente"))
+        self.assertNotIn("1234567", sumiu.mensagem)
+        propria = self.app.traduzir_erro(PermissionError("o cofre está em uso; feche e tente de novo"))
+        self.assertEqual(propria.mensagem, "O cofre está em uso; feche e tente de novo")
+
     def test_nuvem_na_raiz_da_unidade_nao_abre_o_disco_todo(self):
         """Pasta da nuvem na raiz de uma unidade (gravada à mão): o /api/abrir
         não passa a abrir qualquer arquivo dela."""

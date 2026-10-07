@@ -338,7 +338,7 @@
     ["pauta", "intervalo_horas", "inteiro", "Intervalo (horas)", "De quanto em quanto tempo conferir a pauta."],
     ["pauta", "dias_atras", "inteiro", "Dias para trás", "Período que a sincronização confere antes de hoje."],
     ["pauta", "dias_a_frente", "inteiro", "Dias à frente", "Período que a sincronização confere depois de hoje."],
-    ["pauta", "incluir_partes_sigilosos", "flag", "Incluir as partes dos sigilosos no Excel", "Desligado, a planilha mostra “(segredo de justiça)” no lugar das partes."],
+    ["pauta", "incluir_partes_sigilosos", "flag", "Mostrar as partes e as observações dos processos sigilosos na planilha", "Desligado (recomendado), as colunas Partes e Observações dos processos em segredo de justiça saem como “(segredo de justiça)”."],
     ["compartilhar", "pasta_nuvem", "pasta", "Pasta na nuvem", "OneDrive ou Google Drive para espelhar o acervo. Em branco, não espelha."],
     ["compartilhar", "espelhar_automaticamente", "flag", "Espelhar sozinho", "Ao fim de cada download e de cada transcrição."],
     ["compartilhar", "incluir_texto", "flag", "Gerar o texto dos autos para a IA", "Com a página e o documento marcados; a IA lê melhor e gasta menos."],
@@ -731,7 +731,7 @@
       pendencias.unshift({ chave: SIGILO === "autos" ? "sigilo" : "sigilo-arquivos", titulo: n.titulo, mensagem: n.mensagem, acao: "compartilhar", arquivos: n.arquivos.slice() });
     }
     return {
-      nome: "Helestron", versao: "1.0.1", modo: MODO_JANELA, usuario: valores.geral.nome_usuario, pastas: PASTAS, pendencias,
+      nome: "Helestron", versao: "1.0.2", modo: MODO_JANELA, usuario: valores.geral.nome_usuario, pastas: PASTAS, pendencias,
       audiencia: { ativa: !!sessao.id && sessao.estado !== "encerrada", estado: sessao.estado, processo: sessao.id ? sessao.processo : null },
       resumo: {
         processos: 312, transcricoes: 47,

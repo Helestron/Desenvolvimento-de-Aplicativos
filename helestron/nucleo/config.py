@@ -139,8 +139,9 @@ ESQUEMA: list[tuple[str, str, str, str]] = [
     ("pauta", "dias_atras", "7", "Quantos dias antes de hoje entram na conferência."),
     ("pauta", "dias_a_frente", "60", "Quantos dias depois de hoje entram na conferência."),
     ("pauta", "incluir_partes_sigilosos", "false",
-     "Na planilha exportada, mostrar as partes dos processos em segredo de\n"
-     "justiça. Desligado (padrão), a coluna sai como \"(segredo de justiça)\"."),
+     "Na planilha exportada, mostrar as partes e as observações dos processos\n"
+     "em segredo de justiça. Desligado (padrão), as colunas saem como\n"
+     "\"(segredo de justiça)\"."),
     ("pauta", "pasta", "Pauta",
      "Onde ficam as planilhas da pauta exportada. Mesma regra de caminho da\n"
      "pasta_acervo, mas FORA dela: a planilha traz as partes dos processos\n"
@@ -165,9 +166,9 @@ ROTULOS: dict[tuple[str, str], tuple[str, str, str]] = {
         "Dias à frente", "inteiro",
         "Quantos dias depois de hoje entram na sincronização."),
     ("pauta", "incluir_partes_sigilosos"): (
-        "Mostrar as partes dos processos sigilosos na planilha", "flag",
-        "Desligado (recomendado), a coluna Partes dos processos em segredo de justiça "
-        "sai como “(segredo de justiça)”."),
+        "Mostrar as partes e as observações dos processos sigilosos na planilha", "flag",
+        "Desligado (recomendado), as colunas Partes e Observações dos processos em segredo "
+        "de justiça saem como “(segredo de justiça)”."),
     ("pauta", "pasta"): (
         "Pasta da pauta exportada", "pasta",
         "Onde ficam as planilhas da pauta. Fica fora do acervo: elas trazem as partes "

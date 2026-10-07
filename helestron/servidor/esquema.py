@@ -146,9 +146,10 @@ CAMPOS: tuple[Campo, ...] = (
     Campo("pauta", "dias_a_frente", "inteiro", "Dias à frente na sincronização",
           minimo=1, maximo=365, padrao="60"),
     Campo("pauta", "incluir_partes_sigilosos", "flag",
-          "Mostrar as partes dos processos sigilosos na planilha",
-          "Desligado (recomendado), a coluna Partes dos processos em segredo de justiça sai "
-          "como “(segredo de justiça)”. Vale como sugestão inicial em Exportar Excel.",
+          "Mostrar as partes e as observações dos processos sigilosos na planilha",
+          "Desligado (recomendado), as colunas Partes e Observações dos processos em segredo "
+          "de justiça saem como “(segredo de justiça)”. Vale como sugestão inicial em "
+          "Exportar Excel.",
           padrao="false"),
 )
 

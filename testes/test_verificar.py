@@ -532,6 +532,39 @@ class TestChecagens(unittest.TestCase):
         with mock.patch.object(verificar, "_falantes_situacao", return_value=(True, "instalada")):
             self.assertEqual(verificar.checar_falantes().situacao, OK)
 
+    def test_componente_embutido_que_sumiu_e_falha(self):
+        """O manifesto.json diz o que a construção embutiu: o modelo ou os
+        modelos de voz que vieram e sumiram da pasta do programa são defeito
+        da instalação (reinstalar), não 'baixar no primeiro uso'."""
+        programa = self.pasta / "programa"
+        programa.mkdir()
+        (programa / "manifesto.json").write_text(json.dumps({"componentes": {
+            "modelo_transcricao": "faster-whisper-small", "falantes": True}}), encoding="utf-8")
+        with mock.patch.object(verificar.caminhos, "INSTALADO", True), \
+                mock.patch.object(verificar.caminhos, "INSTALACAO", programa), \
+                mock.patch.object(verificar, "_modelo_instalado",
+                                  return_value=(False, self.pasta / "x", False)), \
+                mock.patch.object(verificar, "_falantes_situacao",
+                                  return_value=(False, "incompleta (faltam os modelos de voz)")):
+            modelo = verificar.checar_modelo(self.cfg)
+            falantes = verificar.checar_falantes()
+        self.assertEqual((modelo.situacao, modelo.codigo), (FALHA, "modelo"))
+        self.assertIn("veio com o programa", modelo.detalhe)
+        self.assertIn("Helestron-Setup", modelo.acao)
+        self.assertEqual((falantes.situacao, falantes.codigo), (FALHA, "falantes"))
+        self.assertIn("Helestron-Setup", falantes.acao)
+        # construção sem eles (componentes vazios): continua aviso
+        (programa / "manifesto.json").write_text(json.dumps({"componentes": {
+            "modelo_transcricao": "", "falantes": False}}), encoding="utf-8")
+        with mock.patch.object(verificar.caminhos, "INSTALADO", True), \
+                mock.patch.object(verificar.caminhos, "INSTALACAO", programa), \
+                mock.patch.object(verificar, "_modelo_instalado",
+                                  return_value=(False, self.pasta / "x", False)), \
+                mock.patch.object(verificar, "_falantes_situacao",
+                                  return_value=(False, "incompleta (faltam os modelos de voz)")):
+            self.assertEqual(verificar.checar_modelo(self.cfg).situacao, AVISO)
+            self.assertEqual(verificar.checar_falantes().situacao, AVISO)
+
     def test_regras_da_pauta(self):
         self.assertEqual(verificar.checar_regras_pauta().situacao, OK)
         from helestron.pauta import regras

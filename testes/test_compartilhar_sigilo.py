@@ -481,6 +481,37 @@ class TestRestosDaVersaoAnterior(unittest.TestCase):
                 self.assertEqual(migracao.main([]), 0)
             self.assertIn("Nada da versão anterior a limpar.", saida.getvalue())
 
+    def test_reapontar_conectores_da_instalacao_que_mudou_de_pasta(self):
+        from helestron.compartilhar import migracao
+
+        acervo = str(self.base / "Acervo")
+        antigo = {"command": "C:/Velha/Helestron/python.exe",
+                  "args": ["-I", "-m", "helestron", "mcp", "--pasta", acervo]}
+        self.json.write_text(json.dumps({"mcpServers": {"helestron": antigo, "outro": {"command": "x"}},
+                                         "preferencias": {"y": 2}}), encoding="utf-8")
+        self.toml.write_text('model = "x"\n\n[mcp_servers.helestron]\n'
+                             "command = 'C:/Velha/Helestron/python.exe'\n"
+                             f"args = ['-I', '-m', 'helestron', 'mcp', '--pasta', '{acervo}']\n\n"
+                             '[mcp_servers.outro]\ncommand = "y"\n', encoding="utf-8")
+        with mock.patch.object(claude, "arquivos_config_desktop", return_value=[self.json]), \
+                mock.patch.object(chatgpt, "arquivo_config_codex", return_value=self.toml):
+            # fora da instalação, nada muda
+            self.assertEqual(migracao.reapontar_conectores(), [])
+            feito = migracao.reapontar_conectores(forcar=True)
+            self.assertEqual(len(feito), 2, feito)
+            esperada = claude.entrada_mcp(Path(acervo))
+            dados = json.loads(self.json.read_text(encoding="utf-8"))
+            self.assertEqual(dados["mcpServers"]["helestron"], esperada)
+            self.assertEqual(dados["mcpServers"]["outro"], {"command": "x"})
+            self.assertEqual(dados["preferencias"], {"y": 2})
+            codex = tomllib.loads(self.toml.read_text(encoding="utf-8"))
+            self.assertEqual(codex["mcp_servers"]["helestron"]["command"], esperada["command"])
+            self.assertIn(str(Path(acervo).resolve()), codex["mcp_servers"]["helestron"]["args"])
+            self.assertEqual(codex["model"], "x")
+            self.assertIn("outro", codex["mcp_servers"])
+            # de novo: já aponta para esta instalação, nada a fazer
+            self.assertEqual(migracao.reapontar_conectores(forcar=True), [])
+
     def test_arquivo_invalido_nao_e_tocado(self):
         self.json.write_text("{ isto não é json", encoding="utf-8")
         self.toml.write_text("[mcp_servers.assessor_integrado\ncommand = ", encoding="utf-8")

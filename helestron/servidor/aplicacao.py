@@ -248,11 +248,25 @@ class Aplicacao:
         # o que fazer - e não "Algo deu errado no Helestron".
         if nome in ("MicrofoneIndisponivel", "MicrofoneNaoEncontrado"):
             return ErroApi(409, "microfone_indisponivel", frase)
+        # O erro do próprio Windows ("[Errno 13] Permission denied: 'C:\\...'")
+        # traz o caminho, que pode ser o de um processo sigiloso, e a resposta
+        # aparece na tela, vai em capturas e é copiada ao suporte: a página
+        # recebe a frase geral e o caminho fica só no registro. A frase escrita
+        # pelo programa (sem errno) segue como está.
+        do_sistema = isinstance(erro, OSError) and erro.errno is not None
+        if do_sistema and isinstance(erro, (PermissionError, FileNotFoundError)):
+            log.warning("%s: %s", nome, texto)
         if isinstance(erro, PermissionError):
-            return ErroApi(409, "arquivo_preso", frase or "O arquivo está em uso por outro "
-                                                           "programa.", nome)
+            if do_sistema or not frase:
+                frase = ("Um arquivo de que o Helestron precisa está aberto em outro programa "
+                         "(Word, leitor de PDF, Excel) ou o Windows negou o acesso. Feche-o e "
+                         "tente de novo; o caminho ficou no registro (pasta Logs).")
+            return ErroApi(409, "arquivo_preso", frase, nome)
         if isinstance(erro, FileNotFoundError):
-            return ErroApi(404, "arquivo_inexistente", frase or "Arquivo não encontrado.", nome)
+            if do_sistema or not frase:
+                frase = ("Um arquivo ou uma pasta não foi encontrado (pode ter sido movido ou "
+                         "apagado); o caminho ficou no registro (pasta Logs).")
+            return ErroApi(404, "arquivo_inexistente", frase, nome)
         if isinstance(erro, LookupError) and not isinstance(erro, (KeyError, IndexError)):
             return ErroApi(409, "vazio", frase)
         if isinstance(erro, ValueError) and nome in ("ValueError", "NumeroInvalido"):

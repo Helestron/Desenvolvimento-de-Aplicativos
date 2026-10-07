@@ -513,9 +513,32 @@ def _nomes_dos_modelos(cfg) -> tuple[str, str]:
     return ao_vivo, revisao
 
 
+def _componentes_embutidos() -> dict:
+    """O que a construção declarou ter embutido (a chave 'componentes' do
+    manifesto.json: {"modelo_transcricao": "faster-whisper-small" ou "",
+    "falantes": bool}). Vazio fora da instalação e no manifesto sem a chave."""
+    if not caminhos.INSTALADO:
+        return {}
+    try:
+        dados = json.loads((Path(caminhos.INSTALACAO) / "manifesto.json")
+                           .read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    comp = dados.get("componentes") if isinstance(dados, dict) else None
+    return comp if isinstance(comp, dict) else {}
+
+
 def checar_modelo(cfg) -> Item:
     ao_vivo, revisao = _nomes_dos_modelos(cfg)
     instalado, pasta, embutido = _modelo_instalado(ao_vivo)
+    declarado = _componentes_embutidos().get("modelo_transcricao")
+    if not instalado and isinstance(declarado, str) and declarado == f"faster-whisper-{ao_vivo}":
+        # Veio no instalador e sumiu da pasta do programa (antivírus, cópia
+        # interrompida): não é "baixado no primeiro uso", é instalação com defeito.
+        return Item("Modelo de transcrição", FALHA,
+                    f"O modelo da transcrição ao vivo ({ao_vivo}) veio com o programa, mas não "
+                    "está mais na pasta do programa (o antivírus pode tê-lo retirado).",
+                    obrigatorio=False, codigo="modelo", acao=REINSTALAR)
     rev_ok, _, _ = _modelo_instalado(revisao)
     if revisao == ao_vivo:
         sobre_revisao = ""
@@ -1201,6 +1224,11 @@ def _falantes_situacao() -> tuple[bool, str]:
 def checar_falantes(completo: bool = False) -> Item:
     nome = "Separação de falantes (opcional)"
     disponivel, situacao = _falantes_situacao()
+    if not disponivel and _componentes_embutidos().get("falantes") is True:
+        return Item(nome, FALHA,
+                    "Os modelos de voz vieram com o programa, mas não estão mais na pasta do "
+                    "programa (o antivírus pode tê-los retirado): a revisão final não separa as "
+                    "vozes sozinha.", obrigatorio=False, codigo="falantes", acao=REINSTALAR)
     if not disponivel:
         if _presente("sherpa_onnx"):
             # A biblioteca veio; faltam só os modelos de voz (construção sem eles).
