@@ -269,6 +269,32 @@ class TextosQueOUsuarioLe(unittest.TestCase):
                     self.assertEqual(int(n + ano + j + tr + origem + dv) % 97, 1)
         self.assertGreater(achados, 0)
 
+    def test_exportacao_da_pauta_fala_das_partes_e_das_observacoes(self):
+        # A planilha mascara as partes E as observações dos processos sigilosos
+        # (pauta.modelos.mascarar_sigiloso): o interruptor da exportação diz as duas.
+        texto = (WEB / "js" / "secao-pauta.js").read_text(encoding="utf-8")
+        self.assertIn('"Incluir as partes e as observações dos sigilosos"', texto)
+        self.assertIn("no lugar das partes e das observações", texto)
+        self.assertNotIn('"Incluir as partes dos sigilosos"', texto)
+
+    def test_demonstracao_traz_os_campos_do_servidor(self):
+        # O modo demonstração (?demo=1) devolve o que o servidor devolve: a linha
+        # do processo com a causa e o refazer (api_processos.item_json), o espelho
+        # com o que não foi copiado e o pacote com os avisos e o .zip grande demais
+        # (api_compartilhar.concluir_espelho e concluir_pacote) - e a tela de fim
+        # de tarefa os lê para o aviso âmbar.
+        demo = (WEB / "js" / "demo.js").read_text(encoding="utf-8")
+        app = (WEB / "js" / "app.js").read_text(encoding="utf-8")
+        servidor = "".join((RAIZ / "helestron" / "servidor" / nome).read_text(encoding="utf-8")
+                           for nome in ("api_processos.py", "api_compartilhar.py"))
+        for campo in ("causa", "refazer", "nao_copiados", "grande_demais", "avisos", "resumo"):
+            with self.subTest(campo=campo):
+                self.assertIn(f'"{campo}"', servidor)
+                self.assertRegex(demo, rf"\b{campo}: ")
+        for campo in ("nao_copiados", "grande_demais"):
+            with self.subTest(tela=campo):
+                self.assertIn(f"r.{campo}", app)
+
     def test_concordancia_dos_lotes(self):
         # "0 de 1 processo baixados": o particípio concorda com o total.
         for nome, texto in self._js_da_interface().items():

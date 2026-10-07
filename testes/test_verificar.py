@@ -553,6 +553,158 @@ class TestChecagens(unittest.TestCase):
         self.assertIn("RuntimeError: inesperado", item.detalhe)
 
 
+_SEM_ONEDRIVE = {"OneDrive": "", "OneDriveCommercial": "", "OneDriveConsumer": ""}
+
+
+class TestSigilososForaDaNuvem(unittest.TestCase):
+    """A pasta dos sigilosos e a da pauta exportada fora da nuvem: dentro do
+    OneDrive ou do Google Drive, o que é de segredo de justiça sai do
+    computador; com a pasta da nuvem do espelho contendo-as, idem."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.pasta = Path(self.tmp.name)
+        self.cfg = cfg_temporaria(self.pasta)
+        detectar = mock.patch("helestron.compartilhar.nuvem.detectar", return_value={})
+        self.detectar = detectar.start()
+        self.addCleanup(detectar.stop)
+
+    def local(self, ambiente: dict | None = None) -> Item:
+        with mock.patch.dict(os.environ, dict(_SEM_ONEDRIVE, **(ambiente or {}))):
+            return verificar.checar_local(self.cfg)
+
+    def test_tudo_fora_da_nuvem(self):
+        item = self.local()
+        self.assertEqual(item.situacao, OK, item.detalhe)
+        self.assertIn("sigilosos e pauta fora da nuvem", item.detalhe)
+
+    def test_sigilosos_no_onedrive(self):
+        od = self.pasta / "OD"
+        self.cfg.definir("geral", "pasta_sigilosos", str(od / "Sigilosos"))
+        item = self.local({"OneDrive": str(od)})
+        self.assertEqual((item.situacao, item.obrigatorio, item.codigo), (AVISO, False, "local"))
+        self.assertIn("a pasta dos processos em segredo de justiça", item.detalhe)
+        self.assertIn("está dentro do OneDrive", item.detalhe)
+        self.assertNotIn("pauta exportada", item.detalhe)      # a pauta ficou fora
+        self.assertIn("escolha para os sigilosos uma pasta fora do OneDrive e do Google Drive",
+                      item.acao)
+        self.assertIn("Ajustes › Pastas", item.acao)
+        # o mais grave primeiro: o segredo de justiça saindo do computador
+        self.assertTrue(item.detalhe.startswith("Atenção: a pasta dos processos em segredo"))
+
+    def test_pauta_no_google_drive_detectado(self):
+        gd = self.pasta / "GD"
+        self.detectar.return_value = {"Google Drive": gd}
+        self.cfg.definir("pauta", "pasta", str(gd / "Pauta"))
+        item = self.local()
+        self.assertEqual(item.situacao, AVISO)
+        self.assertIn("a pasta da pauta exportada", item.detalhe)
+        self.assertIn("está dentro do Google Drive", item.detalhe)
+        self.assertIn("sai do computador e fica ao alcance", item.detalhe)
+        self.assertIn("para a pauta", item.acao)
+
+    def test_google_drive_pelo_nome_da_pasta(self):
+        self.cfg.definir("geral", "pasta_sigilosos", str(self.pasta / "Google Drive" / "Sig"))
+        self.assertEqual(verificar.nuvem_da_pasta(self.cfg.pasta_sigilosos, []), "Google Drive")
+        self.assertIn("Google Drive", self.local().detalhe)
+        self.assertEqual(verificar.nuvem_da_pasta(self.pasta / "Sigilosos", []), "")
+
+    def test_onedrive_detectado_sem_a_variavel(self):
+        od = self.pasta / "Empresa"
+        self.detectar.return_value = {"OneDrive (instituição)": od}
+        self.assertEqual(verificar.nuvem_da_pasta(od / "Sig", None), "OneDrive")
+
+    def test_deteccao_que_falha_nao_derruba(self):
+        self.detectar.side_effect = OSError("sem acesso")
+        self.assertEqual(self.local().situacao, OK)
+
+    def test_pasta_da_nuvem_com_os_sigilosos_dentro(self):
+        nuvem = self.pasta / "Nuvem"
+        self.cfg.definir("compartilhar", "pasta_nuvem", str(nuvem))
+        self.assertEqual(verificar.checar_pastas(self.cfg).situacao, OK)
+        for secao, chave in (("geral", "pasta_sigilosos"), ("pauta", "pasta")):
+            with self.subTest(chave=chave):
+                self.cfg.definir("geral", "pasta_sigilosos", str(self.pasta / "Sigilosos"))
+                self.cfg.definir("pauta", "pasta", str(self.pasta / "Pauta"))
+                self.cfg.definir(secao, chave, str(nuvem / "Dentro"))
+                item = verificar.checar_pastas(self.cfg)
+                self.assertEqual((item.situacao, item.codigo), (AVISO, "pastas"))
+                frase = config.conflito_com_a_nuvem(nuvem, self.cfg.pasta_sigilosos,
+                                                    self.cfg.pasta_pauta)
+                self.assertTrue(frase)
+                self.assertIn(frase, item.detalhe)
+                self.assertIn(str(nuvem), item.detalhe)
+                self.assertIn("Ajustes › Pastas", item.acao)
+                self.assertIn("Ajustes › Compartilhar", item.acao)
+
+    def test_nuvem_dentro_dos_sigilosos(self):
+        self.cfg.definir("compartilhar", "pasta_nuvem", str(self.pasta / "Sigilosos" / "OD"))
+        item = verificar.checar_pastas(self.cfg)
+        self.assertEqual(item.situacao, AVISO)
+        self.assertIn("A pasta da nuvem não pode ficar dentro da pasta dos processos",
+                      item.detalhe)
+
+
+class TestCatalogoETribunaisLocais(unittest.TestCase):
+    """O catálogo de tribunais e as correções de endereço do usuário
+    (enderecos-locais.json): a correção fora do formato fica de fora - e a
+    Verificação diz isso; a frase de erro não culpa só o tribunais.json."""
+
+    def test_correcoes_fora_do_formato_sao_aviso(self):
+        from helestron.nucleo import tribunais
+
+        frase = (f"parte das correções de endereço ({tribunais.ARQUIVO_LOCAL}) está fora do "
+                 "formato e foi ignorada: eproc:TJAL; vale o endereço do catálogo")
+        with mock.patch.object(tribunais, "problema_locais", return_value=frase):
+            item = verificar.checar_tribunais()
+        self.assertEqual((item.situacao, item.codigo), (AVISO, "tribunais"))
+        self.assertRegex(item.detalhe, r"^\d+ tribunais no catálogo; \d+ com e-SAJ ou eProc\. Mas ")
+        self.assertTrue(item.detalhe.endswith(frase + "."))
+        self.assertIn("Ajustes › Acessos aos portais", item.acao)
+        self.assertIn("“Corrigir o endereço de um portal”", item.acao)
+        self.assertIn(Path(tribunais.ARQUIVO_LOCAL).name, item.acao)
+
+    def test_correcoes_ilegiveis_de_verdade(self):
+        from helestron.nucleo import tribunais
+
+        arquivo = Path(tempfile.mkdtemp()) / "enderecos-locais.json"
+        self.addCleanup(lambda: arquivo.unlink(missing_ok=True))
+        arquivo.write_text("{ quebrado", encoding="utf-8")
+        with mock.patch.object(tribunais, "ARQUIVO_LOCAL", arquivo):
+            item = verificar.checar_tribunais()
+        self.assertEqual(item.situacao, AVISO, item.detalhe)
+        self.assertIn("não puderam ser lidas e foram ignoradas", item.detalhe)
+        with mock.patch.object(tribunais, "ARQUIVO_LOCAL", arquivo.with_name("nao-existe.json")):
+            self.assertEqual(verificar.checar_tribunais().situacao, OK)
+
+    def test_erro_ao_carregar_cita_as_correcoes(self):
+        from helestron.nucleo import tribunais
+
+        with mock.patch.object(tribunais, "carregar", side_effect=TypeError("x")):
+            item = verificar.checar_tribunais()
+        self.assertEqual(item.situacao, FALHA)
+        self.assertIn("tribunais.json", item.detalhe)
+        self.assertIn("correções de endereço", item.detalhe)
+        self.assertIn(str(tribunais.ARQUIVO_LOCAL), item.detalhe)
+        self.assertTrue(item.acao.startswith("Desfaça a última edição do enderecos-locais.json"))
+
+    def test_catalogo_ilegivel_diz_o_motivo(self):
+        from helestron.nucleo import tribunais
+
+        motivo = ("o catálogo de tribunais (dados\\tribunais.json) não pôde ser lido: erro de "
+                  "formatação na linha 3, coluna 5. Corrija o arquivo ou instale o programa de novo")
+        with mock.patch.object(tribunais, "carregar", return_value=()), \
+                mock.patch.object(tribunais, "problema", return_value=motivo):
+            item = verificar.checar_tribunais()
+        self.assertEqual(item.situacao, FALHA)
+        self.assertEqual(item.detalhe, "O" + motivo[1:] + ".")
+        with mock.patch.object(tribunais, "carregar", return_value=()), \
+                mock.patch.object(tribunais, "problema", return_value=""):
+            self.assertEqual(verificar.checar_tribunais().detalhe,
+                             "O catálogo de tribunais está vazio.")
+
+
 class TestConector(unittest.TestCase):
     """O conector MCP: roda de verdade (como o Claude Desktop o rodaria) e o
     que está registrado nas IAs aponta para este acervo e esta instalação."""

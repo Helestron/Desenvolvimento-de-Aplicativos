@@ -498,7 +498,8 @@
     };
     let baixados = 0, falhas = 0, jaTinha = 0, sigilosos = 0;
     let perguntou = false;
-    for (const n of numeros) emitirItem({ tarefa: t.id, numero: n, situacao: "", mensagem: "", arquivo: "", sigiloso: false });
+    // 'causa' e 'refazer': os do servidor (api_processos.item_json), os mesmos do relatório.
+    for (const n of numeros) emitirItem({ tarefa: t.id, numero: n, situacao: "", mensagem: "", arquivo: "", sigiloso: false, causa: "", refazer: true });
     await pausa(500);
     for (let i = 0; i < numeros.length; i++) {
       if (t._parar) break;
@@ -524,14 +525,14 @@
           return;
         }
       }
-      emitirItem({ tarefa: t.id, numero: n, situacao: "BAIXANDO", mensagem: "Abrindo a pasta digital…", arquivo: "", sigiloso: false });
+      emitirItem({ tarefa: t.id, numero: n, situacao: "BAIXANDO", mensagem: "Abrindo a pasta digital…", arquivo: "", sigiloso: false, causa: "", refazer: true });
       atualizar(t, { status: `Baixando ${n} no ${portal}`, progresso: { atual: n } });
       await pausa(650 + (i % 3) * 180);
-      let item = { tarefa: t.id, numero: n, situacao: "OK", mensagem: `${entre(18, 412)} páginas`, arquivo: pasta + "\\" + n + ".pdf", sigiloso: false };
-      if (LOTE_FALHA) item = Object.assign(item, { situacao: "ERRO", mensagem: "O portal não respondeu (tempo esgotado).", arquivo: "" });
+      let item = { tarefa: t.id, numero: n, situacao: "OK", mensagem: `${entre(18, 412)} páginas`, arquivo: pasta + "\\" + n + ".pdf", sigiloso: false, causa: "", refazer: false };
+      if (LOTE_FALHA) item = Object.assign(item, { situacao: "ERRO", mensagem: "O portal não respondeu (tempo esgotado).", arquivo: "", causa: "portal", refazer: true });
       else if (i === 2) item = Object.assign(item, { situacao: "JA_BAIXADO", mensagem: "O PDF já estava na pasta do lote." });
       if (i === 4 && opcoes.separar_sigilosos !== false) item = Object.assign(item, { sigiloso: true, mensagem: "Segredo de justiça: salvo na pasta dos sigilosos.", arquivo: PASTAS.sigilosos + "\\" + nomeLote + "\\" + n + ".pdf" });
-      if (i === 7) item = Object.assign(item, { situacao: "NAO_ENCONTRADO", mensagem: "Não achei o processo no e-SAJ do TJSP.", arquivo: "" });
+      if (i === 7) item = Object.assign(item, { situacao: "NAO_ENCONTRADO", mensagem: "Não achei o processo no e-SAJ do TJSP.", arquivo: "", causa: "portal", refazer: true });
       emitirItem(item);
       if (item.situacao === "OK") baixados++;
       if (item.situacao === "JA_BAIXADO") jaTinha++;
@@ -1204,7 +1205,17 @@
         await pausa(1200);
         atualizar(t, { status: "Compactando…" });
         await pausa(900);
-        concluir(t, "concluida", { status: "Pacote pronto (186 MB). Os sigilosos ficaram de fora.", resultado: { pasta: DOCS + "\\Pacotes para IA", arquivo: DOCS + "\\Pacotes para IA\\Acervo para o ChatGPT.zip" } });
+        // Como o servidor (api_compartilhar.concluir_pacote): a pasta e o .zip, a
+        // mensagem com a orientação, os avisos e se o .zip passou do limite.
+        const d = new Date();
+        const dois = (x) => String(x).padStart(2, "0");
+        const nomePacote = `Pacote para o ChatGPT ${d.getFullYear()}-${dois(d.getMonth() + 1)}-${dois(d.getDate())} ${dois(d.getHours())}h${dois(d.getMinutes())}`;
+        const pastaPacote = DOCS + "\\Pacotes para IA\\" + nomePacote;
+        concluir(t, "concluida", { status: "Pacote pronto.", resultado: {
+          pasta: pastaPacote, arquivo: pastaPacote + ".zip",
+          mensagem: nomePacote + ".zip. Arraste o .zip para uma conversa ou um Projeto do ChatGPT.",
+          avisos: [], faltaram: [], grande_demais: false, tamanho_mb: 186,
+        } });
       })();
       return { tarefa: t.id };
     },
@@ -1219,7 +1230,11 @@
           atualizar(t, { status: `Copiando o que mudou (${p}%)…`, progresso: { feitos: p, percentual: p } });
           await pausa(300);
         }
-        concluir(t, "concluida", { status: "Espelho em dia: 14 arquivos novos ou alterados.", resultado: { pasta: corpo.destino } });
+        // Como o servidor (api_compartilhar.concluir_espelho): o resumo do espelho no status.
+        concluir(t, "concluida", { status: "14 copiados, 231 sem mudança.", resultado: {
+          copiados: 14, iguais: 231, resumo: "14 copiados, 231 sem mudança", nao_copiados: [],
+          pasta: (corpo.destino || "") + "\\Helestron - Acervo",
+        } });
       })();
       return { tarefa: t.id };
     },
