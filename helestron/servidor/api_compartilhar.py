@@ -9,10 +9,23 @@ fechado), e a recusa diz qual arquivo é, por que ficou e para onde movê-lo.
 O resto do processo que não pôde sair (a minuta do usuário, o produto da IA
 em Produtos/, a transcrição aberta no Word, o relatório do lote aberto no
 Excel) não trava nada - o índice, o conector, o pacote e a nuvem já o deixam
-de fora -, mas fica avisado no Início. E todo compartilhamento começa pelo
-preparo (nucleo/sigilo.py: o processo que o programa já sabe sigiloso - pela
-pasta dos sigilosos ou pela pauta - sai do acervo e do índice antes de a
-ferramenta abrir ou de a nuvem receber a cópia).
+de fora -, mas fica avisado no Início. O Claude Code, o Cowork, o ChatGPT
+(modo Work) e o Codex, que leem a pasta inteira sem esse filtro, ainda o
+veem até ele sair: é o "risco aceito" da especificação, e o aviso diz isso
+(a alavanca para voltar a travar é motor.bloqueia()). E todo
+compartilhamento começa pelo preparo (nucleo/sigilo.py: o processo que o
+programa já sabe sigiloso - pela pasta dos sigilosos ou pela pauta - sai do
+acervo e do índice antes de a ferramenta abrir ou de a nuvem receber a
+cópia).
+
+A pasta dos sigilosos (ou a da pauta) DENTRO do acervo - um config.ini
+editado à mão ou de versão anterior, que a tela de Ajustes recusaria - é
+outra coisa: ali o sigiloso está no acervo por inteiro, e é o lugar para
+onde o programa o manda. Com as pastas assim, nenhuma ferramenta que lê a
+pasta abre, nem o preparo (que escreveria no CLAUDE.md que os sigilosos
+"não estão nesta pasta") nem o espelho na nuvem: 409 com a frase do
+conflito (exigir_pastas_separadas). O mesmo vale para a pasta da nuvem com
+os sigilosos ou a pauta dentro dela (config.conflito_com_a_nuvem).
 """
 
 from __future__ import annotations
@@ -22,6 +35,7 @@ import threading
 from pathlib import Path
 
 from .. import servicos
+from ..nucleo import config as _config
 from ..nucleo import sistema
 from ..tarefas import NUVEM
 from .api_geral import maiuscula
@@ -151,6 +165,33 @@ def exigir_sem_sigiloso(app) -> None:
                       frase_sigilosos_no_acervo(lista, app.cfg, _motivos(app)))
 
 
+def exigir_pastas_separadas(app) -> None:
+    """Recusa (409) enquanto a pasta dos sigilosos ou a da pauta estiver
+    dentro do acervo (ou o acervo dentro dela) - a regra única de
+    servicos.problema_nas_pastas, a mesma das pendências do Início.
+
+    As ferramentas que leem a pasta do acervo direto (Claude Code, Cowork,
+    ChatGPT Work, Codex) não passam pelo filtro do conector e do índice: com
+    as pastas assim, elas leriam os autos sigilosos. O preparo e o espelho
+    também esperam - o CLAUDE.md diria que os sigilosos não estão ali.
+    """
+    cfg = app.cfg
+    frase = servicos.problema_nas_pastas(cfg.pasta_acervo, cfg.pasta_sigilosos,
+                                         servicos.pasta_pauta(cfg))
+    if frase:
+        raise ErroApi(409, "pastas_em_conflito", frase)
+
+
+def conflito_da_pasta_da_nuvem(cfg, destino) -> str | None:
+    """Por que o acervo não pode ser espelhado em 'destino', ou None: a nuvem
+    dentro do acervo (ou contendo-o), ou os sigilosos ou a pauta dentro da
+    nuvem (ou contendo-a)."""
+    return (servicos.conflito_da_nuvem(destino, cfg.pasta_acervo)
+            or _config.conflito_com_a_nuvem(destino, cfg.pasta_sigilosos,
+                                            servicos.pasta_pauta(cfg))
+            or None)
+
+
 def preparar_e_conferir(app, **opcoes):
     """O preparo do acervo (preparo.atualizar_contexto(app.cfg, **opcoes)) e,
     se os autos de um processo sigiloso não puderam sair do acervo, a recusa
@@ -211,9 +252,12 @@ def depois_de_salvar(app, documento: Path | None = None) -> None:
 
 def nuvem_sem_conflito(cfg, destino) -> bool:
     """O espelho automático pode ir para 'destino'? Pasta da nuvem dentro do
-    acervo (ou que o contém), gravada antes desta regra ou à mão no
-    config.ini: o espelho é pulado, com o aviso no registro."""
-    frase = servicos.conflito_da_nuvem(destino, cfg.pasta_acervo)
+    acervo (ou que o contém), com os sigilosos ou a pauta dentro dela, ou
+    sigilosos e pauta dentro do acervo - gravados antes destas regras ou à
+    mão no config.ini: o espelho é pulado, com o aviso no registro."""
+    frase = (conflito_da_pasta_da_nuvem(cfg, destino)
+             or servicos.problema_nas_pastas(cfg.pasta_acervo, cfg.pasta_sigilosos,
+                                             servicos.pasta_pauta(cfg)))
     if frase:
         log.warning("Espelho na nuvem NÃO feito: %s", frase)
         return False
@@ -284,6 +328,7 @@ def _lista(valor) -> list:
 
 def preparar(p: Pedido) -> dict:
     app = p.app
+    exigir_pastas_separadas(app)
     exigir_sem_sigiloso(app)
 
     def alvo(tw):
@@ -331,6 +376,7 @@ def cowork(p: Pedido) -> dict:
     from ..compartilhar import claude
 
     app = p.app
+    exigir_pastas_separadas(app)
     exigir_sem_sigiloso(app)
     acervo = app.cfg.pasta_acervo
     _preparo_rapido(app)
@@ -382,6 +428,7 @@ def claude_code(p: Pedido) -> dict:
     from ..compartilhar import claude
 
     app = p.app
+    exigir_pastas_separadas(app)
     exigir_sem_sigiloso(app)
     _preparo_rapido(app)
     try:
@@ -416,6 +463,7 @@ def chatgpt_work(p: Pedido) -> dict:
     from ..compartilhar import chatgpt
 
     app = p.app
+    exigir_pastas_separadas(app)
     exigir_sem_sigiloso(app)
     acervo = app.cfg.pasta_acervo
     _preparo_rapido(app)
@@ -446,6 +494,7 @@ def codex(p: Pedido) -> dict:
     from ..compartilhar import chatgpt
 
     app = p.app
+    exigir_pastas_separadas(app)
     exigir_sem_sigiloso(app)
     acervo = app.cfg.pasta_acervo
     _preparo_rapido(app)
@@ -526,9 +575,10 @@ def espelhar(p: Pedido) -> dict:
         raise erro_400("Escolha antes a pasta do OneDrive ou do Google Drive.", "sem_nuvem")
     if not Path(destino).is_dir():
         raise ErroApi(404, "pasta_inexistente", f"A pasta {destino} não existe.")
+    exigir_pastas_separadas(app)
     exigir_sem_sigiloso(app)
     acervo = cfg.pasta_acervo
-    frase = servicos.conflito_da_nuvem(destino, acervo)
+    frase = conflito_da_pasta_da_nuvem(cfg, destino)
     if frase:
         raise erro_400(frase, "pastas_em_conflito")
     # Só depois de todas as conferências: a pasta recusada não fica gravada

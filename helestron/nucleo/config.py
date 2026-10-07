@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import configparser
 import logging
+import math
 import os
 import re
 import threading
@@ -238,6 +239,30 @@ def _ler_texto(arquivo: Path) -> str:
     return "\n".join(linhas).lstrip("\ufeff")
 
 
+def para_real(valor) -> float:
+    """O número do texto ('3', '2,5', '1e3'), só se for finito.
+
+    'inf', 'nan' e '1e999' (que o float lê como infinito) levantam
+    ValueError - e não passam adiante para virar OverflowError no int() ou
+    no time.sleep() de quem usa o valor.
+    """
+    if isinstance(valor, bool):
+        raise ValueError("valor lógico não é número")
+    numero = float(str(valor).replace(",", ".").strip())
+    if not math.isfinite(numero):
+        raise ValueError(f"número não finito: {valor!r}")
+    return numero
+
+
+def para_inteiro(valor) -> int:
+    """O inteiro do texto ('3', '3.0', '2,7' -> 2); ValueError se não for
+    número finito. A regra única do config.ini, da tela de Ajustes e da API:
+    só ValueError sai daqui, nunca OverflowError."""
+    if isinstance(valor, int) and not isinstance(valor, bool):
+        return valor
+    return int(para_real(valor))
+
+
 def _novo_parser() -> configparser.ConfigParser:
     return configparser.ConfigParser(
         interpolation=None, comment_prefixes=(";", "#"),
@@ -299,13 +324,13 @@ class Config:
 
     def inteiro(self, secao: str, chave: str) -> int:
         try:
-            return int(float(self.texto(secao, chave).replace(",", ".")))
+            return para_inteiro(self.texto(secao, chave))
         except ValueError:
             return int(PADROES.get((secao, chave), "0") or 0)
 
     def real(self, secao: str, chave: str) -> float:
         try:
-            return float(self.texto(secao, chave).replace(",", "."))
+            return para_real(self.texto(secao, chave))
         except ValueError:
             return float(PADROES.get((secao, chave), "0") or 0)
 
@@ -382,6 +407,59 @@ def conflito_de_pastas(acervo: Path, sigilosos: Path, pauta: Path | None = None)
         return ("A pasta da pauta exportada não pode ficar dentro da pasta do acervo (nem ser "
                 "a mesma): a planilha traz as partes dos processos em segredo de justiça, e "
                 "tudo o que está no acervo é compartilhado com a IA. Escolha uma pasta fora dele.")
+    return ""
+
+
+def _caminho_comparavel(p) -> str:
+    """O caminho resolvido, normalizado para comparar (sem distinguir
+    maiúsculas no Windows); com %VARIAVEIS% e ~ expandidos."""
+    texto = os.path.expandvars(str(p).strip().strip('"'))
+    try:
+        resolvido = Path(texto).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        resolvido = Path(os.path.abspath(texto))
+    return os.path.normcase(str(resolvido))
+
+
+def _dentro_ou_igual(filho, pai) -> bool:
+    f, p = _caminho_comparavel(filho), _caminho_comparavel(pai)
+    return f == p or f.startswith(p.rstrip(os.sep) + os.sep)
+
+
+def conflito_com_a_nuvem(nuvem, sigilosos, pauta=None) -> str:
+    """Por que a pasta dos sigilosos (ou a da pauta exportada) não serve com
+    esta pasta da nuvem; texto vazio se servem.
+
+    Tudo o que está na pasta da nuvem (OneDrive, Google Drive) sai do
+    computador e fica ao alcance dos conectores do ChatGPT e do Claude. Os
+    autos em segredo de justiça não podem morar lá dentro, nem a planilha da
+    pauta (traz as partes dos processos sigilosos). Ao contrário também não:
+    com a nuvem dentro da pasta dos sigilosos, o espelho do acervo se
+    misturaria a eles - e a limpeza do espelho (que apaga dele a cópia de
+    processo sigiloso) passaria a andar dentro da pasta dos sigilosos.
+    'nuvem' em branco: não se espelha, e não há conflito.
+    """
+    if not str(nuvem or "").strip():
+        return ""
+    if sigilosos is not None and str(sigilosos).strip():
+        if _dentro_ou_igual(sigilosos, nuvem):
+            return ("A pasta dos processos em segredo de justiça não pode ficar dentro da pasta "
+                    "da nuvem (nem ser ela): tudo o que está ali é sincronizado com o OneDrive "
+                    "ou o Google Drive e fica ao alcance dos conectores da IA. Escolha uma pasta "
+                    "fora da nuvem.")
+        if _dentro_ou_igual(nuvem, sigilosos):
+            return ("A pasta da nuvem não pode ficar dentro da pasta dos processos em segredo de "
+                    "justiça: o espelho do acervo se misturaria a eles. Escolha pastas separadas.")
+    if pauta is not None and str(pauta).strip():
+        if _dentro_ou_igual(pauta, nuvem):
+            return ("A pasta da pauta exportada não pode ficar dentro da pasta da nuvem (nem ser "
+                    "ela): a planilha traz as partes dos processos em segredo de justiça, e tudo "
+                    "o que está ali é sincronizado com o OneDrive ou o Google Drive. Escolha uma "
+                    "pasta fora da nuvem.")
+        if _dentro_ou_igual(nuvem, pauta):
+            return ("A pasta da nuvem não pode ficar dentro da pasta da pauta exportada: o "
+                    "espelho do acervo se misturaria às planilhas da pauta. Escolha pastas "
+                    "separadas.")
     return ""
 
 

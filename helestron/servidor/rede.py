@@ -74,6 +74,11 @@ _RE_SCRIPT_EMBUTIDO = re.compile(rb"<script(?![^>]*\bsrc\s*=)[^>]*>(.*?)</script
 _RE_TOKEN = re.compile(r"([?&]t=)[^&\s\"]+")
 
 
+def mascarar_token(texto: str) -> str:
+    """O texto com o token da URL (?t=...) trocado por ***."""
+    return _RE_TOKEN.sub(r"\1***", str(texto))
+
+
 def csp_da_pagina(html: bytes) -> str:
     """A CSP com o hash de cada <script> embutido da página servida."""
     hashes = []
@@ -255,9 +260,11 @@ class Pedido:
                 return valor.strip().lower() in ("1", "true", "sim", "s", "on", "yes")
             return bool(valor)
         if tipo is int:
+            # OverflowError: o JSON 1e999 (ou Infinity) chega como float
+            # infinito, e int() dele não é ValueError - seria um 500.
             try:
                 return int(valor)
-            except (TypeError, ValueError) as erro:
+            except (TypeError, ValueError, OverflowError) as erro:
                 raise erro_400(f"O campo “{nome}” deve ser um número inteiro.",
                                "campo_invalido") from erro
         if tipo is str:
@@ -292,12 +299,18 @@ class Tratador(BaseHTTPRequestHandler):
     server: "ServidorLocal"
 
     # --------------------------------------------------------- registro
+    # O token da URL (?t=, o do /api/eventos e o da página inicial) nunca vai
+    # para o registro: a pasta Logs é a que o usuário manda ao suporte.
+    def caminho_seguro(self) -> str:
+        """O caminho pedido (com a consulta), sem o token."""
+        return mascarar_token(getattr(self, "path", "") or "")
+
     def log_message(self, formato, *args) -> None:                # noqa: N802
-        # O token da URL (?t=) nunca vai para o registro.
-        log.debug("%s %s", self.address_string(), _RE_TOKEN.sub(r"\1***", formato % args))
+        log.debug("%s %s", self.address_string(), mascarar_token(formato % args))
 
     def log_error(self, formato, *args) -> None:                  # noqa: N802
-        log.debug("erro HTTP: " + formato, *args)
+        # O send_error repete a linha do pedido (com a consulta) na mensagem.
+        log.debug("erro HTTP: %s", mascarar_token(formato % args))
 
     # ---------------------------------------------------------- métodos
     def do_GET(self):                                              # noqa: N802
@@ -362,7 +375,7 @@ class Tratador(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.close_connection = True
         except Exception as erro:                       # pragma: no cover - defesa
-            log.exception("falha ao atender %s %s", metodo, self.path)
+            log.exception("falha ao atender %s %s", metodo, self.caminho_seguro())
             try:
                 self._json_erro(ErroApi(500, "erro_interno", "Algo deu errado no Helestron.",
                                         f"{type(erro).__name__}: {erro}"))

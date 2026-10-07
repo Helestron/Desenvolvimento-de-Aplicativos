@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import servicos
-from ..nucleo import config
+from ..nucleo import caminhos, config
 from .rede import ErroApi, erro_400
 
 
@@ -209,11 +209,14 @@ def valor_atual(cfg, c: Campo):
     if c.tipo == "flag":
         return texto.strip().lower() in ("1", "true", "sim", "s", "yes", "on")
     if c.tipo == "inteiro":
+        # config.para_inteiro: '1e999' ou 'inf' editados à mão no config.ini
+        # voltam ao padrão, em vez de derrubar a tela de Ajustes (500).
         try:
-            return int(float(texto.replace(",", ".")))
+            return config.para_inteiro(texto)
         except ValueError:
             try:
-                return int(c.padrao or _padroes_ini().get((c.secao, c.chave), "0") or 0)
+                return config.para_inteiro(c.padrao or _padroes_ini().get((c.secao, c.chave), "0")
+                                           or 0)
             except ValueError:
                 return 0
     return texto
@@ -241,7 +244,9 @@ def normalizar(c: Campo, valor) -> str:
         return "true" if bool(valor) else "false"
     if c.tipo == "inteiro":
         try:
-            numero = int(float(str(valor).replace(",", ".").strip()))
+            # Só ValueError sai de config.para_inteiro: '1e999', o JSON 1e999
+            # (infinito) e NaN são recusados com a frase, e não com 500.
+            numero = config.para_inteiro(valor)
         except (TypeError, ValueError) as erro:
             raise erro_400(f"“{c.rotulo}” deve ser um número inteiro.", "valor_invalido") from erro
         if (c.minimo is not None and numero < c.minimo) or \
@@ -269,31 +274,63 @@ def normalizar(c: Campo, valor) -> str:
     return texto
 
 
-def conferir_pastas(cfg, secao: str, chave: str, valor: str) -> None:
-    """Recusa a pasta que poria os sigilosos (ou a pauta) ao alcance da IA, e
-    a pasta da nuvem que entraria em conflito com o acervo."""
-    if (secao, chave) == NUVEM or (secao, chave) == ("geral", "pasta_acervo"):
-        novo = Path(os.path.expandvars(valor)).expanduser() if valor else None
-        if (secao, chave) == NUVEM:
-            nuvem, acervo = (str(novo) if novo is not None else ""), cfg.pasta_acervo
-        else:
-            nuvem = cfg.texto(*NUVEM)
-            nuvem = str(Path(os.path.expandvars(nuvem)).expanduser()) if nuvem else ""
-            acervo = novo if novo is not None else cfg.pasta_acervo
-        frase = servicos.conflito_da_nuvem(nuvem, acervo)
-        if frase:
-            raise ErroApi(400, "pastas_em_conflito", frase)
-    if (secao, chave) not in PASTAS_DO_SIGILO:
-        return
+# O padrão de cada pasta em branco - o mesmo que a Config usa
+# (caminhos.resolver): em branco não é "sem pasta", é a pasta padrão.
+PADRAO_DA_PASTA = {("geral", "pasta_acervo"): "Acervo", ("geral", "pasta_sigilosos"): "Sigilosos",
+                   ("pauta", "pasta"): "Pauta"}
+
+
+def _pastas_depois(cfg, secao: str, chave: str, valor: str) -> tuple[Path, Path, Path, str]:
+    """(acervo, sigilosos, pauta, nuvem) como ficarão depois de gravar 'valor'.
+
+    A pasta em branco é resolvida para o padrão que passa a valer
+    (Documentos\\Helestron\\Acervo, ...), como a Config fará ao relê-la - e
+    não deixada com a pasta de agora: a conferência compararia as pastas
+    antigas, e "voltar ao padrão" pela API poria os sigilosos dentro do
+    acervo sem recusa. A nuvem em branco é "não espelhar" ("").
+    """
     acervo, sigilosos, pauta = cfg.pasta_acervo, cfg.pasta_sigilosos, servicos.pasta_pauta(cfg)
-    novo = Path(os.path.expandvars(valor)).expanduser() if valor else None
-    if (secao, chave) == ("geral", "pasta_acervo") and novo is not None:
-        acervo = novo
-    elif (secao, chave) == ("geral", "pasta_sigilosos") and novo is not None:
-        sigilosos = novo
-    elif (secao, chave) == ("pauta", "pasta"):
-        pauta = novo if novo is not None else servicos.base_usuario() / "Pauta"
-    frase = servicos.problema_nas_pastas(acervo, sigilosos, pauta)
+    nuvem = cfg.texto(*NUVEM)
+    alvo = (secao, chave)
+    if alvo in PADRAO_DA_PASTA:
+        novo = caminhos.resolver(valor, PADRAO_DA_PASTA[alvo], servicos.base_usuario())
+        if alvo == ("geral", "pasta_acervo"):
+            acervo = novo
+        elif alvo == ("geral", "pasta_sigilosos"):
+            sigilosos = novo
+        else:
+            pauta = novo
+    elif alvo == NUVEM:
+        nuvem = valor
+    nuvem = str(Path(os.path.expandvars(nuvem)).expanduser()) if nuvem else ""
+    return acervo, sigilosos, pauta, nuvem
+
+
+def conferir_pastas(cfg, secao: str, chave: str, valor: str) -> None:
+    """Recusa a pasta que poria os sigilosos (ou a pauta) ao alcance da IA ou
+    da nuvem, e a pasta da nuvem que entraria em conflito com o acervo.
+
+    Cada chave é conferida com as pastas que ela afeta, já com o valor novo
+    (a pasta em branco resolvida para o padrão): o acervo com os sigilosos,
+    a pauta e a nuvem; os sigilosos e a pauta com o acervo e com a nuvem; a
+    nuvem com o acervo, os sigilosos e a pauta.
+    """
+    alvo = (secao, chave)
+    if alvo != NUVEM and alvo not in PASTAS_DO_SIGILO:
+        return
+    acervo, sigilosos, pauta, nuvem = _pastas_depois(cfg, secao, chave, valor)
+    frase = None
+    if alvo in (NUVEM, ("geral", "pasta_acervo")):
+        frase = servicos.conflito_da_nuvem(nuvem, acervo)
+    if not frase and alvo in PASTAS_DO_SIGILO:
+        frase = servicos.problema_nas_pastas(acervo, sigilosos, pauta)
+    if not frase and alvo != ("geral", "pasta_acervo"):
+        # Os sigilosos e a pauta, nunca na pasta da nuvem (nem contendo-a).
+        # Só com a chave que mexe numa delas: a correção de uma pasta não
+        # fica refém de um conflito antigo de outra, editado à mão.
+        frase = config.conflito_com_a_nuvem(
+            nuvem, sigilosos if alvo in (NUVEM, ("geral", "pasta_sigilosos")) else None,
+            pauta if alvo in (NUVEM, ("pauta", "pasta")) else None)
     if frase:
         raise ErroApi(400, "pastas_em_conflito", frase)
 

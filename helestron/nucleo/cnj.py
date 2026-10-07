@@ -24,9 +24,18 @@ from dataclasses import dataclass, replace
 # O separador aceita hífen, ponto, espaço e os travessões que o Word põe
 # sozinho no lugar do hífen ("0700123–45.2024...").
 _SEP = r"[-.\s\u2010-\u2015]?"
+# O dependente (/01, /0003 - o e-SAJ usa 4 dígitos) só é aceito quando é
+# mesmo um sufixo do número, e não o começo do texto que vem depois dele:
+#   * colado à barra ("/1", "/01", "/0003"), de 1 a 4 dígitos;
+#   * com espaço em volta da barra (" / 01"), só com 2 ou mais dígitos -
+#     "... / 3 réus" é texto, não o incidente 03;
+#   * nunca seguido de letra, ordinal ou grau ("/ 1ª Vara", "/2ª Vara",
+#     "/1º"): o \w do Python já cobre letras, dígitos, 'ª' e 'º'.
+# Sem isso, a relação com "0700123-45.2024.8.02.0001 / 1ª Vara" baixava o
+# incidente 01 no lugar dos autos principais.
 _PADRAO = re.compile(
     rf"(?<!\d)(\d{{7}}){_SEP}(\d{{2}}){_SEP}(\d{{4}}){_SEP}(\d){_SEP}(\d{{2}}){_SEP}(\d{{4}})"
-    r"(?:\s*/\s*(\d{1,4}))?"          # dependente: /01, /0003 (o e-SAJ usa 4 dígitos)
+    r"(?:(?:/|\s*/\s*(?=\d\d))(\d{1,4})(?![\w°]))?"
     r"(?!\d)"
 )
 

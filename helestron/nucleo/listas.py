@@ -12,15 +12,20 @@ arquivo de verdade. O que se aprendeu lá continua valendo:
    de processo nenhum. A célula numérica vira inteiro antes de ser lida.
 4. O EXCEL CORROMPE O CNJ GUARDADO COMO NÚMERO: o double de 64 bits não
    comporta 20 dígitos, e os últimos saem trocados - e o número corrompido
-   ainda parece um número de processo. Por isso célula NUMÉRICA só entra se
-   o dígito verificador conferir. Sem isso, o programa baixaria processo
-   alheio sem ninguém perceber.
+   ainda parece um número de processo. Por isso a célula numérica que já
+   não guarda o inteiro exato (de 2**53 em diante - todo CNJ como número)
+   nunca entra no lote, mesmo que o dígito verificador confira: ele é
+   módulo 97, e cerca de 1 em 97 números corrompidos passaria por ele. O
+   inteiro exato (raro: XML montado à mão) só entra se o dígito conferir.
+   Sem isso, o programa baixaria processo alheio sem ninguém perceber.
 5. PLANILHA COM FÓRMULA que o Excel nunca abriu não tem valor gravado:
    tenta-se de novo pelo texto das fórmulas.
 
 E o que foi corrigido em relação à base (todos com teste):
   * o sufixo de dependente só é aceito com barra ("/01"): "... - 2ª Vara"
-    deixava de ser lido como o incidente 02;
+    deixava de ser lido como o incidente 02; e, mesmo com a barra, não
+    quando o que vem depois é texto ("... / 1ª Vara", ".../2ª Vara",
+    "... / 3 réus" continuam sendo os autos principais - cnj._PADRAO);
   * o Word é lido na ordem do documento (parágrafos e tabelas
     intercalados), e não todos os parágrafos antes de todas as tabelas;
   * várias colunas de número: se uma delas se chama "processo" (e não
@@ -133,6 +138,14 @@ def _texto_da_celula(valor) -> str:
     return digitos
 
 
+# Célula numérica (float) que não guarda mais o inteiro exato: de 2**53 em
+# diante, o espaçamento entre dois doubles vizinhos passa de 1. O CNJ como
+# número tem de 18 a 20 dígitos (o zero da frente some) - sempre nessa faixa.
+# Acima de 10**20 não há CNJ possível, e a célula segue o caminho comum.
+_FLOAT_INEXATO = float(2 ** 53)
+_ALEM_DO_CNJ = 1e20
+
+
 class _Coletor:
     """Junta números e senhas, na ordem, sem repetir."""
 
@@ -172,6 +185,21 @@ class _Coletor:
         texto = _texto_da_celula(valor)
         if not texto:
             return
+        if isinstance(valor, float) and _FLOAT_INEXATO <= abs(valor) < _ALEM_DO_CNJ:
+            # Item 4 do docstring. Acima de 2**53 o double não guarda mais o
+            # inteiro exato (o Excel, aliás, só guarda 15 algarismos): o CNJ
+            # lido daqui já não é o da relação. O dígito verificador não basta
+            # como filtro - é módulo 97, e cerca de 1 em 97 números
+            # corrompidos ainda confere (com o foro, ou até o tribunal,
+            # trocado). Nada desta célula entra no lote; ela é contada entre
+            # os corrompidos (inclusive o número com "00" na frente, que nem
+            # chega a parecer um CNJ), para o aviso "formate como Texto".
+            achados = cnj.extrair_todos(texto)
+            self.leitura.corrompidos.extend(
+                [n.formatado for n in achados] or [texto])
+            return
+        # Inteiro de verdade (XML montado à mão, com todos os dígitos) é
+        # exato: vale o dígito verificador, como antes.
         numerico = isinstance(valor, (int, float)) and not isinstance(valor, bool)
         for n in cnj.extrair_todos(texto):
             if numerico and not n.digito_confere:
@@ -259,6 +287,7 @@ def _ler_linhas(col: _Coletor, linhas: list[tuple], aviso_aba: str) -> None:
     coluna, coluna_senha = _escolher_coluna(linhas)
     if coluna is not None:
         antes = len(col.leitura.processos)
+        corrompidos = len(col.leitura.corrompidos)
         for linha in linhas:
             valor = linha[coluna] if coluna < len(linha) else None
             senha = ""
@@ -270,6 +299,9 @@ def _ler_linhas(col: _Coletor, linhas: list[tuple], aviso_aba: str) -> None:
                 col.leitura.senhas[col.leitura.processos[-1].formatado] = senha
         if len(col.leitura.processos) > antes:
             return
+        # A linha inteira vai ser lida: o que a coluna já contou como
+        # corrompido não conta duas vezes (a tela diria o dobro de linhas).
+        del col.leitura.corrompidos[corrompidos:]
     # Sem coluna reconhecida (ou ela veio vazia): varre a linha inteira.
     for linha in linhas:
         for valor in linha:
@@ -279,7 +311,7 @@ def _ler_linhas(col: _Coletor, linhas: list[tuple], aviso_aba: str) -> None:
 def _de_xlsx(caminho: Path, col: _Coletor) -> None:
     from openpyxl import load_workbook
 
-    def tentar(valores: bool) -> None:
+    def tentar(valores: bool, alvo: _Coletor) -> None:
         # Em memória: o openpyxl recusa pela extensão, e aqui a extensão já
         # se mostrou mentirosa; e no modo read_only ele lê as abas depois.
         try:
@@ -292,19 +324,25 @@ def _de_xlsx(caminho: Path, col: _Coletor) -> None:
             for nome in livro.sheetnames:
                 aba = livro[nome]
                 if getattr(aba, "sheet_state", "visible") != "visible":
-                    col.leitura.avisos.append(f"aba oculta '{nome}' ignorada")
+                    alvo.leitura.avisos.append(f"aba oculta '{nome}' ignorada")
                     continue
                 linhas = list(aba.iter_rows(values_only=True))
-                _ler_linhas(col, linhas, nome)
+                _ler_linhas(alvo, linhas, nome)
         finally:
             try:
                 livro.close()
             except Exception:
                 pass
 
-    tentar(True)
+    tentar(True, col)
     if not col.leitura.processos:
-        tentar(False)
+        # De novo, pelo texto das fórmulas. As células numéricas e as abas
+        # ocultas são as mesmas da primeira leitura: os corrompidos e os
+        # avisos não são contados de novo (a tela diria o dobro de linhas).
+        formulas = _Coletor()
+        tentar(False, formulas)
+        for n in formulas.leitura.processos:
+            col.numero(n, formulas.leitura.senhas.get(n.formatado, ""))
 
 
 def _de_xls(caminho: Path, col: _Coletor) -> None:
