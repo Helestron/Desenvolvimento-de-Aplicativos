@@ -304,6 +304,18 @@ class TextosQueOUsuarioLe(unittest.TestCase):
             with self.subTest(arquivo=nome):
                 self.assertNotRegex(texto, r'"processo", "processos"\)\} baixados')
 
+    def test_seletor_da_relacao_mostra_tudo_o_que_o_programa_le(self):
+        # A planilha .xlsm (com macros) era lida, mas não aparecia no filtro
+        # "Relações de processos" do diálogo nem no 'accept' do navegador.
+        from helestron.nucleo import listas
+
+        texto = (WEB / "js" / "secao-processos.js").read_text(encoding="utf-8")
+        filtro = re.search(r'const TIPOS_RELACAO = \["Relações de processos\|([^"]+)"', texto)
+        aceitar = re.search(r'const ACEITAR = "([^"]+)";', texto)
+        self.assertEqual(sorted(e.lstrip("*") for e in filtro.group(1).split(";")),
+                         sorted(listas.EXTENSOES))
+        self.assertEqual(sorted(aceitar.group(1).split(",")), sorted(listas.EXTENSOES))
+
 
 class MarcaEFontes(unittest.TestCase):
     def test_fonte_inter_embutida_com_a_licenca(self):
