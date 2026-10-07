@@ -29,8 +29,14 @@ E o que foi corrigido em relação à base (todos com teste):
   * o Word é lido na ordem do documento (parágrafos e tabelas
     intercalados), e não todos os parágrafos antes de todas as tabelas;
   * várias colunas de número: se uma delas se chama "processo" (e não
-    "processo de origem", "principal"...), só ela é lida;
-  * abas ocultas da planilha são ignoradas;
+    "processo de origem", "principal"...), só ela é lida - mesmo que só
+    traga números corrompidos (item 4); vazia, a linha inteira é lida, menos
+    as colunas de outro processo;
+  * abas ocultas da planilha são ignoradas (no .ods também, e na leitura
+    direta do XML do .xlsx); os bytes crus da planilha, que as trazem, não
+    são lidos como texto;
+  * o .xlsx que o openpyxl não lê inteiro (célula fora do padrão, variante
+    do formato) é lido direto do XML, com as mesmas regras;
   * arquivo em UTF-16 (BOM) é lido;
   * senha de processo sigiloso na lista ("número ; senha" ou coluna
     "senha") fica associada ao número, com a mesma grafia usada no
@@ -41,7 +47,9 @@ E o que foi corrigido em relação à base (todos com teste):
 from __future__ import annotations
 
 import csv
+import html
 import logging
+import posixpath
 import re
 import urllib.parse
 import urllib.request
@@ -161,6 +169,13 @@ class _Coletor:
         if senha:
             self.leitura.senhas[n.formatado] = senha
 
+    def absorver(self, outro: "_Coletor") -> None:
+        """O que outra leitura (feita à parte, para poder ser descartada) achou."""
+        for n in outro.leitura.processos:
+            self.numero(n, outro.leitura.senhas.get(n.formatado, ""))
+        self.leitura.corrompidos += outro.leitura.corrompidos
+        self.leitura.avisos += outro.leitura.avisos
+
     def texto(self, texto: str, senha: str = "") -> int:
         achados = cnj.extrair_todos(texto)
         for n in achados:
@@ -264,27 +279,56 @@ def _sem_marcacao(bruto: str) -> str:
 
 
 # --------------------------------------------------------------- planilhas
-def _escolher_coluna(linhas: list[tuple]) -> tuple[int | None, int | None]:
-    """Nas 10 primeiras linhas, a coluna do número e a da senha, se houver."""
+def _cabecalho(linhas: list[tuple]) -> tuple[int | None, int | None, frozenset[int]]:
+    """Nas 10 primeiras linhas, o cabeçalho: a coluna do número, a da senha,
+    se houver, e as que ele diz serem de OUTRO processo ("Processo de
+    origem", "Principal"...).
+
+    O relatório exportado costuma trazer um título antes do cabeçalho
+    ("Relação de processos", numa célula só, mesclada sobre as outras), e o
+    título também tem "processo" no texto: a linha com mais de uma célula
+    preenchida, e sem número de processo dentro, passa na frente dele. Sem
+    nenhuma linha assim, vale a primeira com o rótulo, como antes.
+    """
+    primeira = None
     for linha in linhas[:10]:
         num = senha = None
+        outras: set[int] = set()
+        preenchidas = 0
+        com_numero = False
         for i, valor in enumerate(linha):
+            rotulo = _texto_da_celula(valor).strip()
+            if not rotulo:
+                continue
+            preenchidas += 1
+            if cnj.extrair_todos(rotulo):
+                com_numero = True
+                continue
             if not isinstance(valor, str):
                 continue
-            rotulo = valor.strip()
-            if not rotulo or cnj.extrair_todos(rotulo):
-                continue
+            if _COLUNA_OUTRO.search(rotulo):
+                outras.add(i)
             if num is None and _COLUNA_NUMERO.search(rotulo) and not _COLUNA_OUTRO.search(rotulo):
                 num = i
             elif senha is None and _COLUNA_SENHA.search(rotulo):
                 senha = i
-        if num is not None:
-            return num, senha
-    return None, None
+        if num is None:
+            continue
+        achado = (num, senha, frozenset(outras))
+        if preenchidas > 1 and not com_numero:
+            return achado
+        if primeira is None:
+            primeira = achado
+    return primeira or (None, None, frozenset())
+
+
+def _escolher_coluna(linhas: list[tuple]) -> tuple[int | None, int | None]:
+    """Nas 10 primeiras linhas, a coluna do número e a da senha, se houver."""
+    return _cabecalho(linhas)[:2]
 
 
 def _ler_linhas(col: _Coletor, linhas: list[tuple], aviso_aba: str) -> None:
-    coluna, coluna_senha = _escolher_coluna(linhas)
+    coluna, coluna_senha, outras = _cabecalho(linhas)
     if coluna is not None:
         antes = len(col.leitura.processos)
         corrompidos = len(col.leitura.corrompidos)
@@ -297,21 +341,28 @@ def _ler_linhas(col: _Coletor, linhas: list[tuple], aviso_aba: str) -> None:
             col.celula(valor)
             if senha and len(col.leitura.processos) > n_antes:
                 col.leitura.senhas[col.leitura.processos[-1].formatado] = senha
-        if len(col.leitura.processos) > antes:
+        # A coluna do número trouxe número - mesmo que só os corrompidos pelo
+        # Excel (item 4): as outras colunas não são lidas. Varrer a linha
+        # inteira poria no lote o "Processo de origem" (outro processo) no
+        # lugar dos números que a relação pede.
+        if len(col.leitura.processos) > antes or len(col.leitura.corrompidos) > corrompidos:
             return
-        # A linha inteira vai ser lida: o que a coluna já contou como
-        # corrompido não conta duas vezes (a tela diria o dobro de linhas).
-        del col.leitura.corrompidos[corrompidos:]
-    # Sem coluna reconhecida (ou ela veio vazia): varre a linha inteira.
+    # Sem coluna reconhecida (ou ela veio vazia): varre a linha inteira -
+    # menos as colunas que o cabeçalho diz serem de outro processo.
     for linha in linhas:
-        for valor in linha:
-            col.celula(valor)
+        for i, valor in enumerate(linha):
+            if i not in outras:
+                col.celula(valor)
 
 
 def _de_xlsx(caminho: Path, col: _Coletor) -> None:
     from openpyxl import load_workbook
 
-    def tentar(valores: bool, alvo: _Coletor) -> None:
+    abriu = False
+
+    def tentar(valores: bool, alvo: _Coletor) -> int:
+        """Lê as abas visíveis em 'alvo' e diz quantas leu."""
+        nonlocal abriu
         # Em memória: o openpyxl recusa pela extensão, e aqui a extensão já
         # se mostrou mentirosa; e no modo read_only ele lê as abas depois.
         try:
@@ -320,34 +371,51 @@ def _de_xlsx(caminho: Path, col: _Coletor) -> None:
         except Exception as erro:
             raise ListaInvalida(
                 f"não consegui abrir a planilha: {str(erro)[:120]}") from erro
+        abriu = True
+        lidas = 0
         try:
             for nome in livro.sheetnames:
-                aba = livro[nome]
-                if getattr(aba, "sheet_state", "visible") != "visible":
-                    alvo.leitura.avisos.append(f"aba oculta '{nome}' ignorada")
-                    continue
-                # No modo read_only, o openpyxl lê só até a "dimensão" que o
-                # arquivo declara - e as planilhas exportadas por sistemas
-                # (o próprio SAJ, relatórios, Apache POI) costumam declarar
-                # "A1": lia-se a primeira linha e mais nada, e a relação
-                # inteira era recusada ("nenhum número de processo").
-                redefinir = getattr(aba, "reset_dimensions", None)
-                if callable(redefinir):
-                    redefinir()
-                linhas = list(aba.iter_rows(values_only=True))
+                try:
+                    aba = livro[nome]
+                    if getattr(aba, "sheet_state", "visible") != "visible":
+                        alvo.leitura.avisos.append(f"aba oculta '{nome}' ignorada")
+                        continue
+                    if not hasattr(aba, "iter_rows"):      # aba de gráfico: sem células
+                        continue
+                    # No modo read_only, o openpyxl lê só até a "dimensão" que
+                    # o arquivo declara - e as planilhas exportadas por
+                    # sistemas (o próprio SAJ, relatórios, Apache POI) costumam
+                    # declarar "A1": lia-se a primeira linha e mais nada, e a
+                    # relação inteira era recusada ("nenhum número de processo").
+                    redefinir = getattr(aba, "reset_dimensions", None)
+                    if callable(redefinir):
+                        redefinir()
+                    linhas = list(aba.iter_rows(values_only=True))
+                except Exception as erro:
+                    # No modo read_only, a célula só é convertida aqui: o valor
+                    # com vírgula decimal ("1500,50", de exportador com o
+                    # Windows em português), o texto gravado sem o tipo, a data
+                    # fora do padrão ISO - em qualquer coluna - derrubavam a
+                    # leitura inteira, com a frase do openpyxl em inglês.
+                    raise ListaInvalida(
+                        f"não consegui ler a aba '{nome}': {str(erro)[:120]}") from erro
                 _ler_linhas(alvo, linhas, nome)
+                lidas += 1
         finally:
             try:
                 livro.close()
             except Exception:
                 pass
+        return lidas
 
+    primeira = _Coletor()
     erro_openpyxl: ListaInvalida | None = None
+    lidas = 0
     try:
-        tentar(True, col)
+        lidas = tentar(True, primeira)
     except ListaInvalida as erro:
         erro_openpyxl = erro
-    if not col.leitura.processos and erro_openpyxl is None:
+    if erro_openpyxl is None and lidas and not primeira.leitura.processos:
         # De novo, pelo texto das fórmulas. As células numéricas e as abas
         # ocultas são as mesmas da primeira leitura: os corrompidos e os
         # avisos não são contados de novo (a tela diria o dobro de linhas).
@@ -357,22 +425,192 @@ def _de_xlsx(caminho: Path, col: _Coletor) -> None:
         except ListaInvalida:
             pass
         for n in formulas.leitura.processos:
-            col.numero(n, formulas.leitura.senhas.get(n.formatado, ""))
-    if not col.leitura.processos:
-        # O openpyxl recusa variantes legítimas do formato (Strict Open XML,
-        # arquivos gerados por outros programas com estilos que ele não
-        # entende): lê-se o texto das células direto do XML.
-        _de_xlsx_bruto(caminho, col)
-    if not col.leitura.processos and erro_openpyxl is not None:
+            primeira.numero(n, formulas.leitura.senhas.get(n.formatado, ""))
+    if erro_openpyxl is None and lidas and (primeira.leitura.processos
+                                            or primeira.leitura.corrompidos):
+        col.absorver(primeira)
+        return
+    # O openpyxl recusou o arquivo (variantes legítimas do formato, estilos
+    # que ele não entende), parou numa célula fora do padrão, não achou aba
+    # (o Strict Open XML abre com zero abas) ou não achou número nas abas
+    # visíveis: a planilha é lida de novo, direto do XML, aba por aba e
+    # coluna por coluna. O que a primeira leitura juntou até parar fica de
+    # fora: nada conta duas vezes. Se o openpyxl abriu a pasta de trabalho,
+    # ele sabia quais abas são ocultas: a leitura direta, sem esse mapa, não
+    # as distinguiria, e não é feita.
+    xml = _Coletor()
+    lidas_xml = _de_xlsx_xml(caminho, xml, so_com_mapa=abriu)
+    if (xml.leitura.processos or xml.leitura.corrompidos
+            or erro_openpyxl is not None or not lidas):
+        col.absorver(xml)
+    else:
+        col.absorver(primeira)
+    if not col.leitura.processos and not col.leitura.corrompidos \
+            and erro_openpyxl is not None and not lidas_xml:
         raise erro_openpyxl
 
 
+# ------------------------------------------------- .xlsx lido direto do XML
 _RE_CELULA_XML = re.compile(rb"<(?:\w+:)?(?:t|v)(?:\s[^>]*)?>([^<]*)</(?:\w+:)?(?:t|v)>")
+_RE_SI_XML = re.compile(rb"<(?:\w+:)?si(?:\s[^>]*)?(?:/>|>(.*?)</(?:\w+:)?si>)", re.S)
+_RE_FONETICA_XML = re.compile(rb"<(?:\w+:)?rPh\b.*?</(?:\w+:)?rPh>", re.S)
+_RE_T_XML = re.compile(rb"<(?:\w+:)?t(?:\s[^>]*)?>([^<]*)</(?:\w+:)?t>")
+_RE_REFERENCIA = re.compile(r"([A-Za-z]{1,3})\d+$")
+_RE_INTEIRO = re.compile(r"[+-]?\d+")
+_MAX_COLUNAS = 16384            # a última coluna do Excel (XFD)
 
 
-def _de_xlsx_bruto(caminho: Path, col: _Coletor) -> None:
-    """O texto das células (textos compartilhados e das abas), sem o
-    openpyxl: só o que é texto entra, como na leitura normal."""
+def _local(tag: str) -> str:
+    """O nome do elemento sem o espaço de nomes (o Strict Open XML usa outro)."""
+    return tag.rsplit("}", 1)[-1]
+
+
+def _texto_xml(bruto: bytes) -> str:
+    return html.unescape(bruto.decode("utf-8", errors="ignore"))
+
+
+def _texto_ooxml(el) -> str:
+    """O texto de um <si> ou <is>: o <t> direto ou os <t> dos trechos <r>
+    (a transcrição fonética, <rPh>, fica de fora)."""
+    partes = []
+    for filho in el:
+        nome = _local(filho.tag)
+        if nome == "t":
+            partes.append(filho.text or "")
+        elif nome == "r":
+            partes += [t.text or "" for t in filho if _local(t.tag) == "t"]
+    return "".join(partes)
+
+
+def _relacoes(z: zipfile.ZipFile, parte: str) -> list[tuple[str, str, str]]:
+    """(Id, Type, parte de destino) das relações de uma parte do pacote."""
+    pasta, nome = posixpath.split(parte)
+    saida = []
+    for rel in ET.fromstring(z.read(posixpath.join(pasta, "_rels", nome + ".rels"))).iter():
+        if _local(rel.tag) != "Relationship" or rel.get("TargetMode") == "External":
+            continue
+        alvo = (rel.get("Target") or "").replace("\\", "/")
+        destino = alvo.lstrip("/") if alvo.startswith("/") else \
+            posixpath.normpath(posixpath.join(pasta, alvo))
+        saida.append((rel.get("Id") or "", rel.get("Type") or "", destino))
+    return saida
+
+
+def _mapa_xlsx(z: zipfile.ZipFile,
+               nomes: list[str]) -> tuple[list[tuple[str, bool, str]], str, bool]:
+    """As abas de células, (nome, oculta, parte do ZIP) na ordem da pasta de
+    trabalho, a parte dos textos compartilhados e se o mapa foi lido - sem
+    ele, vão todas as abas, sem saber quais são ocultas."""
+    existentes = set(nomes)
+    compartilhadas = next((n for n in nomes if n.lower() == "xl/sharedstrings.xml"), "")
+    try:
+        livro_parte = next((destino for _, tipo, destino in _relacoes(z, "")
+                            if tipo.endswith("/officeDocument")), "xl/workbook.xml")
+    except Exception:
+        livro_parte = "xl/workbook.xml"
+    try:
+        alvos: dict[str, str] = {}
+        for rid, tipo, destino in _relacoes(z, livro_parte):
+            if tipo.endswith("/worksheet"):         # a aba de gráfico não tem células
+                alvos[rid] = destino
+            elif tipo.endswith("/sharedStrings") and destino in existentes:
+                compartilhadas = destino
+        abas = []
+        for aba in ET.fromstring(z.read(livro_parte)).iter():
+            if _local(aba.tag) != "sheet":
+                continue
+            rid = next((v for k, v in aba.attrib.items() if _local(k) == "id"), "")
+            parte = alvos.get(rid, "")
+            if parte in existentes:
+                abas.append((aba.get("name") or Path(parte).stem,
+                             (aba.get("state") or "visible") != "visible", parte))
+        if abas:
+            return abas, compartilhadas, True
+    except Exception as erro:
+        log.debug("mapa das abas da planilha ilegível: %s", type(erro).__name__)
+    # Sem o mapa (workbook.xml ilegível ou sem as relações): todas as abas,
+    # na ordem do nome.
+    def ordem(nome: str):
+        return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", nome)]
+    planilhas = sorted((n for n in nomes if n.lower().startswith("xl/worksheets/")
+                        and n.lower().endswith(".xml")), key=ordem)
+    return [(Path(p).stem, False, p) for p in planilhas], compartilhadas, False
+
+
+def _textos_compartilhados(dados: bytes) -> list[str]:
+    try:
+        return [_texto_ooxml(si) for si in ET.fromstring(dados) if _local(si.tag) == "si"]
+    except ET.ParseError:
+        # XML malformado: pelo texto, sem perder a posição de cada <si>.
+        return ["".join(_texto_xml(t) for t in _RE_T_XML.findall(
+                    _RE_FONETICA_XML.sub(b"", m.group(1) or b"")))
+                for m in _RE_SI_XML.finditer(dados)]
+
+
+def _valor_xml(celula, compartilhadas: list[str]):
+    """O valor de uma célula <c>, como o openpyxl o daria - mas sem recusar
+    o que foge do padrão: o que não é número segue como texto."""
+    tipo = celula.get("t") or "n"
+    valor = formula = em_linha = None
+    for filho in celula:
+        nome = _local(filho.tag)
+        if nome == "v":
+            valor = filho.text or ""
+        elif nome == "is":
+            em_linha = _texto_ooxml(filho)
+        elif nome == "f":
+            formula = filho.text or ""
+    if tipo == "inlineStr" or (em_linha is not None and valor is None):
+        return em_linha or ""
+    if valor is None:
+        return formula          # fórmula que o Excel nunca calculou (item 5)
+    if tipo == "s":
+        try:
+            return compartilhadas[int(valor)]
+        except (ValueError, IndexError):
+            return None
+    if tipo in ("str", "d"):
+        return valor
+    if tipo in ("b", "e"):
+        return None
+    bruto = valor.strip()
+    try:
+        return int(bruto) if _RE_INTEIRO.fullmatch(bruto) else float(bruto)
+    except ValueError:
+        return bruto            # "1500,50", o número de processo sem o tipo
+
+
+def _linhas_xml(dados: bytes, compartilhadas: list[str]) -> list[tuple]:
+    linhas = []
+    for linha in ET.fromstring(dados).iter():
+        if _local(linha.tag) != "row":
+            continue
+        celulas: dict[int, object] = {}
+        proxima = 0
+        for celula in linha:
+            if _local(celula.tag) != "c":
+                continue
+            m = _RE_REFERENCIA.match(celula.get("r") or "")
+            indice = proxima
+            if m:
+                indice = 0
+                for letra in m.group(1).upper():
+                    indice = indice * 26 + ord(letra) - 64
+                indice -= 1
+            if not 0 <= indice < _MAX_COLUNAS:
+                indice = proxima
+            proxima = indice + 1
+            celulas[indice] = _valor_xml(celula, compartilhadas)
+        linhas.append(tuple(celulas.get(i) for i in range(max(celulas) + 1))
+                      if celulas else ())
+    return linhas
+
+
+def _de_xlsx_xml(caminho: Path, col: _Coletor, so_com_mapa: bool = False) -> int:
+    """A planilha lida direto do XML, sem o openpyxl, e do mesmo jeito que a
+    leitura normal: só as abas visíveis, e a coluna do número escolhida pelo
+    cabeçalho. Devolve quantas abas leu."""
+    lidas = 0
     try:
         with zipfile.ZipFile(caminho) as z:
             nomes = z.namelist()
@@ -381,23 +619,41 @@ def _de_xlsx_bruto(caminho: Path, col: _Coletor) -> None:
                     "esta é uma pasta de trabalho binária do Excel (.xlsb), que o "
                     "programa não lê. No Excel, use Salvar como > Pasta de Trabalho "
                     "do Excel (.xlsx), ou CSV, e escolha de novo.")
-            partes = [n for n in nomes if n == "xl/sharedStrings.xml"
-                      or (n.startswith("xl/worksheets/") and n.endswith(".xml"))]
-            for nome in partes:
-                dados = z.read(nome)
-                for m in _RE_CELULA_XML.finditer(dados):
-                    bruto = m.group(1).decode("utf-8", errors="ignore")
-                    texto = (bruto.replace("&amp;", "&").replace("&lt;", "<")
-                             .replace("&gt;", ">").replace("&quot;", '"')
-                             .replace("&apos;", "'"))
-                    # Só texto: o valor numérico de uma célula (<v> de célula
-                    # numérica) não tem os 20 dígitos do CNJ de forma confiável.
-                    if re.search(r"\D", texto.strip()):
-                        col.texto(texto)
+            abas, parte_compartilhadas, mapeadas = _mapa_xlsx(z, nomes)
+            if so_com_mapa and not mapeadas:
+                log.debug("leitura direta do XML dispensada: abas sem o mapa da pasta de trabalho")
+                return 0
+            compartilhadas: list[str] = []
+            if parte_compartilhadas:
+                try:
+                    compartilhadas = _textos_compartilhados(z.read(parte_compartilhadas))
+                except Exception as erro:
+                    log.debug("textos compartilhados ilegíveis: %s", type(erro).__name__)
+            for nome, oculta, parte in abas:
+                if oculta:
+                    col.leitura.avisos.append(f"aba oculta '{nome}' ignorada")
+                    continue
+                try:
+                    dados = z.read(parte)
+                except Exception as erro:
+                    log.debug("aba ilegível na planilha: %s", type(erro).__name__)
+                    continue
+                lidas += 1
+                try:
+                    _ler_linhas(col, _linhas_xml(dados, compartilhadas), nome)
+                except ET.ParseError:
+                    # XML malformado: só o texto das células desta aba. O número
+                    # gravado como número não tem os 20 dígitos do CNJ de forma
+                    # confiável e fica de fora.
+                    for m in _RE_CELULA_XML.finditer(dados):
+                        texto = _texto_xml(m.group(1))
+                        if re.search(r"\D", texto.strip()):
+                            col.texto(texto)
     except ListaInvalida:
         raise
     except Exception as erro:
         log.debug("leitura direta do XML da planilha falhou: %s", type(erro).__name__)
+    return lidas
 
 
 def _de_xls(caminho: Path, col: _Coletor) -> None:
@@ -432,7 +688,19 @@ _NS_ODS = {
     "table": "urn:oasis:names:tc:opendocument:xmlns:table:1.0",
     "office": "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
     "text": "urn:oasis:names:tc:opendocument:xmlns:text:1.0",
+    "style": "urn:oasis:names:tc:opendocument:xmlns:style:1.0",
 }
+_MAX_COLUNAS_ODS = 1024         # a última coluna das versões antigas do LibreOffice (AMJ)
+
+
+def _valor_ods(celula):
+    o = _NS_ODS["office"]
+    if celula.get(f"{{{o}}}value-type") == "float" and celula.get(f"{{{o}}}value"):
+        try:
+            return float(celula.get(f"{{{o}}}value"))
+        except ValueError:
+            pass
+    return " ".join("".join(p.itertext()) for p in celula)
 
 
 def _de_ods(caminho: Path, col: _Coletor) -> None:
@@ -441,22 +709,45 @@ def _de_ods(caminho: Path, col: _Coletor) -> None:
             raiz = ET.fromstring(z.read("content.xml"))
     except Exception as erro:
         raise ListaInvalida(f"não consegui abrir o arquivo .ods: {str(erro)[:120]}") from erro
-    t, o = _NS_ODS["table"], _NS_ODS["office"]
+    t, s = _NS_ODS["table"], _NS_ODS["style"]
+    celulas = (f"{{{t}}}table-cell", f"{{{t}}}covered-table-cell")
+    # Aba oculta: o estilo dela diz table:display="false".
+    ocultos = {estilo.get(f"{{{s}}}name") for estilo in raiz.iter(f"{{{s}}}style")
+               if estilo.get(f"{{{s}}}name") and any(
+                   p.get(f"{{{t}}}display") == "false"
+                   for p in estilo.iter(f"{{{s}}}table-properties"))}
     for tabela in raiz.iter(f"{{{t}}}table"):
+        nome = tabela.get(f"{{{t}}}name", "")
+        if tabela.get(f"{{{t}}}style-name") in ocultos:
+            col.leitura.avisos.append(f"aba oculta '{nome}' ignorada")
+            continue
         linhas = []
         for linha in tabela.iter(f"{{{t}}}table-row"):
-            valores = []
-            for celula in linha.iter(f"{{{t}}}table-cell"):
-                tipo = celula.get(f"{{{o}}}value-type")
-                if tipo == "float" and celula.get(f"{{{o}}}value"):
-                    try:
-                        valores.append(float(celula.get(f"{{{o}}}value")))
-                        continue
-                    except ValueError:
-                        pass
-                valores.append(" ".join("".join(p.itertext()) for p in celula))
-            linhas.append(tuple(valores))
-        _ler_linhas(col, linhas, tabela.get(f"{{{t}}}name", ""))
+            # O LibreOffice grava as células vizinhas iguais (as vazias,
+            # sobretudo) como uma só, com number-columns-repeated, e a célula
+            # coberta por uma mescla com outro nome: contadas uma vez, elas
+            # deslocavam as colunas seguintes, e a "Senha" lia a vizinha.
+            valores: list = []
+            vazias = 0
+            for celula in linha:
+                if celula.tag not in celulas:
+                    continue
+                try:
+                    repete = int(celula.get(f"{{{t}}}number-columns-repeated") or 1)
+                except ValueError:
+                    repete = 1
+                repete = max(1, min(repete, _MAX_COLUNAS_ODS))
+                valor = _valor_ods(celula)
+                if valor in ("", None):
+                    # só ocupam lugar se vier algo depois
+                    vazias = min(vazias + repete, _MAX_COLUNAS_ODS)
+                    continue
+                valores += [""] * vazias + [valor] * repete
+                vazias = 0
+                if len(valores) >= _MAX_COLUNAS_ODS:
+                    break
+            linhas.append(tuple(valores[:_MAX_COLUNAS_ODS]))
+        _ler_linhas(col, linhas, nome)
 
 
 # --------------------------------------------------------------- documentos
@@ -538,7 +829,12 @@ def _de_html(caminho: Path, col: _Coletor) -> None:
 
 def _de_texto(caminho: Path, col: _Coletor) -> None:
     bruto = _decodificar(caminho.read_bytes())
-    ler_texto_em(col, bruto, csv_provavel=caminho.suffix.lower() == ".csv")
+    # Como no texto colado (ler_texto): com tabulação, é tabela - o "Salvar
+    # como > Texto Unicode" do Excel é um .txt assim -, e a segunda coluna só
+    # é a senha se o cabeçalho disser "Senha". Lida linha a linha, a coluna
+    # vizinha ("Ativo", a classe, a vara) virava a senha do processo sigiloso.
+    ler_texto_em(col, bruto, csv_provavel=caminho.suffix.lower() in (".csv", ".tsv")
+                 or "\t" in bruto)
 
 
 def ler_texto_em(col: _Coletor, bruto: str, csv_provavel: bool = False) -> None:
@@ -597,18 +893,39 @@ def ler_arquivo(caminho: Path | str) -> Leitura:
         col.texto(dados.decode("utf-16-le", errors="ignore"))
         col.texto(dados.decode("latin-1", errors="ignore"))
     else:
+        # Num coletor à parte: o leitor que para no meio não deixa um lote pela
+        # metade.
+        lido = _Coletor()
         try:
-            _LEITORES.get(tipo, _de_texto)(caminho, col)
+            _LEITORES.get(tipo, _de_texto)(caminho, lido)
         except ListaInvalida as erro:
             erro_leitor = erro
         except ImportError as erro:  # pragma: no cover - instalação incompleta
             erro_leitor = ListaInvalida(
                 f"falta uma biblioteca para ler {_NOMES.get(tipo, tipo)} "
                 f"({erro.name}). {sistema.REINSTALAR}")
+        except OSError:
+            raise           # arquivo preso ou sumido: a frase disso é de quem chamou
+        except Exception as erro:
+            # O erro da biblioteca (em inglês, e 'erro inesperado' na linha de
+            # comando) não chega ao usuário: a frase diz o que fazer.
+            log.warning("Relação %s: a leitura falhou (%s).", caminho.name, type(erro).__name__)
+            erro_leitor = ListaInvalida(
+                f"não consegui ler o arquivo {caminho.name} ({_NOMES.get(tipo, tipo)}): "
+                "ele tem algo fora do padrão." + LNLN
+                + "Abra-o no programa em que foi feito (o Excel, o Word), salve de "
+                  "novo e escolha outra vez; ou copie os números e cole a lista na "
+                  "tela de Processos.")
+        else:
+            col.absorver(lido)
 
     # Última tentativa: texto com outra cara. Custa pouco e salva o arquivo
-    # com extensão trocada.
-    if not col.leitura.processos and tipo != "texto":
+    # com extensão trocada. Não vale para a planilha que o leitor dela abriu:
+    # nos bytes crus estão também as abas ocultas e as colunas de outro
+    # processo, que a leitura deixou de fora de propósito (o .xlsx, o .ods e
+    # o .docx, ainda por cima, são ZIP - o texto deles não aparece nos bytes).
+    if not col.leitura.processos and tipo not in ("texto", "xlsx", "ods", "docx") \
+            and (tipo != "xls" or erro_leitor is not None):
         try:
             _de_texto(caminho, col)
         except Exception:
@@ -616,15 +933,20 @@ def ler_arquivo(caminho: Path | str) -> Leitura:
 
     if not col.leitura.processos:
         if col.leitura.corrompidos:
+            quantas = len(col.leitura.corrompidos)
+            linhas = "1 linha" if quantas == 1 else f"{quantas} linhas"
             raise ListaInvalida(
                 "esta planilha guarda os números de processo como NÚMERO, e "
                 "não como texto." + LNLN
                 + "O Excel não comporta os 20 dígitos do CNJ num campo "
                   "numérico: ele arredonda os últimos, e o número deixa de ser "
-                  f"o do processo. Foi o que aconteceu com {len(col.leitura.corrompidos)} "
-                  "linha(s) deste arquivo." + LNLN
+                  f"o do processo. Foi o que aconteceu com {linhas} deste arquivo."
+                + LNLN
                 + "Para resolver: no Excel, formate a coluna dos números como "
-                  "Texto e cole-os de novo; ou salve a relação como .csv." + LNLN
+                  "Texto e digite-os de novo, ou cole-os de um lugar onde estejam "
+                  "como texto (o e-mail, o SAJ). Os algarismos que o Excel já "
+                  "perdeu não voltam: salvar a relação como .csv não adianta."
+                + LNLN
                 + "Deixei de importá-los de propósito: importados assim, o "
                   "programa baixaria processo alheio.")
         if erro_leitor is not None:

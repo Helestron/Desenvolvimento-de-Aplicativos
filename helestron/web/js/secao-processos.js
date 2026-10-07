@@ -16,8 +16,9 @@
   const { el, icone, botao, cartao, cabecalhoCartao, vazio, faixa, pilula, interruptor, trocar, folha, aviso, situacaoDownload, nomeSistema } = H.ui;
   const { fmt, api } = H;
 
-  const TIPOS_RELACAO = ["Relações de processos|*.xlsx;*.xls;*.ods;*.csv;*.docx;*.pdf;*.txt;*.html;*.htm", "Todos os arquivos|*.*"];
-  const ACEITAR = ".xlsx,.xls,.ods,.csv,.docx,.pdf,.txt,.html,.htm";
+  // As mesmas extensões de nucleo/listas.py (EXTENSOES): test_web_contrato confere.
+  const TIPOS_RELACAO = ["Relações de processos|*.xlsx;*.xlsm;*.xls;*.ods;*.csv;*.docx;*.pdf;*.txt;*.html;*.htm", "Todos os arquivos|*.*"];
+  const ACEITAR = ".xlsx,.xlsm,.xls,.ods,.csv,.docx,.pdf,.txt,.html,.htm";
 
   function rascunho() {
     if (!H.loja.processos) H.loja.processos = { etapa: "relacao", leitura: null, removidos: new Set(), nomeLote: "", opcoes: null, tarefaId: null, numeros: [] };

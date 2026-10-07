@@ -375,6 +375,47 @@ class TestRelacao(ServidorDeTeste):
         envios = Path(self.app.pasta_envios())
         self.assertEqual(list(envios.glob("*")) if envios.exists() else [], [])
 
+    def test_frase_do_erro_cita_o_arquivo_do_usuario(self):
+        # Achado R27: o leitor só conhece o temporário do envio, e a tela dizia
+        # "Li o arquivo envio-25ef208ac28d1cb2.txt".
+        status, env = self.cliente.enviar("/api/relacao/arquivo", "Minha relação.txt",
+                                          b"nenhum numero aqui")
+        self.assertEqual((status, env["erro"]["codigo"]), (400, "relacao_invalida"))
+        self.assertIn("Minha relação.txt", env["erro"]["mensagem"])
+        self.assertNotIn("envio-", env["erro"]["mensagem"])
+        status, env = self.cliente.enviar("/api/relacao/arquivo", "Minha relação.xlsx",
+                                          b"PK\x03\x04lixo-truncado")
+        self.assertEqual((status, env["erro"]["codigo"]), (400, "relacao_invalida"))
+        self.assertIn("O arquivo Minha relação.xlsx parece danificado", env["erro"]["mensagem"])
+        envios = Path(self.app.pasta_envios())
+        self.assertEqual(list(envios.glob("*")) if envios.exists() else [], [])
+
+    def test_envio_de_planilha_com_valor_fora_do_padrao(self):
+        # Achado R25: a vírgula decimal noutra coluna era 400 'valor_invalido',
+        # com a frase do openpyxl em inglês.
+        from testes.test_listas_excel import linha, texto, xlsx_a_mao
+
+        arq = xlsx_a_mao(self.amb.raiz / "exportada.xlsx", [("Plan1",
+            linha(1, texto("A1", "Processo"), texto("B1", "Valor da causa"))
+            + linha(2, texto("A2", TJAL), '<c r="B2"><v>1500,50</v></c>'))])
+        status, env = self.cliente.enviar("/api/relacao/arquivo", "Relação exportada.xlsx",
+                                          arq.read_bytes())
+        self.assertEqual(status, 200, env)
+        self.assertEqual([p["numero"] for p in env["dados"]["processos"]], [TJAL])
+
+    def test_aviso_dos_corrompidos_manda_digitar_de_novo(self):
+        import openpyxl
+
+        livro = openpyxl.Workbook()
+        for valores in (["Processo"], [TJAL], [7.00012383202480e18]):
+            livro.active.append(valores)
+        arq = self.amb.raiz / "misto.xlsx"
+        livro.save(arq)
+        leitura = self.cliente.dados("POST", "/api/relacao/arquivo", {"caminho": str(arq)})
+        self.assertEqual(len(leitura["corrompidos"]), 1)
+        self.assertTrue(any("digite o número de novo" in a for a in leitura["avisos"]),
+                        leitura["avisos"])
+
     def test_envio_sem_campo_arquivo(self):
         status, env = self.cliente.enviar("/api/relacao/arquivo", "a.txt", TJAL.encode(),
                                           campo="outro")

@@ -128,7 +128,7 @@ class TestCnjComoNumeroNoExcel(unittest.TestCase):
         self.assertIn("formate a coluna", str(ctx.exception))
         # cada linha contada uma vez só (a segunda leitura, a das fórmulas,
         # não dobra a conta)
-        self.assertIn(f"aconteceu com {len(validos)} linha(s)", str(ctx.exception))
+        self.assertIn(f"aconteceu com {len(validos)} linhas deste", str(ctx.exception))
 
     def test_planilha_com_texto_e_numero_so_aceita_o_texto(self):
         from openpyxl import Workbook

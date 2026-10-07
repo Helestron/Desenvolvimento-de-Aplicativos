@@ -574,7 +574,12 @@ Em **Ajustes › Unidade**:
 
    As planilhas `.xlsx` geradas por outros sistemas (relatórios exportados
    pelo próprio SAJ, por exemplo) são lidas inteiras, mesmo quando o arquivo
-   declara um tamanho menor que o real. Duas exceções têm mensagem própria:
+   declara um tamanho menor que o real ou traz, em outra coluna, valores
+   fora do padrão do Excel (valor com vírgula decimal, data gravada como
+   texto). Quando há uma coluna “Processo” (ou “Número”, “Autos”), só ela é
+   lida: a de outro processo (“Processo de origem”, “Principal”) fica de
+   fora, mesmo que a coluna “Processo” só traga números que o Excel
+   corrompeu. Duas exceções têm mensagem própria:
    a pasta de trabalho binária do Excel (`.xlsb`), que o Helestron não lê
    (no Excel, use **Salvar como › Pasta de Trabalho do Excel (.xlsx)**, ou
    CSV, e escolha de novo), e a planilha protegida por **senha de
@@ -1871,8 +1876,9 @@ folha N.
   ignoradas, com aviso).
 - “esta planilha guarda os números de processo como NÚMERO” (ou a lista
   **Números que o Excel corrompeu**, na revisão): o Excel perdeu os últimos
-  algarismos. Formate a coluna como Texto e cole os números de novo, ou
-  salve a relação como `.csv`.
+  algarismos. Formate a coluna como Texto e digite os números de novo, ou
+  cole-os de um lugar onde estejam como texto (o e-mail, o SAJ). Salvar a
+  relação como `.csv` não adianta: os algarismos perdidos não voltam.
 - “pasta de trabalho binária do Excel (.xlsb)” ou “protegida por senha de
   abertura”: salve como `.xlsx` (ou CSV), sem a senha, e escolha de novo.
 

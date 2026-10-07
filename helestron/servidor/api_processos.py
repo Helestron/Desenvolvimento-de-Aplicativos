@@ -21,6 +21,7 @@ from pathlib import Path
 from .. import servicos
 from ..nucleo import caminhos, cnj, sistema, tribunais
 from ..tarefas import NAVEGADOR, NUVEM
+from .api_audiencias import _com_outro_nome
 from .api_geral import iso, maiuscula
 from .rede import ErroApi, Pedido, Roteador, erro_400
 
@@ -83,7 +84,9 @@ def leitura_para_json(app, leitura, nome_lote: str = "") -> dict:
         avisos.append(f"{_plural(len(leitura.corrompidos), 'linha')} da planilha "
                       f"{'guarda' if uma else 'guardam'} o número como NÚMERO, e o Excel "
                       f"corrompe os últimos dígitos: {'ficou' if uma else 'ficaram'} de fora de "
-                      "propósito. Formate a coluna como Texto e abra de novo.")
+                      "propósito. Formate a coluna como Texto, digite "
+                      f"{'o número' if uma else 'os números'} de novo e abra a relação "
+                      "outra vez.")
     if sem_suporte:
         um = len(sem_suporte) == 1
         avisos.append(f"{_plural(len(sem_suporte), 'processo')} {'é' if um else 'são'} de "
@@ -112,7 +115,15 @@ def relacao_arquivo(p: Pedido) -> dict:
             arquivo = envio.arquivo("arquivo")
             if arquivo is None:
                 raise erro_400("Envie o arquivo da relação no campo “arquivo”.", "campo_ausente")
-            leitura = _ler_arquivo(arquivo.caminho)
+            try:
+                leitura = _ler_arquivo(arquivo.caminho)
+            except Exception as erro:
+                # O leitor só conhece o temporário do envio: a frase ("o arquivo
+                # envio-3f6e….xlsx parece danificado") diz o nome do arquivo do
+                # usuário.
+                if arquivo.caminho.name in str(erro):
+                    raise _com_outro_nome(erro, arquivo.caminho.name, arquivo.nome) from erro
+                raise
             leitura.origem = arquivo.nome
         return leitura_para_json(app, leitura, Path(arquivo.nome).stem)
     caminho = Path(p.campo("caminho", obrigatorio=True, tipo=str).strip().strip('"'))
