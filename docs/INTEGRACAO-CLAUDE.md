@@ -101,6 +101,7 @@ navegador nem sessões.
 | `login` | `{esaj, eproc}`: o modo de entrada nos Ajustes (`senha`, `certificado` ou `manual`) |
 | `espera_login_min` | quanto tempo o programa espera o usuário concluir o login na janela |
 | `conflito_de_pastas` | vazio, ou a frase do problema: a pasta dos sigilosos (ou a da pauta) dentro do acervo, ou o acervo dentro dela |
+| `comando` | o `helestron.cmd` da pasta do programa (ausente fora da instalação ou em instalação anterior à 1.0.2) |
 
 **Antes de qualquer download, confira:**
 
@@ -132,6 +133,8 @@ Os recursos da 1.0.2:
 | `capa.v2` | a capa completa, `_capa.txt` e `_capa.json` (seção 10) |
 | `texto.paginas-sem-texto` | `paginas_sem_texto` no JSON do `baixar --texto` e do `preparar --pasta` |
 | `baixar.codigo-na-janela` | sem terminal, o código do e-mail do e-SAJ é digitado na janela do navegador |
+| `baixar.pastas-em-conflito` | o `baixar` recusa começar (código 2, `pastas_em_conflito` no JSON) com a pasta dos sigilosos ou a da pauta dentro do acervo |
+| `comando.cmd`, `registro.hkcu` | o `helestron.cmd` na pasta do programa e `HKCU\Software\Helestron` (`Python`, `Versao`, `InstallLocation`) |
 
 ## 3. O login é sempre do usuário
 

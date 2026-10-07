@@ -1606,7 +1606,7 @@ Os Ajustes são organizados em grupos (o índice fica à esquerda da tela):
 | **Unidade** | **Como o Helestron chama você** e os dados do cabeçalho das transcrições (**Magistrado(a)**, **Cargo**, **Vara**, **Comarca**, **Tribunal**) |
 | **Download** | pular os já baixados, separar os sigilosos, baixar as gravações, mostrar o navegador, **Navegador dos portais** (o padrão usa o Chrome e, sem ele, o Edge), pausa, tentativas, esperas, guardar a imagem da tela quando algo der errado e a montagem do PDF no eProc |
 | **Transcrição** | modelos ao vivo e de revisão, revisar ao encerrar, separar as vozes, guardar a gravação, horário de cada fala, participantes padrão, vocabulário, núcleos do processador, o **Microfone** (guardado pelo nome), a lista **Modelos de transcrição** e a **Separação de falantes** |
-| **Pauta** | **Monitorar a pauta**, intervalo, dias para trás e à frente, **Mostrar as partes dos processos sigilosos na planilha** e as **Fontes da pauta** (**Adicionar fonte**, a situação de cada fonte e a lixeira para remover) |
+| **Pauta** | **Monitorar a pauta**, intervalo, dias para trás e à frente, **Mostrar as partes e as observações dos processos sigilosos na planilha** e as **Fontes da pauta** (**Adicionar fonte**, a situação de cada fonte e a lixeira para remover) |
 | **Compartilhar** | **Pasta da nuvem**, espelhar sozinho e **Gerar a versão em texto dos autos** |
 | **Sobre e diagnóstico** | versão e modo da janela, **Verificar a instalação**, **Abrir os registros**, a lista da verificação e **Encerrar o Helestron** |
 
@@ -1649,7 +1649,9 @@ posto lá fica. Configurações, senhas, processos, transcrições e pauta
 continuam onde estavam. A versão instalada aparece em **Ajustes › Sobre e
 diagnóstico**. Se você escolher outra pasta para a versão nova, o programa
 muda de pasta: o da pasta anterior é fechado e removido (veja [Onde o
-Helestron é instalado](#onde-o-helestron-é-instalado)).
+Helestron é instalado](#onde-o-helestron-é-instalado)), e o conector do
+acervo no Claude Desktop e no ChatGPT/Codex passa a apontar para a pasta
+nova, com o mesmo acervo (reinicie o Claude Desktop para ele o reabrir).
 
 Na primeira abertura depois da atualização para a 1.0.2, o Helestron apaga
 a cópia do perfil do Google Chrome que as versões anteriores faziam para o

@@ -554,7 +554,7 @@ Sucesso: `{"ok": true, "dados": ...}`. Erro: `{"ok": false, "erro": {"codigo":
 * `GET /api/tribunais` → `[{sigla, nome, sistema, alternativo}]`
 * `GET /api/acessos` → `[{portal, tribunal, sistema, rotulo, usuario, tem_senha, guardada, so_agora, modo}]` (`so_agora`: a senha foi digitada com “Lembrar neste computador” desligado e vale até fechar o programa, para o download e para a pauta); `POST /api/acessos` `{portal, usuario, senha, lembrar?, modo?}`; `DELETE /api/acessos/{portal}`; `POST /api/acessos/testar` `{tribunal, sistema?}` → `{tarefa}` (tipo `teste_login`; testa exatamente o portal pedido, contrato C1). Apagar o acesso, ou gravá-lo com outro usuário, apaga também a sessão guardada e os perfis do navegador do portal (`navegador.esquecer_portal`; o navegador aberto antes disso não regrava a sessão ao fechar). Com o cofre preso ou em uso por outro processo (`cofre_senhas.CofreIndisponivel`), a resposta é 409 `arquivo_preso`, com a frase
 * `GET /api/tribunais/enderecos` → `[{portal, grau, rotulo, url, rotulo_portal}]` (só os endereços corrigidos pelo usuário); `GET /api/tribunais/enderecos/{portal}` → `{portal, rotulo, enderecos: [{grau, rotulo, url, padrao, corrigido}]}`; `POST /api/tribunais/enderecos` `{portal, grau, url}` → o mesmo (url em branco volta ao catálogo). É o “Endereço do portal” de Ajustes › Acessos aos portais: a correção fica em `LOCAL/enderecos-locais.json` e vale por cima de `dados/tribunais.json`, para o download e a pauta; as mensagens do motor sobre endereço mudado apontam para ela.
-* `POST /api/dialogo/arquivo` `{titulo, tipos: ["Planilhas|*.xlsx;*.xls", ...]}` e `POST /api/dialogo/pasta` `{titulo, inicial}` → `{caminho|null}` (diálogo nativo pela pywebview; fora dela → erro `sem_dialogo`, e a interface usa `<input type=file>`)
+* `POST /api/dialogo/arquivo` `{titulo, tipos: ["Planilhas|*.xlsx;*.xls", ...]}` e `POST /api/dialogo/pasta` `{titulo, inicial}` → `{caminho|null}` (o de arquivo também `tamanho`, em bytes, ou `null`; diálogo nativo pela pywebview; fora dela → erro `sem_dialogo`, e a interface usa `<input type=file>`)
 * `POST /api/abrir` `{tipo: "pasta"|"arquivo"|"url", alvo}`
 * `GET /api/verificacao` → `[{nome, situacao: "ok"|"aviso"|"falha", detalhe, acao}]`; `POST /api/verificacao/completa` → `{tarefa}`
 * `POST /api/encerrar`
@@ -1546,8 +1546,9 @@ obrigatória: sem elas, a mensagem traz `COMANDOS_CONVERSAO`.
 7. Gera `manifesto.json`: versão, `componentes` (`{modelo_transcricao:
    "faster-whisper-small" ou "", falantes: bool}`, lidos da própria árvore,
    para a verificação saber se a falta de um modelo é defeito ou uma
-   construção sem ele; `integridade.py` ignora a chave) e o SHA-256 e o
-   tamanho de cada arquivo.
+   construção sem ele: o modelo ou os modelos de voz declarados e ausentes
+   da pasta do programa são FALHA no Diagnóstico, com a ação de reinstalar;
+   `integridade.py` ignora a chave) e o SHA-256 e o tamanho de cada arquivo.
 8. Gera as imagens da marca, a lista do que a instalação põe na pasta do
    programa (`construir.gerar_registro`, a partir de
    `construir.linhas_do_registro`: `arquivos-instalados.txt`, em UTF-16 com
@@ -1681,7 +1682,11 @@ não é alterado. Modo silencioso (`/S`, `/D=`) para a TI e o CI.
    (`claude_desktop_config.json`) e do Codex/ChatGPT Work
    (`%USERPROFILE%\.codex\config.toml`), guarda antes uma cópia de cada
    arquivo ao lado (`…antes-do-helestron-<data>`), não toca arquivo com JSON
-   ou TOML inválido, nunca levanta e devolve o que fez, em frases. A limpeza
+   ou TOML inválido, nunca levanta e devolve o que fez, em frases. Ela também
+   chama `migracao.reapontar_conectores()`: no programa instalado, o conector
+   `helestron` registrado com o `python.exe` de outra pasta (a instalação que
+   mudou de lugar) passa a usar o desta, com a mesma pasta do acervo (o
+   `--pasta` da entrada antiga); com o comando já certo, nada muda. A limpeza
    nunca segura nem derruba a instalação. A mesma função existe como linha
    de comando, `python -I -m helestron.compartilhar.migracao` (sai sempre
    com 0, em cerca de 0,1 s), e como `helestron.compartilhar.limpar_restos_antigos()`,
