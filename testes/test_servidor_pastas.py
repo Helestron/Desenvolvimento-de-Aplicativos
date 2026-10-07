@@ -61,6 +61,43 @@ class TestPastaEmBrancoVoltaAoPadrao(ServidorDeTeste):
             self.cfg.definir("geral", "pasta_sigilosos", str(onedrive / "Sigilosos"))
             self.gravar("geral", "pasta_acervo", str(raiz / "OutroAcervo"))
 
+    def test_recusa_da_escolha_nao_manda_mover_a_pasta_atual(self):
+        """Achado V13: a pasta recusada nos Ajustes não é gravada, e a atual
+        (aqui, fora da nuvem) fica como está. A frase dizia para mover "o que
+        está na pasta atual" e mandava ir a Ajustes › Pastas, onde a pessoa já
+        está."""
+        onedrive = self.amb.raiz / "OneDrive - TJAL"
+        with mock.patch.dict("os.environ", {"OneDrive": str(onedrive)}):
+            for secao, chave, nome in (("geral", "pasta_sigilosos", "Sigilosos"),
+                                       ("pauta", "pasta", "Pauta")):
+                with self.subTest(chave=chave):
+                    frase = self.recusa(secao, chave, str(onedrive / nome))
+                    self.assertIn("não pode ficar dentro do OneDrive", frase)
+                    self.assertTrue(frase.endswith(
+                        "Escolha uma pasta fora do OneDrive e do Google Drive."), frase)
+                    self.assertNotIn("pasta atual", frase)
+                    self.assertNotIn("Ajustes", frase)
+        self.cfg.recarregar()
+        self.assertEqual(self.cfg.pasta_sigilosos, self.amb.dados / "Sigilosos")
+        self.assertEqual(self.cfg.pasta_pauta, self.amb.dados / "Pauta")
+
+    def test_meu_drive_do_perfil_recusado(self):
+        """Achado V11: a pasta do Google Drive no modo espelho
+        (%USERPROFILE%\\Meu Drive ou My Drive) passava nos Ajustes, e a
+        verificação depois dizia que não pode."""
+        perfil = self.amb.raiz / "Users" / "Fulano"
+        (perfil / "Meu Drive").mkdir(parents=True)
+        with mock.patch.dict("os.environ", {"HOME": str(perfil), "USERPROFILE": str(perfil)}):
+            frase = self.recusa("geral", "pasta_sigilosos", str(perfil / "Meu Drive" / "Sigilosos"))
+            self.assertIn("segredo de justiça não pode ficar dentro do Google Drive", frase)
+            frase = self.recusa("pauta", "pasta", str(perfil / "My Drive" / "Pauta"))
+            self.assertIn("pauta exportada não pode ficar dentro do Google Drive", frase)
+            # fora dela, no mesmo perfil, a escolha passa
+            self.gravar("geral", "pasta_sigilosos", str(perfil / "Sigilosos"))
+        self.cfg.recarregar()
+        self.assertEqual(self.cfg.pasta_sigilosos, perfil / "Sigilosos")
+        self.assertEqual(self.cfg.pasta_pauta, self.amb.dados / "Pauta")
+
     def test_acervo_em_branco_com_sigilosos_dentro_do_padrao(self):
         dados, raiz = self.amb.dados, self.amb.raiz
         self.gravar("geral", "pasta_acervo", str(raiz / "D_Acervo"))

@@ -707,28 +707,36 @@ def problema_nas_pastas(acervo, sigilosos, pauta=None, nuvem: bool = True) -> st
     return sigilo_na_nuvem(sigilosos, pauta) if nuvem else None
 
 
-def sigilo_na_nuvem(sigilosos=None, pauta=None) -> str | None:
+def sigilo_na_nuvem(sigilosos=None, pauta=None, ao_escolher: bool = False) -> str | None:
     """Por que a pasta dos sigilosos (ou a da pauta exportada) não pode ficar
     onde está, ou None: nada de segredo de justiça na nuvem, e por isso as
     duas ficam fora de toda pasta sincronizada (OneDrive, Google Drive), não
     só fora da pasta do espelho (config.conflito_com_a_nuvem). Pelo caminho,
-    sem varrer as unidades: a conferência roda a cada estado da tela."""
+    sem varrer as unidades: a conferência roda a cada estado da tela.
+
+    'ao_escolher': a frase é a dos Ajustes, que recusam a pasta escolhida:
+    ela não é gravada, e a frase não manda mover o que está na atual (que
+    pode estar fora da nuvem). Sem ele, a pasta é a da configuração, e a
+    frase manda trocá-la e mover o que está nela."""
     for pasta, rotulo in ((sigilosos, "dos processos em segredo de justiça"),
                           (pauta, "da pauta exportada")):
         if pasta is None or not str(pasta).strip():
             continue
         servico = _nuvem_pelo_caminho(pasta)
         if servico:
+            fim = ("Escolha uma pasta fora do OneDrive e do Google Drive." if ao_escolher else
+                   "Em Ajustes › Pastas, escolha uma pasta fora do OneDrive e do Google Drive "
+                   "e mova para ela o que está na pasta atual.")
             return (f"A pasta {rotulo} não pode ficar dentro do {servico}: tudo o que está ali "
-                    "sai do computador e fica ao alcance dos conectores da IA. Em Ajustes › "
-                    "Pastas, escolha uma pasta fora do OneDrive e do Google Drive e mova para "
-                    "ela o que está na pasta atual.")
+                    f"sai do computador e fica ao alcance dos conectores da IA. {fim}")
     return None
 
 
 def _nuvem_pelo_caminho(pasta) -> str:
     """"OneDrive" ou "Google Drive" se o caminho é de pasta sincronizada com a
-    nuvem (a regra de verificar.nuvem_da_pasta, sem a detecção das unidades);
+    nuvem (a regra de verificar.nuvem_da_pasta sem a detecção das unidades,
+    que reconhece pelo caminho todas as pastas que a detecção procura -
+    inclusive %USERPROFILE%\\Meu Drive, a do Google Drive no modo espelho);
     "" se não é. Nunca levanta."""
     try:
         from .verificar import nuvem_da_pasta

@@ -57,6 +57,53 @@ class TestPastas(unittest.TestCase):
         self.assertIsNone(servicos.problema_nas_pastas(acervo, self.base / "Sigilosos",
                                                        self.base / "Pauta"))
 
+    def test_google_drive_no_modo_espelho_sem_varrer_as_unidades(self):
+        """Achado V11: %USERPROFILE%\\Meu Drive (o Google Drive para
+        computador no modo espelho) passava pela regra do caminho - e pelos
+        Ajustes, pelo baixar, pelo caminhos --json e pelo Início -, enquanto a
+        verificação dizia que não pode. Reconhecido só pelo caminho: nada de
+        varrer as unidades a cada estado da tela."""
+        perfil = self.amb.raiz / "Users" / "Fulano"
+        perfil.mkdir(parents=True)
+        acervo = self.base / "Acervo"
+        ambiente = {"HOME": str(perfil), "USERPROFILE": str(perfil),
+                    "OneDrive": "", "OneDriveCommercial": "", "OneDriveConsumer": ""}
+        with mock.patch.dict("os.environ", ambiente), \
+                mock.patch("helestron.compartilhar.nuvem.detectar",
+                           side_effect=AssertionError("varreu as unidades")):
+            for nome in ("Meu Drive", "My Drive"):
+                with self.subTest(nome=nome):
+                    frase = servicos.problema_nas_pastas(acervo, perfil / nome / "Sigilosos") or ""
+                    self.assertIn("dos processos em segredo de justiça não pode ficar dentro do "
+                                  "Google Drive", frase)
+                    frase = servicos.problema_nas_pastas(acervo, self.base / "Sigilosos",
+                                                         perfil / nome / "Pauta") or ""
+                    self.assertIn("da pauta exportada não pode ficar dentro do Google Drive",
+                                  frase)
+            self.assertIsNone(servicos.sigilo_na_nuvem(perfil / "Documentos" / "Sigilosos",
+                                                       perfil / "Pauta"))
+
+    def test_frase_da_escolha_nos_ajustes(self):
+        """Achado V13: nos Ajustes, a pasta recusada não é gravada e a atual
+        pode estar fora da nuvem - a frase não manda mover o que está nela.
+        Para a pasta da configuração, manda."""
+        onedrive = self.amb.raiz / "OneDrive - TJAL"
+        with mock.patch.dict("os.environ", {"OneDrive": str(onedrive)}):
+            escolha = servicos.sigilo_na_nuvem(onedrive / "Sigilosos", ao_escolher=True)
+            atual = servicos.sigilo_na_nuvem(onedrive / "Sigilosos")
+            pauta = servicos.sigilo_na_nuvem(None, onedrive / "Pauta", ao_escolher=True)
+        self.assertEqual(escolha, "A pasta dos processos em segredo de justiça não pode ficar "
+                                  "dentro do OneDrive: tudo o que está ali sai do computador e "
+                                  "fica ao alcance dos conectores da IA. Escolha uma pasta fora "
+                                  "do OneDrive e do Google Drive.")
+        self.assertTrue(pauta.startswith("A pasta da pauta exportada não pode ficar"), pauta)
+        for frase in (escolha, pauta):
+            self.assertNotIn("pasta atual", frase)
+            self.assertNotIn("mova", frase)
+        self.assertTrue(atual.endswith("Em Ajustes › Pastas, escolha uma pasta fora do OneDrive "
+                                       "e do Google Drive e mova para ela o que está na pasta "
+                                       "atual."), atual)
+
     def test_conflito_da_nuvem(self):
         acervo = self.base / "Acervo"
         for nuvem in (acervo, acervo / "OneDrive", self.base, self.amb.raiz):
