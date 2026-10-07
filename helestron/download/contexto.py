@@ -81,7 +81,9 @@ class Contexto:
 # Os eventos que o motor e os portais emitem, com os dados de cada um:
 #   lote_inicio       destino, relatorio, sigilosos_do_lote, total
 #   grupo_inicio      sistema, tribunal, alternativo (bool), ordens (lista)
-#   navegador_ocupado sistema, tribunal, ate (ISO): esperando outro download
+#   navegador_ocupado sistema, tribunal, ate (ISO), motivo: esperando o navegador
+#                     do portal abrir (outro_download: outro download o usa;
+#                     copia_antiga_presa: a cópia antiga do perfil não saiu)
 #   login_aguardando  sistema, tribunal, modo, prazo_min, ate (ISO), motivo
 #   acao_na_janela    sistema, tribunal, motivo (captcha, perfil...)
 #   login_concluido   sistema, tribunal

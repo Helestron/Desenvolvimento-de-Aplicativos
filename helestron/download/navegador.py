@@ -48,7 +48,8 @@ from urllib.parse import urlsplit
 
 from ..nucleo import caminhos, cofre_senhas, sistema
 from ..nucleo.registro import censurar
-from .modelos import AJUSTES_ACESSOS, ENTRAR_MANUALMENTE, NavegadorOcupado, PortalIndisponivel
+from .modelos import (AJUSTES_ACESSOS, ENTRAR_MANUALMENTE, CopiaAntigaPresa, NavegadorOcupado,
+                      PortalIndisponivel)
 
 log = logging.getLogger("download.navegador")
 
@@ -485,7 +486,7 @@ def preparar_perfil_certificado(destino: Path, user_data: Path | None = None) ->
     e o registro dela nas preferências). Sem o Web Signer no Chrome, o
     perfil abre limpo, e a tela de login ensina a instalá-lo pela Chrome Web
     Store (fica neste perfil). A cópia antiga, do perfil inteiro, é apagada
-    antes; se ela não puder sair agora, NavegadorOcupado - o navegador do
+    antes; se ela não puder sair agora, CopiaAntigaPresa - o navegador do
     programa nunca abre em cima dela (com as senhas, os cookies e as outras
     extensões do Chrome do usuário).
     """
@@ -493,7 +494,7 @@ def preparar_perfil_certificado(destino: Path, user_data: Path | None = None) ->
     user_data = Path(user_data or USER_DATA_CHROME)
     with _TRAVA_PERFIS:
         if not limpar_copia_antiga(destino):
-            raise NavegadorOcupado(COPIA_ANTIGA_PRESA)
+            raise CopiaAntigaPresa(COPIA_ANTIGA_PRESA)
         perfis = _perfis_do_chrome(user_data)
         origem = next((p for p in perfis if (p / "Extensions" / EXT_WEB_SIGNER).is_dir()), None)
         if tem_web_signer(destino):

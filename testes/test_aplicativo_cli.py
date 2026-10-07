@@ -406,6 +406,32 @@ class TestComandosParaAutomacao(unittest.TestCase):
         self.assertFalse((destino / f"{outro}.txt").exists())
         self.assertEqual(sorted(p.name for p in destino.iterdir()), [f"{publico}.txt"])
 
+    def test_preparar_pasta_le_o_sigilo_do_relatorio_do_lote(self):
+        """Achado V2: o lote baixado com a separação desligada antes do
+        registro do download (ou com ele perdido) tem o sigiloso na pasta e
+        o relatório dizendo sigiloso=sim; o JSON o dava como público."""
+        from helestron.download import motor
+
+        publico, sigiloso = "0700001-27.2024.8.02.0001", "0700002-02.2024.8.02.0001"
+        for lote in (self.amb.raiz / "Lotes da skill" / "Lote 8",       # fora do acervo
+                     self.acervo / "Processos" / "Lote 8"):             # dentro dele
+            with self.subTest(lote=lote):
+                self.pdf(lote / f"{publico}.pdf", "autos públicos")
+                self.pdf(lote / f"{sigiloso}.pdf", "PARTES EM SEGREDO DE JUSTIÇA")
+                motor._gravar_relatorio(lote / "_controle" / "relatorio.csv", [
+                    [1, publico, "TJAL", "esaj", "OK", 1, 1, f"{publico}.pdf", "não",
+                     "", "", "", ""],
+                    [2, sigiloso, "TJAL", "esaj", "OK", 1, 1, f"{sigiloso}.pdf", "sim",
+                     "", "", "", ""]])
+                codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--json")
+                self.assertEqual(codigo, 0)
+                itens = {Path(i["pdf"]).stem: i for i in json.loads(saida)["itens"]}
+                self.assertTrue(itens[sigiloso]["sigiloso"])
+                self.assertFalse(itens[publico]["sigiloso"])
+                if lote.is_relative_to(self.acervo):
+                    self.assertEqual(itens[sigiloso]["situacao"], "sigiloso_ignorado")
+                    self.assertFalse((lote / "_texto" / f"{sigiloso}.txt").exists())
+
     def test_preparar_rejeita_argumento_e_mostra_ajuda(self):
         codigo, saida, _ = self.rodar("preparar", "-h")
         self.assertEqual(codigo, 0)

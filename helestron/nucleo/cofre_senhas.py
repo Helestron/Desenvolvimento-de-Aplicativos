@@ -29,7 +29,7 @@ import sys
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -173,36 +173,39 @@ def _trava_abandonada(trava: Path) -> bool:
         return False
 
 
+class TravaOcupada(PermissionError):
+    """A trava entre processos de um arquivo não saiu no prazo (ESPERA_TRAVA_S)."""
+
+
 @contextmanager
-def _travado(arquivo: Path):
-    """Uma gravação do cofre de cada vez: entre as threads deste processo
-    (_trava) e entre processos (o arquivo '<cofre>.trava', criado com O_EXCL
-    e apagado ao fim - nada fica na pasta)."""
-    with _trava:
-        trava = arquivo.with_name(arquivo.name + ".trava")
-        trava.parent.mkdir(parents=True, exist_ok=True)
+def travado(arquivo: Path, trava: threading.Lock, o_que: str):
+    """Uma gravação de 'arquivo' de cada vez: entre as threads deste processo
+    ('trava') e entre processos (o arquivo '<arquivo>.trava', criado com
+    O_EXCL e apagado ao fim - nada fica na pasta). A trava esquecida (o
+    processo que a tinha caiu) deixa de valer depois de TRAVA_ABANDONADA_S;
+    a viva que não sai em ESPERA_TRAVA_S levanta TravaOcupada. 'o_que': o
+    nome do arquivo para o registro ("do cofre de senhas")."""
+    with trava:
+        marca = arquivo.with_name(arquivo.name + ".trava")
+        marca.parent.mkdir(parents=True, exist_ok=True)
         limite = time.monotonic() + ESPERA_TRAVA_S
         while True:
             try:
-                fd = os.open(trava, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                fd = os.open(marca, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 break
             except (FileExistsError, PermissionError):
                 # PermissionError: no Windows, a trava que outro processo
                 # acabou de apagar ainda está "saindo" por um instante.
-                if _trava_abandonada(trava):
+                if _trava_abandonada(marca):
                     try:
-                        trava.unlink()
-                        log.warning("trava do cofre de senhas esquecida (%s); retirada",
-                                    trava.name)
+                        marca.unlink()
+                        log.warning("trava %s esquecida (%s); retirada", o_que, marca.name)
                         continue
                     except OSError:
                         pass            # não saiu: espera-se como por uma trava viva
                 if time.monotonic() >= limite:
-                    raise CofreIndisponivel(
-                        "Não consegui gravar o cofre de senhas agora: outra janela do Helestron "
-                        "(ou o download pela linha de comando) está gravando nele, ou a pasta "
-                        f"{arquivo.parent} não aceita gravação. Nada foi alterado; repita em "
-                        "alguns segundos.") from None
+                    raise TravaOcupada(f"a trava {o_que} ({marca.name}) não saiu em "
+                                       f"{ESPERA_TRAVA_S:.0f} s") from None
                 time.sleep(0.05)
         try:
             try:
@@ -212,9 +215,25 @@ def _travado(arquivo: Path):
             yield
         finally:
             try:
-                trava.unlink()
+                marca.unlink()
             except OSError as erro:
-                log.warning("não consegui retirar a trava do cofre de senhas (%s)", erro)
+                log.warning("não consegui retirar a trava %s (%s)", o_que, erro)
+
+
+@contextmanager
+def _travado(arquivo: Path):
+    """Uma gravação do cofre de cada vez (travado), entre as threads deste
+    processo e entre processos."""
+    with ExitStack() as pilha:
+        try:
+            pilha.enter_context(travado(arquivo, _trava, "do cofre de senhas"))
+        except TravaOcupada:
+            raise CofreIndisponivel(
+                "Não consegui gravar o cofre de senhas agora: outra janela do Helestron "
+                "(ou o download pela linha de comando) está gravando nele, ou a pasta "
+                f"{arquivo.parent} não aceita gravação. Nada foi alterado; repita em "
+                "alguns segundos.") from None
+        yield
 
 
 class CofreSenhas:

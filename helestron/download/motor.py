@@ -73,7 +73,7 @@ from .modelos import (CANCELADO, CAUSA_FALHA, CAUSA_GRAVACAO, CAUSA_INESPERADO,
                       CAUSA_PDF_ABERTO, CAUSA_PDF_INVALIDO, CAUSA_PORTAL, CAUSA_PORTAL_PAROU,
                       CAUSA_SESSAO, CAUSA_SIGILO_NO_ACERVO, ERRO, JA_BAIXADO, NAO_ENCONTRADO,
                       NAO_SUPORTADO, OK, SEM_ACESSO, SIGILOSO_SEM_SENHA, TENTAR_DE_NOVO,
-                      Cancelado, LoginFalhou, NavegadorOcupado, OpcoesDownload,
+                      Cancelado, CopiaAntigaPresa, LoginFalhou, NavegadorOcupado, OpcoesDownload,
                       PortalIndisponivel, ProcessoNaoEncontrado, ResultadoProcesso, ResumoLote,
                       SemAcesso, SessaoPerdida, SigilosoSemSenha)
 
@@ -92,6 +92,9 @@ MAX_RELOGINS = 2                 # por processo
 MAX_INDISPONIVEL_SEGUIDOS = 3    # processos seguidos com o portal fora: desiste do grupo
 ESPERA_ENTRE_TENTATIVAS_S = 3.0  # cresce a cada tentativa (3 s, 6 s...), até 30 s
 ESPERA_NAVEGADOR_S = 30.0        # navegador ocupado por outro download: tenta de novo a cada 30 s
+# O "motivo" do evento navegador_ocupado: por que o navegador do portal não abre
+MOTIVO_OUTRO_DOWNLOAD = "outro_download"       # outro download usa o perfil
+MOTIVO_COPIA_ANTIGA = "copia_antiga_presa"     # a cópia antiga do perfil não pôde ser apagada
 
 # Os arquivos de _controle que andam com o PDF do processo (para a pasta de
 # sigilosos, de volta ao lote...): a capa em texto e em JSON e o registro do
@@ -106,10 +109,15 @@ SEM_REGISTRO = "sem registro do download anterior: paginação não conferida"
 # Na linha da rodada que não trocou o PDF que já estava na pasta (falha,
 # item interrompido, grupo sem login): depois disto vem o que se sabia dele.
 PDF_ANTERIOR = "o PDF anterior continua na pasta"
+# O sigilo não pôde ir para o registro do download (_lembrar_sigilo): com a
+# separação desligada, os autos vão para a pasta de sigilosos assim mesmo.
+SEM_REGISTRO_DO_SIGILO = ("por segurança, mesmo com a separação dos sigilosos desligada: o "
+                          "registro do sigilo não pôde ser gravado agora")
 # Pedaços do detalhe que valem só para a rodada em que foram escritos: não
 # são copiados quando o processo, já na pasta, é visto de novo.
 _SO_DA_RODADA = (JA_ESTAVA, SEM_REGISTRO, "levado agora para a pasta de sigilosos",
-                 "baixado de novo", PDF_ANTERIOR, "atenção:", "ATENÇÃO:")
+                 "baixado de novo", PDF_ANTERIOR, "atenção:", "ATENÇÃO:",
+                 SEM_REGISTRO_DO_SIGILO)
 
 # Erro de conexão (o portal ou a rede fora), e não página lenta: só estes
 # contam para MAX_INDISPONIVEL_SEGUIDOS. "Timeout" solto não entra - o
@@ -1450,6 +1458,10 @@ class _Lote:
         self._sigilo_no_acervo: list[str] = []
         self._sigilo_avisos: list[str] = []
         self._sigilo_motivos: dict[str, str] = {}       # arquivo -> por que ficou
+        # Sigilosos cujo sigilo não pôde ir para o registro do download
+        # (_lembrar_sigilo): por segurança, vão para a pasta de sigilosos
+        # mesmo com a separação desligada - lá, a regra única os vê pela pasta.
+        self._sem_registro: set[str] = set()
         self._cfg_lida = None            # config.ini, quando quem chama não deu cfg
         self._nav = None                 # o navegador do grupo em curso
         # Uma vez sigiloso, sempre sigiloso: o que relatórios anteriores
@@ -1741,14 +1753,40 @@ class _Lote:
         return (sigilo.motivo_da_pasta(self.raiz_sigilosos, n) or sigilo.motivo_da_pauta(n)
                 or sigilo.motivo_do_download(n))
 
-    def _lembrar_sigilo(self, n: Numero) -> None:
+    def _sigilo_so_do_relatorio(self, n: Numero, motivo: str) -> bool:
+        """O sigilo vem só de um relatório anterior deste lote (ou da capa)?
+        É o do lote de versão anterior, com o sigiloso no acervo e sem o
+        registro do download. O relatório marca também o que o lote só
+        TRATOU como sigiloso porque a pasta dos sigilosos ou a pauta o
+        indicava: esse não vai para o registro do download, que diria, sem
+        ser verdade, que o portal o apurou (e desfazer a marcação errada da
+        pauta deixaria de bastar)."""
+        return motivo == SIGILO_ANTERIOR and not (
+            sigilo.motivo_da_pasta(self.raiz_sigilosos, n) or sigilo.motivo_da_pauta(n))
+
+    def _lembrar_sigilo(self, n: Numero) -> bool:
         """O sigilo que o portal mostrou passa a valer na regra única
         (sigilo.lembrar_do_download): o índice, o texto para a IA, o conector,
         o pacote, a nuvem e a transcrição deixam o processo de fora mesmo com
-        os autos no acervo (separação dos sigilosos desligada, ou presos)."""
-        if not sigilo.lembrar_do_download([n]):
-            log.warning("    não consegui guardar no registro do sigilo que %s corre em segredo "
-                        "de justiça; o lote o trata como sigiloso assim mesmo.", n.formatado)
+        os autos no acervo (separação dos sigilosos desligada, ou presos).
+
+        Se o registro não pôde ser gravado, falha para o lado seguro: os autos
+        vão para a pasta de sigilosos mesmo com a separação desligada
+        (_separar), onde a regra os vê pela pasta. False nesse caso."""
+        if sigilo.lembrar_do_download([n]):
+            return True
+        self._sem_registro.add(n.nome_arquivo)
+        log.warning("    não consegui guardar no registro do sigilo que %s corre em segredo de "
+                    "justiça; o lote o trata como sigiloso assim mesmo%s.", n.formatado,
+                    "" if self.opcoes.separar_sigilosos else
+                    " e o guarda na pasta de sigilosos, mesmo com a separação desligada")
+        return False
+
+    def _separar(self, n: Numero) -> bool:
+        """O sigiloso 'n' vai para a pasta de sigilosos? Com a separação
+        ligada, sempre; desligada, só se o sigilo dele não pôde ir para o
+        registro do download (_lembrar_sigilo)."""
+        return bool(self.opcoes.separar_sigilosos) or n.nome_arquivo in self._sem_registro
 
     def _levar(self, origem_dir: Path, alvo_dir: Path, n: Numero,
                r: ResultadoProcesso | None,
@@ -1768,7 +1806,7 @@ class _Lote:
         se sigiloso, para a pasta de sigilosos. Se não der, o processo fica
         como ERRO e NADA dele entra no acervo."""
         nome = f"{n.nome_arquivo}.pdf"
-        sigilo = r.sigiloso and self.opcoes.separar_sigilosos
+        sigilo = r.sigiloso and self._separar(n)
         alvo_dir = self.pasta_sigilosos if sigilo else self.destino
         if sigilo:
             _marcar_origem(self.pasta_sigilosos, self.destino)
@@ -1803,6 +1841,8 @@ class _Lote:
                 log.info("    sigiloso: guardado em %s (fora do acervo compartilhado).",
                          alvo_dir)
                 r.detalhe = _juntar(r.detalhe, "guardado na pasta de sigilosos")
+                if not self.opcoes.separar_sigilosos:
+                    r.detalhe = _juntar(r.detalhe, SEM_REGISTRO_DO_SIGILO)
         if sigilo:
             # Cópias baixadas quando o processo ainda era público (neste
             # lote ou noutro) também saem do acervo.
@@ -2264,8 +2304,9 @@ class _Lote:
         self._evento("grupo_inicio", sistema=tribunal.sistema, tribunal=tribunal.sigla,
                      alternativo=bool(alternativo), ordens=[self.itens[i].ordem for i in indices])
         # Navegador ocupado por outro download (o mesmo perfil não abre duas
-        # vezes): com "esperar o navegador", tenta de novo a cada 30 s até o
-        # prazo - mas só antes de o grupo começar a baixar.
+        # vezes), ou que não abre porque a cópia antiga do perfil ficou presa
+        # (CopiaAntigaPresa): com "esperar o navegador", tenta de novo a cada
+        # 30 s até o prazo - mas só antes de o grupo começar a baixar.
         espera = max(0.0, float(getattr(self.opcoes, "esperar_navegador_s", 0) or 0))
         limite = time.monotonic() + espera
         avisou = False
@@ -2279,13 +2320,23 @@ class _Lote:
                     if not avisou:
                         avisou = True
                         ate = datetime.fromtimestamp(time.time() + restante)
-                        log.warning("O navegador do %s está ocupado por outro download; espero "
-                                    "até %s.", nome, f"{ate:%H:%M}")
-                        self.ctx.status(f"O navegador do {nome} está ocupado por outro download; "
-                                        f"esperando até {ate:%H:%M}...")
+                        if isinstance(erro, CopiaAntigaPresa):
+                            motivo = MOTIVO_COPIA_ANTIGA
+                            frase = (f"O navegador do {nome} não abre agora: a cópia antiga do "
+                                     "perfil do Chrome (das versões anteriores) ainda não pôde "
+                                     "ser apagada. Feche as janelas do navegador do programa (e "
+                                     "o Explorador, se estiver aberto na pasta perfis do "
+                                     "Helestron); tento de novo até "
+                                     f"{ate:%H:%M}...")
+                        else:
+                            motivo = MOTIVO_OUTRO_DOWNLOAD
+                            frase = (f"O navegador do {nome} está ocupado por outro download; "
+                                     f"esperando até {ate:%H:%M}...")
+                        log.warning("%s", frase)
+                        self.ctx.status(frase)
                         self._evento("navegador_ocupado", sistema=tribunal.sistema,
                                      tribunal=tribunal.sigla,
-                                     ate=ate.isoformat(timespec="seconds"))
+                                     ate=ate.isoformat(timespec="seconds"), motivo=motivo)
                     try:
                         self._dormir(min(ESPERA_NAVEGADOR_S, restante))
                     except Cancelado:
@@ -2449,7 +2500,7 @@ class _Lote:
         r.arquivo = str(existente)
         r.paginas = _paginas(existente)
         r.sigiloso = _mesma_pasta(existente.parent, self.pasta_sigilosos) or bool(motivo)
-        if motivo == SIGILO_ANTERIOR:
+        if self._sigilo_so_do_relatorio(n, motivo):
             self._lembrar_sigilo(n)      # lote de antes desta regra, com o sigiloso no acervo
         if reg["sistema"]:
             r.sistema = reg["sistema"]
@@ -2458,10 +2509,14 @@ class _Lote:
         r.paginacao = dict(reg["paginacao"])
         sem_registro = not (reg["manifesto"] or reg["meta"] or reg["linha"] is not None)
         r.detalhe = _juntar(JA_ESTAVA, reg["detalhe"], SEM_REGISTRO if sem_registro else "")
-        if r.sigiloso and self.opcoes.separar_sigilosos:
+        if r.sigiloso and self._separar(n):
             # sigiloso que ficou no acervo (separação que falhou numa
-            # versão anterior, ou cópia de quando era público)
+            # versão anterior, ou cópia de quando era público; com a
+            # separação desligada, o sigilo que não foi para o registro)
             self._retirar_do_acervo(r, n)
+            if not self.opcoes.separar_sigilosos \
+                    and _mesma_pasta(Path(r.arquivo).parent, self.pasta_sigilosos):
+                r.detalhe = _juntar(r.detalhe, SEM_REGISTRO_DO_SIGILO)
         self._concluir(r)
 
     def _registrar_download(self, r: ResultadoProcesso) -> None:
@@ -2641,10 +2696,12 @@ class _Lote:
         # tentativa que falhou, ou um download anterior, vale para esta.
         if n.nome_arquivo in (getattr(portal, "sigilosos_apurados", None) or ()):
             r.sigiloso = True
-        if r.sigiloso or motivo == SIGILO_ANTERIOR:
+        if r.sigiloso or self._sigilo_so_do_relatorio(n, motivo):
             # O sigilo que o portal mostrou (agora ou numa rodada anterior
             # deste lote) passa a valer na regra única ANTES de o PDF ir para
-            # o lote: com a separação desligada, ele fica no acervo.
+            # o lote: com a separação desligada, ele fica no acervo. O que
+            # veio só da pasta ou da pauta não vai para o registro do
+            # download: elas mesmas já o dizem.
             self._lembrar_sigilo(n)
         if not r.sigiloso and motivo:
             r.sigiloso = True
@@ -2656,7 +2713,7 @@ class _Lote:
                 self._guardar(r, n, provisorio)
                 guardado = bool(r.arquivo) and not _dentro(r.arquivo, self.provisorio) \
                     and Path(r.arquivo).is_file()
-            elif r.sigiloso and self.opcoes.separar_sigilosos:
+            elif r.sigiloso and self._separar(n):
                 self._retirar_do_acervo(r, n)
         except BaseException:
             # Ctrl+C no meio da guarda: o que não chegou ao destino volta

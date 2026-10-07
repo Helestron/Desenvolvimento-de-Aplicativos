@@ -321,8 +321,11 @@ class TestPerfilDoCertificado(apoio.PastaTemporaria):
                 mock.patch.object(navegador, "USER_DATA_CHROME", self.tmp / "sem-chrome"), \
                 mock.patch.object(Path, "rename", side_effect=recusa), \
                 self.assertLogs("download.navegador", "WARNING") as registro:
-            with self.assertRaises(modelos.NavegadorOcupado) as caso:
+            # CopiaAntigaPresa (um NavegadorOcupado): o motor espera por ela
+            # como pelo navegador ocupado, mas diz o motivo real (achado V10)
+            with self.assertRaises(modelos.CopiaAntigaPresa) as caso:
                 nav.abrir()
+        self.assertIsInstance(caso.exception, modelos.NavegadorOcupado)
         self.assertEqual(lancados, [], "o Chrome do programa não abre sobre a cópia antiga")
         self.assertIn("não pôde ser apagada", str(caso.exception))
         self.assertTrue((destino / "Default" / "Login Data").exists(), "nada mudou")

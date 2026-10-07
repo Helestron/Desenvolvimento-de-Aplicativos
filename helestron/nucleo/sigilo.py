@@ -1,6 +1,6 @@
 """A regra única do processo sigiloso (segredo de justiça).
 
-O programa sabe que um processo corre em segredo de justiça por quatro
+O programa sabe que um processo corre em segredo de justiça por estas
 fontes, e qualquer uma basta:
 
 1. os AUTOS estão na pasta dos sigilosos (<sigilosos>/<número>.pdf ou
@@ -15,7 +15,19 @@ fontes, e qualquer uma basta:
 4. um DOWNLOAD já o apurou em segredo de justiça (o portal mostrou o selo):
    fica no registro ao lado do da pauta (LOCAL/download.sigilo.json:
    lembrar_do_download). Com a separação dos sigilosos desligada, os autos
-   ficam no acervo, e é só por ele que o resto do programa sabe do sigilo.
+   ficam no acervo, e é por ele que o resto do programa sabe do sigilo;
+5. o RELATÓRIO de um lote dentro do acervo o dá como sigiloso (coluna
+   "sigiloso" = "sim", em <lote>/_controle/relatorio.csv:
+   sigilosos_dos_relatorios). É o que cobre o lote baixado com a separação
+   desligada antes de existir o registro do download (versão anterior), ou
+   depois de ele se perder (a pasta LOCAL apagada, o acervo levado para
+   outro computador). chaves_sigilosas, ao dar com um processo que só o
+   relatório conhece, o acrescenta ao registro do download.
+
+A gravação dos registros (4 e o da pauta) passa uma de cada vez também
+entre processos (a janela, o "baixar" da linha de comando e o conector) e
+insiste quando o Windows segura o arquivo por um instante (a trava e a troca
+do cofre de senhas: cofre_senhas.travado e gravar_privado).
 
 O INCIDENTE (o dependente "...0001-01", o cumprimento de sentença, por
 exemplo) herda o sigilo do principal: as partes e o conteúdo são os mesmos.
@@ -45,6 +57,7 @@ banco e o registro.
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import os
@@ -54,7 +67,7 @@ import urllib.parse
 from dataclasses import replace
 from pathlib import Path
 
-from . import caminhos, cnj
+from . import caminhos, cnj, cofre_senhas
 
 log = logging.getLogger("nucleo.sigilo")
 
@@ -74,6 +87,17 @@ MAX_PASTAS = 2000
 SUFIXO_APURADO = ".sigilo.json"
 # E o do que o download já apurou, ao lado dele: download.sigilo.json
 NOME_DO_DOWNLOAD = "download"
+# Os relatórios de um lote, em <lote>/_controle (download/motor.RELATORIOS):
+# o "(atualizado)" é o que o motor grava quando o Excel prende o outro.
+RELATORIOS_DO_LOTE = ("relatorio.csv", "relatorio (atualizado).csv")
+# Até que profundidade, abaixo do acervo, se procura a pasta de um lote (a
+# que tem _controle): o próprio acervo (0), <acervo>/<lote> (1),
+# <acervo>/Processos/<lote> (2, onde o download grava) e um nível abaixo
+# (Processos/2025/<lote>). Abaixo do 2º nível, no máximo MAX_PASTAS pastas.
+PROFUNDIDADE_LOTES = 3
+# Pastas do acervo em que não há lote: o cache da IA, a das gravações e a
+# do Claude Code (e as _controle, onde o relatório é procurado, não descido).
+_SEM_LOTE = frozenset({"_ia", "_audio", ".claude", "_controle"})
 
 # Por que o processo é sigiloso, para a tela, a linha de comando e o relatório
 MOTIVO_PASTA = ("os autos, uma transcrição ou uma gravação dele estão na pasta dos "
@@ -95,6 +119,8 @@ _trava = threading.Lock()
 _trava_apurado = threading.Lock()
 # arquivo do banco -> (assinatura do banco e do registro, chaves, quando foi lido)
 _lidas: dict[str, tuple[tuple, frozenset[str], float]] = {}
+# relatório de lote -> (assinatura: mtime e tamanho, processos que ele dá como sigilosos)
+_relatorios_lidos: dict[str, tuple[tuple, frozenset[str]]] = {}
 _avisou_pasta_grande: set[str] = set()
 
 
@@ -400,24 +426,34 @@ def _ler_banco(arquivo: Path) -> frozenset[str]:
     return frozenset(nomes)
 
 
-def _ler_apuradas(arquivo: Path | None) -> tuple[frozenset[str], bool]:
+def _ler_apuradas(arquivo: Path | None, tentativas: int = 1,
+                  avisar: bool = True) -> tuple[frozenset[str], bool]:
     """(processos do registro, se foi lido). Sem o registro: (vazio, True).
     Registro ilegível (preso pelo antivírus, estragado): (vazio, False) - e
-    ninguém grava por cima dele."""
+    ninguém grava por cima dele. 'tentativas': quantas vezes insistir no
+    arquivo preso (o estragado não muda com a espera); 'avisar': o
+    ilegível vai para o registro do programa."""
     if arquivo is None:
         return frozenset(), True
-    try:
-        dados = json.loads(arquivo.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return frozenset(), True
-    except (OSError, ValueError) as erro:
-        log.warning("não consegui ler o registro dos processos já apurados em segredo de "
-                    "justiça (%s): %s", arquivo.name, str(erro)[:160])
-        return frozenset(), False
+    for tentativa in range(max(1, tentativas)):
+        try:
+            dados = json.loads(arquivo.read_text(encoding="utf-8"))
+            break
+        except FileNotFoundError:
+            return frozenset(), True
+        except (OSError, ValueError) as erro:
+            if isinstance(erro, OSError) and tentativa < tentativas - 1:
+                time.sleep(cofre_senhas.ESPERA_S)
+                continue
+            if avisar:
+                log.warning("não consegui ler o registro dos processos já apurados em segredo "
+                            "de justiça (%s): %s", arquivo.name, str(erro)[:160])
+            return frozenset(), False
     lista = dados.get("processos") if isinstance(dados, dict) else None
     if not isinstance(lista, list):
-        log.warning("o registro dos processos já apurados em segredo de justiça (%s) não tem a "
-                    "lista 'processos'.", arquivo.name)
+        if avisar:
+            log.warning("o registro dos processos já apurados em segredo de justiça (%s) não "
+                        "tem a lista 'processos'.", arquivo.name)
         return frozenset(), False
     return frozenset(n for n in (_nome(x) for x in lista if isinstance(x, str)) if n), True
 
@@ -442,34 +478,36 @@ _DESFAZER = (" Para desfazer uma marcação errada, veja no manual do Helestron 
 
 def _acrescentar(arquivo: Path | None, processos, sobre: str) -> bool:
     """Acrescenta 'processos' ao registro 'arquivo' (lembrar_da_pauta,
-    lembrar_do_download). Só acrescenta, nunca tira; gravação atômica
-    (temporário + os.replace). Nunca levanta: False se não gravou (o registro
-    ilegível não é sobrescrito)."""
+    lembrar_do_download). Só acrescenta, nunca tira.
+
+    Ler, juntar e gravar acontecem sob a trava do registro, entre as threads
+    e entre os processos (a janela, o "baixar" da linha de comando, o
+    conector): um não apaga o que o outro acabou de acrescentar. O registro
+    preso por um instante (antivírus, o outro processo lendo) é lido e
+    trocado com insistência; a gravação é atômica (temporário no disco +
+    troca). Nunca levanta: False se não gravou (o registro ilegível não é
+    sobrescrito)."""
     nomes = {n for n in (_nome(p) for p in processos or []) if n}
     if arquivo is None or not nomes:
         return False
-    with _trava_apurado:
-        ja, legivel = _ler_apuradas(arquivo)
-        if not legivel:
-            return False
-        if nomes <= ja:
-            return True
-        dados = {"sobre": sobre + _DESFAZER, "processos": sorted(ja | nomes)}
-        temporario = arquivo.with_name(f".{arquivo.name}.{os.getpid()}."
-                                       f"{threading.get_ident()}.tmp")
-        try:
-            arquivo.parent.mkdir(parents=True, exist_ok=True)
-            temporario.write_text(json.dumps(dados, ensure_ascii=False, indent=1) + "\n",
-                                  encoding="utf-8")
-            os.replace(temporario, arquivo)
-        except OSError as erro:
-            log.warning("não consegui guardar o registro dos processos apurados em segredo de "
-                        "justiça (%s): %s", arquivo.name, str(erro)[:160])
-            try:
-                temporario.unlink()
-            except OSError:
-                pass
-            return False
+    # Já estão todos lá: nada a gravar, e sem trava (do registro nada sai).
+    ja, legivel = _ler_apuradas(arquivo, avisar=False)
+    if legivel and nomes <= ja:
+        return True
+    try:
+        with cofre_senhas.travado(arquivo, _trava_apurado, f"do registro {arquivo.name}"):
+            ja, legivel = _ler_apuradas(arquivo, cofre_senhas.TENTATIVAS)
+            if not legivel:
+                return False
+            if nomes <= ja:
+                return True
+            dados = {"sobre": sobre + _DESFAZER, "processos": sorted(ja | nomes)}
+            cofre_senhas.gravar_privado(
+                arquivo, json.dumps(dados, ensure_ascii=False, indent=1) + "\n")
+    except OSError as erro:
+        log.warning("não consegui guardar o registro dos processos apurados em segredo de "
+                    "justiça (%s): %s", arquivo.name, str(erro)[:160])
+        return False
     return True
 
 
@@ -580,16 +618,149 @@ def esquecer_pauta() -> None:
         _lidas.clear()
 
 
+# ============================================================ relatório do lote
+def _pastas_de_controle(raiz: Path) -> list[Path]:
+    """As pastas _controle dos lotes dentro de 'raiz' (o acervo): em largura,
+    até PROFUNDIDADE_LOTES, sem descer pelo cache da IA, pelas pastas das
+    gravações, pelas escondidas e pelos atalhos. Os dois primeiros níveis
+    são sempre lidos inteiros; abaixo deles, no máximo MAX_PASTAS pastas
+    (a pasta de Processos primeiro). Só pastas: o relatório é procurado
+    pelo nome, sem listar a _controle (que tem a capa de cada processo)."""
+    achadas: list[Path] = []
+    nivel: list[tuple[Path, tuple[str, ...]]] = [(Path(raiz), ())]
+    lidas_abaixo = 0
+    while nivel:
+        proximo: list[tuple[Path, tuple[str, ...]]] = []
+        for pasta, partes in nivel:
+            if len(partes) >= 2:
+                if lidas_abaixo >= MAX_PASTAS:
+                    chave = str(raiz)
+                    if chave not in _avisou_pasta_grande:
+                        _avisou_pasta_grande.add(chave)
+                        log.warning("O acervo (%s) tem pastas demais; o relatório dos lotes só "
+                                    "foi procurado nas primeiras %d abaixo do segundo nível.",
+                                    raiz, MAX_PASTAS)
+                    return achadas
+                lidas_abaixo += 1
+            try:
+                with os.scandir(pasta) as it:
+                    entradas = list(it)
+            except OSError:
+                continue
+            for e in entradas:
+                minusculo = e.name.lower()
+                try:
+                    if not e.is_dir():
+                        continue
+                except OSError:
+                    continue
+                if minusculo == "_controle":
+                    achadas.append(Path(e.path))
+                    continue
+                if (len(partes) >= PROFUNDIDADE_LOTES or minusculo in _SEM_LOTE
+                        or minusculo.startswith((".", "$", "~")) or _e_ligacao(e)):
+                    continue
+                proximo.append((Path(e.path), (*partes, minusculo)))
+        # Os lotes do download (Processos/<lote>) antes do resto do acervo
+        nivel = sorted(proximo, key=lambda item: item[1][0] != "processos")
+    return achadas
+
+
+def _sigilosos_do_csv(dados: bytes) -> frozenset[str]:
+    """Os processos que um relatório de lote dá como sigilosos ("sim" na
+    coluna "sigiloso"), lido como o motor o lê (UTF-8 com BOM; o salvo pelo
+    Excel, em ANSI). A linha mascarada ("(processo sigiloso)") não tem número
+    e não conta: o número dela está na pasta dos sigilosos."""
+    try:
+        texto = dados.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        texto = dados.decode("cp1252", errors="replace")
+    nomes: set[str] = set()
+    try:
+        for linha in csv.DictReader(texto.splitlines(), delimiter=";"):
+            valor = linha.get("sigiloso")
+            if not isinstance(valor, str) or valor.strip().lower() != "sim":
+                continue
+            try:
+                nomes.add(cnj.ler_nome_arquivo(str(linha.get("processo") or "").strip())
+                          .nome_arquivo)
+            except cnj.NumeroInvalido:
+                continue
+    except (csv.Error, ValueError, AttributeError) as erro:
+        log.warning("relatório de lote ilegível em parte (%s); vale o que foi lido.",
+                    str(erro)[:120])
+    return frozenset(nomes)
+
+
+def _do_relatorio(arquivo: Path) -> frozenset[str]:
+    """_sigilosos_do_csv de um relatório, guardado enquanto ele não muda (a
+    data e o tamanho). Preso por um instante: vale o que se leu da última vez."""
+    try:
+        st = os.stat(arquivo)
+    except OSError:
+        return frozenset()
+    assinatura = (st.st_mtime_ns, st.st_size)
+    chave = str(arquivo)
+    with _trava:
+        guardado = _relatorios_lidos.get(chave)
+    if guardado is not None and guardado[0] == assinatura:
+        return guardado[1]
+    try:
+        dados = arquivo.read_bytes()
+    except OSError as erro:
+        log.info("não consegui ler o relatório %s (%s)", arquivo, str(erro)[:120])
+        return guardado[1] if guardado is not None else frozenset()
+    nomes = _sigilosos_do_csv(dados)
+    with _trava:
+        _relatorios_lidos[chave] = (assinatura, nomes)
+    return nomes
+
+
+def sigilosos_dos_relatorios(raiz) -> Sigilosas:
+    """Os processos (Numero.nome_arquivo) que o relatório de algum lote
+    dentro de 'raiz' (o acervo) dá como sigilosos: os dois relatórios
+    (RELATORIOS_DO_LOTE) de cada <lote>/_controle até PROFUNDIDADE_LOTES.
+    Com a separação dos sigilosos desligada, o relatório do lote fica no
+    acervo sem máscara, e é o que diz o sigilo do lote baixado antes do
+    registro do download (ou depois de ele se perder). Cada relatório é lido
+    de novo só quando muda. Nunca levanta."""
+    if raiz is None:
+        return Sigilosas()
+    nomes: set[str] = set()
+    try:
+        for controle in _pastas_de_controle(Path(raiz)):
+            for nome in RELATORIOS_DO_LOTE:
+                nomes |= _do_relatorio(controle / nome)
+    except (OSError, ValueError, TypeError) as erro:
+        log.warning("não consegui ler os relatórios dos lotes do acervo (%s)", str(erro)[:160])
+    return Sigilosas(nomes)
+
+
 # ===================================================================== regra
 def chaves_sigilosas(sigilosos, raiz=None, pauta=PAUTA_DO_PROGRAMA) -> Sigilosas:
     """TODOS os processos sigilosos que o programa conhece (Numero.nome_arquivo):
     os da pasta dos sigilosos (autos, transcrição, gravação, diário), os
-    que a pauta marca e os que um download já apurou. 'raiz': o acervo (ver
-    chaves_na_pasta); 'pauta': o banco da pauta, com o registro do download
-    ao lado (None: nem um nem outro). Num Sigilosas: 'chave in ...' vale
-    também para o incidente de um deles."""
-    return Sigilosas(chaves_na_pasta(sigilosos, raiz) | chaves_da_pauta(pauta)
-                     | apuradas_no_download(pauta))
+    que a pauta marca, os que um download já apurou e, com 'raiz', os que o
+    relatório de um lote dentro dela dá como sigilosos. 'raiz': o acervo
+    (ver chaves_na_pasta e sigilosos_dos_relatorios); 'pauta': o banco da
+    pauta, com o registro do download ao lado (None: nem um nem outro). Num
+    Sigilosas: 'chave in ...' vale também para o incidente de um deles.
+
+    O processo que só o relatório conhece (o lote baixado antes do registro
+    do download, ou com ele perdido) passa a valer também no registro do
+    download, para o resto do programa (a transcrição, a tela da
+    audiência). O que a pasta ou a pauta já dão não vai para ele: o relatório
+    marca também o que o lote só TRATOU como sigiloso por elas, e o registro
+    do download diria que o portal o apurou."""
+    sabidas = Sigilosas(chaves_na_pasta(sigilosos, raiz) | chaves_da_pauta(pauta)
+                        | apuradas_no_download(pauta))
+    if raiz is None:
+        return sabidas
+    dos_relatorios = sigilosos_dos_relatorios(raiz)
+    novas = sorted(n for n in dos_relatorios if n not in sabidas)
+    if novas:
+        lembrar_do_download(novas, pauta)
+    return Sigilosas(sabidas | dos_relatorios)
 
 
 def motivo_da_pasta(sigilosos, numero) -> str:

@@ -227,6 +227,99 @@ class TestSigilosos(BaseMotor):
         self.assertEqual((r.situacao, r.sigiloso), (modelos.JA_BAIXADO, True))
         self.assertEqual(sigilo.motivo(self.cfg, TJAL1), sigilo.MOTIVO_DOWNLOAD)
 
+    @contextlib.contextmanager
+    def registro_preso(self):
+        """O download.sigilo.json preso de vez por outro programa: a troca dele
+        falha sempre (as esperas da insistência não contam no teste)."""
+        from helestron.nucleo import cofre_senhas
+        original = os.replace
+        falhas = []
+
+        def replace(origem, destino):
+            if str(destino).endswith("download.sigilo.json"):
+                falhas.append(destino)
+                raise PermissionError(13, "O arquivo já está sendo usado por outro processo",
+                                      str(destino))
+            return original(origem, destino)
+
+        with mock.patch.object(cofre_senhas.os, "replace", replace), \
+                mock.patch.object(cofre_senhas.time, "sleep"):
+            yield falhas
+
+    def test_registro_que_nao_grava_leva_o_sigiloso_para_a_pasta_de_sigilosos(self):
+        """Achado V3: com a separação desligada, o sigilo que não pôde ir para o
+        registro do download (arquivo preso) deixava o PDF no acervo, onde nada
+        dizia que ele é sigiloso: o preparo e o conector o expunham. Falha para
+        o lado seguro: ele vai para a pasta de sigilosos."""
+        nome = TJAL1.nome_arquivo
+        sig = self.tmp / "Sigilosos" / self.destino.name
+        with self.registro_preso() as falhas:
+            resumo = self.rodar([TJAL1, TJAL2], roteiro={TJAL1.formatado: ["ok_sigiloso"]},
+                                separar_sigilosos=False)
+        self.assertTrue(falhas, "a troca do registro não foi tentada")
+        r1, r2 = resumo.itens
+        self.assertEqual((r1.situacao, r1.sigiloso), (modelos.OK, True))
+        self.assertTrue((sig / f"{nome}.pdf").exists())
+        self.assertFalse((self.destino / f"{nome}.pdf").exists())
+        self.assertFalse((self.destino / "_controle" / f"{nome}_capa.txt").exists())
+        self.assertEqual(r1.arquivo, str(sig / f"{nome}.pdf"))
+        self.assertIn(motor.SEM_REGISTRO_DO_SIGILO, r1.detalhe)
+        self.assertFalse(sigilo.arquivo_do_download().exists())
+        # a regra única o vê pela pasta, sem o registro
+        self.assertEqual(sigilo.motivo(self.cfg, TJAL1), sigilo.MOTIVO_PASTA)
+        self.assertNotIn(nome, {chave for chave, _ in motor.processos_no_acervo(
+            self.tmp / "Acervo", self.tmp / "Sigilosos").items()})
+        # o público continua no acervo
+        self.assertEqual((r2.situacao, r2.sigiloso), (modelos.OK, False))
+        self.assertTrue((self.destino / f"{TJAL2.nome_arquivo}.pdf").exists())
+        # com o registro de volta, o próximo sigiloso fica no acervo, como pedido
+        self.rodar([TJAL3], roteiro={TJAL3.formatado: ["ok_sigiloso"]}, separar_sigilosos=False)
+        self.assertTrue((self.destino / f"{TJAL3.nome_arquivo}.pdf").exists())
+        self.assertEqual(sigilo.apuradas_no_download(), {TJAL3.nome_arquivo})
+
+    def test_lote_de_antes_sem_registro_possivel_sai_do_acervo(self):
+        """Achado V3, o lote de antes do registro: o sigilo que só o relatório
+        guarda não pôde ir para o registro; a cópia sai do acervo."""
+        nome = TJAL1.nome_arquivo
+        self.destino.mkdir(parents=True)
+        (self.destino / f"{nome}.pdf").write_bytes(apoio.pdf_bytes(2))
+        motor._gravar_relatorio(self.destino / "_controle" / "relatorio.csv", [
+            [1, TJAL1.formatado, "TJAL", "esaj", "OK", 2, 1, f"{nome}.pdf", "sim",
+             "", "", "2026-10-01 10:00:00", ""]])
+        with self.registro_preso():
+            r = self.rodar([TJAL1], separar_sigilosos=False).itens[0]
+        self.assertEqual((r.situacao, r.sigiloso), (modelos.JA_BAIXADO, True))
+        sig = self.tmp / "Sigilosos" / self.destino.name
+        self.assertTrue((sig / f"{nome}.pdf").exists())
+        self.assertFalse((self.destino / f"{nome}.pdf").exists())
+        self.assertIn(motor.SEM_REGISTRO_DO_SIGILO, r.detalhe)
+        self.assertEqual(sigilo.motivo(self.cfg, TJAL1), sigilo.MOTIVO_PASTA)
+
+    def test_sigilo_so_da_pauta_nao_vai_para_o_registro_do_download(self):
+        """Achado V4: na 2ª rodada, o sigilo que veio só da pauta (o relatório
+        da 1ª dizia sigiloso=sim) ia para o registro do download, com o motivo
+        falso "um download anterior apurou"; e desfazer a marcação errada da
+        pauta, como manda o manual, deixava de bastar."""
+        sigilo.lembrar_da_pauta([TJAL1])
+        # Primeiro com a separação desligada: os autos ficam no acervo, e só a
+        # pauta diz o sigilo (a pasta dos sigilosos ainda não tem nada dele).
+        for separar in (False, True):
+            with self.subTest(separar=separar):
+                destino = self.destino.with_name(f"Lote {separar}")
+                for rodada in (modelos.OK, modelos.JA_BAIXADO):
+                    self.opcoes = apoio.opcoes_de_teste(self.tmp, separar_sigilosos=separar)
+                    fp, fn = apoio.fabricas({TJAL1.formatado: ["ok"]})
+                    r = motor.executar([TJAL1], destino, self.opcoes, self.ctx,
+                                       fabrica_portal=fp, fabrica_navegador=fn).itens[0]
+                    self.assertEqual((r.situacao, r.sigiloso), (rodada, True))
+                    self.assertEqual(sigilo.apuradas_no_download(), set())
+                # nem a regra única, ao ler o relatório do lote no acervo
+                self.assertIn(TJAL1.nome_arquivo, sigilo.chaves_sigilosas(
+                    self.tmp / "Sigilosos", self.tmp / "Acervo"))
+                self.assertEqual(sigilo.apuradas_no_download(), set())
+        self.assertEqual(sigilo.motivo_do_download(TJAL1), "")
+        self.assertEqual(sigilo.motivo(self.cfg, TJAL1), sigilo.MOTIVO_PASTA)
+
     def test_registro_do_sigilo_fica_na_pasta_do_teste(self):
         """O sigilo que um teste registra não vale para o seguinte (os
         números são os mesmos em todos)."""

@@ -347,7 +347,7 @@ Com `--desanexar`, as linhas vão para o `log`, e o JSON traz o mesmo em
 |---|---|---|
 | `lote_inicio` | `destino`, `relatorio`, `sigilosos_do_lote`, `total` | — |
 | `grupo_inicio` | `sistema`, `tribunal`, `alternativo`, `ordens` | um grupo por tribunal e sistema; `alternativo`: o processo não achado no e-SAJ é procurado no eProc (ou o contrário) |
-| `navegador_ocupado` | `sistema`, `tribunal`, `ate` | outro download usa o navegador; o lote espera até `ate` (`--esperar-navegador`) |
+| `navegador_ocupado` | `sistema`, `tribunal`, `ate`, `motivo` (`outro_download`, `copia_antiga_presa`) | o navegador do portal não abre agora: outro download o usa ou, no modo certificado, a cópia antiga do perfil do Chrome ainda não pôde ser apagada (avise o usuário para fechar as janelas do navegador do programa e o Explorador aberto na pasta perfis do Helestron); o lote espera até `ate` (`--esperar-navegador`) |
 | `login_aguardando` | `sistema`, `tribunal`, `modo`, `prazo_min`, `ate`, `motivo` (`certificado`, `manual`, `codigo`) | avise o usuário para entrar na janela |
 | `acao_na_janela` | `sistema`, `tribunal`, `modo`, `prazo_min`, `ate`, `motivo` (`captcha`, `perfil`) | avise o usuário para resolver o captcha ou escolher o perfil na janela |
 | `login_concluido` | `sistema`, `tribunal` | — |
@@ -555,7 +555,7 @@ dizer que uma nova rodada pode mudar o desfecho: `--retomar` (com a mesma
 | `sessao` | a sessão caiu e não voltou | `--retomar` |
 | `portal` | o portal está fora do ar, sem rede, ou o navegador não abriu | espere alguns minutos e `--retomar`; persistindo, peça ao usuário que confira a rede e o portal no próprio navegador |
 | `portal_parou` | o portal parou de responder no meio do grupo | `--retomar` mais tarde |
-| `navegador_ocupado` | outro download usava o navegador do portal | espere o outro terminar e `--retomar` (ou use `--esperar-navegador`) |
+| `navegador_ocupado` | outro download usava o navegador do portal ou, no modo certificado, a cópia antiga do perfil do Chrome não pôde ser apagada (o `detalhe` diz qual) | espere o outro terminar e `--retomar` (ou use `--esperar-navegador`); se for a cópia antiga, peça ao usuário que feche as janelas do navegador do programa (e o Explorador aberto na pasta perfis do Helestron) e `--retomar`; persistindo, que reinicie o computador |
 | `falha` | falha passageira que esgotou as tentativas | `--retomar`; se repetir, leia o `detalhe` e o `log` |
 | `inesperado` | erro do programa | `--retomar` uma vez; se repetir, informe o usuário, com o `log` |
 | `pdf_aberto` | o PDF do lote está aberto noutro programa | peça ao usuário que feche o PDF; `--retomar` |

@@ -437,6 +437,53 @@ class TestSeparacaoDesligada(BaseSigilo):
         self.assertEqual(list(nuvem_dir.rglob(f"{X}*")), [])
         self.assertTrue(list(nuvem_dir.rglob(f"{Y}.pdf")))
 
+    def test_lote_de_antes_do_registro_fica_fora_de_tudo(self):
+        """Achado V2: o lote baixado com a separação desligada ANTES do
+        registro do download (a versão anterior), ou com ele perdido (a pasta
+        LOCAL apagada pela desinstalação, o acervo levado para outro
+        computador): o relatório do lote diz sigiloso=sim, mas o índice, o
+        texto para a IA, o conector, o pacote e a nuvem o tratavam como
+        público."""
+        from helestron.download import motor
+        from testes import apoio_download as apoio
+
+        x, y = cnj.ler(X), cnj.ler(Y)
+        (self.lote / f"{Y}.pdf").unlink()
+        self.cfg.definir("download", "separar_sigilosos", False)
+        fp, fn = apoio.fabricas({X: ["ok_sigiloso"]})
+        opcoes = apoio.opcoes_de_teste(self.base, pasta_sigilosos=self.sig,
+                                       separar_sigilosos=False)
+        motor.executar([x, y], self.lote, opcoes, apoio.ContextoGravador(),
+                       fabrica_portal=fp, fabrica_navegador=fn, cfg=self.cfg)
+        self.assertTrue((self.lote / f"{X}.pdf").exists())
+        sigilo.arquivo_do_download().unlink()        # a versão anterior não o gravava
+        sigilo.esquecer_pauta()
+        self.assertFalse(sigilo.processo_sigiloso(self.cfg, x))
+        # o preparo, o índice, o conector, a nuvem e o pacote o deixam de fora
+        rel = preparo.atualizar_contexto(self.cfg, extrair_texto=True)
+        self.assertEqual(rel.processos, 1)
+        self.assertFalse((self.acervo / "_ia" / "texto" / f"{X}.txt").exists())
+        self.assertTrue((self.acervo / "_ia" / "texto" / f"{Y}.txt").exists())
+        self.assertNotIn(X, (self.acervo / "INDICE.md").read_text(encoding="utf-8"))
+        ac = mcp_servidor.Acervo(self.acervo, sigilosos=self.sig)
+        self.assertEqual(set(ac.pdfs()), {Y})
+        self.assertNotIn(X, ac.listar_acervo())
+        nuvem_dir = self.base / "Nuvem"
+        nuvem_dir.mkdir()
+        nuvem.espelhar(self.acervo, nuvem_dir, sigilosos=self.sig)
+        self.assertEqual(list(nuvem_dir.rglob(f"{X}*")), [])
+        self.assertTrue(list(nuvem_dir.rglob(f"{Y}.pdf")))
+        import zipfile
+        pacote = chatgpt.gerar_pacote(self.acervo, self.base / "Pacotes", cfg=self.cfg)
+        with zipfile.ZipFile(pacote.arquivo_zip) as z:
+            self.assertEqual([n for n in z.namelist() if X in n], [])
+            self.assertTrue([n for n in z.namelist() if Y in n])
+        # e o sigilo voltou ao registro do download, para o resto do programa
+        self.assertEqual(sigilo.apuradas_no_download(), {X})
+        self.assertEqual(sigilo.motivo(self.cfg, x), sigilo.MOTIVO_DOWNLOAD)
+        from helestron.transcricao import documento
+        self.assertEqual(documento.pasta_das_transcricoes(self.cfg, x), self.sig / "Transcricoes")
+
 
 class TestBuscarNumAcervoGrande(unittest.TestCase):
     """'buscar' sem número: a listagem do acervo e a regra do sigilo uma vez

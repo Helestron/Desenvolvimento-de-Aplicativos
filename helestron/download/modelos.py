@@ -58,6 +58,14 @@ class NavegadorOcupado(PortalIndisponivel):
     termina: o motor pode esperar (opção "esperar o navegador")."""
 
 
+class CopiaAntigaPresa(NavegadorOcupado):
+    """O navegador do modo certificado não abre porque a cópia do perfil
+    inteiro do Chrome, das versões anteriores, ainda não pôde ser apagada
+    (um arquivo dela preso pelo antivírus, pelo Explorador ou por uma janela
+    do navegador do programa). Não há outro download: costuma passar sozinho,
+    e o motor espera como pelo navegador ocupado, dizendo o motivo real."""
+
+
 class SessaoPerdida(RuntimeError):
     """A sessão no portal caiu no meio do trabalho; entrar de novo resolve."""
 

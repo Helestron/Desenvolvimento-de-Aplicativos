@@ -21,13 +21,37 @@ Regressões (1.0.2):
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from helestron.nucleo import caminhos, cnj, sigilo
+from helestron.nucleo import caminhos, cnj, cofre_senhas, sigilo
 from testes.test_nucleo import _numero, pauta_com_sigiloso
+
+
+def _lembrar_em_outro_processo(pauta: str, numero: str, barreira) -> None:
+    """Num processo à parte (a janela, o "baixar" da linha de comando, o
+    conector): espera os outros e acrescenta 'numero' ao registro do download."""
+    barreira.wait(60)
+    sigilo.lembrar_do_download([numero], Path(pauta))
+
+
+def _relatorio(controle: Path, linhas, nome: str = "relatorio.csv",
+               codificacao: str = "utf-8-sig") -> Path:
+    """Um relatório de lote como o motor grava (';', UTF-8 com BOM), ou como o
+    Excel o salva (codificacao="cp1252")."""
+    controle.mkdir(parents=True, exist_ok=True)
+    cabecalho = ("ordem;processo;tribunal;sistema;situacao;paginas;documentos;arquivo;"
+                 "sigiloso;incompleto;detalhe;data_hora;causa")
+    corpo = [cabecalho] + [f"{i};{processo};TJAL;esaj;OK;2;1;x.pdf;{sim};;;2026-10-01 10:00:00;"
+                           for i, (processo, sim) in enumerate(linhas, 1)]
+    arquivo = controle / nome
+    arquivo.write_bytes("\r\n".join(corpo).encode(codificacao) + b"\r\n")
+    return arquivo
 
 
 class Base(unittest.TestCase):
@@ -151,7 +175,8 @@ class TestRegistroDoApurado(Base):
         self.assertTrue(sigilo.lembrar_da_pauta([a.formatado]))
         self.assertTrue(sigilo.lembrar_da_pauta([b.formatado, "não é número"]))
         self.assertEqual(sigilo.apuradas_da_pauta(), {a.nome_arquivo, b.nome_arquivo})
-        self.assertEqual(list(self.pauta.parent.glob(".*.tmp")), [])
+        self.assertEqual(sorted(p.name for p in self.pauta.parent.iterdir()),
+                         ["pauta.sigilo.json"], "sobrou temporário ou trava")
         registro = sigilo.arquivo_apurado()
         registro.write_text("{estragado", encoding="utf-8")
         with self.assertLogs("nucleo.sigilo", "WARNING"):
@@ -222,6 +247,207 @@ class TestRegistroDoDownload(Base):
         self.assertTrue(sigilo.lembrar_do_download([x], pauta))
         self.assertEqual(sigilo.apuradas_no_download(pauta), {x.nome_arquivo})
         self.assertFalse(pauta.exists())
+
+
+class TestRegistroEntreProcessos(Base):
+    """Achado V3: o registro só tinha trava dentro do processo e não insistia
+    no arquivo preso. A janela e o "baixar" da linha de comando gravando ao
+    mesmo tempo perdiam números (o último os.replace apagava o que o outro
+    acrescentou), e um instante de arquivo preso (antivírus) bastava para o
+    sigilo não ser guardado."""
+
+    def _arquivos(self):
+        return sorted(p.name for p in self.pauta.parent.iterdir())
+
+    def test_gravacoes_de_varios_processos_nao_se_perdem(self):
+        numeros = [_numero(f"07009{i:02d}") for i in range(8)]
+        ctx = multiprocessing.get_context("spawn")
+        barreira = ctx.Barrier(len(numeros))
+        processos = [ctx.Process(target=_lembrar_em_outro_processo,
+                                 args=(str(self.pauta), n.formatado, barreira))
+                     for n in numeros]
+        for p in processos:
+            p.start()
+        for p in processos:
+            p.join(120)
+        self.assertEqual([p.exitcode for p in processos], [0] * len(numeros))
+        self.assertEqual(sigilo.apuradas_no_download(), {n.nome_arquivo for n in numeros})
+        self.assertEqual(self._arquivos(), ["download.sigilo.json"], "sobrou trava ou temporário")
+
+    def test_troca_presa_por_um_instante_insiste(self):
+        a, b = _numero("0700911"), _numero("0700912")
+        self.assertTrue(sigilo.lembrar_do_download([a]))
+        original = os.replace
+        falhas = [PermissionError(13, "O arquivo já está sendo usado por outro processo")] * 2
+
+        def replace(origem, destino):
+            if str(destino).endswith("download.sigilo.json") and falhas:
+                raise falhas.pop()
+            return original(origem, destino)
+
+        with mock.patch.object(cofre_senhas.os, "replace", replace), \
+                mock.patch.object(cofre_senhas.time, "sleep"):
+            self.assertTrue(sigilo.lembrar_do_download([b]))
+        self.assertEqual(falhas, [])
+        self.assertEqual(sigilo.apuradas_no_download(), {a.nome_arquivo, b.nome_arquivo})
+        self.assertEqual(self._arquivos(), ["download.sigilo.json"])
+
+    def test_leitura_presa_por_um_instante_nao_perde_os_outros(self):
+        a, b = _numero("0700913"), _numero("0700914")
+        self.assertTrue(sigilo.lembrar_do_download([a]))
+        registro = sigilo.arquivo_do_download()
+        original = Path.read_text
+        # a olhada sem trava e a 1ª leitura sob a trava dão com o arquivo preso
+        falhas = [PermissionError(13, "Acesso negado")] * 2
+
+        def ler(caminho, *args, **kwargs):
+            if caminho == registro and falhas:
+                raise falhas.pop()
+            return original(caminho, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", ler), \
+                mock.patch.object(sigilo.time, "sleep") as dormir:
+            self.assertTrue(sigilo.lembrar_do_download([b]))
+        self.assertEqual(falhas, [])
+        self.assertEqual(dormir.call_count, 1)
+        self.assertEqual(sigilo.apuradas_no_download(), {a.nome_arquivo, b.nome_arquivo})
+
+    def test_trava_de_outro_processo(self):
+        x = _numero("0700915")
+        trava = sigilo.arquivo_do_download().with_name("download.sigilo.json.trava")
+        trava.write_text("999999", encoding="ascii")
+        with mock.patch.object(cofre_senhas, "ESPERA_TRAVA_S", 0.2), \
+                self.assertLogs("nucleo.sigilo", "WARNING"):
+            self.assertFalse(sigilo.lembrar_do_download([x]))
+        self.assertTrue(trava.exists(), "a trava viva não é de quem esperou")
+        self.assertEqual(sigilo.apuradas_no_download(), set())
+        # esquecida (o processo que a tinha caiu): deixa de valer
+        velho = time.time() - cofre_senhas.TRAVA_ABANDONADA_S - 5
+        os.utime(trava, (velho, velho))
+        self.assertTrue(sigilo.lembrar_do_download([x]))
+        self.assertEqual(sigilo.apuradas_no_download(), {x.nome_arquivo})
+        self.assertEqual(self._arquivos(), ["download.sigilo.json"])
+
+
+class TestRelatorioDoLote(Base):
+    """Achado V2: só o motor alimentava o registro do download. O lote baixado
+    com a separação desligada pela versão anterior (ou depois de a pasta
+    LOCAL ser apagada, ou com o acervo levado para outro computador) tinha o
+    sigiloso no acervo e o relatório dizendo sigiloso=sim, mas a regra única
+    não o via: o índice, o texto para a IA, o conector, o pacote e a nuvem o
+    tratavam como público."""
+
+    def setUp(self):
+        super().setUp()
+        self.acervo = self.tmp / "Acervo"
+        self.lote = self.acervo / "Processos" / "Lote 1"
+
+    def test_relatorio_do_lote_marca_e_vai_para_o_registro(self):
+        x, y, z = _numero("0700921"), _numero("0700922"), _numero("0700923")
+        inc = _numero("0700924", dependente="01")
+        _relatorio(self.lote / "_controle", [
+            (x.formatado, "sim"), (y.formatado, "não"),
+            ("(processo sigiloso)", "sim"),       # a linha mascarada não tem número
+            (inc.formatado, "Sim")])
+        # o "(atualizado)", salvo pelo Excel em ANSI, também conta
+        _relatorio(self.lote / "_controle", [(z.formatado, "sim"), (y.formatado, "não")],
+                   nome="relatorio (atualizado).csv", codificacao="cp1252")
+        self.assertFalse(sigilo.processo_sigiloso(self.cfg, x))
+        chaves = sigilo.chaves_sigilosas(self.sigilosos, self.acervo)
+        esperado = {x.nome_arquivo, z.nome_arquivo, inc.nome_arquivo}
+        self.assertEqual(set(chaves), esperado)
+        self.assertNotIn(y.nome_arquivo, chaves)
+        self.assertNotIn(_numero("0700924").nome_arquivo, chaves,
+                         "o principal não fica sigiloso pelo incidente")
+        # passou a valer no registro do download, para o resto do programa
+        self.assertEqual(sigilo.apuradas_no_download(), esperado)
+        self.assertEqual(sigilo.motivo(self.cfg, x), sigilo.MOTIVO_DOWNLOAD)
+        # sem o acervo, só a pasta, a pauta e o registro (nada é lido)
+        with mock.patch.object(sigilo, "_pastas_de_controle") as procurar:
+            self.assertEqual(set(sigilo.chaves_sigilosas(self.sigilosos)), esperado)
+        procurar.assert_not_called()
+
+    def test_o_que_a_pasta_ou_a_pauta_ja_dao_nao_vai_para_o_registro(self):
+        """Achado V4: o relatório marca também o que o lote só TRATOU como
+        sigiloso por causa da pasta ou da pauta; o registro do download diria
+        que o portal o apurou."""
+        da_pauta, da_pasta = _numero("0700931"), _numero("0700932")
+        inc_da_pauta = _numero("0700931", dependente="02")
+        sigilo.lembrar_da_pauta([da_pauta])
+        self.arquivo(f"Lote 1/{da_pasta.nome_arquivo}.pdf")
+        _relatorio(self.lote / "_controle", [(da_pauta.formatado, "sim"),
+                                             (inc_da_pauta.formatado, "sim"),
+                                             (da_pasta.formatado, "sim")])
+        chaves = sigilo.chaves_sigilosas(self.sigilosos, self.acervo)
+        for n in (da_pauta, da_pasta, inc_da_pauta):
+            self.assertIn(n.nome_arquivo, chaves)
+        self.assertEqual(sigilo.apuradas_no_download(), set())
+        self.assertFalse(sigilo.arquivo_do_download().exists())
+        # pauta=None: nem a pauta nem o registro - o relatório vale assim mesmo
+        self.assertIn(da_pauta.nome_arquivo,
+                      sigilo.chaves_sigilosas(self.sigilosos, self.acervo, pauta=None))
+        self.assertFalse(sigilo.arquivo_do_download().exists())
+
+    def test_onde_o_relatorio_e_procurado(self):
+        na_raiz, solto, fundo, longe, cache, oculto = (_numero(f"07009{i}") for i in range(40, 46))
+        _relatorio(self.acervo / "_controle", [(na_raiz.formatado, "sim")])     # o acervo é o lote
+        _relatorio(self.acervo / "Lote solto" / "_controle", [(solto.formatado, "sim")])
+        _relatorio(self.acervo / "Processos" / "2025" / "Lote 3" / "_controle",
+                   [(fundo.formatado, "sim")])
+        _relatorio(self.acervo / "a" / "b" / "c" / "d" / "_controle", [(longe.formatado, "sim")])
+        _relatorio(self.acervo / "_ia" / "x" / "_controle", [(cache.formatado, "sim")])
+        _relatorio(self.acervo / "Processos" / ".escondida" / "_controle",
+                   [(oculto.formatado, "sim")])
+        _relatorio(self.lote / "_controle" / "midias", [(longe.formatado, "sim")])
+        achados = sigilo.sigilosos_dos_relatorios(self.acervo)
+        self.assertEqual(set(achados), {na_raiz.nome_arquivo, solto.nome_arquivo,
+                                        fundo.nome_arquivo})
+        self.assertEqual(sigilo.sigilosos_dos_relatorios(self.tmp / "não existe"), set())
+        self.assertEqual(sigilo.sigilosos_dos_relatorios(None), set())
+
+    def test_acervo_grande_para_de_descer_e_avisa(self):
+        perto, longe = _numero("0700951"), _numero("0700952")
+        _relatorio(self.lote / "_controle", [(perto.formatado, "sim")])
+        for i in range(6):
+            (self.acervo / "Documentos" / f"p{i}" / "q").mkdir(parents=True)
+        _relatorio(self.acervo / "Documentos" / "p9" / "Lote" / "_controle",
+                   [(longe.formatado, "sim")])
+        sigilo._avisou_pasta_grande.clear()
+        with mock.patch.object(sigilo, "MAX_PASTAS", 3), \
+                self.assertLogs("nucleo.sigilo", "WARNING") as registro:
+            achados = sigilo.sigilosos_dos_relatorios(self.acervo)
+        self.assertIn(perto.nome_arquivo, achados, "os lotes de Processos vêm primeiro")
+        self.assertIn("pastas demais", registro.output[0])
+        self.assertEqual(set(sigilo.sigilosos_dos_relatorios(self.acervo)),
+                         {perto.nome_arquivo, longe.nome_arquivo})
+
+    def test_relatorio_relido_so_quando_muda(self):
+        x, y = _numero("0700961"), _numero("0700962")
+        arquivo = _relatorio(self.lote / "_controle", [(x.formatado, "sim")])
+        leituras = []
+        original = sigilo._sigilosos_do_csv
+
+        def contar(dados):
+            leituras.append(len(dados))
+            return original(dados)
+
+        with mock.patch.object(sigilo, "_sigilosos_do_csv", contar):
+            for _ in range(3):
+                self.assertEqual(set(sigilo.sigilosos_dos_relatorios(self.acervo)),
+                                 {x.nome_arquivo})
+            self.assertEqual(len(leituras), 1)
+            _relatorio(self.lote / "_controle", [(x.formatado, "sim"), (y.formatado, "sim")])
+            depois = arquivo.stat().st_mtime_ns + 10 ** 9
+            os.utime(arquivo, ns=(depois, depois))
+            self.assertEqual(set(sigilo.sigilosos_dos_relatorios(self.acervo)),
+                             {x.nome_arquivo, y.nome_arquivo})
+            self.assertEqual(len(leituras), 2)
+            # preso por um instante (o Excel): vale o que se leu da última vez
+            os.utime(arquivo, ns=(depois + 10 ** 9, depois + 10 ** 9))
+            with mock.patch.object(Path, "read_bytes",
+                                   side_effect=PermissionError(13, "Acesso negado")):
+                self.assertEqual(set(sigilo.sigilosos_dos_relatorios(self.acervo)),
+                                 {x.nome_arquivo, y.nome_arquivo})
 
 
 class TestPastaFunda(Base):

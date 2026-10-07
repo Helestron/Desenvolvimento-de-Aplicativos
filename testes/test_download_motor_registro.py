@@ -591,15 +591,18 @@ class TestPortalForaDoAr(BaseRegistro):
 
 # ================================================= esperas, cofre, preparo
 class TestEsperarONavegador(BaseRegistro):
-    def fabrica_ocupada(self, vezes):
+    def fabrica_ocupada(self, vezes, erro=None):
         contagem = {"n": 0}
 
         def fn(tribunal, opcoes):
             contagem["n"] += 1
             if contagem["n"] <= vezes:
-                raise modelos.NavegadorOcupado("o navegador do programa já está aberto")
+                raise erro or modelos.NavegadorOcupado("o navegador do programa já está aberto")
             return apoio.NavegadorFalso(tribunal, opcoes)
         return fn, contagem
+
+    def avisos_de_espera(self):
+        return [s for s in self.ctx.status_ if "até" in s and "navegador do" in s]
 
     def test_espera_o_outro_download_terminar(self):
         fp, _ = fabricas_com()
@@ -609,6 +612,63 @@ class TestEsperarONavegador(BaseRegistro):
         self.assertEqual(resumo.itens[0].situacao, modelos.OK)
         self.assertEqual(contagem["n"], 3)
         self.assertEqual(self.ctx.tipos().count("navegador_ocupado"), 1)
+        evento = next(d for t, d in self.ctx.eventos if t == "navegador_ocupado")
+        self.assertEqual(evento["motivo"], motor.MOTIVO_OUTRO_DOWNLOAD)
+        aviso, = self.avisos_de_espera()
+        self.assertIn("ocupado por outro download", aviso)
+
+    def test_copia_antiga_presa_diz_o_motivo_real(self):
+        """Achado V10: com "esperar o navegador", a cópia antiga do perfil
+        presa (antivírus, Explorador) era anunciada como "ocupado por outro
+        download", no status, no registro e no evento - não há outro download."""
+        from helestron.download import navegador
+        fp, _ = fabricas_com()
+        fn, contagem = self.fabrica_ocupada(
+            2, modelos.CopiaAntigaPresa(navegador.COPIA_ANTIGA_PRESA))
+        with mock.patch.object(motor, "ESPERA_NAVEGADOR_S", 0.01), \
+                self.assertLogs("download.motor", "WARNING") as registro:
+            resumo = self.executar([TJAL1], fp, fn, esperar_navegador_s=60)
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+        self.assertEqual(contagem["n"], 3)
+        evento = next(d for t, d in self.ctx.eventos if t == "navegador_ocupado")
+        self.assertEqual(evento["motivo"], motor.MOTIVO_COPIA_ANTIGA)
+        aviso, = self.avisos_de_espera()
+        self.assertIn("cópia antiga do perfil do Chrome", aviso)
+        self.assertIn("Feche as janelas do navegador do programa", aviso)
+        texto = "\n".join(registro.output) + aviso
+        self.assertNotIn("outro download", texto)
+
+    def test_copia_antiga_presa_com_o_navegador_de_verdade(self):
+        """O mesmo, com o Navegador do programa (modo certificado) abrindo
+        sobre a cópia antiga que o Windows não deixa renomear."""
+        from helestron.download import navegador
+        base = self.tmp / "perfis" / "esaj-TJAL"
+        antiga = base.with_name("esaj-TJAL-certificado")
+        (antiga / "Default" / "Extensions" / navegador.EXT_WEB_SIGNER / "0.9").mkdir(parents=True)
+        (antiga / "Default" / "Login Data").write_text("x")
+        (antiga / "Local State").write_text("{}")
+        self.assertTrue(navegador.copia_antiga(antiga))
+
+        def fn(tribunal, opcoes):
+            return navegador.Navegador(base, certificado=True, pasta_downloads=self.tmp / "dl")
+
+        recusa = PermissionError(13, "arquivo em uso por outro processo")
+        fp, _ = fabricas_com()
+        with mock.patch.object(motor, "ESPERA_NAVEGADOR_S", 0.01), \
+                mock.patch.object(navegador, "perfil_aberto", return_value=False), \
+                mock.patch.object(Path, "rename", side_effect=recusa), \
+                mock.patch.object(navegador, "USER_DATA_CHROME", self.tmp / "sem-chrome"), \
+                mock.patch.object(navegador, "escolher_canais", return_value=["chrome"]), \
+                self.assertLogs("download.motor", "WARNING"):
+            r = self.executar([TJAL1], fp, fn, esperar_navegador_s=0.05).itens[0]
+        aviso, = self.avisos_de_espera()
+        self.assertIn("cópia antiga do perfil do Chrome", aviso)
+        self.assertNotIn("outro download", aviso)
+        self.assertEqual([d["motivo"] for t, d in self.ctx.eventos if t == "navegador_ocupado"],
+                         [motor.MOTIVO_COPIA_ANTIGA])
+        # esgotado o prazo, o detalhe diz o que fazer
+        self.assertEqual((r.situacao, r.causa), (modelos.ERRO, modelos.CAUSA_NAVEGADOR_OCUPADO))
+        self.assertIn("não pôde ser apagada", r.detalhe)
 
     def test_sem_esperar_ou_prazo_esgotado_falha_com_a_causa(self):
         for espera in (0, 0.05):

@@ -366,7 +366,7 @@ os mesmos ajustes da tela Processos:
 | `--midias` | baixa também as gravações de audiência |
 | `--texto` | ao fim, extrai o texto de cada PDF, com a marca de cada página (em `_texto`, ao lado dos PDFs; dentro do acervo, em `_ia\texto`) |
 | `--retomar` | refaz só o que o relatório da pasta do lote diz que pede nova tentativa (falhou, ficou pendente ou foi interrompido), os números que ainda não estão nele e o processo baixado cujo PDF já não está na pasta; com `--rebaixar-incompletos`, também o que tem folhas (ou documentos) ausentes. Com `--destino`, dispensa a relação; se a pasta não tiver o relatório de um lote, sai com o código 2 |
-| `--esperar-navegador MIN` | se outro download estiver usando o navegador do portal, espera até MIN minutos (tentando a cada 30 segundos; no máximo 1440, um dia), em vez de desistir |
+| `--esperar-navegador MIN` | se outro download estiver usando o navegador do portal (ou, no modo certificado, se a cópia antiga do perfil do Chrome ainda não puder ser apagada, e o aviso diz isso), espera até MIN minutos (tentando a cada 30 segundos; no máximo 1440, um dia), em vez de desistir |
 | `--json ARQ` | grava o andamento e o resultado num arquivo JSON, para programas |
 | `--eventos` | imprime cada acontecimento (o login que espera você, o fim…) numa linha `HELESTRON-EVENTO {…}` |
 | `--log ARQ` | guarda num arquivo tudo o que sai na tela e o registro detalhado (com `--json` e sem `--log`, o registro vai para `%LOCALAPPDATA%\Helestron\Logs\execucoes`) |
@@ -1501,7 +1501,7 @@ pauta.
 
 ### Quando o processo é sigiloso para o Helestron
 
-Basta uma destas quatro situações:
+Basta uma destas situações:
 
 1. **os autos** do processo estão na pasta dos sigilosos
    (`Sigilosos\<nome do lote>\` ou soltos em `Sigilosos\`);
@@ -1521,7 +1521,13 @@ Basta uma destas quatro situações:
    justiça no portal do tribunal, mesmo que os autos tenham ficado no
    acervo (com **Separar os processos sigilosos** desligado): o sigilo,
    uma vez apurado, fica guardado num registro à parte, o
-   `download.sigilo.json`.
+   `download.sigilo.json`;
+5. o **relatório de um lote** do acervo o dá como sigiloso (“sim” na coluna
+   `sigiloso` do `_controle\relatorio.csv`). Com **Separar os processos
+   sigilosos** desligado, é esse relatório que guarda o sigilo dos lotes
+   baixados por uma versão anterior, ou depois de o registro do item 4 se
+   perder (as configurações apagadas na desinstalação, o acervo levado para
+   outro computador); o Helestron o devolve ao registro.
 
 O **incidente** de um processo sigiloso (o `...0001-01`, como o cumprimento
 de sentença) também é sigiloso: as partes e o conteúdo são os mesmos. O
@@ -1572,16 +1578,19 @@ um incidente.
 > do conector, do pacote e da nuvem, e o `CLAUDE.md` avisa a IA de que a
 > pasta pode conter processo em segredo de justiça; mas o Claude Code, o
 > Cowork e o ChatGPT abrem a pasta inteira e poderiam lê-lo. Deixe a opção
-> ligada (o padrão).
+> ligada (o padrão). Se o Helestron não conseguir guardar o sigilo no
+> registro (o `download.sigilo.json` preso por outro programa), ele leva os
+> autos para a pasta dos sigilosos assim mesmo, e a linha do processo diz
+> por quê.
 
 ### Se um processo foi marcado como sigiloso por engano
 
 A marcação de sigilo **não se desfaz sozinha**, e não há botão para
 desfazê-la: a pauta não esquece um sigilo já apurado (ele fica gravado no
 banco da pauta e também num registro à parte, o `pauta.sigilo.json`), o
-download também não (o `download.sigilo.json`), e os arquivos levados para
-a pasta dos sigilosos continuam lá (enquanto estiverem, o processo
-continua sigiloso). É de propósito: na dúvida, o
+download também não (o `download.sigilo.json` e o relatório do lote), e os
+arquivos levados para a pasta dos sigilosos continuam lá (enquanto
+estiverem, o processo continua sigiloso). É de propósito: na dúvida, o
 processo fica do lado seguro, fora da IA e da nuvem, e nada vaza. Uma
 versão anterior do Helestron
 podia marcar por engano, por exemplo, o processo com “Nível 1” no local da
@@ -1611,18 +1620,25 @@ Se o processo é público e você precisa dele no acervo:
    sigiloso), mova também para outra pasta o `download.sigilo.json`, da
    mesma pasta `%LOCALAPPDATA%\Helestron`, e guarde-o: sem movê-lo, o
    processo continua sigiloso. Os outros processos que um download achou
-   em segredo de justiça continuam sigilosos se os autos deles estiverem
-   na pasta dos sigilosos; os que ficaram no acervo (com **Separar os
-   processos sigilosos** desligado) deixam de sê-lo até serem baixados de
-   novo: baixe de novo os lotes deles antes de compartilhar o acervo.
-5. Leve de volta para o acervo o que o Helestron pôs na pasta dos sigilosos:
+   em segredo de justiça continuam sigilosos: pelos autos na pasta dos
+   sigilosos ou, os que ficaram no acervo (com **Separar os processos
+   sigilosos** desligado), pelo relatório do lote deles, que os devolve ao
+   registro.
+5. No relatório do lote em que ele foi baixado, troque “sim” por “não” na
+   coluna `sigiloso` da linha dele (o Excel abre o arquivo; salve-o no
+   mesmo formato): no `Sigilosos\<nome do lote>\_controle\relatorio.csv`,
+   se existir, e, com **Separar os processos sigilosos** desligado, no
+   `Acervo\Processos\<nome do lote>\_controle\relatorio.csv`; faça o mesmo
+   no `relatorio (atualizado).csv`, se houver. Sem isso, o relatório o
+   marca de novo (e o devolve ao `download.sigilo.json`).
+6. Leve de volta para o acervo o que o Helestron pôs na pasta dos sigilosos:
    os autos, de `Sigilosos\<nome do lote>\` para
    `Acervo\Processos\<nome do lote>\`; as transcrições, de
    `Sigilosos\Transcricoes\` para `Acervo\Transcricoes\` (e as gravações, de
    `Sigilosos\Transcricoes\_audio\` para `Acervo\Transcricoes\_audio\`); e o
    que mais tiver o número dele no nome (uma minuta em
    `Sigilosos\Produtos\`, por exemplo).
-6. Abra o Helestron e, na tela Compartilhar, clique em **Preparar acervo
+7. Abra o Helestron e, na tela Compartilhar, clique em **Preparar acervo
    para a IA**.
 
 Na dúvida, não faça nada: um processo público marcado por engano só fica

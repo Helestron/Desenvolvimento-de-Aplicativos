@@ -329,7 +329,7 @@ python -m helestron baixar [NÚMEROS...] [--lista ARQ|URL] [--destino PASTA] [--
 | `--rebaixar-incompletos` | baixa de novo o PDF que já está na pasta só se ele tem `incompleto` ou não tem o manifesto de paginação (seção 13) |
 | `--texto` | depois do lote, `textos.garantir_texto` de cada PDF OK ou JA_BAIXADO: fora do acervo, em `<pasta do PDF>/_texto/<nome>.txt` (o do sigiloso fica na própria pasta de sigilosos); dentro do acervo, em `<acervo>/_ia/texto`. Autos de sigiloso presos no acervo não viram texto (`sigiloso_ignorado`). `textos.analisar` dá as páginas sem texto extraível de cada um (`paginas_sem_texto`, impressas e no JSON) |
 | `--retomar` | com a relação, ou só com `--destino`: baixa os números da relação que o relatório da pasta do lote (`motor.ler_relatorio_do_lote`, que lê também o relatório completo da pasta de sigilosos) não tem ou cuja linha `pede_nova_tentativa`, o `SIGILOSO_SEM_SENHA` cuja senha a relação agora traz e as linhas do relatório que pedem nova tentativa. Da linha OK ou JA_BAIXADO, volta o que o motor baixaria de novo (`cli._baixado_que_volta`, com as mesmas regras de `_registro_anterior` e `_baixar_de_novo`): o PDF que já não está na pasta do lote nem na de sigilosos dele; com `--rebaixar-incompletos`, o que tem `incompleto` ou não tem o manifesto; e o do e-SAJ de versão anterior com sinal de numeração deslocada. O que fica de fora é impresso e vai para `ignorados_por_retomar`, com o porquê (o que só `--rebaixar-incompletos` refaria diz isso); sem nada a retomar, sai com 0. Só com `--destino` e sem o relatório de um lote em `_controle` (caminho errado), sai com 2 (`causa_erro` `sem_processos`) |
-| `--esperar-navegador MIN` | o `NavegadorOcupado` (outro download usa o perfil do navegador do portal) antes de o grupo começar: tenta de novo a cada `ESPERA_NAVEGADOR_S` (30 s) até o prazo, com o evento `navegador_ocupado`; sem a opção, o grupo termina em ERRO com a causa `navegador_ocupado`. MIN é finito, de 0 a 1440 (`MAX_ESPERA_NAVEGADOR_MIN`, um dia); fora disso, erro de uso |
+| `--esperar-navegador MIN` | o `NavegadorOcupado` (outro download usa o perfil do navegador do portal; ou a subclasse `CopiaAntigaPresa`, do modo certificado: a cópia antiga do perfil inteiro do Chrome ainda não pôde ser apagada) antes de o grupo começar: tenta de novo a cada `ESPERA_NAVEGADOR_S` (30 s) até o prazo, com o evento `navegador_ocupado` e o aviso do motivo real (`motivo` `outro_download` ou `copia_antiga_presa`: “ocupado por outro download”, ou a cópia antiga e o que fechar); sem a opção, o grupo termina em ERRO com a causa `navegador_ocupado`, e o detalhe diz qual dos dois. MIN é finito, de 0 a 1440 (`MAX_ESPERA_NAVEGADOR_MIN`, um dia); fora disso, erro de uso |
 | `--json ARQ` | o acompanhamento em JSON (abaixo) |
 | `--eventos` | cada evento numa linha `HELESTRON-EVENTO {json}` da saída padrão (`contexto.linha_de_evento`) |
 | `--log ARQ` | duplica a saída padrão e a de erro no arquivo (UTF-8, `flush` a cada escrita) e acrescenta ao registro um handler INFO com `FiltroSegredos`, retirado no fim. Com `--json` e sem `--log`, vale `LOGS/execucoes/baixar-<data>-<pid>.log`. O arquivo que não pode ser aberto encerra com 2, com o JSON concluído (`causa_erro` `uso`, `log` vazio) |
@@ -418,7 +418,7 @@ ao acompanhamento, cuja falha nunca derruba o lote):
 |---|---|
 | `lote_inicio` | `destino`, `relatorio`, `sigilosos_do_lote`, `total` |
 | `grupo_inicio` | `sistema`, `tribunal`, `alternativo`, `ordens` |
-| `navegador_ocupado` | `sistema`, `tribunal`, `ate` (ISO): esperando outro download |
+| `navegador_ocupado` | `sistema`, `tribunal`, `ate` (ISO), `motivo` (`outro_download`: outro download usa o navegador; `copia_antiga_presa`: no modo certificado, a cópia antiga do perfil do Chrome ainda não pôde ser apagada): esperando o navegador do portal abrir |
 | `login_aguardando` | `sistema`, `tribunal`, `modo`, `prazo_min`, `ate`, `motivo` (`certificado`, `manual`, `codigo`): publicado ANTES de esperar o usuário na janela |
 | `acao_na_janela` | `sistema`, `tribunal`, `modo`, `prazo_min`, `ate`, `motivo` (`captcha`, `perfil`; eProc) |
 | `login_concluido` | `sistema`, `tribunal` (só depois de um evento de espera) |
@@ -444,7 +444,7 @@ por quê:
 | `sessao` | a sessão caiu e não voltou depois das novas entradas |
 | `portal` | portal fora do ar, sem rede, navegador que não abre (`motor.portal_fora`: só erro de conexão, `net::ERR_*`, tempo esgotado de navegação, `ECONN*`) |
 | `portal_parou` | o portal parou de responder no meio do grupo (`MAX_INDISPONIVEL_SEGUIDOS`) |
-| `navegador_ocupado` | outro download usa o navegador do portal |
+| `navegador_ocupado` | outro download usa o navegador do portal, ou (no modo certificado) a cópia antiga do perfil do Chrome ainda não pôde ser apagada: o detalhe diz qual |
 | `falha` | falha passageira que esgotou as tentativas (inclusive o arquivo provisório preso pelo antivírus) |
 | `inesperado` | erro do programa (vai para o registro) |
 | `pdf_aberto` | o PDF do lote está aberto noutro programa |
@@ -1860,7 +1860,34 @@ dados ficam com a instalação registrada.
     do registro da pauta: `arquivo_do_download`, `apuradas_no_download`)
     antes de levar o PDF para o lote; com a separação dos sigilosos
     desligada, os autos ficam no acervo, e é por esse registro que o
-    preparo, o MCP, o pacote, a nuvem e a transcrição o deixam de fora.
+    preparo, o MCP, o pacote, a nuvem e a transcrição o deixam de fora. O
+    sigilo que vem só do relatório anterior do lote (ou da capa) vai para
+    o registro só quando nem a pasta dos sigilosos nem a pauta o dão
+    (`motor._sigilo_so_do_relatorio`): o relatório marca também o que o lote
+    só TRATOU como sigiloso por elas, e o registro diria que o portal o
+    apurou. Se o registro não puder ser gravado (`_lembrar_sigilo` devolve
+    `False`), o motor falha para o lado seguro: os autos vão para a pasta de
+    sigilosos mesmo com a separação desligada (`_separar`), com
+    `SEM_REGISTRO_DO_SIGILO` no detalhe, e a regra os vê pela pasta. A
+    gravação dos dois registros (`_acrescentar`) passa uma de cada vez
+    também entre processos (a janela, o `baixar`, o conector:
+    `cofre_senhas.travado`, a trava `<registro>.trava` com O_EXCL, que vale
+    por até `ESPERA_TRAVA_S` e é abandonada depois de `TRAVA_ABANDONADA_S`)
+    e insiste no arquivo preso, na leitura e na troca (`TENTATIVAS` ×
+    `ESPERA_S`, `cofre_senhas.gravar_privado`); (5) com o acervo (`raiz`),
+    o **relatório de um lote** dentro dele o dá como sigiloso
+    (`sigilo.sigilosos_dos_relatorios`: `relatorio.csv` e
+    `relatorio (atualizado).csv` de cada `<lote>/_controle`, em largura até
+    `PROFUNDIDADE_LOTES` = 3 níveis abaixo do acervo, sem `_ia`, `_audio`,
+    pastas ocultas e atalhos; os dois primeiros níveis inteiros e, abaixo
+    deles, no máximo `MAX_PASTAS`, com `Processos` primeiro; cada relatório
+    relido só quando muda a data ou o tamanho; “sim” na coluna `sigiloso`,
+    UTF-8 com BOM ou, salvo pelo Excel, cp1252; a linha mascarada não
+    conta). É o que cobre o lote baixado com a separação desligada antes do
+    registro (versão anterior) ou depois de ele se perder (LOCAL apagada,
+    acervo noutro computador); `chaves_sigilosas` acrescenta ao registro
+    do download o que só o relatório conhece (não o que a pasta ou a pauta
+    já dão), e o `preparar --pasta` soma o relatório da própria pasta.
     `sigilo.chaves_sigilosas` dá todos; `sigilo.motivo` diz por quê (“os
     autos, uma transcrição ou uma gravação dele estão na pasta dos
     sigilosos”, “a pauta de audiências indica que ele corre em segredo de
@@ -2049,8 +2076,10 @@ dados ficam com a instalação registrada.
     afastar o `pauta.sqlite3` **e o `pauta.sigilo.json`** (o registro do
     apurado, que sozinho manteria o processo sigiloso; a pauta recomeça: é
     preciso cadastrar as fontes, sincronizar e importar de novo antes de
-    baixar ou transcrever) e trazer os arquivos de volta da pasta dos
-    sigilosos para o acervo.
+    baixar ou transcrever), o `download.sigilo.json` se o sigilo veio de um
+    download, trocar “sim” por “não” na linha dele no relatório do lote
+    (fonte 5, e “uma vez sigiloso, sempre sigiloso” do motor) e trazer os
+    arquivos de volta da pasta dos sigilosos para o acervo.
   * **Download.** O processo que o programa já sabe sigiloso pela regra
     única vai para a pasta dos sigilosos mesmo que a página do portal não
     mostre o selo (segredo decretado depois, leiaute que a leitura não
