@@ -23,10 +23,18 @@ O que este módulo faz, e a armadilha que cada passo contorna:
   linkProcessoAssinado), e todo link usado é colhido da própria página;
 * o eProc não entrega o processo num PDF na hora (o "Download Completo" é
   agendado e leva de minutos a horas): o PDF é montado aqui, documento a
-  documento, do evento mais antigo ao mais novo, com capa e marcadores
-  "Evento N — descrição — rótulo (data)". O Download Completo nativo é
-  opcional ([eproc] modo = completo) e, se falhar ou demorar, cai no modo
-  por documentos;
+  documento, do evento mais antigo ao mais novo, SEM capa e sem página
+  nenhuma inserida antes ou entre os documentos - o eProc não numera folhas,
+  e cada documento conserva a paginação própria (cita-se "evento N, RÓTULO,
+  p. Y"). O documento que não veio, ou a gravação, tem UMA página de aviso no
+  lugar, marcada como não citável. Cada documento tem um marcador "Evento N —
+  descrição — rótulo (data)" e rótulos de página ("Ev. 1 INIC1 p. 2"); o PDF
+  leva metadados e o manifesto de paginação (nucleo.paginacao). Os dados da
+  capa (classe, partes, como citar, o mapa dos documentos) vão para
+  _controle/<número>_capa.txt e _capa.json e para o manifesto. O Download
+  Completo nativo é opcional ([eproc] modo = completo): o arquivo do eProc
+  entra intacto (a página M do PDF é a página M dele) e, se falhar ou demorar,
+  cai no modo por documentos;
 * cada documento vem pelo contexto autenticado
   (acessar_documento_implementacao); se não vier, pela moldura
   (iframe#conteudoIframe). PDF, HTML (ISO-8859-1, do editor do eProc),
@@ -62,11 +70,11 @@ import urllib.parse
 import uuid
 import zipfile
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 
-from ..nucleo import caminhos, sistema
+from ..nucleo import caminhos, paginacao, sistema
 from ..nucleo.cnj import Numero
 from . import pdf
 from .contexto import Contexto
@@ -87,7 +95,6 @@ MAX_CODIGOS = 5               # códigos do autenticador por login
 MAX_ENVIOS_SENHA = 2          # envios da senha sem resposta clara (o eProc bloqueia o
                               # usuário depois de poucas tentativas erradas)
 MODOS_PDF = ("documentos", "completo")
-TITULO_CAPA = "Capa — dados do processo"
 TITULO_COMPLETO = "Autos completos (arquivo gerado pelo eProc)"
 
 # data-mimetype do link do documento (o eProc escreve a extensão)
@@ -128,6 +135,8 @@ SELETORES_PADRAO: dict[str, list[str]] = {
     "capa_situacao": ["#txtSituacao"],
     "capa_orgao": ["#txtOrgaoJulgador"],
     "capa_magistrado": ["#txtMagistrado"],
+    "capa_assunto": ["#txtAssunto"],
+    "capa_valor": ["#txtValorCausa"],
     "partes_tabela": ["#tblPartesERepresentantes"],
     "parte_nome": ["a.infraNomeParte", "span.infraNomeParte"],
     "eventos_tabela": ["#tblEventos"],
@@ -723,17 +732,21 @@ def eventos_ausentes(eventos: list[Evento]) -> str:
     return "1" if menor == 2 else f"1 a {menor - 1}"
 
 
-def titulo_do_documento(doc: Documento) -> str:
-    """Marcador do documento: "Evento 3 — DESPACHO — DESPADEC1 (12/03/2024)"."""
-    descricao = limpar(doc.descricao)
+def _titulo(evento, descricao: str, rotulo: str, data: str) -> str:
+    descricao = limpar(descricao)
     if len(descricao) > 90:
         descricao = descricao[:88].rstrip() + "…"
-    partes = [f"Evento {doc.evento}" if doc.evento else "Evento"]
+    partes = [f"Evento {evento}" if evento else "Evento"]
     if descricao:
         partes.append(descricao)
-    partes.append(doc.rotulo or "documento")
+    partes.append(rotulo or "documento")
     titulo = " — ".join(partes)
-    return f"{titulo} ({doc.data})" if doc.data else titulo
+    return f"{titulo} ({data})" if data else titulo
+
+
+def titulo_do_documento(doc: Documento) -> str:
+    """Marcador do documento: "Evento 3 — DESPACHO — DESPADEC1 (12/03/2024)"."""
+    return _titulo(doc.evento, doc.descricao, doc.rotulo, doc.data)
 
 
 def plural(n: int, singular: str, plural_: str) -> str:
@@ -755,7 +768,9 @@ CAMPOS_CAPA = (("numero", "capa_numero", "Número"), ("classe", "capa_classe", "
                ("autuacao", "capa_autuacao", "Autuação"),
                ("situacao", "capa_situacao", "Situação"),
                ("orgao", "capa_orgao", "Órgão julgador"),
-               ("magistrado", "capa_magistrado", "Magistrado(a)"))
+               ("magistrado", "capa_magistrado", "Magistrado(a)"),
+               ("assunto", "capa_assunto", "Assunto"),
+               ("valor", "capa_valor", "Valor da causa"))
 
 
 def ler_capa(fonte, sel: dict | None = None) -> dict[str, str]:
@@ -1219,71 +1234,354 @@ def links_do_completo(links: list, digitos: str) -> list[str]:
     return proprios or neutros
 
 
-# ------------------------------------------------------------- capa (PDF)
-def texto_capa(numero: Numero, portal: str, capa: dict, partes: list[str], n_eventos: int,
-               docs: list[Documento], sigiloso: bool, faltaram: list[Documento],
-               midias: int, completo: bool = False, quando: datetime | None = None,
-               ausentes: str = "") -> str:
-    """A primeira página do PDF: quem é o processo e como ler o arquivo."""
+# ------------------------------------------ paginação, manifesto e capa
+# O PDF do eProc não tem capa (nem página nenhuma antes ou entre os
+# documentos): o eProc não numera folhas, cada documento conserva a
+# paginação própria, e qualquer página inserida seria tomada por página dos
+# autos. O que a capa da 1.0.1 dizia vai para _controle/<número>_capa.txt,
+# _capa.json e o manifesto de paginação (nucleo.paginacao) dentro do PDF.
+
+# Sufixos dos marcadores das páginas de aviso: o marcador diz, já no painel do
+# leitor de PDF, que a página não é do documento (não se cita "PET1, p. 1").
+SUFIXO_NAO_INCLUIDO = " [NÃO INCLUÍDO]"
+SUFIXO_GRAVACAO = " [GRAVAÇÃO — fora do PDF]"
+FORMATO_CAPA = "helestron.capa/2"
+# Os campos da capa que vão para o manifesto e o capa.json (sem o número,
+# que já é o "processo")
+CAMPOS_MANIFESTO = ("classe", "competencia", "autuacao", "situacao", "orgao", "magistrado",
+                    "assunto", "valor")
+
+
+def _inteiro(valor) -> int:
+    try:
+        return int(valor or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def origem_esperada(doc: Documento) -> str:
+    """O tipo que o documento teria no PDF, pelo data-mimetype do link - o
+    do documento que não veio: pdf | imagem | html | texto | midia."""
+    mt = (doc.mimetype or "").strip().lower()
+    if mt in MIMETYPES_MIDIA:
+        return "midia"
+    if mt in MIMETYPES_IMAGEM:
+        return "imagem"
+    if mt in ("html", "htm", "xhtml"):
+        return "html"
+    if mt in ("txt", "text"):
+        return "texto"
+    return "pdf"
+
+
+def citacao(doc: Documento, y: int | None = None, origem: str = "pdf",
+            situacao: str = "ok") -> str:
+    """Como se cita a página Y do documento (a mesma marca do texto dos autos).
+
+    "evento 1, INIC1, p. 2" (PDF ou imagem: a página Y é a do próprio
+    documento, igual à do eProc); "evento 3, DESPADEC1" (HTML ou texto do
+    editor do eProc, que não tem páginas); "evento 4, PET1 — NÃO INCLUÍDO" e
+    "evento 7, VIDEO1 — gravação fora do PDF" (página de aviso do Helestron,
+    que não é página dos autos).
+    """
+    base = (f"evento {doc.evento}, {doc.rotulo}" if doc.evento
+            else (doc.rotulo or "documento"))
+    if situacao == "ausente":
+        return f"{base} — NÃO INCLUÍDO"
+    if situacao == "midia":
+        return f"{base} — gravação fora do PDF"
+    if origem in ("html", "texto") or not y:
+        return base
+    return f"{base}, p. {int(y)}"
+
+
+def rotulo_de_pagina(doc: Documento, origem: str = "pdf",
+                     situacao: str = "ok") -> tuple[str, bool]:
+    """(prefixo do rótulo de página, numerar?): o que o leitor de PDF mostra
+    na caixa da página.
+
+    "Ev. 1 INIC1 p. " numerado (vira "Ev. 1 INIC1 p. 2"); "Ev. 3 DESPADEC1"
+    em todas as páginas do documento sem paginação própria (HTML, texto);
+    "Ev. 4 PET1 nao incluido" e "Ev. 7 VIDEO1 gravacao" na página de aviso,
+    sem número para citar. Em ASCII simples (pdf.rotulo_seguro): o PyMuPDF
+    grava errado acento e parênteses no rótulo.
+    """
+    base = pdf.rotulo_seguro(f"Ev. {doc.evento} {doc.rotulo}" if doc.evento
+                             else (doc.rotulo or "Documento")).rstrip()
+    if situacao == "ausente":
+        return pdf.rotulo_seguro(f"{base[:46].rstrip()} nao incluido"), False
+    if situacao == "midia":
+        return pdf.rotulo_seguro(f"{base[:50].rstrip()} gravacao"), False
+    if origem in ("html", "texto"):
+        return base, False
+    return base[:56].rstrip() + " p. ", True
+
+
+def info_do_documento(doc: Documento, origem: str, situacao: str = "ok", **extra) -> dict:
+    """A entrada do documento no manifesto; o pdf.juntar completa o início
+    (página do PDF em que ele começa) e as páginas. ``extra``: "motivo" do
+    documento que não veio, "arquivo" da gravação salva."""
+    info = {"evento": doc.evento, "rotulo": doc.rotulo, "descricao": limpar(doc.descricao),
+            "data": doc.data, "origem": origem, "situacao": situacao}
+    info.update({k: v for k, v in extra.items() if v})
+    return info
+
+
+def capa_do_manifesto(capa: dict, partes: list[str]) -> dict:
+    """Classe, órgão julgador, magistrado, assunto... e as partes (lista de
+    textos, uma linha por polo). As partes ficam DENTRO da capa: no topo do
+    manifesto, "partes" é a lista das partes do ARQUIVO no modo completo
+    ([{inicio, paginas}])."""
+    saida = {k: capa[k] for k in CAMPOS_MANIFESTO if (capa or {}).get(k)}
+    saida["partes"] = [str(p) for p in (partes or []) if str(p).strip()]
+    return saida
+
+
+def eventos_sem_documento(eventos: list[Evento]) -> list[dict]:
+    """Os eventos sem documento (audiência realizada, conclusão...), do mais
+    antigo ao mais novo: não têm página no PDF, nem marcador."""
+    return [{"evento": e.numero, "descricao": limpar(e.descricao), "data": e.data}
+            for e in ordenar_eventos(eventos or []) if not e.documentos]
+
+
+def manifesto_do_processo(numero: Numero, portal: str, tribunal: str, capa: dict,
+                          partes: list[str], eventos: list[Evento] | None, sigiloso: bool,
+                          modo: str = "documentos", ausentes: str = "",
+                          quando: datetime | None = None) -> dict:
+    """O manifesto de paginação do PDF (nucleo.paginacao.manifesto_eproc).
+
+    Os documentos, com início e páginas, quem completa é o pdf.juntar (pelo
+    ``info`` de cada parte); no modo completo, as partes do arquivo (pdf.gravar
+    ou pdf.juntar). ``eventos=None``: a lista de eventos não foi lida inteira,
+    e os eventos sem documento ficam de fora - melhor nada que meia lista.
+    """
     quando = quando or datetime.now()
-    linhas = [f"PROCESSO {numero.formatado}",
-              f"{portal} — autos extraídos em {quando:%d/%m/%Y} às {quando:%H:%M}", ""]
-    if sigiloso:
-        linhas += ["SEGREDO DE JUSTIÇA — processo sigiloso. Não compartilhe este arquivo.", ""]
-    for chave, _sel, rotulo in CAMPOS_CAPA[1:]:
-        if capa.get(chave):
-            linhas.append(f"{rotulo}: {capa[chave]}")
-    if partes:
-        linhas += ["", "Partes:"] + [f"  {p}" for p in partes[:40]]
-    linhas.append("")
-    if completo:
-        linhas += ["Depois desta capa vem o arquivo completo gerado pelo próprio eProc "
-                   "(Download Completo)."]
-    else:
-        linhas += [f"Eventos: {n_eventos}", f"Documentos: {len(docs)}"]
-        if ausentes:
-            linhas.append(f"ATENÇÃO: {'o evento' if ausentes == '1' else 'os eventos'} "
-                          f"{ausentes} não {'apareceu' if ausentes == '1' else 'apareceram'} "
-                          "na lista lida do portal; os documentos deles NÃO estão neste "
-                          "arquivo. Confira no eProc.")
-        if faltaram:
-            linhas.append(f"Documentos não incluídos ({len(faltaram)}): "
-                          f"{descrever_faltantes(faltaram)} — cada um tem uma página de aviso "
-                          "no lugar.")
-        if midias:
-            linhas.append(f"Gravações e outros arquivos de áudio ou vídeo: {midias} (não cabem "
-                          "no PDF; veja a página de aviso de cada uma).")
-        linhas += ["", "Como ler este arquivo: os documentos estão na ordem dos eventos, do mais "
-                   "antigo ao mais novo. Cada documento tem um marcador (painel lateral do "
-                   "leitor de PDF) no formato \"Evento N — descrição — rótulo (data)\". O eProc "
-                   "não numera folhas: para citar, use o evento e o rótulo do documento "
-                   "(por exemplo, evento 1, INIC1)."]
-    return "\n".join(linhas) + "\n"
+    extras = {"portal": portal, "extraido_em": quando.isoformat(timespec="seconds"),
+              "sigiloso": bool(sigiloso), "capa": capa_do_manifesto(capa, partes)}
+    if eventos is not None:
+        extras["eventos_sem_documento"] = eventos_sem_documento(eventos)
+        extras["eventos_nao_listados"] = ausentes or ""
+    return paginacao.manifesto_eproc(numero.formatado, [], modo=modo, tribunal=tribunal,
+                                     **extras)
+
+
+def paginas_do_pdf(m: dict | None) -> int:
+    """A última página do PDF segundo o manifesto (0 se ele não disser)."""
+    itens = [x for x in ((m or {}).get("documentos") or []) + ((m or {}).get("partes") or [])
+             if isinstance(x, dict) and _inteiro(x.get("paginas")) > 0]
+    return max((_inteiro(x.get("inicio")) + _inteiro(x.get("paginas")) - 1 for x in itens),
+               default=0)
+
+
+def _faixa_do_pdf(inicio: int, paginas: int) -> str:
+    if paginas <= 1:
+        return f"pág. {inicio} do PDF"
+    return f"págs. {inicio}–{inicio + paginas - 1} do PDF"
+
+
+def _lista_curta(itens: list[str], limite: int = 12) -> str:
+    if len(itens) > limite:
+        return ", ".join(itens[:limite]) + f" e mais {len(itens) - limite}"
+    return ", ".join(itens)
+
+
+def _ev_rotulo(d: dict) -> str:
+    return f"ev. {d.get('evento')} {d.get('rotulo') or ''}".strip()
+
+
+def resumo_do_arquivo(m: dict | None, eventos: list[Evento] | None) -> list[str]:
+    """As linhas de "== Arquivo ==" do capa.txt: como o PDF foi montado, o que
+    ele tem e o que falta (o que a 1.0.1 escrevia na capa dentro do PDF).
+    ``eventos=None``: a lista de eventos não foi lida inteira."""
+    m = m or {}
+    total = paginas_do_pdf(m)
+    if m.get("modo") == "completo":
+        partes = [p for p in m.get("partes") or [] if isinstance(p, dict)]
+        if len(partes) > 1:
+            faixas = "; ".join(
+                f"parte {i} = {_faixa_do_pdf(_inteiro(p.get('inicio')), _inteiro(p.get('paginas')))}"
+                for i, p in enumerate(partes, 1))
+            linhas = ["Arquivo completo gerado pelo próprio eProc (Download Completo), entregue "
+                      f"em {len(partes)} partes, juntadas na ordem sem nenhuma página "
+                      f"acrescentada; cada parte recomeça na página 1 ({faixas})."]
+        else:
+            linhas = ["Arquivo completo gerado pelo próprio eProc (Download Completo), sem "
+                      "nenhuma página acrescentada: a página M do PDF é a página M desse arquivo."]
+        if total:
+            linhas.append(f"Páginas do PDF: {total}.")
+        if eventos is None:
+            linhas.append("Lista de eventos incompleta: só a primeira página de eventos do portal "
+                          "pôde ser lida (o arquivo do eProc traz os documentos de todos eles).")
+        else:
+            linhas.append(f"Eventos: {len(eventos)}; documentos: "
+                          f"{len(ordenar_documentos(eventos))}.")
+        return linhas
+    docs = [d for d in m.get("documentos") or [] if isinstance(d, dict)]
+    linhas = ["PDF montado pelo Helestron documento a documento, do evento mais antigo ao mais "
+              "novo, sem capa e sem página nenhuma antes ou entre os documentos (só uma página "
+              "de aviso no lugar do documento que não veio e da gravação).",
+              f"Eventos: {len(eventos or [])}; documentos: {len(docs)}; páginas do PDF: {total}.",
+              f"Paginação: {paginacao.resumo(m)}."]
+    ausentes = str(m.get("eventos_nao_listados") or "")
+    if ausentes:
+        linhas.append(f"ATENÇÃO: {'o evento' if ausentes == '1' else 'os eventos'} {ausentes} não "
+                      f"{'apareceu' if ausentes == '1' else 'apareceram'} na lista lida do "
+                      "portal; os documentos deles NÃO estão neste arquivo. Confira no eProc.")
+    fora = [_ev_rotulo(d) for d in docs if d.get("situacao") == "ausente"]
+    if fora:
+        linhas.append(f"Documentos não incluídos ({len(fora)}): {_lista_curta(fora)} — cada um "
+                      "tem uma página de aviso no lugar.")
+    gravacoes = [_ev_rotulo(d) for d in docs if d.get("situacao") == "midia"]
+    if gravacoes:
+        linhas.append(f"Gravações (áudio ou vídeo) fora do PDF ({len(gravacoes)}): "
+                      f"{_lista_curta(gravacoes)} — página de aviso no lugar; as baixadas ficam "
+                      "em _controle\\midias.")
+    sem_doc = [e for e in m.get("eventos_sem_documento") or [] if isinstance(e, dict)]
+    if sem_doc:
+        linhas.append(f"Eventos sem documento ({len(sem_doc)}): não têm página no PDF (estão na "
+                      "lista de eventos, abaixo).")
+    return linhas
+
+
+def como_citar(m: dict | None) -> list[str]:
+    """As linhas de "== Como citar ==" do capa.txt."""
+    m = m or {}
+    if m.get("modo") == "completo":
+        partes = [p for p in m.get("partes") or [] if isinstance(p, dict)]
+        posicao = ("\"Download Completo do eProc, parte P, pág. M\"" if len(partes) > 1
+                   else "\"Download Completo do eProc, pág. M\"")
+        return ["Cite o evento e o documento que a própria página ou o marcador do arquivo do "
+                f"eProc indicarem; sem eles, {posicao}. O eProc não numera folhas: não cite "
+                "\"fl.\"."]
+    return ["O eProc não numera folhas: cada documento conserva a paginação própria, igual à "
+            "do eProc. Cite \"evento N, RÓTULO, p. Y\", com Y a página dentro do documento (o "
+            "leitor de PDF mostra \"Ev. N RÓTULO p. Y\" na caixa da página, e o texto dos autos "
+            "marca cada página assim).",
+            "Documento escrito no editor do próprio eProc (despacho, decisão, sentença, "
+            "certidão em HTML) não tem páginas: cite \"evento N, RÓTULO\".",
+            "A posição no arquivo (\"pág. M do PDF\") serve só para navegar: nunca a cite. As "
+            "páginas de aviso (documento NÃO INCLUÍDO, gravação fora do PDF) não são páginas dos "
+            "autos."]
+
+
+def mapa_de_documentos(m: dict | None, eventos: list[Evento] | None) -> list[str]:
+    """"== Mapa de documentos ==": TODOS os documentos, um por linha, com
+    a posição no PDF e a paginação no eProc (no modo completo, sem posição:
+    o arquivo do eProc não a informa)."""
+    m = m or {}
+    docs = [d for d in m.get("documentos") or [] if isinstance(d, dict)]
+    if m.get("modo") == "completo" or not docs:
+        lista = ordenar_documentos(eventos or [])
+        linhas = [f"== Mapa de documentos ({len(lista)}) =="]
+        if m.get("modo") == "completo" and lista:
+            linhas.append("(o arquivo do eProc não informa a página em que começa cada documento: "
+                          "use os marcadores do próprio arquivo, quando houver)")
+        return linhas + [titulo_do_documento(d) for d in lista]
+    linhas = [f"== Mapa de documentos ({len(docs)}) =="]
+    for d in docs:
+        inicio, qtd = _inteiro(d.get("inicio")), _inteiro(d.get("paginas"))
+        faixa = _faixa_do_pdf(inicio, qtd) if inicio else "fora do PDF"
+        situacao = str(d.get("situacao") or "ok")
+        if situacao == "ausente":
+            motivo = limpar(str(d.get("motivo") or ""))[:200]
+            onde = f"{faixa} — NÃO INCLUÍDO (página de aviso)" + (f": {motivo}" if motivo else "")
+        elif situacao == "midia":
+            arquivo = str(d.get("arquivo") or "")
+            onde = (f"{faixa} — gravação fora do PDF (página de aviso)"
+                    + (f"; salva em {arquivo}" if arquivo else "; não baixada"))
+        elif str(d.get("origem") or "pdf") in ("html", "texto"):
+            onde = f"{faixa} (texto do próprio eProc, sem paginação: cite sem página)"
+        elif qtd == 1:
+            onde = f"{faixa} (1 pág.; p. 1 no eProc)"
+        else:
+            onde = f"{faixa} ({qtd} págs.; p. 1–{qtd} no eProc)"
+        titulo = _titulo(d.get("evento"), d.get("descricao") or "", d.get("rotulo") or "",
+                         d.get("data") or "")
+        linhas.append(f"{titulo} — {onde}")
+    return linhas
 
 
 def texto_capa_txt(numero: Numero, portal: str, capa: dict, partes: list[str],
-                   eventos: list[Evento], sigiloso: bool) -> str:
-    """_controle/<número>_capa.txt: classe, partes e andamentos, para a IA."""
+                   eventos: list[Evento], sigiloso: bool, manifesto: dict | None = None,
+                   quando: datetime | None = None, eventos_completos: bool = True) -> str:
+    """_controle/<número>_capa.txt, para quem lê e para a IA: a capa do
+    processo, o arquivo (como foi montado, o que falta), como citar, o mapa de
+    TODOS os documentos e TODOS os eventos.
+
+    "SEGREDO DE JUSTIÇA" vai no topo: o motor o procura nos primeiros 2000
+    caracteres para manter o processo fora do acervo nas próximas rodadas.
+    """
+    quando = quando or datetime.now()
     linhas = [f"Processo {numero.formatado} - {portal}",
-              f"Capa extraída em {datetime.now():%d/%m/%Y %H:%M}", ""]
+              f"Capa extraída em {quando:%d/%m/%Y %H:%M}", ""]
     if sigiloso:
         linhas += ["SEGREDO DE JUSTIÇA - processo sigiloso. Não compartilhe.", ""]
-    dados = [f"{rotulo}: {capa[chave]}" for chave, _s, rotulo in CAMPOS_CAPA[1:] if capa.get(chave)]
+    dados = [f"{rotulo}: {capa[chave]}" for chave, _s, rotulo in CAMPOS_CAPA[1:]
+             if (capa or {}).get(chave)]
     if dados:
         linhas += ["== Capa =="] + dados + [""]
     if partes:
         linhas += ["== Partes =="] + list(partes) + [""]
-    recentes = list(reversed(ordenar_eventos(eventos)))
+    linhas += (["== Arquivo =="] + resumo_do_arquivo(manifesto, eventos if eventos_completos
+                                                       else None) + [""])
+    linhas += ["== Como citar =="] + como_citar(manifesto) + [""]
+    mapa = mapa_de_documentos(manifesto, eventos)
+    if not eventos_completos:
+        mapa.insert(1, "(lista incompleta: só os documentos da primeira página de eventos do "
+                       "portal)")
+    linhas += mapa + [""]
+    recentes = list(reversed(ordenar_eventos(eventos or [])))
     linhas.append(f"== Eventos ({len(recentes)}) ==")
-    for e in recentes[:60]:
-        docs = ", ".join(d.rotulo for d in e.documentos)
+    if recentes and not eventos_completos:
+        linhas.append("(lista incompleta: só a primeira página de eventos do portal)")
+    for e in recentes:
+        rotulos = ", ".join(d.rotulo for d in e.documentos)
         linhas.append(f"{e.data}  Evento {e.numero} - {e.descricao}"
-                      + (f" [{docs}]" if docs else ""))
-    if len(recentes) > 60:
-        linhas.append(f"(... e mais {len(recentes) - 60} eventos antigos)")
+                      + (f" [{rotulos}]" if rotulos else ""))
     if not recentes:
         linhas.append("(nenhum evento localizado na página - confira no portal)")
     return "\n".join(linhas) + "\n"
+
+
+def dados_da_capa(numero: Numero, portal: str, tribunal: str, capa: dict, partes: list[str],
+                  eventos: list[Evento], sigiloso: bool, manifesto: dict | None = None,
+                  quando: datetime | None = None, eventos_completos: bool = True) -> dict:
+    """_controle/<número>_capa.json: o mesmo do capa.txt, legível por máquina
+    (a skill do Claude o lê pelo "capa_json" do --json do baixar)."""
+    quando = quando or datetime.now()
+    m = manifesto or {}
+    ordenados = ordenar_eventos(eventos or [])
+    docs = [dict(d) for d in m.get("documentos") or [] if isinstance(d, dict)]
+    if not docs:
+        docs = [info_do_documento(d, origem_esperada(d), "") for d in ordenar_documentos(ordenados)]
+        for d in docs:
+            d.pop("situacao", None)
+    saida = {
+        "formato": FORMATO_CAPA,
+        "sistema": "eproc",
+        "tribunal": tribunal,
+        "portal": portal,
+        "processo": numero.formatado,
+        "extraido_em": quando.isoformat(timespec="seconds"),
+        "sigiloso": bool(sigiloso),
+        "capa": {k: capa[k] for k in CAMPOS_MANIFESTO if (capa or {}).get(k)},
+        "partes": [str(p) for p in (partes or []) if str(p).strip()],
+        "modo": str(m.get("modo") or "documentos"),
+        "paginacao": paginacao.resumo(m) if paginacao.valido(m) else "",
+        "paginas_pdf": paginas_do_pdf(m),
+        "como_citar": " ".join(como_citar(m)),
+        "eventos_completos": bool(eventos_completos),
+        "eventos_nao_listados": (str(m.get("eventos_nao_listados") or "")
+                                 if eventos_completos else ""),
+        "eventos_sem_documento": eventos_sem_documento(ordenados) if eventos_completos else [],
+        "eventos": [{"evento": e.numero, "data": e.data, "hora": e.hora,
+                     "descricao": limpar(e.descricao),
+                     "documentos": [d.rotulo for d in e.documentos]} for e in ordenados],
+        "documentos": docs,
+    }
+    if m.get("modo") == "completo":
+        saida["partes_do_arquivo"] = [p for p in m.get("partes") or [] if isinstance(p, dict)]
+    return saida
 
 
 # ------------------------------------------------------------ configuração
@@ -1486,6 +1784,13 @@ class PortalEProc:
         self.sigilosos_apurados: set[str] = set()
         # o processo que baixar() está buscando agora, e o resultado dele
         self._em_curso: tuple[Numero, ResultadoProcesso] | None = None
+        # o manifesto de paginação do último PDF gravado (para a capa)
+        self._manifesto: dict | None = None
+        # _todos_os_eventos saiu da primeira página de eventos?
+        self._paginou = False
+        # um evento de espera (login_aguardando, acao_na_janela) foi publicado
+        # e ainda não teve o login_concluido
+        self._aguardando_usuario = False
 
     # ----------------------------------------------------------- atalhos
     @property
@@ -1664,6 +1969,35 @@ class PortalEProc:
                 pass
 
     # ============================================================ login
+    def _evento(self, tipo: str, **dados) -> None:
+        """Evento legível por máquina para quem acompanha (a skill do Claude,
+        pela linha de comando): "login_aguardando", "acao_na_janela",
+        "login_concluido". Contexto sem ``evento`` (versão anterior) não
+        recebe nada; e o evento é aviso: nunca derruba o login."""
+        ev = getattr(self.ctx, "evento", None)
+        if not callable(ev):
+            return
+        try:
+            ev(tipo, sistema=self.sistema, tribunal=self.tribunal.sigla, **dados)
+        except Exception as erro:
+            log.debug("evento %s não publicado: %s", tipo, erro)
+
+    def _evento_de_espera(self, tipo: str, motivo: str, limite: float) -> None:
+        """login_aguardando ou acao_na_janela, ANTES de esperar o usuário: o
+        modo de login, o prazo que resta (até ``limite``, em time.monotonic) e
+        o porquê ("manual", "certificado", "captcha", "perfil")."""
+        resta = max(0.0, limite - time.monotonic())
+        self._evento(tipo, modo=self.modo_login, prazo_min=max(1, -int(-resta // 60)),
+                     ate=(datetime.now() + timedelta(seconds=resta)).isoformat(timespec="seconds"),
+                     motivo=motivo)
+        self._aguardando_usuario = True
+
+    def _login_concluido(self) -> None:
+        """login_concluido - só depois de um evento de espera, como no e-SAJ."""
+        if self._aguardando_usuario:
+            self._aguardando_usuario = False
+            self._evento("login_concluido")
+
     def _etapa(self, pagina=None, apos_envio: bool = False) -> str:
         """Em que ponto do login a página está.
 
@@ -1857,9 +2191,11 @@ class PortalEProc:
         avisou_perfil = False
         conhecida_em = time.monotonic()
         tolerancia = max(30.0, float(self.opcoes.espera_s))
+        self._aguardando_usuario = False
         while True:
             self._checar_cancelado()
             if etapa == "logado":
+                self._login_concluido()
                 return
             if time.monotonic() > limite:
                 self.nav.diagnosticar("eproc-login-prazo")
@@ -1901,13 +2237,14 @@ class PortalEProc:
                 if not avisou_captcha:
                     avisou_captcha = True
                     self._restaurar_janela()
+                    self._evento_de_espera("acao_na_janela", "captcha", limite)
                     self.ctx.avisar(
                         "Verificação no eProc",
                         f"O {self.nome} pediu uma verificação (captcha) na janela do navegador. "
                         "Resolva-a lá; o programa continua sozinho em seguida.")
                 self._dormir(2)
             elif etapa == "perfil":
-                avisou_perfil = self._escolher_perfil(avisou_perfil)
+                avisou_perfil = self._escolher_perfil(avisou_perfil, limite)
             else:
                 if time.monotonic() - conhecida_em > tolerancia:
                     self.nav.diagnosticar("eproc-login-incompleto")
@@ -2015,9 +2352,10 @@ class PortalEProc:
                 break
         return achados
 
-    def _escolher_perfil(self, avisou: bool) -> bool:
+    def _escolher_perfil(self, avisou: bool, limite: float | None = None) -> bool:
         """Mais de um perfil (advogado, servidor, magistrado...): escolhe o
-        único, ou o configurado ([eproc] perfil); senão, o usuário escolhe."""
+        único, ou o configurado ([eproc] perfil); senão, o usuário escolhe.
+        ``limite`` (time.monotonic): o fim do prazo do login, para o evento."""
         botoes = self._perfis_na_tela()
         descricoes = []
         for b in botoes:
@@ -2050,6 +2388,9 @@ class PortalEProc:
                 f"perfil na janela, ou indique-o em {AJUSTES_ACESSOS}, campo “{PERFIL_EPROC}”.")
         if not avisou:
             self._restaurar_janela()
+            if limite is None:
+                limite = time.monotonic() + max(1, int(self.opcoes.espera_login_min)) * 60
+            self._evento_de_espera("acao_na_janela", "perfil", limite)
             self.ctx.avisar(
                 "Escolha o perfil no eProc",
                 f"O seu usuário tem mais de um perfil no {self.nome} ({lista}). Escolha, na "
@@ -2072,14 +2413,19 @@ class PortalEProc:
         else:
             mensagem = ("Conclua o login na janela do navegador que se abriu (usuário e senha, "
                         "código do autenticador ou certificado digital, como de costume).")
+        limite = time.monotonic() + minutos * 60
+        self._aguardando_usuario = False
+        self._evento_de_espera("login_aguardando",
+                               "certificado" if self.modo_login == "certificado" else "manual",
+                               limite)
         self.ctx.avisar(f"Entre no {self.nome}",
                         f"{mensagem} Aguardo até {plural(minutos, 'minuto', 'minutos')} e sigo "
                         "sozinho.")
-        limite = time.monotonic() + minutos * 60
         while time.monotonic() < limite:
             self._dormir(2)
             if self._etapa_em_alguma_aba() == "logado":
                 self.ctx.status("Login concluído.")
+                self._login_concluido()
                 return
         self.nav.diagnosticar("eproc-manual-prazo")
         raise LoginFalhou(
@@ -2347,18 +2693,53 @@ class PortalEProc:
             self._sem_eventos(info, r)
         if r.sigiloso:
             log.info("    processo em segredo de justiça (sigiloso).")
-        if self.modo_pdf == "completo" and self._baixar_completo(numero, destino, r, info):
-            self._gravar_capa_txt(numero, destino, info, info["eventos"], r.sigiloso)
-            r.detalhe = "; ".join(self._notas)
-            return
-        eventos = self._todos_os_eventos(info["eventos"], rotulo)
+        self._manifesto = None
+        eventos: list[Evento] | None = None
+        if self.modo_pdf == "completo":
+            # A lista inteira de eventos ANTES do Download Completo, que tira o
+            # navegador da página do processo: é ela que faz a capa e o mapa
+            # (com só a primeira página, a capa contava os eventos pela metade).
+            eventos = self._eventos_antes_do_completo(numero, info, rotulo)
+            if self._baixar_completo(numero, destino, r, info, eventos):
+                completos = eventos is not None
+                if completos:
+                    r.documentos = len(ordenar_documentos(eventos))
+                self._gravar_capa(numero, destino, info, eventos if completos else info["eventos"],
+                                  r.sigiloso, eventos_completos=completos)
+                r.detalhe = "; ".join(self._notas)
+                return
+        if eventos is None:
+            eventos = self._todos_os_eventos(info["eventos"], rotulo)
         ausentes = eventos_ausentes(eventos)
         if ausentes:
             log.warning("    a lista lida começa depois do evento 1: faltam os eventos %s "
                         "(paginação?).", ausentes)
         self._montar_documentos(numero, destino, r, info, eventos, ausentes)
-        self._gravar_capa_txt(numero, destino, info, eventos, r.sigiloso)
+        self._gravar_capa(numero, destino, info, eventos, r.sigiloso)
         r.detalhe = "; ".join(self._notas)
+
+    def _eventos_antes_do_completo(self, numero: Numero, info: dict,
+                                   rotulo: str) -> list[Evento] | None:
+        """Os eventos de todas as páginas, para a capa do Download Completo.
+
+        None quando a paginação falha: o Download Completo segue assim mesmo
+        (o arquivo do eProc traz os documentos de todos os eventos), e a capa
+        avisa que a lista de eventos ficou incompleta. Se a leitura saiu da
+        primeira página, volta-se à do processo, onde está o botão do
+        Download Completo.
+        """
+        self._paginou = False
+        try:
+            eventos = self._todos_os_eventos(info["eventos"], rotulo)
+        except (Cancelado, SessaoPerdida, LoginFalhou):
+            raise
+        except Exception as erro:
+            log.warning("    não consegui ler todas as páginas de eventos (%s); a capa do Download "
+                        "Completo fica só com a primeira.", str(erro)[:160])
+            eventos = None
+        if self._paginou:
+            self._voltar_ao_processo(numero)
+        return eventos
 
     def _sem_eventos(self, info: dict, r: ResultadoProcesso) -> None:
         """A página do processo abriu sem eventos: sigilo, falta de acesso, ou
@@ -2674,7 +3055,9 @@ class PortalEProc:
 
     def _todos_os_eventos(self, primeiros: list[Evento], rotulo: str) -> list[Evento]:
         """Os eventos de TODAS as páginas (o eProc mostra uma de cada vez)."""
+        self._paginou = False
         if self._listar_todos():
+            self._paginou = True
             todos = ler_eventos(ler_html(self._html()), self.sel)
             # "Listar todos" pode ser só uma página maior: a paginação, se
             # ainda houver, é percorrida do mesmo jeito (senão os eventos
@@ -2691,6 +3074,7 @@ class PortalEProc:
                 continue
             self._checar_cancelado()
             self.ctx.status(f"{rotulo}: lendo a página {n} de {len(valores)} dos eventos...")
+            self._paginou = True
             mudou = self._mudar_pagina(valor)
             self._conferir_sessao_na_pagina()
             if not mudou:
@@ -2765,8 +3149,35 @@ class PortalEProc:
         return ok
 
     # ------------------------------------------------------ documentos
+    def _metadados(self, numero: Numero, modo: str) -> dict:
+        """Título, assunto e programa do PDF (o manifesto põe as palavras-chave).
+        No modo completo, o criador e o produtor do arquivo do eProc ficam."""
+        from .. import __version__
+        titulo = f"Processo {numero.formatado}"
+        if modo == "completo":
+            return {"title": titulo,
+                    "subject": f"Autos do {self.nome} — arquivo completo gerado pelo próprio "
+                               "eProc (Download Completo), sem páginas acrescentadas"}
+        return {"title": titulo,
+                "subject": f"Autos do {self.nome} — documento a documento, paginação de cada "
+                           "documento igual à do eProc",
+                "creator": f"Helestron {__version__}", "producer": f"Helestron {__version__}",
+                "creationDate": datetime.now().strftime("D:%Y%m%d%H%M%S")}
+
+    def _manifesto_de(self, numero: Numero, info: dict, eventos: list[Evento] | None,
+                      sigiloso: bool, modo: str, ausentes: str = "") -> dict:
+        return manifesto_do_processo(numero, self.nome, self.tribunal.sigla,
+                                     info.get("capa") or {}, info.get("partes") or [], eventos,
+                                     sigiloso, modo, ausentes)
+
     def _montar_documentos(self, numero: Numero, destino: Path, r: ResultadoProcesso,
                            info: dict, eventos: list[Evento], ausentes: str = "") -> None:
+        """O PDF documento a documento: só as páginas dos documentos, na ordem
+        dos eventos, sem capa e sem página nenhuma entre eles - o eProc não
+        numera folhas, e cada documento conserva a paginação própria (o
+        rótulo da página diz "Ev. 1 INIC1 p. 2"). O documento que não veio e
+        a gravação ficam com UMA página de aviso no lugar, marcada como não
+        citável no rótulo, no marcador e no manifesto."""
         rotulo = numero.formatado
         docs = ordenar_documentos(eventos)
         if not docs:
@@ -2778,32 +3189,47 @@ class PortalEProc:
         log.info("    %s, %s.", plural(len(eventos), "evento", "eventos"),
                  plural(len(docs), "documento", "documentos"))
         r.documentos = len(docs)
-        partes: list[pdf.Parte] = []
+        partes: list[pdf.Parte] = []          # uma por documento, na ordem de docs
         faltaram: list[Documento] = []
         midias_salvas: list[str] = []
         midias_fora = 0
         obtidos = 0
         pasta_midias = destino.parent / "_controle" / "midias" / numero.nome_arquivo
+
+        def documento(doc: Documento, dados: bytes, tipo: str, origem: str) -> None:
+            prefixo, numerar = rotulo_de_pagina(doc, origem)
+            partes.append(pdf.Parte(titulo_do_documento(doc), dados, tipo, rotulo_pagina=prefixo,
+                                    numerar=numerar, info=info_do_documento(doc, origem),
+                                    manter_sumario=tipo == "pdf"))
+
+        def aviso(doc: Documento, texto: str, situacao: str, origem: str, **extra) -> None:
+            prefixo, numerar = rotulo_de_pagina(doc, origem, situacao)
+            sufixo = SUFIXO_NAO_INCLUIDO if situacao == "ausente" else SUFIXO_GRAVACAO
+            partes.append(pdf.Parte(titulo_do_documento(doc) + sufixo, texto.encode("utf-8"),
+                                    "aviso", rotulo_pagina=prefixo, numerar=numerar,
+                                    info=info_do_documento(doc, origem, situacao, **extra)))
+
+        def nao_veio(doc: Documento, motivo: str, origem: str = "") -> None:
+            faltaram.append(doc)
+            aviso(doc, self._aviso_falha(doc, motivo), "ausente", origem or origem_esperada(doc),
+                  motivo=limpar(motivo)[:300])
+
         try:
             for i, doc in enumerate(docs, 1):
                 self._checar_cancelado()
                 if i > 1 and PAUSA_DOCUMENTOS_S:
                     self._dormir(PAUSA_DOCUMENTOS_S)
-                titulo = titulo_do_documento(doc)
                 self.ctx.status(f"{rotulo}: documento {i} de {len(docs)} "
                                 f"(evento {doc.evento}, {doc.rotulo})...")
                 if doc.mimetype in MIMETYPES_MIDIA and not self.opcoes.baixar_midias:
                     midias_fora += 1
-                    partes.append(pdf.Parte(titulo, self._aviso_midia(doc, None).encode("utf-8"),
-                                            "aviso"))
+                    aviso(doc, self._aviso_midia(doc, None), "midia", "midia")
                     continue
                 try:
                     tipo, dados, extra = self._obter_documento(doc)
                 except _FalhaDocumento as erro:
-                    faltaram.append(doc)
                     log.warning("    %s não veio: %s", doc.rotulo, str(erro)[:200])
-                    partes.append(pdf.Parte(titulo, self._aviso_falha(doc, str(erro)).encode(
-                        "utf-8"), "aviso"))
+                    nao_veio(doc, str(erro))
                     continue
                 if tipo == "midia":
                     caminho = None
@@ -2814,42 +3240,59 @@ class PortalEProc:
                         obtidos += 1
                     else:
                         midias_fora += 1
-                    aviso = self._aviso_midia(doc, caminho, destino.parent,
+                    texto = self._aviso_midia(doc, caminho, destino.parent,
                                               falhou=self.opcoes.baixar_midias and caminho is None)
-                    partes.append(pdf.Parte(titulo, aviso.encode("utf-8"), "aviso"))
+                    arquivo = ""
+                    if caminho:
+                        try:
+                            arquivo = Path(caminho).relative_to(destino.parent).as_posix()
+                        except ValueError:
+                            arquivo = Path(caminho).name
+                    aviso(doc, texto, "midia", "midia", arquivo=arquivo)
                 elif tipo == "html":
-                    partes.append(pdf.Parte(titulo, html_em_utf8(dados), "html"))
+                    documento(doc, html_em_utf8(dados), "html", "html")
                     obtidos += 1
                 elif tipo == "imagem":
                     try:
-                        partes.append(pdf.Parte(titulo, pdf.imagem_para_pdf(dados), "pdf"))
-                        obtidos += 1
+                        convertido = pdf.imagem_para_pdf(dados)
                     except Exception as erro:
-                        faltaram.append(doc)
                         motivo = f"a imagem não pôde ser convertida ({str(erro)[:120]})"
                         log.warning("    %s: %s", doc.rotulo, motivo)
-                        partes.append(pdf.Parte(titulo, self._aviso_falha(doc, motivo).encode(
-                            "utf-8"), "aviso"))
+                        nao_veio(doc, motivo, "imagem")
+                        continue
+                    documento(doc, convertido, "pdf", "imagem")
+                    obtidos += 1
+                elif tipo == "pdf" and pdf.contar_paginas_de(dados) is None:
+                    # Conferido aqui, e não só no pdf.juntar: assim o documento
+                    # entra no "incompleto" e o manifesto diz o motivo.
+                    motivo = ("o arquivo do documento veio inválido (não abre como PDF, está "
+                              "protegido por senha ou não tem páginas)")
+                    log.warning("    %s: %s", doc.rotulo, motivo)
+                    nao_veio(doc, motivo, "pdf")
                 else:
-                    partes.append(pdf.Parte(titulo, dados, tipo))
+                    documento(doc, dados, tipo, "texto" if tipo == "texto" else "pdf")
                     obtidos += 1
             if faltaram and not obtidos:
                 # Só páginas de aviso (as gravações não baixadas também são
                 # aviso): isso não são os autos - é falha, e o motor tenta de novo.
                 raise RuntimeError("nenhum documento do processo pôde ser baixado")
             self._checar_cancelado()
-            capa = texto_capa(numero, self.nome, info["capa"], info["partes"], len(eventos), docs,
-                              r.sigiloso, faltaram, len(midias_salvas) + midias_fora,
-                              ausentes=ausentes)
-            partes.insert(0, pdf.Parte(TITULO_CAPA, capa.encode("utf-8"), "texto"))
+            manifesto = self._manifesto_de(numero, info, eventos, r.sigiloso, "documentos",
+                                           ausentes)
             self.ctx.status(f"{rotulo}: montando o PDF ({len(docs)} documentos)...")
-            r.paginas = pdf.juntar(partes, destino)
+            r.paginas = pdf.juntar(partes, destino, metadados=self._metadados(numero, "documentos"),
+                                   manifesto=manifesto)
+            self._manifesto = manifesto
         except BaseException:
             # Sem o PDF, as gravações já salvas ficariam soltas no acervo
             # compartilhado - e, de processo sigiloso, fora do alcance do motor,
             # que só as leva para a pasta de sigilosos junto com o PDF pronto.
             self._apagar_midias(midias_salvas, pasta_midias)
             raise
+        # O documento que o próprio pdf.juntar não conseguiu incluir (conversão
+        # que falhou lá) também tem página de aviso no lugar: entra na conta.
+        faltaram = [d for d, p in zip(docs, partes)
+                    if p.falhou or (p.info or {}).get("situacao") == "ausente"]
         log.info("    salvo: %s (%d páginas)", destino.name, r.paginas)
         incompleto = []
         if ausentes:
@@ -2885,9 +3328,15 @@ class PortalEProc:
         except OSError:
             pass
 
+    # As páginas de aviso dizem que não são páginas dos autos: estão no lugar
+    # de um documento, e "p. 1" delas não existe no eProc.
+    NAO_E_PAGINA = ("\n\nEsta página é um aviso do Helestron, posto no lugar do documento: não é "
+                    "página dos autos e não deve ser citada.")
+
     def _aviso_falha(self, doc: Documento, motivo: str) -> str:
         return (f"O documento {doc.rotulo} do evento {doc.evento} não pôde ser baixado do "
-                f"{self.nome}.\n\nMotivo: {motivo}\n\nConsulte-o diretamente no portal.")
+                f"{self.nome}.\n\nMotivo: {motivo}\n\nConsulte-o diretamente no portal."
+                + self.NAO_E_PAGINA)
 
     def _aviso_midia(self, doc: Documento, caminho: Path | None, raiz: Path | None = None,
                      falhou: bool = False) -> str:
@@ -2898,13 +3347,14 @@ class PortalEProc:
                 relativo = Path(caminho).relative_to(raiz) if raiz else Path(caminho)
             except ValueError:
                 relativo = Path(caminho)
-            return cabeca + f"O arquivo foi salvo em:\n{relativo}"
+            return cabeca + f"O arquivo foi salvo em:\n{relativo}" + self.NAO_E_PAGINA
         if falhou:
             return cabeca + ("O arquivo veio do portal, mas não pôde ser salvo no computador "
-                             "(disco cheio ou sem permissão?). Consulte-o diretamente no eProc.")
+                             "(disco cheio ou sem permissão?). Consulte-o diretamente no eProc."
+                             + self.NAO_E_PAGINA)
         return cabeca + ("O arquivo não foi baixado: para baixá-lo, ative a opção de baixar as "
                          "gravações de audiência e baixe o processo de novo, ou consulte-o "
-                         "diretamente no eProc.")
+                         "diretamente no eProc." + self.NAO_E_PAGINA)
 
     def _salvar_midia(self, doc: Documento, dados: bytes, extensao: str,
                       pasta: Path) -> Path | None:
@@ -3050,11 +3500,18 @@ class PortalEProc:
 
     # ------------------------------------------------- Download Completo
     def _baixar_completo(self, numero: Numero, destino: Path, r: ResultadoProcesso,
-                         info: dict) -> bool:
-        """O PDF que o próprio eProc gera. False quando não deu (e a página
-        volta para a do processo, para a montagem por documentos)."""
+                         info: dict, eventos: list[Evento] | None = None) -> bool:
+        """O PDF que o próprio eProc gera, sem página nenhuma acrescentada: a
+        página M do PDF é a página M do arquivo do eProc, com o sumário e os
+        rótulos que ele trouxer. False quando não deu (e a página volta para a
+        do processo, para a montagem por documentos). ``eventos``: a lista
+        inteira (None se não foi lida), para o manifesto."""
         try:
             arquivos = self._gerar_completo(numero)
+            for i, dados in enumerate(arquivos, 1):
+                if pdf.contar_paginas_de(dados) is None:
+                    raise RuntimeError("o arquivo completo entregue pelo eProc não abre como PDF"
+                                       + (f" (parte {i})" if len(arquivos) > 1 else ""))
         except (Cancelado, SessaoPerdida, LoginFalhou):
             raise
         except Exception as erro:
@@ -3065,13 +3522,25 @@ class PortalEProc:
                                "documento a documento")
             self._voltar_ao_processo(numero)
             return False
-        capa = texto_capa(numero, self.nome, info["capa"], info["partes"], 0, [], r.sigiloso,
-                          [], 0, completo=True)
-        partes = [pdf.Parte(TITULO_CAPA, capa.encode("utf-8"), "texto")]
-        for i, dados in enumerate(arquivos, 1):
-            titulo = TITULO_COMPLETO if len(arquivos) == 1 else f"{TITULO_COMPLETO} — parte {i}"
-            partes.append(pdf.Parte(titulo, dados, "pdf"))
-        r.paginas = pdf.juntar(partes, destino)
+        self.ctx.status(f"{numero.formatado}: gravando o arquivo completo...")
+        manifesto = self._manifesto_de(numero, info, eventos, r.sigiloso, "completo",
+                                       eventos_ausentes(eventos) if eventos is not None else "")
+        metadados = self._metadados(numero, "completo")
+        if len(arquivos) == 1:
+            # O arquivo entra como veio (o que se acrescenta vai por salvamento
+            # incremental); o marcador só entra se o arquivo não tiver sumário.
+            r.paginas = pdf.gravar(destino, arquivos[0], marcadores=[(TITULO_COMPLETO, 1)],
+                                   metadados=metadados, manifesto=manifesto,
+                                   preservar_sumario=True)
+        else:
+            # Processo grande sai em partes (ZIP): cada uma recomeça na página 1
+            partes = [pdf.Parte(f"{TITULO_COMPLETO} — parte {i}", dados, "pdf",
+                                rotulo_pagina=f"Parte {i} p. ", manter_sumario=True)
+                      for i, dados in enumerate(arquivos, 1)]
+            r.paginas = pdf.juntar(partes, destino, metadados=metadados, manifesto=manifesto)
+        if not manifesto.get("partes"):
+            manifesto["partes"] = [{"inicio": 1, "paginas": r.paginas}]
+        self._manifesto = manifesto
         log.info("    salvo: %s (%d páginas, Download Completo)", destino.name, r.paginas)
         self._notas.append("PDF completo gerado pelo próprio eProc")
         return True
@@ -3165,12 +3634,25 @@ class PortalEProc:
         return arquivos
 
     # ------------------------------------------------------------- capa
-    def _gravar_capa_txt(self, numero: Numero, destino: Path, info: dict,
-                         eventos: list[Evento], sigiloso: bool) -> None:
+    def _gravar_capa(self, numero: Numero, destino: Path, info: dict, eventos: list[Evento],
+                     sigiloso: bool, eventos_completos: bool = True) -> None:
+        """_controle/<número>_capa.txt e _capa.json (o motor os leva junto com o
+        PDF): a capa, o arquivo, como citar, o mapa de todos os documentos e
+        todos os eventos. Capa é conveniência, não dever: falha vai só para o log."""
+        controle = destino.parent / "_controle"
+        quando = datetime.now()
+        capa, partes = info.get("capa") or {}, info.get("partes") or []
         try:
-            alvo = destino.parent / "_controle" / f"{numero.nome_arquivo}_capa.txt"
-            texto = texto_capa_txt(numero, self.nome, info["capa"], info["partes"], eventos,
-                                   sigiloso)
-            sistema.gravar_atomico(alvo, texto.encode("utf-8"))
-        except Exception as erro:          # capa é conveniência, não dever
+            texto = texto_capa_txt(numero, self.nome, capa, partes, eventos, sigiloso,
+                                   self._manifesto, quando, eventos_completos)
+            sistema.gravar_atomico(controle / f"{numero.nome_arquivo}_capa.txt",
+                                   texto.encode("utf-8"))
+        except Exception as erro:
             log.debug("capa não gravada: %s", erro)
+        try:
+            dados = dados_da_capa(numero, self.nome, self.tribunal.sigla, capa, partes, eventos,
+                                  sigiloso, self._manifesto, quando, eventos_completos)
+            sistema.gravar_atomico(controle / f"{numero.nome_arquivo}_capa.json",
+                                   json.dumps(dados, ensure_ascii=False, indent=1).encode("utf-8"))
+        except Exception as erro:
+            log.debug("capa (JSON) não gravada: %s", erro)

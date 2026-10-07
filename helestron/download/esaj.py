@@ -32,8 +32,11 @@ na leitura do código):
 * senha errada só era percebida depois de esperar 45 s pela tela do código.
 
 Nada de dossiê, OCR, anonimizador ou índice da triagem: o produto aqui é o
-PDF único. De acessório fica só a capa (_controle/<número>_capa.txt), que é
-barata e dá à IA classe, partes, juiz e andamentos sem abrir o PDF.
+PDF único. De acessório fica só a capa (_controle/<número>_capa.txt, e o
+mesmo em _capa.json para máquina), que é barata - sai da página do processo
+que o download já abre - e dá à IA classe, partes, juiz, marcas (prioridade,
+justiça gratuita...), todas as movimentações, incidentes, audiências e as
+folhas do PDF sem abrir o portal nem o PDF.
 """
 
 from __future__ import annotations
@@ -650,35 +653,201 @@ def frases_das_ausencias(plano: PlanoFolhas, ausentes: dict[int, str]) -> list[s
     return frases
 
 
-def formatar_capa(info: dict, numero: Numero, sigla: str, sigiloso: bool = False) -> str:
-    linhas = [f"Processo {numero.formatado} - {sigla} (e-SAJ, 1º grau)",
-              f"Capa extraída da consulta em {datetime.now():%d/%m/%Y %H:%M}", ""]
+# ------------------------------------------------------------- capa (v2)
+# A capa sai da página do processo (CPOPG) que o download já abre: a IA e a
+# skill do Claude leem classe, partes, marcas, andamentos, incidentes e
+# audiências sem abrir o portal. Vai em _controle/<número>_capa.txt (para ler)
+# e _capa.json (para máquina); o motor leva os dois junto com o PDF.
+FORMATO_CAPA = "helestron.capa/2"
+# As seções da página do processo achadas pelo TÍTULO (h2 "Audiências"...),
+# não pelo id: o título muda menos que o HTML em volta.
+SECOES_CAPA = (("incidentes", "Incidentes, ações incidentais, recursos e execuções de sentenças"),
+               ("apensos", "Apensos, entranhados e unificados"),
+               ("audiencias", "Audiências"),
+               ("historico_classes", "Histórico de classes"),
+               ("peticoes_diversas", "Petições diversas"))
+EXTRAS_CAPA = (("outros_numeros", "Outros números"), ("processo_principal", "Processo principal"),
+               ("local_fisico", "Local físico"), ("outros_assuntos", "Outros assuntos"))
+# (chave no capa.json, padrão sem acento, como escrever na lista de marcas)
+MARCAS_CAPA = (("prioridade", r"priorit|prioridade", "Prioridade"),
+               ("justica_gratuita", r"justica gratuita|gratuidade|assistencia judiciaria",
+                "Justiça gratuita"),
+               ("segredo", r"segredo de justica|sigilos", "Segredo de justiça"),
+               ("idoso", r"\bidos[oa]s?\b", "Idoso"))
+_RE_DATA_CAPA = re.compile(r"\b\d{2}/\d{2}/\d{4}\b")
+_RE_CNJ_CAPA = re.compile(r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}(?:/\d+)?")
+
+
+def _limpo(texto, limite: int = 2000) -> str:
+    return re.sub(r"\s+", " ", str(texto or "")).strip()[:limite]
+
+
+# No capa.json, os campos da capa com chaves de máquina (as do eProc, quando
+# há equivalente); no capa.txt ficam os rótulos da página.
+CHAVES_CAPA = {"Classe": "classe", "Assunto": "assunto", "Foro": "foro", "Vara": "vara",
+               "Juiz": "juiz", "Distribuição": "distribuicao", "Valor da ação": "valor",
+               "Situação": "situacao", "Área": "area", "Controle": "controle"}
+
+
+def _chave_da_capa(rotulo) -> str:
+    rotulo = _limpo(rotulo, 80)
+    return CHAVES_CAPA.get(rotulo) or re.sub(r"[^a-z0-9]+", "_", sem_acento(rotulo)).strip("_")
+
+
+def marcas_da_capa(info: dict, sigiloso: bool = False) -> tuple[list[str], dict[str, bool]]:
+    """As marcas do cabeçalho do processo (as etiquetas .unj-tag e o que o
+    cabeçalho escreve por extenso) e, delas, prioridade, justiça gratuita,
+    segredo de justiça e idoso. O cabeçalho chega sem os valores da capa
+    (classe, assunto...): um assunto "Estatuto do Idoso" não faz o processo
+    ter a prioridade do idoso."""
+    etiquetas = list(dict.fromkeys(t for t in (_limpo(x, 200) for x in info.get("marcas") or [])
+                                   if t))
+    base = sem_acento(" ".join(etiquetas) + " " + _limpo(info.get("cabecalho")))
+    sinais = {chave: bool(re.search(padrao, base)) for chave, padrao, _ in MARCAS_CAPA}
+    sinais["segredo"] = sinais["segredo"] or bool(sigiloso)
+    marcas = list(etiquetas)
+    for chave, padrao, rotulo in MARCAS_CAPA:
+        if sinais[chave] and not any(re.search(padrao, sem_acento(t)) for t in etiquetas):
+            marcas.append(rotulo)
+    return marcas, sinais
+
+
+def linhas_da_secao(chave: str, linhas) -> list[dict]:
+    """As linhas de uma seção da página do processo (as células de cada uma
+    e o código do processo do link, quando houver), com a data e o número
+    do processo separados; nos incidentes, também recebido_em e classe."""
+    saida = []
+    for linha in linhas or []:
+        if not isinstance(linha, dict):
+            continue
+        celulas = [c for c in (_limpo(x, 1000) for x in linha.get("celulas") or []) if c]
+        if not celulas:
+            continue
+        texto = " ".join(celulas)
+        if len(celulas) == 1 and re.match(r"(?i)n[aã]o h[aá]\b|nenhum", celulas[0]):
+            continue                      # "Não há incidentes... vinculados a este processo."
+        data = next((c for c in celulas if _RE_DATA_CAPA.fullmatch(c)), "")
+        if not data:
+            achada = _RE_DATA_CAPA.search(texto)
+            data = achada.group(0) if achada else ""
+        resto = [c for c in celulas if c != data]
+        item = {"data": data, "texto": " - ".join(resto), "celulas": celulas}
+        numero = _RE_CNJ_CAPA.search(texto)
+        if numero:
+            item["numero"] = numero.group(0)
+        if linha.get("codigo"):
+            item["codigo"] = _limpo(linha["codigo"], 40)
+        if chave == "incidentes":
+            classe = " - ".join(c for c in (_limpo(_RE_CNJ_CAPA.sub(" ", c)) for c in resto) if c)
+            item.update(recebido_em=data, classe=classe)
+        saida.append(item)
+    return saida
+
+
+def dados_da_capa(info: dict, numero: Numero, sigla: str, sigiloso: bool = False,
+                  manifesto: dict | None = None, quando: datetime | None = None) -> dict:
+    """_controle/<número>_capa.json: a capa v2, legível por máquina (a skill do
+    Claude a lê pelo "capa_json" do --json do baixar)."""
+    quando = quando or datetime.now()
+    marcas, sinais = marcas_da_capa(info, sigiloso)
+    extras = info.get("extras") if isinstance(info.get("extras"), dict) else {}
+    secoes = info.get("secoes") if isinstance(info.get("secoes"), dict) else {}
+    dados = {
+        "formato": FORMATO_CAPA,
+        "sistema": "esaj",
+        "tribunal": sigla,
+        "processo": numero.formatado,
+        "extraido_em": quando.isoformat(timespec="seconds"),
+        "sigiloso": bool(sigiloso),
+        "capa": {_chave_da_capa(k): _limpo(v, 500) for k, v in (info.get("capa") or {}).items()
+                 if _limpo(v)},
+        "partes": [p for p in (_limpo(x, 2000) for x in info.get("partes") or []) if p],
+        "marcas": marcas,
+        **sinais,
+        "outros_numeros": _limpo(extras.get("outros_numeros"), 500),
+        "processo_principal": _limpo(extras.get("processo_principal"), 200),
+        "local_fisico": _limpo(extras.get("local_fisico"), 300),
+        "outros_assuntos": _limpo(extras.get("outros_assuntos"), 500),
+        "movimentacoes": [{"data": _limpo(m.get("data"), 20), "texto": _limpo(m.get("texto"))}
+                          for m in info.get("movs") or [] if isinstance(m, dict)],
+        "codigo_processo": _limpo(info.get("codigo"), 40),
+        "url": _limpo(info.get("url"), 500),
+    }
+    for chave, _titulo in SECOES_CAPA:
+        dados[chave] = linhas_da_secao(chave, secoes.get(chave))
+    if paginacao.valido(manifesto):
+        dados["paginacao"] = {"resumo": paginacao.resumo(manifesto),
+                              "ultima": int(manifesto.get("ultima") or 0),
+                              "ausentes": dict(manifesto.get("ausentes") or {}),
+                              "folhas_ausentes": paginacao.descrever_folhas(
+                                  paginacao.ausentes(manifesto))}
+    return dados
+
+
+def formatar_capa(info: dict, numero: Numero, sigla: str, sigiloso: bool = False,
+                  manifesto: dict | None = None, quando: datetime | None = None) -> str:
+    """_controle/<número>_capa.txt: a capa v2 para ler (os títulos "== Capa ==",
+    "== Partes ==" e "== Movimentações (N) ==" ficam como na 1.0.1). Todas as
+    movimentações - só as da tabela de movimentações, sem limite de 60 -, as
+    marcas, os incidentes, apensos, audiências, o histórico de classes, as
+    petições diversas e, com o ``manifesto``, as folhas do PDF.
+
+    "SEGREDO DE JUSTIÇA" vai no topo: o motor o procura nos primeiros 2000
+    caracteres para manter o processo fora do acervo nas próximas rodadas.
+    """
+    quando = quando or datetime.now()
+    d = dados_da_capa(info, numero, sigla, sigiloso, manifesto, quando)
+    linhas =[f"Processo {numero.formatado} - {sigla} (e-SAJ, 1º grau)",
+              f"Capa extraída da consulta em {quando:%d/%m/%Y %H:%M}", ""]
     if sigiloso:
         linhas += ["SEGREDO DE JUSTIÇA - processo sigiloso. Não compartilhe.", ""]
-    capa = info.get("capa") or {}
+    capa = [f"{k}: {_limpo(v, 500)}" for k, v in (info.get("capa") or {}).items() if _limpo(v)]
+    capa += [f"{rotulo}: {d[chave]}" for chave, rotulo in EXTRAS_CAPA if d.get(chave)]
     if capa:
-        linhas.append("== Capa ==")
-        linhas += [f"{k}: {v}" for k, v in capa.items()]
-        linhas.append("")
-    partes = info.get("partes") or []
-    if partes:
-        linhas.append("== Partes ==")
-        linhas += list(partes)
-        linhas.append("")
-    movs = info.get("movs") or []
+        linhas += ["== Capa =="] + capa + [""]
+    if d["marcas"]:
+        linhas += ["== Marcas =="] + d["marcas"] + [""]
+    if d["partes"]:
+        linhas += ["== Partes =="] + d["partes"] + [""]
+    if d.get("paginacao"):
+        p = d["paginacao"]
+        linhas += ["== Arquivo ==",
+                   f"Folhas 1 a {p['ultima']} (última oferecida pela Pasta Digital)",
+                   f"Paginação: {p['resumo']}",
+                   "Como citar: \"fl. N\" - a página N do PDF é sempre a folha N da Pasta Digital; "
+                   "a folha com página de aviso não veio do e-SAJ (não a use como prova).", ""]
+    movs = d["movimentacoes"]
     linhas.append(f"== Movimentações ({len(movs)}) ==")
     if movs:
-        linhas += [f"{m.get('data', '')}  {m.get('texto', '')}" for m in movs[:60]]
-        if len(movs) > 60:
-            linhas.append(f"(... e mais {len(movs) - 60} movimentações antigas)")
+        linhas += [f"{m['data']}  {m['texto']}" for m in movs]
     else:
         linhas.append("(nenhuma movimentação localizada na página - confira no portal)")
+    for chave, titulo in SECOES_CAPA:
+        itens = d[chave]
+        if not itens:
+            continue
+        linhas += ["", f"== {titulo} ({len(itens)}) =="]
+        linhas += [(f"{x['data']}  {x['texto']}" if x["data"] else x["texto"]) for x in itens]
     return "\n".join(linhas) + "\n"
 
 
 # --------------------------------------------------------- JS da página
 _JS_PAGINA_PROCESSO = r"""() => {
     const limpa = s => (s || '').replace(/\s+/g, ' ').trim();
+    const semAcento = s => limpa(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    const texto = el => limpa(el ? (el.innerText || el.textContent) : '');
+    // Texto para detectar segredo - o essencial, lido primeiro e fora dos
+    // extras: a página inteira MENOS as movimentações ("retirado o segredo de
+    // justiça" não faz o processo sigiloso) e menos o modal de senha, que
+    // existe escondido em toda página.
+    let resto = (document.body && document.body.innerText) || '';
+    document.querySelectorAll(
+        '#tabelaUltimasMovimentacoes, #tabelaTodasMovimentacoes, #popupSenha, ' +
+        '#senhaProcesso, [id*="Movimentac"], .modal'
+    ).forEach(el => {
+        const t = el.innerText || '';
+        if (t) resto = resto.split(t).join(' ');
+    });
     const capa = {};
     const campos = {
         'Classe': '#classeProcesso', 'Assunto': '#assuntoProcesso',
@@ -688,38 +857,133 @@ _JS_PAGINA_PROCESSO = r"""() => {
         'Área': '#areaProcesso', 'Controle': '#numeroControleProcesso',
     };
     for (const [rot, sel] of Object.entries(campos)) {
-        const el = document.querySelector(sel);
-        if (el && limpa(el.innerText)) capa[rot] = limpa(el.innerText);
+        const v = texto(document.querySelector(sel));
+        if (v) capa[rot] = v;
     }
+    // Partes: a tabela de todas; sem ela, a das principais (juntar as duas
+    // repetia cada parte)
     const partes = [];
-    document.querySelectorAll('#tablePartesPrincipais tr, #tableTodasPartes tr').forEach(tr => {
-        const c = Array.from(tr.querySelectorAll('td')).map(td => limpa(td.innerText)).filter(Boolean);
+    let tabPartes = document.querySelector('#tableTodasPartes');
+    if (!tabPartes || !tabPartes.querySelector('td'))
+        tabPartes = document.querySelector('#tablePartesPrincipais');
+    if (tabPartes) tabPartes.querySelectorAll('tr').forEach(tr => {
+        const c = Array.from(tr.cells || []).map(td => texto(td)).filter(Boolean);
         if (c.length >= 2) partes.push(c.join(' '));
     });
-    const vistos = new Set();
-    const movs = [];
-    document.querySelectorAll('tr').forEach(tr => {
-        const c = Array.from(tr.querySelectorAll('td')).map(td => limpa(td.innerText));
-        if (c.length < 2 || !/^\d{2}\/\d{2}\/\d{4}$/.test(c[0])) return;
-        const texto = c.slice(1).filter(Boolean).join(' - ');
-        if (texto.length < 3) return;
-        const chave = c[0] + '|' + texto;
-        if (vistos.has(chave)) return;
-        vistos.add(chave);
-        movs.push({data: c[0], texto: texto});
-    });
-    // Texto para detectar segredo: a página inteira MENOS as movimentações
-    // ("retirado o segredo de justiça" não faz o processo sigiloso) e menos
-    // o modal de senha, que existe escondido em toda página.
-    let texto = (document.body && document.body.innerText) || '';
-    document.querySelectorAll(
-        '#tabelaUltimasMovimentacoes, #tabelaTodasMovimentacoes, #popupSenha, ' +
-        '#senhaProcesso, [id*="Movimentac"], .modal'
-    ).forEach(el => {
-        const t = el.innerText || '';
-        if (t) texto = texto.split(t).join(' ');
-    });
-    return {capa, partes: [...new Set(partes)], movs, texto: texto.slice(0, 200000)};
+    // Seções achadas pelo título; de cada uma, a primeira tabela depois do
+    // título (e antes do título seguinte). Extra: o que falhar aqui não leva
+    // a capa, as movimentações nem o texto do segredo junto.
+    const secoes = {};
+    const tabelasDeSecao = new Set();
+    try {
+        const SECOES = {incidentes: /^incidentes/, apensos: /^apensos/, audiencias: /^audiencias/,
+                        historico_classes: /^historico de classes/,
+                        peticoes_diversas: /^peticoes diversas/};
+        const titulos = Array.from(document.querySelectorAll(
+            'h1, h2, h3, h4, h5, .subtitle, .tituloDoBloco'));
+        const ehTitulo = new Set(titulos);
+        for (const h of titulos) {
+            const t = semAcento(h.innerText || h.textContent);
+            const chave = Object.keys(SECOES).find(k => SECOES[k].test(t));
+            if (!chave || secoes[chave]) continue;
+            const w = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+            w.currentNode = h;
+            let tabela = null, n;
+            while ((n = w.nextNode())) {
+                if (h.contains(n)) continue;
+                if (ehTitulo.has(n)) break;
+                if (n.tagName === 'TABLE') { tabela = n; break; }
+            }
+            const linhas = [];
+            if (tabela) {
+                tabelasDeSecao.add(tabela);
+                tabela.querySelectorAll('tr').forEach(tr => {
+                    if (tr.closest('table') !== tabela) return;     // tabela aninhada
+                    const tds = Array.from(tr.cells || []).filter(c => c.tagName === 'TD');
+                    if (!tds.length) return;
+                    const a = tr.querySelector('a[href*="processo.codigo="]');
+                    const m = a ? /processo\.codigo=([A-Za-z0-9]+)/.exec(a.getAttribute('href') || '')
+                                : null;
+                    linhas.push({celulas: tds.map(td => texto(td)), codigo: m ? m[1] : ''});
+                });
+            }
+            secoes[chave] = linhas;
+        }
+    } catch (e) { /* seções são extras */ }
+    // Movimentações: só da tabela delas (todas; sem ela, as últimas). A regra
+    // antiga - toda linha que começa por data - trazia audiências, histórico
+    // de classes e petições; e sem repetir "data|texto", porque duas
+    // movimentações iguais no mesmo dia são duas movimentações.
+    const movimento = tr => {
+        const c = Array.from(tr.cells || []).map(td => texto(td));
+        if (c.length < 2 || !/^\d{2}\/\d{2}\/\d{4}$/.test(c[0])) return null;
+        const t = c.slice(1).filter(Boolean).join(' - ');
+        return t.length >= 3 ? {data: c[0], texto: t} : null;
+    };
+    let movs = [];
+    for (const sel of ['#tabelaTodasMovimentacoes', '#tabelaUltimasMovimentacoes']) {
+        const tab = document.querySelector(sel);
+        if (!tab) continue;
+        const lidas = [];
+        tab.querySelectorAll('tr').forEach(tr => { const m = movimento(tr); if (m) lidas.push(m); });
+        if (lidas.length) { movs = lidas; break; }
+    }
+    if (!movs.length) {
+        // layout sem as tabelas conhecidas: a regra antiga, fora das seções
+        const vistos = new Set();
+        document.querySelectorAll('tr').forEach(tr => {
+            const dona = tr.closest('table');
+            if (dona && tabelasDeSecao.has(dona)) return;
+            const m = movimento(tr);
+            if (!m || vistos.has(m.data + '|' + m.texto)) return;
+            vistos.add(m.data + '|' + m.texto);
+            movs.push(m);
+        });
+    }
+    const marcas = [];
+    let cabecalho = '';
+    const extras = {};
+    let codigo = '', url = '';
+    try {
+        // Marcas: as etiquetas do cabeçalho e o texto dele, sem os valores da
+        // capa (um assunto "Estatuto do Idoso" não é prioridade de idoso)
+        document.querySelectorAll('.unj-tag').forEach(el => {
+            const t = texto(el);
+            if (t && !marcas.includes(t)) marcas.push(t);
+        });
+        cabecalho = texto(document.querySelector('#containerDadosPrincipaisProcesso'));
+        for (const v of Object.values(capa)) if (v) cabecalho = cabecalho.split(v).join(' ');
+        // Outros números, processo principal...: o rótulo e o valor ao lado
+        const EXTRAS = {outros_numeros: /^outros numeros/, local_fisico: /^local fisico/,
+                        outros_assuntos: /^outros assuntos/,
+                        processo_principal: /^processo principal/};
+        document.querySelectorAll('.unj-label, label, th, dt, span.label, td.label').forEach(el => {
+            const t = semAcento(el.innerText || el.textContent).replace(/:$/, '');
+            if (t.length > 40) return;
+            const chave = Object.keys(EXTRAS).find(k => EXTRAS[k].test(t));
+            if (!chave || extras[chave]) return;
+            let v = texto(el.nextElementSibling);
+            if (!v && el.parentElement)
+                v = limpa(texto(el.parentElement).replace(texto(el), ''));
+            if (v) extras[chave] = v.slice(0, 500);
+        });
+        if (!extras.processo_principal) {
+            const m = /Processo principal:?\s*(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}(?:\/\d+)?)/i
+                .exec(texto(document.body));
+            if (m) extras.processo_principal = m[1];
+        }
+        // O endereço só com o que identifica o processo (nada de sessão ou senha)
+        const u = new URL(location.href);
+        if (/^https?:$/.test(u.protocol)) {
+            const fica = ['processo.codigo', 'processo.foro', 'processo.numero'];
+            const busca = new URLSearchParams();
+            for (const [k, v] of u.searchParams) if (fica.includes(k)) busca.append(k, v);
+            codigo = busca.get('processo.codigo') || '';
+            url = u.origin + u.pathname + (busca.toString() ? '?' + busca.toString() : '');
+        }
+    } catch (e) { /* extras */ }
+    return {capa, partes: [...new Set(partes)], movs, marcas, cabecalho, secoes, extras,
+            codigo, url, texto: resto.slice(0, 200000)};
 }"""
 
 _JS_MODAL_SENHA = r"""() => {
@@ -767,6 +1031,8 @@ class PortalESAJ:
         self.sigilosos_apurados: set[str] = set()
         # o processo que baixar() está buscando agora, e o resultado dele
         self._em_curso: tuple[Numero, ResultadoProcesso] | None = None
+        # o manifesto de paginação do último PDF gravado (para a capa)
+        self._manifesto: dict | None = None
 
     # ----------------------------------------------------------- atalhos
     @property
@@ -1392,6 +1658,7 @@ class PortalESAJ:
     def _baixar(self, numero: Numero, destino: Path, senha: str | None,
                 r: ResultadoProcesso) -> None:
         self.numero_atual = numero
+        self._manifesto = None
         rotulo = numero.formatado
         self._checar_cancelado()
         self.ctx.status(f"{rotulo}: consultando o {self.nome}...")
@@ -1472,10 +1739,17 @@ class PortalESAJ:
                                            plano.nao_oferecidas,
                                            self._acabamento(plano, numero, "servidor"))
             log.info("    salvo: %s (%.1f MB)", destino.name, len(dados) / 1048576)
-        except (Cancelado, SessaoPerdida, LoginFalhou, SemAcesso, PortalIndisponivel,
-                PermissionError):
-            raise           # PDF aberto em outro programa: peça a peça também não gravaria
+        except (Cancelado, SessaoPerdida, LoginFalhou, SemAcesso, PortalIndisponivel):
+            raise
         except Exception as erro:
+            if isinstance(erro, PermissionError) and self._na_gravacao(erro, destino):
+                # O arquivo que se estava gravando ficou preso: o próprio PDF
+                # (aberto no leitor, quando o destino é uma pasta que o usuário
+                # vê) ou o provisório dele, recém-gravado, que o antivírus ou o
+                # indexador seguram por uns segundos. Peça a peça grava no mesmo
+                # lugar e daria no mesmo: o erro sobe, e o motor diz qual é
+                # (leitor de PDF) ou tenta de novo, com espera (área provisória).
+                raise
             motivo = str(erro) or type(erro).__name__
             if cheira_a_sessao(motivo) and not self.sessao_ativa():
                 raise SessaoPerdida(f"a sessão do {self.nome} caiu ({motivo[:160]})") from erro
@@ -1517,12 +1791,48 @@ class PortalESAJ:
                                 if len(midias) == 1 else
                                 f"{len(midias)} gravações de audiência nos autos, não baixadas")
         r.detalhe = "; ".join(detalhes)
+        self._gravar_capa(info, numero, destino, r.sigiloso)
+
+    def _gravar_capa(self, info: dict, numero: Numero, destino: Path, sigiloso: bool) -> None:
+        """_controle/<número>_capa.txt e _capa.json (o motor os leva junto com o
+        PDF), com as folhas do PDF gravado. Capa é conveniência, não dever:
+        falha vai só para o log."""
+        controle = destino.parent / "_controle"
+        quando = datetime.now()
+        manifesto = getattr(self, "_manifesto", None)
         try:
-            alvo = destino.parent / "_controle" / f"{numero.nome_arquivo}_capa.txt"
-            texto = formatar_capa(info, numero, self.tribunal.sigla, r.sigiloso)
-            sistema.gravar_atomico(alvo, texto.encode("utf-8"))
-        except Exception as erro:     # capa é conveniência, não dever
+            texto = formatar_capa(info, numero, self.tribunal.sigla, sigiloso, manifesto, quando)
+            sistema.gravar_atomico(controle / f"{numero.nome_arquivo}_capa.txt",
+                                   texto.encode("utf-8"))
+        except Exception as erro:
             log.debug("capa não gravada: %s", erro)
+        try:
+            dados = dados_da_capa(info, numero, self.tribunal.sigla, sigiloso, manifesto, quando)
+            sistema.gravar_atomico(controle / f"{numero.nome_arquivo}_capa.json",
+                                   json.dumps(dados, ensure_ascii=False, indent=1).encode("utf-8"))
+        except Exception as erro:
+            log.debug("capa (JSON) não gravada: %s", erro)
+
+    @staticmethod
+    def _na_gravacao(erro: OSError, destino: Path) -> bool:
+        """O PermissionError é do arquivo que se estava gravando - o destino ou
+        um provisório dele (".parcial", ".parcial2"), na mesma pasta? Sem nome
+        de arquivo (o Windows nega o acesso a um soquete, por exemplo, quando o
+        firewall barra o canal de download), não é: foi a rota do servidor que
+        falhou, e o peça a peça pode dar certo."""
+        destino = Path(destino)
+        for nome in (getattr(erro, "filename", None), getattr(erro, "filename2", None)):
+            if not nome:
+                continue
+            alvo = Path(str(nome))
+            pares = [(alvo, destino)]
+            try:
+                pares.append((alvo.resolve(), destino.resolve()))
+            except (OSError, ValueError):
+                pass
+            if any(a.parent == d.parent and a.name.startswith(d.name) for a, d in pares):
+                return True
+        return False
 
     @staticmethod
     def _marcar_sigilosas(pecas: list[dict], r: ResultadoProcesso) -> int:
@@ -1553,6 +1863,7 @@ class PortalESAJ:
             manifesto = paginacao.manifesto_esaj(
                 numero.formatado, plano.ultima, ausentes, origem=origem,
                 tribunal=self.tribunal.sigla, notas=[*notas, *plano.anomalias])
+            self._manifesto = manifesto        # a capa diz as folhas do PDF
             return sumario, manifesto
         return acabar
 

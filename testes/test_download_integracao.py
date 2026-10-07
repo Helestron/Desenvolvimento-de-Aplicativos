@@ -185,23 +185,48 @@ class Atendente(BaseHTTPRequestHandler):
             return self._pagina(f"<h2>Consulta de processo</h2>{modal}")
         incidente = ""
         if info.get("incidente"):
-            incidente = (f"<table><tr><td><a href='/cpopg/show.do?processo.codigo="
-                         f"{info['incidente']}&processo.foro=1'>{n.principal}/01</a></td>"
-                         "<td>Cumprimento de sentença (00001)</td></tr></table>")
+            # a seção é achada pelo título; a linha começa por data, como no
+            # portal ("Recebido em")
+            incidente = ("<h2 class='subtitle tituloDoBloco'>Incidentes, ações incidentais, "
+                         "recursos e execuções de sentenças</h2>"
+                         "<table><thead><tr><th>Recebido em</th><th>Processo</th><th>Classe</th>"
+                         "</tr></thead><tr><td>15/05/2024</td><td><a href='/cpopg/show.do?"
+                         f"processo.codigo={info['incidente']}&processo.foro=1'>{n.principal}/01"
+                         "</a></td><td>Cumprimento de sentença (00001)</td></tr></table>")
         principal = (f"<p>Processo principal: {info['principal'].principal}</p>"
                      if info.get("principal") else "")
         corpo = (
             f"<div id='containerDadosPrincipaisProcesso'><span id='numeroProcesso'>"
             f"{n.formatado}</span><span id='classeProcesso'>Procedimento Comum Cível</span>"
-            "<span id='assuntoProcesso'>Indenização por Dano Moral</span>"
-            "<span id='juizProcesso'>Dra. Fulana de Tal</span></div>"
+            "<span id='assuntoProcesso'>Estatuto do Idoso</span>"
+            "<span id='juizProcesso'>Dra. Fulana de Tal</span>"
+            "<span class='unj-tag'>Tramitação prioritária</span>"
+            "<span class='unj-label'>Outros números</span><div>0001234-56.2023.8.02.0001</div>"
+            "</div>"
             f"{principal}"
             "<table id='tablePartesPrincipais'><tr><td>Autor:</td><td>Maria da Silva</td></tr>"
             "<tr><td>Réu:</td><td>Banco Exemplo S.A.</td></tr></table>"
+            "<table id='tableTodasPartes'><tr><td>Autor:</td><td>Maria da Silva</td></tr>"
+            "<tr><td>Réu:</td><td>Banco Exemplo S.A.</td></tr>"
+            "<tr><td>Terceiro:</td><td>João Terceiro</td></tr></table>"
             f"{incidente}"
+            "<h2 class='subtitle tituloDoBloco'>Movimentações</h2>"
+            "<table id='tabelaUltimasMovimentacoes'>"
+            "<tr><td>20/04/2024</td><td>Retirado o segredo de justiça</td></tr></table>"
             "<table id='tabelaTodasMovimentacoes'>"
             "<tr><td>20/04/2024</td><td>Retirado o segredo de justiça</td></tr>"
+            "<tr><td>01/02/2024</td><td>Distribuído por sorteio</td></tr>"
             "<tr><td>01/02/2024</td><td>Distribuído por sorteio</td></tr></table>"
+            # tabelas com linhas que começam por data e NÃO são movimentações
+            "<h2 class='subtitle tituloDoBloco'>Petições diversas</h2>"
+            "<table><tr><th>Data</th><th>Tipo</th></tr>"
+            "<tr><td>05/03/2024</td><td>Pedido de vista dos autos</td></tr></table>"
+            "<h2 class='subtitle tituloDoBloco'>Audiências</h2>"
+            "<table><tr><th>Data</th><th>Audiência</th><th>Situação</th><th>Qt. Pessoas</th></tr>"
+            "<tr><td>19/04/2024</td><td>Conciliação</td><td>Realizada</td><td>2</td></tr></table>"
+            "<h2 class='subtitle tituloDoBloco'>Histórico de classes</h2>"
+            "<table><tr><td>01/02/2024</td><td>Evolução de classe</td>"
+            "<td>Procedimento Comum Cível</td><td>Cível</td></tr></table>"
             # o modal de senha existe ESCONDIDO em toda página
             "<div id='popupSenha' style='display:none'><p>Segredo de justiça: informe a "
             "senha</p><input id='senhaProcesso'><button id='btEnviarSenha'>Enviar</button></div>")
@@ -464,6 +489,37 @@ class TestPortaADentro(apoio.PastaTemporaria):
         self.assertIn("Classe: Procedimento Comum Cível", capa)
         self.assertIn("Maria da Silva", capa)
         self.assertIn("Distribuído por sorteio", capa)
+        # capa v2: só a tabela de movimentações (as duas iguais do mesmo dia
+        # ficam), as partes de uma tabela só, as seções pelo título, marcas e
+        # a paginação do PDF
+        movs = capa[capa.index("== Movimentações"):].split("\n\n")[0]
+        self.assertIn("== Movimentações (3) ==", movs)
+        self.assertEqual(movs.count("01/02/2024  Distribuído por sorteio"), 2)
+        for intrusa in ("Conciliação", "Pedido de vista", "Evolução de classe", "Cumprimento"):
+            self.assertNotIn(intrusa, movs)
+        self.assertEqual(capa.count("Réu: Banco Exemplo S.A."), 1)
+        self.assertIn("Terceiro: João Terceiro", capa)
+        self.assertIn("== Marcas ==\nTramitação prioritária\n\n", capa,
+                      "o assunto 'Estatuto do Idoso' não é marca de idoso")
+        self.assertIn("Outros números: 0001234-56.2023.8.02.0001", capa)
+        self.assertIn("== Audiências (1) ==\n19/04/2024  Conciliação - Realizada - 2", capa)
+        self.assertIn("== Petições diversas (1) ==\n05/03/2024  Pedido de vista dos autos", capa)
+        self.assertIn("== Histórico de classes (1) ==", capa)
+        self.assertIn("== Incidentes, ações incidentais, recursos e execuções de sentenças (1) ==",
+                      capa)
+        self.assertIn("Folhas 1 a 6 (última oferecida pela Pasta Digital)", capa)
+        self.assertIn("Paginação: página N = folha N (fls. 1 a 6)", capa)
+        capa_json = json.loads((destino / "_controle" / f"{P1.nome_arquivo}_capa.json")
+                               .read_text(encoding="utf-8"))
+        self.assertEqual(capa_json["formato"], "helestron.capa/2")
+        self.assertEqual((capa_json["prioridade"], capa_json["idoso"], capa_json["segredo"]),
+                         (True, False, False))
+        self.assertEqual(capa_json["codigo_processo"], "1K0001AAA0000")
+        self.assertNotIn("senha", capa_json["url"])
+        self.assertEqual(capa_json["incidentes"][0]["codigo"], "1K0001AAA0001")
+        self.assertEqual(capa_json["incidentes"][0]["recebido_em"], "15/05/2024")
+        self.assertEqual(capa_json["paginacao"]["ultima"], 6)
+        self.assertEqual(len(capa_json["movimentacoes"]), 3)
         self.assertTrue((destino / "_controle" / "midias" / P1.nome_arquivo /
                          "audiencia1.mp3").exists())
         loc = next(l for l in self.portal.localizadores.values() if l["cd"] == "1K0001AAA0000")
@@ -488,6 +544,11 @@ class TestPortaADentro(apoio.PastaTemporaria):
                              "o manifesto vai com o PDF para a pasta de sigilosos")
         self.assertTrue((sig / "_controle" / "midias" / P2.nome_arquivo / "audiencia1.mp3").exists())
         self.assertFalse((destino / "_controle" / f"{P2.nome_arquivo}_capa.txt").exists())
+        self.assertFalse((destino / "_controle" / f"{P2.nome_arquivo}_capa.json").exists())
+        capa2 = json.loads((sig / "_controle" / f"{P2.nome_arquivo}_capa.json")
+                           .read_text(encoding="utf-8"))
+        self.assertTrue(capa2["sigiloso"] and capa2["segredo"])
+        self.assertEqual(capa2["paginacao"]["folhas_ausentes"], "3")
 
         # P3: inexistente; incidente; busca que devolve lista
         self.assertEqual(r[P3.formatado].situacao, modelos.NAO_ENCONTRADO)
@@ -545,6 +606,38 @@ class TestPortaADentro(apoio.PastaTemporaria):
         self.assertLess(demora, 30, "não pode esperar os 45 s da tela do código")
         self.assertEqual(ctx.pedidos_codigo, [])
         self.assertTrue(list((self.tmp / "diagnostico").glob("*esaj-login-recusado*.html")))
+
+    def test_capa_v2_em_layouts_diferentes(self):
+        """A leitura da página do processo (capa v2) no navegador de verdade, em
+        layouts que o portal falso do lote não tem."""
+        with self.navegador("esaj-capa") as nav:
+            # layout sem as tabelas de movimentações conhecidas: vale a regra
+            # antiga (linha que começa por data, sem repetir), mas fora das seções
+            nav.pagina.set_content(
+                "<table id='outra'><tr><td>02/02/2024</td><td>Conclusos</td></tr>"
+                "<tr><td>02/02/2024</td><td>Conclusos</td></tr>"
+                "<tr><td>01/02/2024</td><td>Distribuído</td></tr></table>"
+                "<div><h2 class='subtitle'>Incidentes, ações incidentais, recursos e execuções "
+                "de sentenças</h2></div><p>Não há incidentes vinculados a este processo.</p>"
+                "<div><h2 class='subtitle'>Audiências</h2></div>"
+                "<div class='x'><table><tr><th>Data</th><th>Audiência</th></tr>"
+                "<tr><td>03/03/2024</td><td>Instrução</td></tr></table></div>"
+                "<div><span class='unj-label'>Processo principal</span><div><a href="
+                "'/cpopg/show.do?processo.codigo=1K0001AAA0000'>0700001-11.2024.8.02.0001</a>"
+                "</div></div>"
+                "<span class='unj-label'>Local físico</span><div>Cartório</div>"
+                "<p>Segredo de justiça</p>")
+            info = nav.pagina.evaluate(esaj._JS_PAGINA_PROCESSO)
+        self.assertEqual(info["movs"], [{"data": "02/02/2024", "texto": "Conclusos"},
+                                        {"data": "01/02/2024", "texto": "Distribuído"}])
+        self.assertEqual(info["secoes"]["incidentes"], [],
+                         "título sem tabela: não pega a tabela da seção seguinte")
+        self.assertEqual(info["secoes"]["audiencias"],
+                         [{"celulas": ["03/03/2024", "Instrução"], "codigo": ""}])
+        self.assertEqual(info["extras"], {"processo_principal": "0700001-11.2024.8.02.0001",
+                                          "local_fisico": "Cartório"})
+        self.assertIn("Segredo de justiça", info["texto"], "o texto do segredo continua lido")
+        self.assertEqual((info["url"], info["codigo"]), ("", ""), "página fora do portal")
 
     def test_primeiro_visivel_no_navegador_de_verdade(self):
         from helestron.download.navegador import primeiro_visivel

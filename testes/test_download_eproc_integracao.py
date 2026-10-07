@@ -14,6 +14,7 @@ ou o Edge instalados; aqui, o Chromium de /opt/pw-browsers).
 
 from __future__ import annotations
 
+import json
 import time
 import unittest
 from dataclasses import replace
@@ -21,7 +22,7 @@ from unittest import mock
 
 from helestron.download import eproc, modelos, motor
 from helestron.download.eproc import PortalEProc
-from helestron.nucleo import tribunais
+from helestron.nucleo import paginacao, tribunais
 
 from testes import apoio_download as apoio
 from testes import apoio_eproc as ae
@@ -71,6 +72,19 @@ class TestEProcDeMentira(apoio.PastaTemporaria):
         with pymupdf.open(str(caminho)) as doc:
             return doc.get_toc(), [p.get_text() for p in doc], [len(p.get_images()) for p in doc]
 
+    @staticmethod
+    def acabamento(caminho):
+        """Os rótulos de página, os metadados e o manifesto de paginação do PDF."""
+        import pymupdf
+        with pymupdf.open(str(caminho)) as doc:
+            return [p.get_label() for p in doc], dict(doc.metadata), paginacao.ler_do_doc(doc)
+
+    @staticmethod
+    def capa(pasta, numero):
+        controle = pasta / "_controle"
+        return ((controle / f"{numero.nome_arquivo}_capa.txt").read_text("utf-8"),
+                json.loads((controle / f"{numero.nome_arquivo}_capa.json").read_text("utf-8")))
+
     # ------------------------------------------------- o lote pelo motor
     def test_lote_pelo_motor_e_segunda_rodada(self):
         falso = ae.EProcFalso()
@@ -102,47 +116,77 @@ class TestEProcDeMentira(apoio.PastaTemporaria):
         self.assertEqual(r1.situacao, modelos.OK, r1.detalhe)
         self.assertEqual(r1.sistema, "eproc")
         self.assertEqual(r1.documentos, 7)
-        self.assertEqual(r1.paginas, 9)
+        self.assertEqual(r1.paginas, 8, "só as páginas dos documentos: nenhuma capa")
         self.assertEqual(r1.incompleto, "ev. 4 PET1")
         self.assertIn("1 documento não veio e tem página de aviso no lugar", r1.detalhe)
         self.assertIn("1 gravação salva", r1.detalhe)
         self.assertFalse(r1.sigiloso, "'Sem Sigilo (Nível 0)' não é sigilo")
         self.assertIn(f"{ae.P1.digitos}:1", falso.paginas_pedidas)
-        toc, textos, imagens = self.paginas(destino / f"{ae.P1.nome_arquivo}.pdf")
+        pdf1 = destino / f"{ae.P1.nome_arquivo}.pdf"
+        toc, textos, imagens = self.paginas(pdf1)
         self.assertEqual(toc, [
-            [1, "Capa — dados do processo", 1],
-            [1, "Evento 1 — PETIÇÃO INICIAL — INIC1 (10/01/2024)", 2],
-            [1, "Evento 1 — PETIÇÃO INICIAL — PROC2 (10/01/2024)", 4],
-            [1, "Evento 2 — JUNTADA DE DOCUMENTO — FOTO1 (11/01/2024)", 5],
-            [1, "Evento 3 — DECISÃO INTERLOCUTÓRIA — DESPADEC1 (12/03/2024)", 6],
-            [1, "Evento 4 — JUNTADA DE PETIÇÃO — PET1 (20/03/2024)", 7],
-            [1, "Evento 6 — SENTENÇA — SENT1 (10/05/2024)", 8],
-            [1, "Evento 7 — GRAVAÇÃO DE AUDIÊNCIA — VIDEO1 (15/05/2024)", 9]])
-        capa = textos[0]
-        self.assertIn(f"PROCESSO {ae.P1.formatado}", capa)
-        self.assertIn("Classe: PROCEDIMENTO COMUM CÍVEL", capa)
-        self.assertIn("Órgão julgador: Juízo da 1ª Vara Cível de Porto Alegre", capa)
-        self.assertIn("AUTOR: MARIA DA SILVA", capa)
-        self.assertIn("RÉU: BANCO EXEMPLO S.A.", capa)
-        self.assertIn("Eventos: 7", capa)
-        self.assertIn("Documentos: 7", capa)
-        self.assertIn("ev. 4 PET1", capa)
-        self.assertIn("INIC1 1", textos[1])
-        self.assertIn("INIC1 2", textos[2])
-        self.assertIn("PROC2 1", textos[3])           # só pela moldura (iframe)
-        self.assertGreater(imagens[4], 0)              # a foto (JPEG) virou página
-        self.assertIn("DECISÃO", textos[5])            # HTML em ISO-8859-1, acentos certos
-        self.assertIn("Citação e intimação", textos[5])
-        self.assertIn("não pôde ser baixado", textos[6])
-        self.assertIn("SENTENÇA", textos[7])
-        self.assertIn("condenação em custas — publique-se", textos[7])
-        self.assertIn("salvo em", textos[8])
+            [1, "Evento 1 — PETIÇÃO INICIAL — INIC1 (10/01/2024)", 1],
+            [1, "Evento 1 — PETIÇÃO INICIAL — PROC2 (10/01/2024)", 3],
+            [1, "Evento 2 — JUNTADA DE DOCUMENTO — FOTO1 (11/01/2024)", 4],
+            [1, "Evento 3 — DECISÃO INTERLOCUTÓRIA — DESPADEC1 (12/03/2024)", 5],
+            [1, "Evento 4 — JUNTADA DE PETIÇÃO — PET1 (20/03/2024) [NÃO INCLUÍDO]", 6],
+            [1, "Evento 6 — SENTENÇA — SENT1 (10/05/2024)", 7],
+            [1, "Evento 7 — GRAVAÇÃO DE AUDIÊNCIA — VIDEO1 (15/05/2024) "
+                "[GRAVAÇÃO — fora do PDF]", 8]])
+        self.assertIn("INIC1 1", textos[0], "a página 1 é a p. 1 da petição inicial")
+        self.assertIn("INIC1 2", textos[1])
+        self.assertIn("PROC2 1", textos[2])           # só pela moldura (iframe)
+        self.assertGreater(imagens[3], 0)              # a foto (JPEG) virou página
+        self.assertIn("DECISÃO", textos[4])            # HTML em ISO-8859-1, acentos certos
+        self.assertIn("Citação e intimação", textos[4])
+        self.assertIn("não pôde ser baixado", textos[5])
+        self.assertIn("não é página dos autos", " ".join(textos[5].split()))
+        self.assertIn("SENTENÇA", textos[6])
+        self.assertIn("condenação em custas — publique-se", textos[6])
+        self.assertIn("salvo em", textos[7])
+        rotulos, meta, m1 = self.acabamento(pdf1)
+        self.assertEqual(rotulos, ["Ev. 1 INIC1 p. 1", "Ev. 1 INIC1 p. 2", "Ev. 1 PROC2 p. 1",
+                                   "Ev. 2 FOTO1 p. 1", "Ev. 3 DESPADEC1", "Ev. 4 PET1 nao incluido",
+                                   "Ev. 6 SENT1", "Ev. 7 VIDEO1 gravacao"])
+        self.assertIn("sistema=eproc", meta["keywords"])
+        self.assertIn("modo=documentos", meta["keywords"])
+        self.assertEqual(meta["title"], f"Processo {ae.P1.formatado}")
+        self.assertEqual((m1["sistema"], m1["paginacao"], m1["modo"]),
+                         ("eproc", "documento", "documentos"))
+        self.assertEqual([(d["rotulo"], d["inicio"], d["paginas"], d["situacao"])
+                          for d in m1["documentos"]],
+                         [("INIC1", 1, 2, "ok"), ("PROC2", 3, 1, "ok"), ("FOTO1", 4, 1, "ok"),
+                          ("DESPADEC1", 5, 1, "ok"), ("PET1", 6, 1, "ausente"),
+                          ("SENT1", 7, 1, "ok"), ("VIDEO1", 8, 1, "midia")])
+        self.assertEqual([d["origem"] for d in m1["documentos"]],
+                         ["pdf", "pdf", "imagem", "html", "pdf", "html", "midia"])
+        self.assertIn("HTTP", m1["documentos"][4]["motivo"])
+        self.assertEqual(m1["documentos"][6]["arquivo"],
+                         f"_controle/midias/{ae.P1.nome_arquivo}/Evento 7 - VIDEO1.mp4")
+        self.assertEqual(m1["capa"]["classe"], "PROCEDIMENTO COMUM CÍVEL")
+        self.assertEqual(m1["capa"]["partes"], ["AUTOR: MARIA DA SILVA", "RÉU: BANCO EXEMPLO S.A."])
+        self.assertEqual(m1["eventos_sem_documento"],
+                         [{"evento": 5, "descricao": "AUDIÊNCIA REALIZADA", "data": "01/04/2024"}])
+        self.assertEqual(r1.paginacao.get("ultima"), 8)
         midia = destino / "_controle" / "midias" / ae.P1.nome_arquivo / "Evento 7 - VIDEO1.mp4"
         self.assertTrue(midia.exists())
         self.assertEqual(r1.midias, [str(midia)])
-        capa_txt = (destino / "_controle" / f"{ae.P1.nome_arquivo}_capa.txt").read_text("utf-8")
-        self.assertIn("Classe: PROCEDIMENTO COMUM CÍVEL", capa_txt)
-        self.assertIn("Evento 7 - GRAVAÇÃO DE AUDIÊNCIA [VIDEO1]", capa_txt)
+        # a capa que estava no PDF foi para o capa.txt (e o capa.json)
+        capa_txt, capa_json = self.capa(destino, ae.P1)
+        for trecho in (f"Processo {ae.P1.formatado} - eProc do TJRS",
+                       "Classe: PROCEDIMENTO COMUM CÍVEL",
+                       "Órgão julgador: Juízo da 1ª Vara Cível de Porto Alegre",
+                       "AUTOR: MARIA DA SILVA", "RÉU: BANCO EXEMPLO S.A.",
+                       "Eventos: 7; documentos: 7; páginas do PDF: 8.",
+                       "Documentos não incluídos (1): ev. 4 PET1", "== Como citar ==",
+                       "== Mapa de documentos (7) ==",
+                       "Evento 1 — PETIÇÃO INICIAL — INIC1 (10/01/2024) — págs. 1–2 do PDF "
+                       "(2 págs.; p. 1–2 no eProc)",
+                       "Evento 7 — GRAVAÇÃO DE AUDIÊNCIA — VIDEO1 (15/05/2024) — pág. 8 do PDF",
+                       "Evento 7 - GRAVAÇÃO DE AUDIÊNCIA [VIDEO1]"):
+            self.assertIn(trecho, capa_txt)
+        self.assertEqual((capa_json["sistema"], len(capa_json["documentos"]),
+                          len(capa_json["eventos"])), ("eproc", 7, 7))
 
         # sigiloso sem acesso, inexistente, achado só pela consulta processual
         r_sig = r[ae.P_SIG.formatado]
@@ -154,7 +198,7 @@ class TestEProcDeMentira(apoio.PastaTemporaria):
         self.assertIn("não encontrado no 1º grau do eProc do TJRS", r_nao.detalhe)
         r_cons = r[ae.P_CONS.formatado]
         self.assertEqual(r_cons.situacao, modelos.OK, r_cons.detalhe)
-        self.assertEqual(r_cons.paginas, 2)
+        self.assertEqual(r_cons.paginas, 1)
         self.assertTrue(any("controlador_ajax.php" in u for _, u in falso.pedidos))
 
         # sigiloso com acesso: baixado e levado para fora do acervo
@@ -165,13 +209,19 @@ class TestEProcDeMentira(apoio.PastaTemporaria):
         self.assertTrue((sig / f"{ae.P_SIGOK.nome_arquivo}.pdf").exists())
         self.assertFalse((destino / f"{ae.P_SIGOK.nome_arquivo}.pdf").exists())
         self.assertTrue((sig / "_controle" / f"{ae.P_SIGOK.nome_arquivo}_capa.txt").exists())
+        capa_sig, json_sig = self.capa(sig, ae.P_SIGOK)
+        self.assertIn("SEGREDO DE JUSTIÇA", capa_sig[:2000])
+        self.assertTrue(json_sig["sigiloso"])
+        self.assertFalse((destino / "_controle" / f"{ae.P_SIGOK.nome_arquivo}_capa.json").exists())
+        self.assertTrue(paginacao.ler_do_pdf(sig / f"{ae.P_SIGOK.nome_arquivo}.pdf")["sigiloso"],
+                        "o manifesto vai com o PDF para a pasta de sigilosos")
 
         # a sessão caiu no 2º documento do P_EXP: novo login e o processo inteiro de novo
         r_exp = r[ae.P_EXP.formatado]
         self.assertEqual(r_exp.situacao, modelos.OK, r_exp.detalhe)
-        self.assertEqual(r_exp.paginas, 4)
+        self.assertEqual(r_exp.paginas, 3)
         toc, textos, _ = self.paginas(destino / f"{ae.P_EXP.nome_arquivo}.pdf")
-        self.assertEqual([t[1].split(" — ")[-1] for t in toc[1:]],
+        self.assertEqual([t[1].split(" — ")[-1] for t in toc],
                          ["INIC1 (07/02/2024)", "CONT1 (08/02/2024)", "REPLICA1 (09/02/2024)"])
 
         self.assertTrue((destino / "_controle" / "relatorio.csv").exists())
@@ -265,7 +315,7 @@ class TestEProcDeMentira(apoio.PastaTemporaria):
         self.assertEqual(falso.codigos_recebidos, ["999999", ae.CODIGO])
         self.assertTrue(any(ae.HOST_SSO in u for _, u in falso.pedidos))
         self.assertEqual(r.situacao, modelos.OK, r.detalhe)
-        self.assertEqual(r.paginas, 2)
+        self.assertEqual(r.paginas, 1)
 
     def test_keycloak_senha_errada(self):
         falso = ae.EProcFalso(estilo="keycloak")
@@ -344,11 +394,23 @@ class TestEProcDeMentira(apoio.PastaTemporaria):
         # o relacionado foi desmarcado: com dois marcados, o eProc dá erro
         self.assertEqual(falso.completo_marcados, [[f"RS|{ae.P1.digitos}|111"]])
         toc, textos, _ = self.paginas(alvo)
-        self.assertEqual([t[1] for t in toc], ["Capa — dados do processo",
-                                               "Autos completos (arquivo gerado pelo eProc)"])
-        self.assertEqual(r.paginas, 6)
-        self.assertIn("COMPLETO 5", textos[5])
-        self.assertIn("Download Completo", textos[0])
+        # o arquivo do eProc entra como veio: a página M é a página M dele
+        self.assertEqual([t[1] for t in toc], ["Autos completos (arquivo gerado pelo eProc)"])
+        self.assertEqual(r.paginas, 5)
+        self.assertEqual([t.strip() for t in textos], [f"COMPLETO {i}" for i in range(1, 6)])
+        _, meta, m = self.acabamento(alvo)
+        self.assertIn("modo=completo", meta["keywords"])
+        self.assertEqual((m["modo"], m["partes"], m["documentos"]),
+                         ("completo", [{"inicio": 1, "paginas": 5}], []))
+        # a lista inteira de eventos foi lida antes (as duas páginas), para a capa
+        self.assertEqual(r.documentos, 7)
+        self.assertEqual([e["evento"] for e in m["eventos_sem_documento"]], [5])
+        capa_txt, capa_json = self.capa(alvo.parent, ae.P1)
+        self.assertIn("Download Completo", capa_txt)
+        self.assertIn("a página M do PDF é a página M desse arquivo", capa_txt)
+        self.assertIn("== Eventos (7) ==", capa_txt)
+        self.assertIn("== Mapa de documentos (7) ==", capa_txt)
+        self.assertEqual((capa_json["modo"], capa_json["paginas_pdf"]), ("completo", 5))
 
     def test_download_completo_que_falha_cai_para_documentos(self):
         falso = ae.EProcFalso()
@@ -361,7 +423,7 @@ class TestEProcDeMentira(apoio.PastaTemporaria):
         self.assertEqual(r.situacao, modelos.OK, r.detalhe)
         self.assertIn("o Download Completo do eProc falhou", r.detalhe)
         self.assertIn("montado documento a documento", r.detalhe)
-        self.assertEqual(r.paginas, 2)
+        self.assertEqual(r.paginas, 1)
         self.assertEqual(r.documentos, 1)
 
 
@@ -419,7 +481,7 @@ class TestEProcDeMentira(apoio.PastaTemporaria):
         self.assertEqual(r.situacao, modelos.OK, r.detalhe)
         self.assertIn("PDF completo gerado pelo próprio eProc", r.detalhe)
         _, textos, _ = self.paginas(alvo)
-        self.assertEqual(r.paginas, 6)
+        self.assertEqual(r.paginas, 5)
         self.assertFalse(any("OUTRO PROCESSO" in t for t in textos), "autos trocados no PDF")
 
     def test_cancelar_depois_de_salvar_gravacao_nao_deixa_midia_solta(self):
@@ -459,8 +521,11 @@ class TestEProcDeMentira(apoio.PastaTemporaria):
         self.assertEqual(r.situacao, modelos.OK, r.detalhe)
         self.assertEqual(r.incompleto, "eventos 1 a 3 (não listados); ev. 4 PET1")
         self.assertIn("os eventos 1 a 3 não apareceram", r.detalhe)
-        _, textos, _ = self.paginas(alvo)
-        self.assertIn("eventos 1 a 3", textos[0])
+        # sem capa no PDF: o aviso está no capa.txt e no manifesto
+        capa_txt, _ = self.capa(alvo.parent, ae.P1)
+        self.assertIn("os eventos 1 a 3 não apareceram", capa_txt)
+        _, _, m = self.acabamento(alvo)
+        self.assertEqual(m["eventos_nao_listados"], "1 a 3")
 
     def test_paginacao_sem_onchange_usa_a_funcao_do_eproc(self):
         falso = ae.EProcFalso(paginacao_sem_onchange=True)

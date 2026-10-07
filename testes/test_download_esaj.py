@@ -388,6 +388,174 @@ class TestCapa(unittest.TestCase):
         self.assertNotIn("SEGREDO", texto)
         self.assertIn("SEGREDO DE JUSTIÇA", esaj.formatar_capa(INFO, N, "TJAL", sigiloso=True))
 
+    # ------------------------------------------------------------ capa v2
+    INFO_V2 = dict(
+        INFO,
+        movs=[{"data": f"{(i % 28) + 1:02d}/03/2024", "texto": f"Movimentação {i}"}
+              for i in range(75)] + [{"data": "01/02/2024", "texto": "Juntada de petição"},
+                                     {"data": "01/02/2024", "texto": "Juntada de petição"}],
+        marcas=["Prioridade Idoso"],
+        cabecalho="Classe Assunto Foro Justiça Gratuita",
+        extras={"outros_numeros": "0001234-56.2023.8.02.0001",
+                "processo_principal": "0700001-11.2024.8.02.0001"},
+        secoes={
+            "incidentes": [
+                {"celulas": ["15/05/2024", "0700001-11.2024.8.02.0001/01 Cumprimento de sentença"],
+                 "codigo": "1K0001AAA0001"}],
+            "audiencias": [{"celulas": ["20/04/2024", "Conciliação", "Realizada", "2"]}],
+            "historico_classes": [{"celulas": ["01/02/2024", "Evolução", "Procedimento Comum Cível",
+                                               "Cível", ""]}],
+            "peticoes_diversas": [{"celulas": ["05/03/2024", "Contestação"]}],
+            "apensos": [{"celulas": ["Não há processos apensados, entranhados e unificados a "
+                                     "este processo."]}],
+        },
+        codigo="1K0001AAA0000",
+        url="https://portal.teste/cpopg/show.do?processo.codigo=1K0001AAA0000&processo.foro=1")
+
+    def test_capa_v2_todas_as_movimentacoes_e_as_secoes(self):
+        manifesto = paginacao.manifesto_esaj(N.formatado, 8, {6: "N", 7: "N"}, origem="servidor",
+                                             tribunal="TJAL")
+        texto = esaj.formatar_capa(self.INFO_V2, N, "TJAL", manifesto=manifesto)
+        # os títulos da 1.0.1 continuam
+        for titulo in ("== Capa ==", "== Partes ==", "== Movimentações (77) =="):
+            self.assertIn(titulo, texto)
+        # sem o limite de 60, e as duas movimentações iguais do mesmo dia ficam
+        self.assertNotIn("e mais", texto)
+        self.assertIn("Movimentação 74", texto)
+        self.assertEqual(texto.count("01/02/2024  Juntada de petição"), 2)
+        self.assertIn("== Marcas ==\nPrioridade Idoso\nJustiça gratuita\n", texto)
+        self.assertIn("Outros números: 0001234-56.2023.8.02.0001", texto)
+        self.assertIn("Processo principal: 0700001-11.2024.8.02.0001", texto)
+        self.assertIn("Folhas 1 a 8 (última oferecida pela Pasta Digital)", texto)
+        self.assertIn(f"Paginação: {paginacao.resumo(manifesto)}", texto)
+        self.assertIn("folhas com página de aviso: 6-7", texto)
+        self.assertIn("== Incidentes, ações incidentais, recursos e execuções de sentenças (1) ==\n"
+                      "15/05/2024  0700001-11.2024.8.02.0001/01 Cumprimento de sentença", texto)
+        self.assertIn("== Audiências (1) ==\n20/04/2024  Conciliação - Realizada - 2", texto)
+        self.assertIn("== Histórico de classes (1) ==", texto)
+        self.assertIn("== Petições diversas (1) ==\n05/03/2024  Contestação", texto)
+        self.assertNotIn("Apensos", texto, "'Não há...' não é apenso")
+        # as seções vêm depois das movimentações: a ordem da 1.0.1 fica
+        self.assertLess(texto.index("== Movimentações"), texto.index("== Audiências"))
+
+    def test_capa_json(self):
+        manifesto = paginacao.manifesto_esaj(N.formatado, 8, {6: "N"}, tribunal="TJAL")
+        d = esaj.dados_da_capa(self.INFO_V2, N, "TJAL", sigiloso=False, manifesto=manifesto)
+        self.assertEqual((d["formato"], d["sistema"], d["processo"], d["tribunal"]),
+                         ("helestron.capa/2", "esaj", N.formatado, "TJAL"))
+        # chaves de máquina no JSON (no capa.txt ficam os rótulos da página)
+        self.assertEqual(d["capa"], {"classe": "Procedimento Comum Cível", "juiz": "Fulano de Tal"})
+        self.assertEqual(esaj._chave_da_capa("Outro Campo Ção"), "outro_campo_cao")
+        self.assertEqual((d["prioridade"], d["justica_gratuita"], d["segredo"], d["idoso"]),
+                         (True, True, False, True))
+        self.assertEqual(len(d["movimentacoes"]), 77)
+        self.assertEqual(d["incidentes"], [{
+            "data": "15/05/2024", "texto": "0700001-11.2024.8.02.0001/01 Cumprimento de sentença",
+            "celulas": ["15/05/2024", "0700001-11.2024.8.02.0001/01 Cumprimento de sentença"],
+            "numero": "0700001-11.2024.8.02.0001/01", "codigo": "1K0001AAA0001",
+            "recebido_em": "15/05/2024", "classe": "Cumprimento de sentença"}])
+        self.assertEqual(d["apensos"], [])
+        self.assertEqual(d["audiencias"][0]["data"], "20/04/2024")
+        self.assertEqual(d["historico_classes"][0]["texto"],
+                         "Evolução - Procedimento Comum Cível - Cível")
+        self.assertEqual(d["peticoes_diversas"][0]["texto"], "Contestação")
+        self.assertEqual(d["processo_principal"], "0700001-11.2024.8.02.0001")
+        self.assertEqual(d["codigo_processo"], "1K0001AAA0000")
+        self.assertEqual(d["paginacao"]["ultima"], 8)
+        self.assertEqual(d["paginacao"]["folhas_ausentes"], "6")
+        json.dumps(d)                               # tudo serializável
+        # sigiloso: segredo vale mesmo sem a etiqueta
+        d2 = esaj.dados_da_capa(INFO, N, "TJAL", sigiloso=True)
+        self.assertTrue(d2["segredo"])
+        self.assertIn("Segredo de justiça", d2["marcas"])
+        self.assertNotIn("paginacao", d2, "sem o manifesto, nada de folhas inventadas")
+        self.assertEqual(d2["incidentes"], [])
+
+    def test_marcas(self):
+        marcas, sinais = esaj.marcas_da_capa({"marcas": ["Tramitação prioritária"],
+                                              "cabecalho": "Assistência Judiciária"})
+        self.assertEqual(marcas, ["Tramitação prioritária", "Justiça gratuita"])
+        self.assertEqual(sinais, {"prioridade": True, "justica_gratuita": True, "segredo": False,
+                                  "idoso": False})
+        # sem etiqueta e com o cabeçalho limpo (o JS tira os valores da capa)
+        self.assertEqual(esaj.marcas_da_capa({}), ([], dict.fromkeys(
+            ("prioridade", "justica_gratuita", "segredo", "idoso"), False)))
+
+
+class TestCapaNoDownload(apoio.PastaTemporaria):
+    def test_capa_txt_e_json_com_as_folhas_do_pdf(self):
+        p = PortalDeDownload(info=TestCapa.INFO_V2)
+        destino = self.tmp / "Lote" / f"{N.nome_arquivo}.pdf"
+        r = p.baixar(N, destino)
+        self.assertEqual(r.situacao, modelos.OK, r.detalhe)
+        controle = self.tmp / "Lote" / "_controle"
+        texto = (controle / f"{N.nome_arquivo}_capa.txt").read_text(encoding="utf-8")
+        self.assertIn("Folhas 1 a 8 (última oferecida pela Pasta Digital)", texto)
+        self.assertIn("folhas com página de aviso: 6-7", texto)
+        d = json.loads((controle / f"{N.nome_arquivo}_capa.json").read_text(encoding="utf-8"))
+        self.assertEqual(d["paginacao"]["ultima"], 8)
+        self.assertEqual(d["paginacao"]["ausentes"], {"N": "6-7"})
+        self.assertEqual(len(d["movimentacoes"]), 77)
+        self.assertTrue(d["idoso"])
+
+    def test_capa_de_sigiloso_avisa_no_topo(self):
+        p = PortalDeDownload(senha_pedida=[True], info=TestCapa.INFO_V2)
+        r = p.baixar(N, self.tmp / "Lote" / f"{N.nome_arquivo}.pdf", senha="abc123")
+        self.assertTrue(r.sigiloso)
+        texto = (self.tmp / "Lote" / "_controle" / f"{N.nome_arquivo}_capa.txt").read_text(
+            encoding="utf-8")
+        self.assertIn("SEGREDO DE JUSTIÇA", texto[:2000], "o motor só olha o começo")
+        d = json.loads((self.tmp / "Lote" / "_controle" / f"{N.nome_arquivo}_capa.json")
+                       .read_text(encoding="utf-8"))
+        self.assertTrue(d["sigiloso"] and d["segredo"])
+
+
+class TestPermissaoNaGravacao(apoio.PastaTemporaria):
+    """Achado 9c: PermissionError só deixa de montar peça a peça quando é do
+    arquivo que se estava gravando (o PDF de destino, aberto no leitor, ou o
+    provisório dele, preso pelo antivírus - o motor repete); sem arquivo
+    nenhum (o Windows negando um soquete), é falha da rota do servidor."""
+
+    def baixar_com(self, erro):
+        p = PortalDeDownload()
+        destino = self.tmp / "Lote" / f"{N.nome_arquivo}.pdf"
+
+        def gravar(*a, **k):
+            raise erro(destino) if callable(erro) else erro
+
+        with mock.patch.object(esaj.pdf, "gravar_alinhado", side_effect=gravar):
+            r = p.baixar(N, destino)
+        return p, r, destino
+
+    def test_destino_preso_sobe_sem_peca_a_peca(self):
+        for nome in ("{d}", "{d}.parcial", "{d}.parcial2"):
+            with self.subTest(arquivo=nome):
+                def erro(destino, nome=nome):
+                    return PermissionError(13, "Acesso negado", nome.format(d=destino))
+                with self.assertRaises(PermissionError):
+                    self.baixar_com(erro)
+
+    def test_permissao_negada_sem_arquivo_monta_peca_a_peca(self):
+        erro = PermissionError(10013, "uma tentativa de acesso a um soquete foi negada")
+        with self.assertLogs("download.esaj", "WARNING"):
+            p, r, destino = self.baixar_com(erro)
+        self.assertEqual(r.situacao, modelos.OK, r.detalhe)
+        self.assertIn("peça a peça", r.detalhe)
+        self.assertTrue(p.pecas_pedidas)
+        with pymupdf.open(destino) as doc:
+            self.assertEqual(len(doc), 8)
+
+    def test_arquivo_de_outra_pasta_nao_e_da_gravacao(self):
+        destino = self.tmp / "Lote" / "x.pdf"
+        fora = PermissionError(13, "negado", str(self.tmp / "Outra" / "x.pdf"))
+        self.assertFalse(PortalESAJ._na_gravacao(fora, destino))
+        self.assertTrue(PortalESAJ._na_gravacao(
+            PermissionError(13, "negado", str(destino) + ".parcial"), destino))
+        self.assertTrue(PortalESAJ._na_gravacao(
+            PermissionError(13, "negado", str(self.tmp / "Outra" / "y"), None, str(destino)),
+            destino), "os.replace(origem, destino): o destino é o filename2")
+        self.assertFalse(PortalESAJ._na_gravacao(PermissionError(13, "negado"), destino))
+
 
 # ================================================================ dublês
 class NavegadorDeMentira:
