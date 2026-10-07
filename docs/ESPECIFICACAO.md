@@ -581,7 +581,7 @@ Sucesso: `{"ok": true, "dados": ...}`. Erro: `{"ok": false, "erro": {"codigo":
 * `GET /api/config` → `{valores: {secao: {chave: valor}}, esquema: [{secao, chave, tipo: "texto"|"flag"|"inteiro"|"pasta"|"escolha", rotulo, ajuda, opcoes?}]}`
 * `POST /api/config` `{secao, chave, valor}` → `{valor}` (valida; pastas conflitantes → erro com a frase de `problema_nas_pastas`; a pasta da nuvem dentro do acervo ou contendo-o, e o acervo movido para dentro da nuvem já escolhida → 400 `pastas_em_conflito`, com a frase de `servicos.conflito_da_nuvem`; a pasta dos sigilosos ou a da pauta dentro da pasta da nuvem, igual a ela ou contendo-a, ou a nuvem dentro delas → 400 `pastas_em_conflito`, com a frase de `config.conflito_com_a_nuvem` — cada chave confere só a sua pasta. A pasta em branco é conferida como a pasta padrão que ela passa a valer, `caminhos.resolver(valor, "Acervo"|"Sigilosos"|"Pauta", base)`; a `pasta_nuvem` em branco continua sendo “não espelhar”. Número `inf`, `nan` ou `1e999` → 400 `valor_invalido`, e o `GET` com um desses no `config.ini` devolve o padrão)
 * `GET /api/tribunais` → `[{sigla, nome, sistema, alternativo}]`
-* `GET /api/acessos` → `[{portal, tribunal, sistema, rotulo, usuario, tem_senha, guardada, so_agora, modo}]` (`so_agora`: a senha foi digitada com “Lembrar neste computador” desligado e vale até fechar o programa, para o download e para a pauta); `POST /api/acessos` `{portal, usuario, senha, lembrar?, modo?}`; `DELETE /api/acessos/{portal}`; `POST /api/acessos/testar` `{tribunal, sistema?}` → `{tarefa}` (tipo `teste_login`; testa exatamente o portal pedido, contrato C1). Apagar o acesso, ou gravá-lo com outro usuário, apaga também a sessão guardada e os perfis do navegador do portal (`navegador.esquecer_portal`; o navegador aberto antes disso não regrava a sessão ao fechar). Com o cofre preso ou em uso por outro processo (`cofre_senhas.CofreIndisponivel`), a resposta é 409 `arquivo_preso`, com a frase
+* `GET /api/acessos` → `[{portal, tribunal, sistema, rotulo, usuario, tem_senha, guardada, so_agora, modo}]` (`so_agora`: a senha foi digitada com “Lembrar neste computador” desligado e vale até fechar o programa, para o download e para a pauta); `POST /api/acessos` `{portal, usuario, senha, lembrar?, modo?}`; `DELETE /api/acessos/{portal}`; `POST /api/acessos/testar` `{tribunal, sistema?}` → `{tarefa}` (tipo `teste_login`; testa exatamente o portal pedido, contrato C1). Apagar o acesso, ou gravá-lo com outro usuário, apaga também a sessão guardada e os perfis do navegador do portal (`navegador.esquecer_portal`; o navegador aberto antes disso, também o de outro processo, não regrava a sessão ao fechar). Com o cofre preso ou em uso por outro processo (`cofre_senhas.CofreIndisponivel`), a resposta é 409 `arquivo_preso`, com a frase
 * `GET /api/tribunais/enderecos` → `[{portal, grau, rotulo, url, rotulo_portal}]` (só os endereços corrigidos pelo usuário); `GET /api/tribunais/enderecos/{portal}` → `{portal, rotulo, enderecos: [{grau, rotulo, url, padrao, corrigido}]}`; `POST /api/tribunais/enderecos` `{portal, grau, url}` → o mesmo (url em branco volta ao catálogo). É o “Endereço do portal” de Ajustes › Acessos aos portais: a correção fica em `LOCAL/enderecos-locais.json` e vale por cima de `dados/tribunais.json`, para o download e a pauta; as mensagens do motor sobre endereço mudado apontam para ela.
 * `POST /api/dialogo/arquivo` `{titulo, tipos: ["Planilhas|*.xlsx;*.xls", ...]}` e `POST /api/dialogo/pasta` `{titulo, inicial}` → `{caminho|null}` (o de arquivo também `tamanho`, em bytes, ou `null`; diálogo nativo pela pywebview; fora dela → erro `sem_dialogo`, e a interface usa `<input type=file>`)
 * `POST /api/abrir` `{tipo: "pasta"|"arquivo"|"url", alvo}`
@@ -1623,8 +1623,11 @@ não é alterado. Modo silencioso (`/S`, `/D=`) para a TI e o CI.
    Cancelar para escolher outra pasta.”), e o campo passa a mostrar o
    caminho novo (por `WM_SETTEXT`: o NSIS relê o campo depois da função de
    saída e o mostra de novo no Voltar); no `/S /D=`, ajusta sem perguntar e
-   registra no detalhe. Se a subpasta `Helestron` também tiver outras
-   coisas, a instalação é recusada: na página, com a mensagem “A pasta
+   registra no detalhe. Se a subpasta `Helestron` já tem o Helestron (o
+   mesmo `/D=<pasta>` repetido na versão seguinte), é uma atualização como
+   as outras: a seção decide pela pasta final (`EhDoHelestron` de
+   `$INSTDIR`), e a versão anterior sai pela lista dela. Se a subpasta
+   `Helestron` também tiver outras coisas, a instalação é recusada: na página, com a mensagem “A pasta
    escolhida já tem outros arquivos, e a pasta Helestron dentro dela
    também: …”, e a página continua; no `/S`, com o código **3**, sem copiar
    nada. Depois, `PodeGravarNaPasta` cria a pasta e grava um arquivo de
@@ -1715,7 +1718,10 @@ não é alterado. Modo silencioso (`/S`, `/D=`) para a TI e o CI.
    chama `migracao.reapontar_conectores()`: no programa instalado, o conector
    `helestron` registrado com o `python.exe` de outra pasta (a instalação que
    mudou de lugar) passa a usar o desta, com a mesma pasta do acervo (o
-   `--pasta` da entrada antiga); com o comando já certo, nada muda. A limpeza
+   `--pasta` da entrada antiga); com o comando já certo, nada muda. No Codex,
+   só o comando e os argumentos mudam: as outras chaves do bloco ficam
+   (`chatgpt.bloco_toml(..., manter=)`), e o conector que o usuário desligou
+   (`enabled = false`) continua desligado. A limpeza
    nunca segura nem derruba a instalação. A mesma função existe como linha
    de comando, `python -I -m helestron.compartilhar.migracao` (sai sempre
    com 0, em cerca de 0,1 s), e como `helestron.compartilhar.limpar_restos_antigos()`,
@@ -1827,7 +1833,11 @@ dados ficam com a instalação registrada.
   versão no GitHub com o instalador e o `.sha256`. A versão sai sempre do
   nome do único `Helestron-Setup-*.exe` testado (com dois ou nenhum, falha),
   e a tag que não bate com ela reprova a publicação (a `v1.0.2` com o
-  Setup da 1.0.1 publicaria a versão errada e ocuparia a tag). Os testes
+  Setup da 1.0.1 publicaria a versão errada e ocuparia a tag). No disparo
+  manual, a tag que já existe em outro commit (empurrada antes, com o run
+  reprovado) também reprova: o `gh release create` ignora o `--target`
+  quando a tag existe, e penduraria o instalador deste commit na tag de
+  outro código; sem conseguir consultar a tag na API, não publica. Os testes
   rodam os scripts reais desses passos no bash, com um `gh` falso.
 
 ## 12. Regras transversais (valem para todos)
@@ -2083,7 +2093,10 @@ dados ficam com a instalação registrada.
     até a 1.0.1 (senhas, cookies, autopreenchimento, histórico, outras
     extensões e o `Local State`) é apagada na abertura do programa
     (`inicio.limpar_perfis` → `navegador.limpar_perfis_antigos`) ou, se
-    estiver aberta, na próxima vez. A sessão guardada (`perfis\<portal>\sessao.json`)
+    não puder sair agora (aberta, ou um arquivo dela preso pelo antivírus,
+    pelo backup ou pelo Explorador), na próxima vez; enquanto ela não sai, o
+    modo certificado recusa abrir o navegador sobre ela (`NavegadorOcupado`,
+    `navegador.COPIA_ANTIGA_PRESA`). A sessão guardada (`perfis\<portal>\sessao.json`)
     leva só os cookies dos portais (`.jus.br` e os hosts do tribunal no
     catálogo e nas correções: `cookie_do_portal`), cifrados pela DPAPI
     (`cofre_senhas.cifrar`, finalidade `sessao/v1`), nada de
@@ -2091,7 +2104,10 @@ dados ficam com a instalação registrada.
     texto puro da 1.0.1 é regravada no formato novo (`migrar_sessao`).
     Apagar o acesso, ou trocar o usuário, apaga a sessão e os perfis do
     portal (`esquecer_portal`), e o navegador aberto antes disso não a
-    regrava ao fechar. O desinstalador apaga `perfis\` sempre (seção 10).
+    regrava ao fechar e apaga o próprio perfil, também o de outro processo
+    (o `baixar` da linha de comando): o instante fica ainda na marca
+    `perfis\<portal>.esquecido`, que a abertura do programa apaga depois de
+    7 dias. O desinstalador apaga `perfis\` sempre (seção 10).
     O registro do programa censura os segredos de URL
     (`registro.censurar`, `FiltroSegredos` nos handlers do disco, da tela e
     do `--log`: `;jsessionid=`, `hash`, `ticket`, `token`, `code`,

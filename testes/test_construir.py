@@ -922,6 +922,17 @@ class TestScriptNsis(unittest.TestCase):
         self.assertLess(secao.index("SetErrorLevel ${PASTA_OCUPADA}"), secao.index("File /r"))
         self.assertIn("3 = a pasta escolhida", self.script)
 
+    def test_atualizacao_decidida_pela_pasta_final(self):
+        """/D=<pasta> repetido na versão seguinte: a 'ajustada' com o
+        Helestron já na subpasta é atualização, e a versão anterior sai."""
+        secao = self.script[self.script.index('Section "Helestron (programa)"'):]
+        secao = secao[:secao.index("SectionEnd")]
+        self.assertRegex(secao, r'\$\{ElseIf\} \$0 == "ajustada"\n\s+Push \$INSTDIR\n'
+                                r'\s+Call EhDoHelestron\n\s+Pop \$1\n\s+\$\{If\} \$1 == 1\n'
+                                r'\s+StrCpy \$EraDoHelestron 1')
+        self.assertLess(secao.index('${ElseIf} $0 == "ajustada"'),
+                        secao.index("Call RemoverPrograma"))
+
     def test_restos_do_assessor_integrado(self):
         """O atalho "Assessor Integrado" da versão anterior ficava na Área de
         Trabalho e no Menu Iniciar, e os conectores dela no Claude Desktop."""
@@ -1642,6 +1653,30 @@ class TestInstaladorNoWine(unittest.TestCase):
         self.assertLessEqual(restos, {"Helestron/chamadas.txt"})          # o registro do programa falso
         self.assertEqual({rel: d for rel, d in self.conteudo(pasta).items() if not rel.startswith("Helestron/")},
                          do_usuario)
+
+    def test_atualizacao_pela_pasta_mae_remove_a_versao_anterior(self):
+        """A TI repete 'Setup /S /D=C:\\Pasta' na versão seguinte (o que o
+        manual ensina): a pasta tem outras coisas e o Helestron já está na
+        subpasta. Isso era 'ajustada', não atualização, e a versão anterior
+        não saía: o Lib\\velho.py ficava, fora da lista nova (o desinstalador
+        nunca o apagaria)."""
+        pasta = self.c / "Pasta da TI"
+        shutil.rmtree(pasta, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, pasta, True)
+        pasta.mkdir()
+        (pasta / "leia-me.txt").write_bytes(b"leia")
+        subpasta = pasta / "Helestron"
+        self.assertEqual(self.instalar(r"C:\Pasta da TI"), 0)
+        self.assertTrue((subpasta / "Lib" / "velho.py").is_file())
+        self.assertEqual(self.instalar(r"C:\Pasta da TI", setup=self.setup2), 0)
+        self.assertTrue((subpasta / "Lib" / "novo.py").is_file())
+        self.assertFalse((subpasta / "Lib" / "velho.py").exists(), "a versão anterior sai")
+        self.assertTrue(self.registro(subpasta)[0].startswith("Helestron 1.0.1 - "))
+        self.assertEqual(self.local_instalado(), r"C:\Pasta da TI\Helestron")
+        self.assertEqual(self.conteudo(pasta)["leia-me.txt"], b"leia")
+        self.desinstalar(subpasta)
+        restos = {rel for rel in self.conteudo(pasta) if rel.startswith("Helestron/")}
+        self.assertLessEqual(restos, {"Helestron/chamadas.txt"})          # o registro do programa falso
 
     def test_pasta_e_subpasta_com_outras_coisas_recusa_sem_copiar(self):
         pasta = self.c / "Pasta Cheia"
@@ -2400,23 +2435,42 @@ if (-not $mcp.WaitForExit(30000)) {{ $mcp.Kill(); throw 'o MCP nao saiu' }}
         self.assertLess(nomes.index("Versao do programa (e a tag da publicacao)"),
                         next(i for i, n in enumerate(nomes) if n.startswith("Modelo de transc")))
 
-    @unittest.skipUnless(yaml and shutil.which("bash"), "PyYAML ou o bash ausente")
-    def test_publicacao_confere_a_tag_com_o_instalador(self):
-        """A tag v1.0.2 com o Helestron-Setup-1.0.1.exe criava a versão
-        "Helestron v1.0.2" com o instalador da 1.0.1 (e ocupava a tag)."""
+    # Um gh falso: registra a chamada e, no "gh api", responde pelo arquivo
+    # de GH_RESPOSTAS com o caminho pedido ("/" vira "_"), aplicando o --jq
+    # com o jq; sem o arquivo, "Not Found (HTTP 404)", como o gh de verdade.
+    GH_FALSO = """#!/usr/bin/env bash
+echo "gh $*" >> "$GH_LOG"
+if [ "$1" = "api" ]; then
+  resposta="$GH_RESPOSTAS/$(printf '%s' "$2" | tr '/' '_')"
+  if [ -f "$resposta.erro" ]; then cat "$resposta.erro" >&2; exit 1; fi
+  if [ ! -f "$resposta" ]; then
+    echo '{"message":"Not Found","status":"404"}'
+    echo "gh: Not Found (HTTP 404)" >&2
+    exit 1
+  fi
+  if [ "$3" = "--jq" ]; then jq -r "$4" "$resposta"; else cat "$resposta"; fi
+fi
+"""
+
+    def preparar_publicacao(self):
+        """O passo de publicar, numa pasta com o dist/ do instalador 1.0.1 e
+        o gh falso. Devolve (a pasta, a das respostas da API, publicar(**env))."""
         script = self.passo("publicar", "Criar a vers")
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         binarios = tmp / "bin"
         binarios.mkdir()
-        (binarios / "gh").write_text('#!/bin/sh\necho "gh $*" >> "$GH_LOG"\n', encoding="utf-8")
+        (binarios / "gh").write_text(self.GH_FALSO, encoding="utf-8")
         (binarios / "gh").chmod(0o755)
+        respostas = tmp / "api"
+        respostas.mkdir()
         dist = tmp / "dist"
         dist.mkdir()
         (dist / "Helestron-Setup-1.0.1.exe").write_bytes(b"MZ")
         (dist / "Helestron-Setup-1.0.1.exe.sha256").write_text("x  Helestron-Setup-1.0.1.exe\n")
         base = {"PATH": f"{binarios}{os.pathsep}{os.environ['PATH']}", "GH_LOG": str(tmp / "gh.log"),
-                "GITHUB_SHA": "abc", "GITHUB_REPOSITORY": "Helestron/x", "NOTAS": "notas"}
+                "GH_RESPOSTAS": str(respostas), "GITHUB_SHA": "abc",
+                "GITHUB_REPOSITORY": "Helestron/x", "NOTAS": "notas"}
 
         def publicar(**env) -> tuple[int, str]:
             (tmp / "gh.log").unlink(missing_ok=True)
@@ -2424,6 +2478,14 @@ if (-not $mcp.WaitForExit(30000)) {{ $mcp.Kill(); throw 'o MCP nao saiu' }}
             log = (tmp / "gh.log").read_text() if (tmp / "gh.log").exists() else ""
             return r.returncode, log + r.stdout
 
+        return tmp, respostas, publicar
+
+    @unittest.skipUnless(yaml and shutil.which("bash"), "PyYAML ou o bash ausente")
+    def test_publicacao_confere_a_tag_com_o_instalador(self):
+        """A tag v1.0.2 com o Helestron-Setup-1.0.1.exe criava a versão
+        "Helestron v1.0.2" com o instalador da 1.0.1 (e ocupava a tag)."""
+        tmp, _respostas, publicar = self.preparar_publicacao()
+        dist = tmp / "dist"
         codigo, saida = publicar(GITHUB_REF_TYPE="tag", GITHUB_REF_NAME="v1.0.2")
         self.assertEqual(codigo, 1)
         self.assertNotIn("gh release", saida)
@@ -2441,6 +2503,48 @@ if (-not $mcp.WaitForExit(30000)) {{ $mcp.Kill(); throw 'o MCP nao saiu' }}
         codigo, saida = publicar(GITHUB_REF_TYPE="tag", GITHUB_REF_NAME="v1.0.1")
         self.assertEqual(codigo, 1)
         self.assertNotIn("gh release", saida)
+
+    @unittest.skipUnless(yaml and shutil.which("bash") and shutil.which("jq"),
+                         "PyYAML, o bash ou o jq ausente")
+    def test_disparo_manual_nao_publica_em_tag_de_outro_commit(self):
+        """A tag v1.0.1 empurrada antes (o run dela reprovou, sem versão) e o
+        disparo manual depois, de outro commit: o gh ignora o --target quando
+        a tag já existe, e o instalador deste commit ia para a tag do outro."""
+        _tmp, respostas, publicar = self.preparar_publicacao()
+        ref = respostas / "repos_Helestron_x_git_ref_tags_v1.0.1"
+        manual = {"GITHUB_REF_TYPE": "branch", "GITHUB_REF_NAME": "main"}
+        # tag leve em outro commit
+        ref.write_text(json.dumps({"ref": "refs/tags/v1.0.1",
+                                   "object": {"type": "commit", "sha": "outro"}}))
+        codigo, saida = publicar(**manual)
+        self.assertEqual(codigo, 1, saida)
+        self.assertNotIn("gh release", saida)
+        self.assertIn("A tag v1.0.1 ja existe em outro commit (outro)", saida)
+        # tag anotada: vale o commit para onde ela aponta
+        ref.write_text(json.dumps({"ref": "refs/tags/v1.0.1",
+                                   "object": {"type": "tag", "sha": "objeto-da-tag"}}))
+        anotada = respostas / "repos_Helestron_x_git_tags_objeto-da-tag"
+        anotada.write_text(json.dumps({"object": {"type": "commit", "sha": "outro"}}))
+        codigo, saida = publicar(**manual)
+        self.assertEqual(codigo, 1, saida)
+        self.assertNotIn("gh release", saida)
+        # a tag já está neste mesmo commit: publica nela
+        anotada.write_text(json.dumps({"object": {"type": "commit", "sha": "abc"}}))
+        codigo, saida = publicar(**manual)
+        self.assertEqual(codigo, 0, saida)
+        self.assertIn("gh release create v1.0.1 ", saida)
+        # sem conseguir perguntar (a API fora do ar), não publica às cegas
+        ref.unlink()
+        ref.with_name(ref.name + ".erro").write_text("gh: Server Error (HTTP 502)\n")
+        codigo, saida = publicar(**manual)
+        self.assertEqual(codigo, 1, saida)
+        self.assertNotIn("gh release", saida)
+        self.assertIn("Nao consegui conferir se a tag v1.0.1 ja existe", saida)
+        # pela própria tag (o push dela), a API nem é consultada
+        codigo, saida = publicar(GITHUB_REF_TYPE="tag", GITHUB_REF_NAME="v1.0.1")
+        self.assertEqual(codigo, 0, saida)
+        self.assertNotIn("gh api", saida)
+        self.assertIn("gh release create v1.0.1 ", saida)
 
     @unittest.skipUnless(yaml, "PyYAML ausente")
     def test_windows_confere_modelos_de_voz_linha_de_comando_e_perfis(self):

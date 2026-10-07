@@ -87,6 +87,11 @@ VERSAO_PERFIL_CERT = 2
 MARCA_PERFIL_CERT = "helestron-perfil.json"
 SUFIXO_LIXO = ".apagar-"
 _TRAVA_PERFIS = threading.Lock()
+COPIA_ANTIGA_PRESA = (
+    "a cópia do perfil inteiro do Chrome feita pelas versões anteriores (com as senhas e "
+    "os cookies dele) ainda não pôde ser apagada, e o navegador do programa não abre sobre "
+    "ela. Feche as janelas do navegador do programa (e o Explorador, se estiver aberto na "
+    "pasta perfis do Helestron) e tente de novo; se persistir, reinicie o computador.")
 
 # Cookies que a sessão guardada pode levar: os dos portais (todos em .jus.br)
 # e os dos endereços do tribunal (o catálogo, ou a correção do usuário).
@@ -94,8 +99,15 @@ SUFIXOS_DOS_PORTAIS = ("jus.br",)
 FINALIDADE_SESSAO = "sessao/v1"
 # perfil_base (texto) -> instante em que o portal foi "esquecido" (Apagar
 # acesso, troca de usuário): um navegador aberto ANTES disso não regrava a
-# sessão ao fechar, e apaga o próprio perfil.
+# sessão ao fechar, e apaga o próprio perfil. Vale também entre processos
+# (o 'baixar' da linha de comando com o navegador aberto enquanto a janela
+# apaga o acesso): o instante fica ainda na marca <perfil>.esquecido, ao
+# lado da pasta do perfil.
 _ESQUECIDOS: dict[str, float] = {}
+SUFIXO_ESQUECIDO = ".esquecido"
+# A marca só pesa para um navegador aberto antes dela; a limpeza da
+# abertura do programa tira as que passaram deste prazo.
+MARCA_ESQUECIDO_VALIDA_S = 7 * 24 * 3600
 VERSAO_SESSAO = 2
 
 SESSAO_VALIDA_S = 12 * 3600
@@ -410,13 +422,15 @@ def _apagar_pasta(pasta: Path) -> bool:
 def limpar_copia_antiga(destino: Path) -> bool:
     """Apaga a cópia do perfil inteiro do Chrome feita até a 1.0.1 (senhas,
     cookies, autopreenchimento, histórico, Local State). True: não há (mais)
-    cópia antiga; False: ela está aberta agora, e fica para a próxima vez."""
+    cópia antiga; False: ela não pôde sair agora (aberta pelo navegador do
+    programa, ou um arquivo dela preso pelo antivírus, pelo backup ou pelo
+    Explorador), e fica para a próxima vez."""
     destino = Path(destino)
     if not copia_antiga(destino):
         return True
     if not _apagar_pasta(destino):
-        log.warning("A cópia antiga do perfil do Chrome em %s está em uso; apago-a quando "
-                    "o navegador do programa fechar.", destino.name)
+        log.warning("A cópia antiga do perfil do Chrome em %s está em uso e não pôde ser "
+                    "apagada agora; tento de novo na próxima vez.", destino.name)
         return False
     log.info("Apaguei a cópia antiga do perfil do Chrome (%s): ela levava as senhas e os "
              "cookies do Chrome, e o modo certificado só precisa do Web Signer.", destino.name)
@@ -471,13 +485,15 @@ def preparar_perfil_certificado(destino: Path, user_data: Path | None = None) ->
     e o registro dela nas preferências). Sem o Web Signer no Chrome, o
     perfil abre limpo, e a tela de login ensina a instalá-lo pela Chrome Web
     Store (fica neste perfil). A cópia antiga, do perfil inteiro, é apagada
-    antes.
+    antes; se ela não puder sair agora, NavegadorOcupado - o navegador do
+    programa nunca abre em cima dela (com as senhas, os cookies e as outras
+    extensões do Chrome do usuário).
     """
     destino = Path(destino)
     user_data = Path(user_data or USER_DATA_CHROME)
     with _TRAVA_PERFIS:
         if not limpar_copia_antiga(destino):
-            return destino          # aberta: o lançamento acusa "perfil em uso"
+            raise NavegadorOcupado(COPIA_ANTIGA_PRESA)
         perfis = _perfis_do_chrome(user_data)
         origem = next((p for p in perfis if (p / "Extensions" / EXT_WEB_SIGNER).is_dir()), None)
         if tem_web_signer(destino):
@@ -517,11 +533,20 @@ def limpar_perfis_antigos(pasta: Path | None = None) -> int:
     except OSError:
         return 0
     limpos = 0
+    agora = time.time()
     with _TRAVA_PERFIS:
         for item in itens:
             if SUFIXO_LIXO in item.name:
                 shutil.rmtree(item, ignore_errors=True)
                 limpos += 0 if item.exists() else 1
+            elif item.name.endswith(SUFIXO_ESQUECIDO):
+                # a marca do 'Apagar acesso' só pesa para um navegador aberto
+                # antes dela: passado o prazo, não há mais nenhum
+                if agora - _ler_marca_esquecido(item) > MARCA_ESQUECIDO_VALIDA_S:
+                    try:
+                        item.unlink()
+                    except OSError:
+                        pass
             elif item.name.endswith("-certificado") and copia_antiga(item):
                 limpos += 1 if limpar_copia_antiga(item) else 0
             elif (item / "sessao.json").is_file():
@@ -620,14 +645,39 @@ def pastas_do_portal(portal: str, perfis: Path | None = None) -> list[Path]:
     return [base / nome, base / f"{nome}-certificado"]
 
 
+def _marca_esquecido(perfil_base: Path) -> Path:
+    """A marca do 'Apagar acesso' de um portal: ao lado da pasta do perfil,
+    e não dentro dela, porque a pasta sai com o esquecer e a marca tem de
+    ficar para o navegador que ainda está aberto."""
+    perfil_base = Path(perfil_base)
+    return perfil_base.with_name(perfil_base.name + SUFIXO_ESQUECIDO)
+
+
+def _ler_marca_esquecido(marca: Path) -> float:
+    """O instante gravado na marca; 0.0 se não houver ou não se ler."""
+    try:
+        return float(Path(marca).read_text(encoding="ascii").strip())
+    except (OSError, ValueError, UnicodeDecodeError):
+        return 0.0
+
+
 def esquecer_portal(portal: str, perfis: Path | None = None) -> bool:
     """'Apagar acesso' e troca de usuário: a sessão guardada e os perfis do
     navegador do portal saem - sem isso, a sessão anterior (de outra pessoa,
     talvez) seguia valendo por até 12 horas. False: algum perfil está aberto
-    agora (a sessão guardada sai assim mesmo)."""
+    agora (a sessão guardada sai assim mesmo).
+
+    O navegador aberto antes disso não regrava a sessão ao fechar, e apaga o
+    próprio perfil - também o de outro processo (o 'baixar' da linha de
+    comando): por isso o instante vai ainda para a marca no disco."""
     tudo = True
     pastas = pastas_do_portal(portal, perfis)
-    _ESQUECIDOS[os.path.normcase(str(pastas[0]))] = time.time()
+    agora = time.time()
+    _ESQUECIDOS[os.path.normcase(str(pastas[0]))] = agora
+    try:
+        _marca_esquecido(pastas[0]).write_text(repr(agora), encoding="ascii")
+    except OSError:
+        pass                    # sem a pasta dos perfis, não há navegador aberto
     with _TRAVA_PERFIS:
         for pasta in pastas:
             try:
@@ -904,7 +954,12 @@ class Navegador:
         return False
 
     def _foi_esquecido(self) -> bool:
-        quando = _ESQUECIDOS.get(os.path.normcase(str(self.perfil_base)), 0.0)
+        """O acesso ao portal foi apagado depois que este navegador abriu,
+        neste processo ou em outro (a marca no disco)?"""
+        if not self._aberto_em:
+            return False            # nunca abriu: não há sessão a guardar
+        quando = max(_ESQUECIDOS.get(os.path.normcase(str(self.perfil_base)), 0.0),
+                     _ler_marca_esquecido(_marca_esquecido(self.perfil_base)))
         return bool(quando) and quando >= self._aberto_em
 
     def fechar(self) -> None:

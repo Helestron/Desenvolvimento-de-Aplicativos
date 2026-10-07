@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -293,6 +295,43 @@ class TestPerfilDoCertificado(apoio.PastaTemporaria):
         self.assertTrue(navegador.limpar_copia_antiga(destino))
         self.assertFalse(destino.exists())
 
+    def test_copia_antiga_que_nao_sai_nao_e_aberta(self):
+        """Sem Chrome nenhum aberto, o Windows recusa renomear a pasta com um
+        arquivo preso (antivírus, backup, Explorador): o navegador do programa
+        abria em cima da cópia antiga, com as senhas, os cookies e o Local
+        State do Chrome do usuário."""
+        destino = self.tmp / "perfis" / "esaj-TJAL-certificado"
+        (destino / "Default").mkdir(parents=True)
+        (destino / "Default" / "Login Data").write_text("SEGREDO")
+        (destino / "Local State").write_text("{}")
+        lancados = []
+        chromium = mock.Mock()
+        chromium.launch_persistent_context.side_effect = (
+            lambda **k: lancados.append(k.get("user_data_dir")))
+        pw = mock.Mock(chromium=chromium)
+        pw.start.return_value = pw
+        sync_api = types.ModuleType("playwright.sync_api")
+        sync_api.sync_playwright = lambda: pw
+        recusa = PermissionError(13, "o arquivo está sendo usado por outro processo")
+        nav = Navegador(self.tmp / "perfis" / "esaj-TJAL", certificado=True,
+                        pasta_downloads=self.tmp / "dl")
+        with mock.patch.dict(sys.modules, {"playwright.sync_api": sync_api}), \
+                mock.patch.object(navegador, "escolher_canais", return_value=["chrome"]), \
+                mock.patch.object(navegador, "perfil_aberto", return_value=False), \
+                mock.patch.object(navegador, "USER_DATA_CHROME", self.tmp / "sem-chrome"), \
+                mock.patch.object(Path, "rename", side_effect=recusa), \
+                self.assertLogs("download.navegador", "WARNING") as registro:
+            with self.assertRaises(modelos.NavegadorOcupado) as caso:
+                nav.abrir()
+        self.assertEqual(lancados, [], "o Chrome do programa não abre sobre a cópia antiga")
+        self.assertIn("não pôde ser apagada", str(caso.exception))
+        self.assertTrue((destino / "Default" / "Login Data").exists(), "nada mudou")
+        self.assertNotIn("quando o navegador do programa fechar", "".join(registro.output))
+        # solto o arquivo, a cópia antiga sai e o perfil abre só com o Web Signer
+        navegador.preparar_perfil_certificado(destino, self.tmp / "sem-chrome")
+        self.assertFalse(navegador.copia_antiga(destino))
+        self.assertEqual(self._arquivos(destino), [navegador.MARCA_PERFIL_CERT])
+
     def test_limpeza_na_abertura(self):
         perfis = self.tmp / "perfis"
         antiga = perfis / "eproc-TJSC-certificado" / "Default"
@@ -483,7 +522,9 @@ class TestNavegadorSemAbrir(apoio.PastaTemporaria):
         (perfis / "esaj-TJAL" / "chrome" / "Default").mkdir(parents=True)
         (perfis / "esaj-TJAL-certificado" / "Default").mkdir(parents=True)
         self.assertTrue(navegador.esquecer_portal("esaj:tjal", perfis))
-        self.assertEqual(list(perfis.iterdir()), [])
+        # fica só a marca do instante, para o navegador de outro processo
+        self.assertEqual([p.name for p in perfis.iterdir()], ["esaj-TJAL.esquecido"])
+        float((perfis / "esaj-TJAL.esquecido").read_text())
         with self.assertRaises(ValueError):
             navegador.esquecer_portal("esaj:../../x", perfis)
 
@@ -498,6 +539,50 @@ class TestNavegadorSemAbrir(apoio.PastaTemporaria):
         navegador.esquecer_portal("esaj:TJAL", perfis)
         n.fechar()
         self.assertFalse(n.arquivo_sessao.exists())
+
+    def test_esquecer_vale_para_o_navegador_de_outro_processo(self):
+        """'Apagar acesso' na janela com o 'baixar' da linha de comando (outro
+        processo) usando o navegador do portal: a marca ficava só na memória
+        da janela, e o fechar() do outro processo regravava a sessão do
+        usuário anterior e deixava o perfil."""
+        perfis = self.tmp / "perfis"
+        n = self.nav()
+        n._aberto_em = time.time() - 5
+        n._contexto = ContextoFalso([PaginaFalsa()])
+        n._contexto.close = lambda: None
+        n._guardar_sessao()
+        (n.perfil / "chrome" / "Default").mkdir(parents=True)
+        with mock.patch.object(navegador, "perfil_aberto", return_value=True):
+            self.assertFalse(navegador.esquecer_portal("esaj:TJAL", perfis))
+        self.assertFalse(n.arquivo_sessao.exists())
+        nunca_abriu = self.nav()
+        nunca_abriu.fechar()
+        self.assertTrue(n.perfil.exists(), "um navegador que nem abriu não apaga nada")
+        # o outro processo não tem a marca na memória: só a do disco
+        with mock.patch.dict(navegador._ESQUECIDOS, {}, clear=True):
+            n.fechar()
+        self.assertFalse(n.arquivo_sessao.exists(), "a sessão do usuário anterior não volta")
+        self.assertFalse(n.perfil_base.exists(), "o perfil do portal sai ao fechar")
+        # o navegador aberto depois do 'Apagar acesso' guarda a sessão normalmente
+        novo = self.nav()
+        novo._aberto_em = time.time() + 1
+        novo._contexto = ContextoFalso([PaginaFalsa()])
+        novo._contexto.close = lambda: None
+        with mock.patch.dict(navegador._ESQUECIDOS, {}, clear=True):
+            novo.fechar()
+        self.assertEqual([c["name"] for c in navegador.ler_sessao(novo.arquivo_sessao)],
+                         ["JSESSIONID"])
+
+    def test_marca_do_esquecer_vencida_sai_na_abertura(self):
+        perfis = self.tmp / "perfis"
+        perfis.mkdir()
+        navegador.esquecer_portal("eproc:TJSC", perfis)
+        recente = perfis / "eproc-TJSC.esquecido"
+        self.assertTrue(recente.is_file())
+        velha = perfis / "esaj-TJAL.esquecido"
+        velha.write_text(repr(time.time() - navegador.MARCA_ESQUECIDO_VALIDA_S - 60))
+        navegador.limpar_perfis_antigos(perfis)
+        self.assertEqual(sorted(p.name for p in perfis.iterdir()), ["eproc-TJSC.esquecido"])
 
     def test_sessao_velha_nao_volta(self):
         n = self.nav()
