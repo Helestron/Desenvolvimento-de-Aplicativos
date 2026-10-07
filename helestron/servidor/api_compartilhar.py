@@ -26,6 +26,12 @@ pasta abre, nem o preparo (que escreveria no CLAUDE.md que os sigilosos
 "não estão nesta pasta") nem o espelho na nuvem: 409 com a frase do
 conflito (exigir_pastas_separadas). O mesmo vale para a pasta da nuvem com
 os sigilosos ou a pauta dentro dela (config.conflito_com_a_nuvem).
+
+O espelho e o pacote não terminam calados: o arquivo que não foi para a
+nuvem (concluir_espelho) e os avisos do pacote - o .zip grande demais, o
+número que faltou (concluir_pacote) - vão para o status, o resultado e o
+aviso na tela. E o processo que vira sigiloso sai também dos pacotes já
+gerados (servicos.retirar_sigilosos_dos_pacotes), no preparo rápido.
 """
 
 from __future__ import annotations
@@ -43,7 +49,7 @@ from .rede import ErroApi, Pedido, Roteador, erro_400
 
 log = logging.getLogger("servidor.compartilhar")
 
-PASTA_PACOTES = "Pacotes para IA"
+PASTA_PACOTES = servicos.PASTA_PACOTES
 
 
 def registrar(r: Roteador) -> None:
@@ -207,7 +213,61 @@ def preparar_e_conferir(app, **opcoes):
 
 
 def pasta_pacotes() -> Path:
-    return servicos.base_usuario() / PASTA_PACOTES
+    return servicos.pasta_pacotes()
+
+
+# ===================================================================== espelho
+def _no_acervo(arquivo, acervo) -> str:
+    """O arquivo como o usuário o acha: o caminho dentro do acervo."""
+    try:
+        return str(Path(arquivo).relative_to(acervo))
+    except ValueError:
+        return Path(arquivo).name
+
+
+def frase_nao_copiados(nao_copiados, acervo) -> tuple[str, str]:
+    """(título, mensagem) do aviso dos arquivos que o espelho NÃO copiou para
+    a nuvem (nuvem.Espelho.nao_copiados: [(arquivo, motivo)])."""
+    k = len(nao_copiados)
+    titulo = ("Um arquivo não foi copiado para a nuvem" if k == 1
+              else f"{k} arquivos não foram copiados para a nuvem")
+    lista = "; ".join(f"{_no_acervo(a, acervo)} ({m})" for a, m in nao_copiados[:5])
+    if k > 5:
+        lista += f"; e mais {k - 5}"
+    motivos = " ".join(str(m) for _a, m in nao_copiados)
+    dicas = []
+    if "aberto" in motivos:
+        dicas.append("feche o arquivo, se estiver aberto em outro programa" if k == 1
+                     else "feche os que estiverem abertos em outro programa")
+    if "longo" in motivos:
+        dicas.append("encurte o nome da pasta do lote (o caminho na nuvem é mais longo que o do "
+                     "acervo)")
+    fazer = " e ".join(dicas) if dicas else "confira o motivo"
+    return titulo, (f"{lista}. O resto do acervo foi copiado: {fazer} e use “Espelhar agora” "
+                    "na tela Compartilhar - o espelho copia só o que falta.")
+
+
+def concluir_espelho(tw, resultado, acervo, destino) -> dict:
+    """O fim do espelho na nuvem - o do “Espelhar agora”, o do fim do lote e o
+    do fim da transcrição: o status com o resumo do Espelho ("3 copiados, 4
+    sem mudança, 1 NÃO copiado (X.pdf: motivo)") e, se algum arquivo não foi
+    copiado, o aviso na tela. Antes, a tarefa terminava em "N copiados" como
+    se a cópia estivesse completa, e a falha só ia para o registro."""
+    from ..compartilhar import nuvem
+
+    copiados, iguais = int(resultado[0]), int(resultado[1])
+    resumo = getattr(resultado, "resumo", None)
+    if not isinstance(resumo, str) or not resumo:
+        resumo = f"{copiados} copiado{'s' if copiados != 1 else ''}, {iguais} sem mudança"
+    nao = getattr(resultado, "nao_copiados", None)
+    nao = [(Path(a), str(m)) for a, m in nao] if isinstance(nao, (list, tuple)) else []
+    tw.definir_status(maiuscula(resumo) + ".")
+    if nao:
+        titulo, mensagem = frase_nao_copiados(nao, acervo)
+        tw.avisar(titulo, mensagem, "aviso")
+    return {"copiados": copiados, "iguais": iguais, "resumo": maiuscula(resumo),
+            "nao_copiados": [{"arquivo": str(a), "motivo": m} for a, m in nao],
+            "pasta": str(Path(destino) / nuvem.SUBPASTA)}
 
 
 def depois_de_salvar(app, documento: Path | None = None) -> None:
@@ -215,12 +275,18 @@ def depois_de_salvar(app, documento: Path | None = None) -> None:
 
     O índice é o que a IA lê primeiro; sem refazê-lo, a audiência
     recém-transcrita não constava dele - nem da cópia na nuvem. Transcrição
-    sigilosa não está no acervo: o índice não muda, mas refazê-lo não faz mal.
+    sigilosa não está no acervo: o índice não muda, mas refazê-lo não faz mal
+    - e é aí que os pacotes para o ChatGPT já gerados perdem o processo que
+    acaba de virar sigiloso (servicos.atualizar_indice). Com os autos de um
+    sigiloso presos no acervo, o índice e o espelho esperam, mas os pacotes
+    não.
     """
-    if app.fechando or presos(app):
-        if presos(app):
-            log.warning("Índice do acervo e espelho na nuvem adiados: há processo sigiloso no "
-                        "acervo.")
+    if app.fechando:
+        return
+    if presos(app):
+        log.warning("Índice do acervo e espelho na nuvem adiados: há processo sigiloso no "
+                    "acervo.")
+        limpar_pacotes_em_segundo_plano(app)
         return
     cfg = app.cfg
     destino = cfg.texto("compartilhar", "pasta_nuvem")
@@ -236,10 +302,10 @@ def depois_de_salvar(app, documento: Path | None = None) -> None:
                 raise SigilosoNoAcervo(presos(app))
             if tw.cancelado():
                 return {"copiados": 0, "iguais": 0}
-            copiados, iguais = nuvem.espelhar(cfg.pasta_acervo, Path(destino),
-                                              lambda f, t, n: tw.definir_progresso(f, t, n),
-                                              tw.cancelado)
-            return {"copiados": copiados, "iguais": iguais}
+            resultado = nuvem.espelhar(cfg.pasta_acervo, Path(destino),
+                                       lambda f, t, n: tw.definir_progresso(f, t, n),
+                                       tw.cancelado)
+            return concluir_espelho(tw, resultado, cfg.pasta_acervo, destino)
 
         try:
             app.tarefas.iniciar("nuvem", "Espelhar o acervo na nuvem", alvo, (NUVEM,),
@@ -267,9 +333,36 @@ def nuvem_sem_conflito(cfg, destino) -> bool:
 def _atualizar_indice(app) -> None:
     """INDICE.md em dia (servicos.atualizar_indice) e, se o preparo não
     conseguiu tirar do acervo um processo sigiloso, os autos entre os presos
-    (e o resto entre os avisos)."""
+    (e o resto entre os avisos). O pacote antigo que não pôde perder o
+    sigiloso vira aviso na tela."""
     rel = servicos.atualizar_indice(app.cfg)
     _registrar_preparo(app, rel)
+    avisar_pacotes(app, getattr(rel, "avisos_pacotes", None))
+
+
+def avisar_pacotes(app, avisos) -> None:
+    """Os avisos dos pacotes para o ChatGPT que não puderam perder o que é de
+    processo sigiloso (servicos.retirar_sigilosos_dos_pacotes): o usuário
+    precisa apagá-los à mão, antes de arrastá-los de novo para a IA."""
+    if not isinstance(avisos, (list, tuple)):
+        return
+    for frase in avisos:
+        try:
+            app.hub.publicar("aviso", {"titulo": "Pacote antigo com processo sigiloso",
+                                       "mensagem": str(frase), "nivel": "aviso"})
+        except Exception as erro:          # o aviso não derruba o preparo
+            log.debug("aviso do pacote não publicado: %s", erro)
+
+
+def _limpar_pacotes(app) -> None:
+    avisar_pacotes(app, servicos.retirar_sigilosos_dos_pacotes(app.cfg))
+
+
+def limpar_pacotes_em_segundo_plano(app) -> None:
+    """Só os pacotes para o ChatGPT (sem o índice nem o espelho): o processo
+    que virou sigiloso sai dos pacotes já gerados mesmo quando o resto espera."""
+    threading.Thread(target=_limpar_pacotes, args=(app,), name="pacotes-sigilo",
+                     daemon=True).start()
 
 
 def _indice_em_segundo_plano(app) -> None:
@@ -532,19 +625,51 @@ def pacote(p: Pedido) -> dict:
 
         tw.definir_status("Copiando os autos e os textos…")
         try:
-            pasta, arquivo = chatgpt.gerar_pacote(
+            resultado = chatgpt.gerar_pacote(
                 cfg.pasta_acervo, destino, numeros=[str(n) for n in numeros] if numeros else None,
                 cfg=cfg, progresso=lambda f, t, d="": tw.definir_progresso(f, t, d))
         except SigilosoNoAcervo as erro:
             registrar_presos(app, erro.arquivos)
             raise
-        tw.definir_status("Pacote pronto.")
-        return {"pasta": str(pasta), "arquivo": str(arquivo),
-                "mensagem": f"{Path(arquivo).name}. Arraste o .zip para uma conversa ou um "
-                            "Projeto do ChatGPT."}
+        return concluir_pacote(tw, resultado)
 
     tw = app.tarefas.iniciar("pacote", "Gerar o pacote para o ChatGPT", alvo, chave="pacote")
     return {"tarefa": tw.id}
+
+
+def concluir_pacote(tw, resultado) -> dict:
+    """O fim do “Gerar o pacote” (chatgpt.Pacote, que desempacota como
+    (pasta, zip)): os avisos do pacote - o número pedido que não está no
+    acervo (ou é sigiloso), o arquivo ou o .zip acima do limite do ChatGPT, o
+    pacote antigo que não pôde perder o sigiloso - vão para a tela e para a
+    mensagem, e não só para o registro. Com o .zip grande demais, a
+    orientação é arrastar os arquivos da pasta do pacote, e não o .zip."""
+    pasta, arquivo = Path(resultado[0]), Path(resultado[1])
+    avisos = getattr(resultado, "avisos", None)
+    avisos = [str(a) for a in avisos] if isinstance(avisos, (list, tuple)) else []
+    faltaram = getattr(resultado, "faltaram", None)
+    faltaram = [str(n) for n in faltaram] if isinstance(faltaram, (list, tuple)) else []
+    grande = getattr(resultado, "grande_demais", False) is True
+    tamanho = getattr(resultado, "tamanho_zip", 0)
+    tamanho = int(tamanho) if isinstance(tamanho, (int, float)) else 0
+    if grande:
+        mensagem = (f"{pasta.name}: o .zip passou do limite do ChatGPT. Arraste os arquivos da "
+                    "pasta do pacote para uma conversa ou um Projeto do ChatGPT (o texto e as "
+                    "instruções primeiro).")
+        status = ("Pacote pronto, mas o .zip passou do limite do ChatGPT: arraste os arquivos "
+                  "da pasta do pacote.")
+    else:
+        mensagem = f"{arquivo.name}. Arraste o .zip para uma conversa ou um Projeto do ChatGPT."
+        status = "Pacote pronto." if not avisos else (
+            f"Pacote pronto, com {len(avisos)} aviso{'s' if len(avisos) != 1 else ''}.")
+    for frase in avisos:
+        tw.avisar("Pacote para o ChatGPT", frase, "aviso")
+    if avisos:
+        mensagem += " Atenção: " + " ".join(avisos)
+    tw.definir_status(status)
+    return {"pasta": str(pasta), "arquivo": str(arquivo), "mensagem": mensagem,
+            "avisos": avisos, "faltaram": faltaram, "grande_demais": grande,
+            "tamanho_mb": round(tamanho / 1024 / 1024, 1)}
 
 
 # ===================================================================== nuvem
@@ -594,13 +719,9 @@ def espelhar(p: Pedido) -> dict:
         tw.definir_status("Atualizando o índice do acervo…")
         preparar_e_conferir(app, extrair_texto=False)
         tw.definir_status("Copiando o acervo para a nuvem…")
-        copiados, iguais = nuvem.espelhar(acervo, Path(destino),
-                                          lambda f, t, n: tw.definir_progresso(f, t, n),
-                                          tw.cancelado)
-        tw.definir_status(f"{copiados} copiado{'s' if copiados != 1 else ''}, {iguais} sem "
-                          "mudança.")
-        return {"copiados": copiados, "iguais": iguais,
-                "pasta": str(Path(destino) / nuvem.SUBPASTA)}
+        resultado = nuvem.espelhar(acervo, Path(destino),
+                                   lambda f, t, n: tw.definir_progresso(f, t, n), tw.cancelado)
+        return concluir_espelho(tw, resultado, acervo, destino)
 
     tw = app.tarefas.iniciar("nuvem", "Espelhar o acervo na nuvem", alvo, (NUVEM,), chave="nuvem")
     return {"tarefa": tw.id}

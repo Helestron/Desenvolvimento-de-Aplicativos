@@ -447,10 +447,16 @@ def numero_no_nome(caminho: Path):
         return arquivo.numero_do_caminho(Path(caminho))
     except (ImportError, AttributeError):
         pass
-    try:
-        return cnj.ler(Path(caminho).stem)
-    except cnj.NumeroInvalido:
-        return None
+    # Sem o módulo da transcrição, a mesma leitura daqui: cnj.ler perderia o
+    # "-NN" do incidente ("...0001-01.docx" viraria o principal), e a
+    # transcrição do incidente seria tratada como a do processo principal.
+    caminho = Path(caminho)
+    for nome in (caminho.name, caminho.parent.name):
+        try:
+            return cnj.ler_nome_arquivo(nome)
+        except cnj.NumeroInvalido:
+            continue
+    return None
 
 
 def _docx_da_pasta(pasta: Path) -> list[Path]:
@@ -566,6 +572,9 @@ def pendencias(cfg) -> list[Pendencia]:
     problema = problema_nas_pastas(cfg.pasta_acervo, cfg.pasta_sigilosos, pasta_pauta(cfg))
     if problema:
         saida.append(Pendencia("pastas", "Pastas em conflito", problema, "ajustes#pastas"))
+    nuvem = _pendencia_da_nuvem(cfg)
+    if nuvem is not None:
+        saida.append(nuvem)
     if faltam:
         inicio = ("Falta o componente do programa: " if len(faltam) == 1
                   else "Faltam os componentes do programa: ")
@@ -581,6 +590,38 @@ def pendencias(cfg) -> list[Pendencia]:
                                "Baixe agora: senão, a primeira audiência começa baixando o "
                                "modelo, e o texto demora a aparecer.", "ajustes#transcricao"))
     return saida
+
+
+def _pendencia_da_nuvem(cfg) -> Pendencia | None:
+    """A pasta da nuvem em conflito (config.ini editado à mão ou de versão
+    anterior, que a tela de Ajustes recusaria): os sigilosos ou a pauta
+    dentro da nuvem (ou a nuvem dentro deles) - o que é de segredo de justiça
+    seria sincronizado com o OneDrive ou o Google Drive -, ou a nuvem dentro
+    do acervo (ou contendo-o). O espelho não roda assim, e só o registro
+    dizia por quê; agora o Início mostra o motivo e onde corrigir."""
+    try:
+        destino = str(cfg.texto("compartilhar", "pasta_nuvem") or "").strip()
+    except Exception:
+        destino = ""
+    if not destino:
+        return None
+    from .nucleo import config as _config
+
+    pauta = pasta_pauta(cfg)
+    frase = _config.conflito_com_a_nuvem(destino, cfg.pasta_sigilosos, pauta)
+    if frase:
+        # Os sigilosos (ou a pauta) dentro da nuvem: muda-se a pasta deles;
+        # a nuvem dentro deles: muda-se a pasta da nuvem.
+        dentro_da_nuvem = (dentro_ou_igual(cfg.pasta_sigilosos, destino)
+                           or dentro_ou_igual(pauta, destino))
+        return Pendencia("nuvem", "Pasta da nuvem em conflito", frase,
+                         "ajustes#pastas" if dentro_da_nuvem else "ajustes#compartilhar")
+    frase = conflito_da_nuvem(destino, cfg.pasta_acervo)
+    if frase:
+        return Pendencia("nuvem", "Pasta da nuvem em conflito",
+                         frase + " Enquanto isso, o acervo não é espelhado na nuvem.",
+                         "ajustes#compartilhar")
+    return None
 
 
 # ===================================================================== pastas
@@ -694,15 +735,64 @@ def atualizar_indice(cfg):
     é o que a IA lê primeiro, e sem isto a audiência recém-transcrita não
     aparecia nele (nem no espelho da nuvem). O preparo também tira do acervo
     o processo que o programa já sabe sigiloso (a transcrição sigilosa
-    recém-gravada, a pauta). Devolve o RelatorioPreparo (None se falhou:
-    nunca levanta)."""
+    recém-gravada, a pauta) - e os pacotes para o ChatGPT já gerados perdem o
+    que for dele (retirar_sigilosos_dos_pacotes). Devolve o RelatorioPreparo
+    (None se falhou: nunca levanta), com 'avisos_pacotes': o pacote antigo
+    que não pôde perder o sigiloso (também em 'avisos')."""
+    rel = None
     try:
         from .compartilhar import preparo
 
-        return preparo.atualizar_contexto(cfg, extrair_texto=False)
+        rel = preparo.atualizar_contexto(cfg, extrair_texto=False)
     except Exception as erro:
         log.warning("não consegui atualizar o INDICE.md do acervo: %s", str(erro)[:200])
-        return None
+    # Mesmo se o preparo falhou: o pacote antigo não espera o índice.
+    avisos = retirar_sigilosos_dos_pacotes(cfg)
+    if rel is not None:
+        try:
+            rel.avisos_pacotes = list(avisos)
+            if avisos and isinstance(getattr(rel, "avisos", None), list):
+                rel.avisos += avisos
+        except AttributeError:         # relatório sem atributos livres
+            pass
+    return rel
+
+
+PASTA_PACOTES = "Pacotes para IA"
+
+
+def pasta_pacotes() -> Path:
+    """Onde ficam os pacotes para o ChatGPT (Documentos\\Helestron\\Pacotes
+    para IA): fora do acervo, mas ao alcance de quem os arrasta para a IA."""
+    return base_usuario() / PASTA_PACOTES
+
+
+def retirar_sigilosos_dos_pacotes(cfg, sigilosas=None) -> list[str]:
+    """Tira dos pacotes para o ChatGPT já gerados o que é de processo que o
+    programa hoje sabe sigiloso (a regra única: pasta dos sigilosos e pauta;
+    'sigilosas' já calculadas, se houver).
+
+    Antes, só o "Gerar o pacote" seguinte fazia isso: o processo que virou
+    sigiloso depois - a pauta revelou o segredo de justiça, a transcrição foi
+    salva como sigilosa - continuava nos pacotes antigos, prontos para serem
+    arrastados de novo para o ChatGPT. Devolve os avisos do que não pôde ser
+    tirado (arquivo aberto). Nunca levanta."""
+    try:
+        pasta = pasta_pacotes()
+        if not pasta.is_dir():
+            return []
+        from .compartilhar import chatgpt
+
+        if sigilosas is None:
+            from .nucleo import sigilo
+
+            sigilosas = sigilo.chaves_sigilosas(cfg.pasta_sigilosos, cfg.pasta_acervo)
+        if not sigilosas:
+            return []
+        return [str(a) for a in chatgpt.retirar_sigilosos_dos_pacotes(pasta, sigilosas) or []]
+    except Exception as erro:
+        log.warning("não consegui conferir os pacotes para o ChatGPT: %s", str(erro)[:200])
+        return []
 
 
 # ============================================================ compartilhar

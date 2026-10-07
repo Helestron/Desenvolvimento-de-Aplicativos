@@ -68,6 +68,8 @@ LIMITE_CAMINHO = 100
 # Onde a tela de Ajustes mostra cada assunto (as ações citam o caminho).
 AJUSTES_PASTAS = "Ajustes › Pastas"
 AJUSTES_TRANSCRICAO = "Ajustes › Transcrição"
+AJUSTES_COMPARTILHAR = "Ajustes › Compartilhar"
+AJUSTES_ACESSOS = "Ajustes › Acessos aos portais"
 
 # (módulo, distribuição no PyPI, para que serve, só no Windows)
 BIBLIOTECAS: tuple[tuple[str, ...], ...] = (
@@ -911,6 +913,19 @@ def _problema_nas_pastas(cfg) -> tuple[str, str] | None:
                 "junto com o acervo.",
                 _ACAO_PASTAS.format("pastas separadas para o acervo, os sigilosos e a pauta "
                                     "(nenhuma dentro da outra)"))
+    # A pasta da nuvem do espelho (gravada à mão no config.ini, ou antes desta
+    # regra): os sigilosos ou a pauta dentro dela iriam para o OneDrive ou o
+    # Google Drive - a mesma regra da tela de Ajustes (config.conflito_com_a_nuvem).
+    try:
+        nuvem = str(cfg.texto("compartilhar", "pasta_nuvem") or "").strip()
+    except Exception:  # noqa: BLE001 - configuração sem a seção: não há espelho
+        nuvem = ""
+    frase = config.conflito_com_a_nuvem(nuvem, cfg.pasta_sigilosos, _pasta_pauta(cfg))
+    if frase:
+        return (f"{frase} (pasta da nuvem: {nuvem})",
+                "Corrija antes de espelhar o acervo: em " + AJUSTES_PASTAS + ", escolha para os "
+                "sigilosos e a pauta pastas fora da nuvem, ou, em " + AJUSTES_COMPARTILHAR
+                + ", outra pasta da nuvem (em branco, o acervo não é espelhado).")
     if caminhos.INSTALADO and _contem(acervo, caminhos.INSTALACAO):
         return (f"A pasta do acervo ({acervo}) contém a pasta do programa "
                 f"({caminhos.INSTALACAO}), que o instalador substitui a cada atualização.",
@@ -967,10 +982,63 @@ def _caminhos_longos() -> bool:
         return False
 
 
+# Pastas do Google Drive para computador logo abaixo da letra da unidade
+# virtual (G:\Meu Drive, G:\Drives compartilhados).
+_RAIZES_GOOGLE_DRIVE = ("meu drive", "my drive", "drives compartilhados", "shared drives")
+
+
+def _nuvens_detectadas() -> list[tuple[str, Path]]:
+    """[(rótulo, pasta)] das pastas do OneDrive e do Google Drive deste
+    computador (compartilhar.nuvem.detectar). Nunca levanta."""
+    try:
+        from .compartilhar import nuvem
+
+        return [(str(r), Path(p)) for r, p in nuvem.detectar().items()]
+    except Exception as erro:  # noqa: BLE001 - sem detecção, fica a dos nomes
+        log.debug("pastas de nuvem não detectadas: %s", erro)
+        return []
+
+
+def nuvem_da_pasta(pasta, detectadas: list[tuple[str, Path]] | None = None) -> str:
+    """"OneDrive" ou "Google Drive" se a pasta está dentro de uma pasta
+    sincronizada com a nuvem; "" se não está (ou não se sabe)."""
+    if caminhos.dentro_do_onedrive(Path(pasta)):
+        return "OneDrive"
+    for rotulo, raiz in (detectadas if detectadas is not None else _nuvens_detectadas()):
+        if _contem(raiz, Path(pasta)):
+            return "Google Drive" if "google" in rotulo.lower() else "OneDrive"
+    try:
+        partes = [p.lower() for p in Path(pasta).resolve().parts]
+    except (OSError, RuntimeError, ValueError):
+        partes = [p.lower() for p in Path(pasta).parts]
+    if "google drive" in partes or "googledrive" in partes:
+        return "Google Drive"
+    if NO_WINDOWS and len(partes) > 1 and partes[1] in _RAIZES_GOOGLE_DRIVE:
+        return "Google Drive"
+    return ""
+
+
 def checar_local(cfg) -> Item:
-    """Onde ficam as pastas: fora do OneDrive, da rede e de caminho curto."""
+    """Onde ficam as pastas: fora do OneDrive, da rede e de caminho curto - e
+    os sigilosos e a pauta exportada fora de toda pasta sincronizada com a
+    nuvem (OneDrive, Google Drive)."""
     nome = "Local das pastas"
     problemas, acoes = [], []
+    # Primeiro o mais grave: o que é de segredo de justiça saindo do computador.
+    detectadas = _nuvens_detectadas()
+    for rotulo, pasta, porque, alvo in (
+            ("dos processos em segredo de justiça", cfg.pasta_sigilosos,
+             "os autos, as transcrições e as gravações sigilosas saem do computador e ficam",
+             "os sigilosos"),
+            ("da pauta exportada", _pasta_pauta(cfg),
+             "a planilha, com as partes dos processos sigilosos, sai do computador e fica",
+             "a pauta")):
+        servico = nuvem_da_pasta(pasta, detectadas)
+        if servico:
+            problemas.append(f"a pasta {rotulo} ({pasta}) está dentro do {servico}: {porque} "
+                             "ao alcance dos conectores da IA")
+            acoes.append(f"em {AJUSTES_PASTAS}, escolha para {alvo} uma pasta fora do OneDrive "
+                         "e do Google Drive")
     if caminhos.dentro_do_onedrive(cfg.pasta_acervo):
         problemas.append(f"a pasta do acervo ({cfg.pasta_acervo}) está dentro do OneDrive, cuja "
                          "sincronização trava arquivos em uso")
@@ -994,7 +1062,7 @@ def checar_local(cfg) -> Item:
                     obrigatorio=False, codigo="local",
                     acao="Recomendado: " + "; ".join(acoes) + ".")
     return Item(nome, OK, f"Programa em {programa}; dados em {caminhos.LOCAL}; acervo fora do "
-                "OneDrive.", obrigatorio=False, codigo="local")
+                "OneDrive; sigilosos e pauta fora da nuvem.", obrigatorio=False, codigo="local")
 
 
 def _formatar_gb(bytes_: float) -> str:
@@ -1051,20 +1119,50 @@ def checar_cofre() -> Item:
 def checar_tribunais() -> Item:
     from .nucleo import tribunais
 
+    nome = "Catálogo de tribunais"
+    locais = Path(tribunais.ARQUIVO_LOCAL)
     try:
         lista = tribunais.carregar()
     except Exception as erro:  # noqa: BLE001 - JSON editado à mão pode estar quebrado
-        return Item("Catálogo de tribunais", FALHA,
-                    f"O catálogo de tribunais (dados\\tribunais.json) não pôde ser lido: {erro}",
+        # carregar() lê o catálogo E as correções de endereço do usuário: o
+        # problema pode estar no enderecos-locais.json, e não no catálogo que
+        # vem com o programa (a frase antiga só falava do tribunais.json).
+        return Item(nome, FALHA,
+                    "O catálogo de tribunais (dados\\tribunais.json) ou as correções de "
+                    f"endereço ({locais}) não puderam ser lidos: {erro}",
                     codigo="tribunais",
-                    acao=("Desfaça a última edição do tribunais.json (ou do enderecos-locais.json, "
-                          f"na pasta de dados). Se não houve edição: {REINSTALAR}"))
+                    acao=(f"Desfaça a última edição do {locais.name} (na pasta de dados, "
+                          f"{locais.parent}) ou do tribunais.json. Se não houve edição: "
+                          f"{REINSTALAR}"))
     if not lista:
-        return Item("Catálogo de tribunais", FALHA, "O catálogo de tribunais está vazio.",
+        # O catálogo ilegível não levanta: carregar() devolve vazio e guarda o
+        # motivo (tribunais.problema), que diz o arquivo, a linha e a coluna.
+        try:
+            motivo = tribunais.problema()
+        except Exception:  # noqa: BLE001 - fica a frase genérica
+            motivo = ""
+        if motivo:
+            return Item(nome, FALHA, motivo[:1].upper() + motivo[1:] + ".", codigo="tribunais",
+                        acao=("Desfaça a última edição do dados\\tribunais.json. Se não houve "
+                              f"edição: {REINSTALAR}"))
+        return Item(nome, FALHA, "O catálogo de tribunais está vazio.",
                     codigo="tribunais", acao=RODE_O_INSTALADOR)
     suportados = sum(1 for t in lista if t.suportado)
-    return Item("Catálogo de tribunais", OK,
-                f"{len(lista)} tribunais no catálogo; {suportados} com e-SAJ ou eProc.", codigo="tribunais")
+    detalhe = f"{len(lista)} tribunais no catálogo; {suportados} com e-SAJ ou eProc."
+    # As correções de endereço fora do formato não derrubam mais o catálogo
+    # (ficam de fora, e vale o endereço dele) - mas o usuário precisa saber
+    # que a correção que fez não está valendo.
+    try:
+        problema_locais = tribunais.problema_locais()
+    except Exception as erro:  # noqa: BLE001
+        problema_locais = (f"as correções de endereço ({locais}) não puderam ser conferidas "
+                           f"({erro})")
+    if problema_locais:
+        return Item(nome, AVISO, f"{detalhe} Mas {problema_locais}.", codigo="tribunais",
+                    acao=(f"Em {AJUSTES_ACESSOS}, refaça a correção com "
+                          "“Corrigir o endereço de um portal” (ela regrava o arquivo sem o que "
+                          f"está fora do formato), ou desfaça a última edição do {locais.name}."))
+    return Item(nome, OK, detalhe, codigo="tribunais")
 
 
 def checar_regras_pauta() -> Item:

@@ -202,15 +202,42 @@ def _observacao(r, destino: Path) -> str:
 
 
 def item_json(tw, r, destino: Path) -> dict:
+    """A linha do processo no formato da API. 'causa' (por que não deu OK, um
+    código de modelos.CAUSAS) e 'refazer' (uma nova rodada pode mudar o
+    desfecho?) são os mesmos do relatorio.csv e do JSON da linha de comando:
+    quem acompanha o lote pela API decide por eles, sem adivinhar pelo texto."""
+    causa = getattr(r, "causa", "")
+    refazer = getattr(r, "refazer", False)
     return {"tarefa": tw.id, "numero": r.numero, "situacao": r.situacao or "",
             "rotulo": r.rotulo, "mensagem": _observacao(r, destino), "arquivo": r.arquivo or "",
             "sigiloso": bool(r.sigiloso), "paginas": r.paginas or 0, "tribunal": r.tribunal,
-            "sistema": r.sistema, "ordem": r.ordem}
+            "sistema": r.sistema, "ordem": r.ordem,
+            "causa": causa if isinstance(causa, str) else "",
+            "refazer": refazer if isinstance(refazer, bool) else False}
+
+
+def exigir_pastas_separadas(app) -> None:
+    """Recusa (409) o lote enquanto a pasta dos sigilosos ou a da pauta
+    estiver dentro do acervo (ou o acervo dentro dela) - a regra única de
+    servicos.problema_nas_pastas, a mesma do Compartilhar
+    (api_compartilhar.exigir_pastas_separadas) e das pendências do Início.
+
+    Com as pastas assim, o processo sigiloso baixado iria para a pasta dos
+    sigilosos DENTRO do acervo - lido pela IA e copiado para a nuvem com o
+    resto -, e o motor ainda diria que ele ficou "na pasta dos sigilosos"."""
+    cfg = app.cfg
+    frase = servicos.problema_nas_pastas(cfg.pasta_acervo, cfg.pasta_sigilosos,
+                                         servicos.pasta_pauta(cfg))
+    if frase:
+        raise ErroApi(409, "pastas_em_conflito",
+                      frase + " Corrija em Ajustes › Pastas antes de baixar os processos.")
 
 
 def iniciar_lote(app, numeros: list, nome_lote: str, opcoes_pedido: dict | None = None,
                  senhas_pedido: dict | None = None, titulo: str = "") -> object:
-    """Começa o lote de download (usado também pela pauta: "Baixar autos")."""
+    """Começa o lote de download (usado também pela pauta: "Baixar autos").
+    Com as pastas em conflito, recusa (409) antes de abrir o navegador."""
+    exigir_pastas_separadas(app)
     cfg = app.cfg
     opcoes = servicos.opcoes_download(cfg)
     extra = opcoes_pedido or {}
@@ -303,7 +330,7 @@ def _espelhar_ao_fim(app) -> None:
     if any(Path(p).exists() for p in app.sigilosos_presos):
         log.warning("Espelho na nuvem NÃO feito: há processo sigiloso no acervo.")
         return
-    from .api_compartilhar import nuvem_sem_conflito, preparar_e_conferir
+    from .api_compartilhar import concluir_espelho, nuvem_sem_conflito, preparar_e_conferir
 
     if not nuvem_sem_conflito(cfg, destino):
         return
@@ -315,13 +342,10 @@ def _espelhar_ao_fim(app) -> None:
         if tw.cancelado():
             return {"copiados": 0, "iguais": 0}
         tw.definir_status("Copiando o acervo para a nuvem…")
-        copiados, iguais = nuvem.espelhar(cfg.pasta_acervo, Path(destino),
-                                          lambda f, t, n: tw.definir_progresso(f, t, n),
-                                          tw.cancelado)
-        tw.definir_status(f"{copiados} copiado{'s' if copiados != 1 else ''}, {iguais} sem "
-                          "mudança.")
-        return {"copiados": copiados, "iguais": iguais,
-                "pasta": str(Path(destino) / nuvem.SUBPASTA)}
+        resultado = nuvem.espelhar(cfg.pasta_acervo, Path(destino),
+                                   lambda f, t, n: tw.definir_progresso(f, t, n), tw.cancelado)
+        # O resumo do Espelho ("K NÃO copiados") no status, e o aviso na tela
+        return concluir_espelho(tw, resultado, cfg.pasta_acervo, destino)
 
     try:
         app.tarefas.iniciar("nuvem", "Espelhar o acervo na nuvem", alvo, (NUVEM,), chave="nuvem")
