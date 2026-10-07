@@ -1837,7 +1837,9 @@ dados ficam com a instalação registrada.
     ou junções. Contam o PDF em qualquer subpasta, o DOCX em
     `Transcricoes\**` e tudo o que estiver em `Transcricoes\**\_audio`
     (inclusive pastas); o número sai do nome inteiro (`p.name`, e não
-    `p.stem`, que quebrava nome de pasta com pontos). Consultam essa mesma regra o compartilhamento
+    `p.stem`, que quebrava nome de pasta com pontos), em qualquer posição
+    dele, também na consulta de um número só (`na_pasta`):
+    “Audiência - <número>.docx” e os 20 dígitos contam. Consultam essa mesma regra o compartilhamento
     (`INDICE.md`, `CLAUDE.md`/`AGENTS.md`, `_ia/texto`, o MCP, o pacote e o
     espelho na nuvem), o download e a transcrição (tela, linha de comando e
     gravação enviada). O MCP apura a listagem do acervo e a regra uma vez
@@ -1873,9 +1875,11 @@ dados ficam com a instalação registrada.
     outra), no `POST …/nuvem/espelhar` (400 `pastas_em_conflito`, e o
     destino não fica gravado), no espelho automático (`nuvem_sem_conflito`
     pula, com aviso no registro), na pendência `nuvem` do Início, na
-    verificação (`checar_pastas`; `checar_local` avisa, primeiro, a pasta
-    dos sigilosos ou da pauta no OneDrive ou no Google Drive,
-    `verificar.nuvem_da_pasta`) e, por último, no próprio `nuvem.espelhar`
+    verificação (`checar_pastas`; `checar_local` aponta, primeiro e como
+    regra, não como recomendação, a pasta dos sigilosos ou da pauta em
+    qualquer pasta do OneDrive ou do Google Drive, `verificar.nuvem_da_pasta`:
+    aviso, como os conflitos de `checar_pastas`, com “Corrija:” e os
+    conselhos de conforto depois) e, por último, no próprio `nuvem.espelhar`
     (`_recusar_sigilosos_na_nuvem`, antes de copiar ou apagar qualquer
     coisa, também para a subpasta antiga). Enquanto as pastas estiverem
     misturadas, o download, o preparo, as ferramentas e o espelho recusam
@@ -1886,7 +1890,9 @@ dados ficam com a instalação registrada.
     resultado (`nuvem.Espelho`, que ainda desempacota como `(copiados,
     iguais)`) traz `nao_copiados`, `sigilosos_restantes` e `resumo`; a cópia usa
     `copyfile` e `utime`, para não levar o somente leitura para a nuvem, e
-    o caminho longo usa o prefixo `\\?\` no Windows.
+    o caminho longo usa o prefixo `\\?\` no Windows, na cópia e na
+    varredura que retira o sigiloso (sem ele, a cópia longa ficaria
+    invisível para a retirada).
   * **O que ainda estiver no acervo sai.** Todo compartilhamento começa
     pelo preparo (`preparo.atualizar_contexto`), que varre o acervo uma vez
     só (`motor.processos_no_acervo`: arquivo com o número no nome, pasta de
@@ -2363,7 +2369,10 @@ As quatro ferramentas continuam com os mesmos nomes, todas só de leitura:
 
 Mensagem que não é objeto, ou lote vazio, dá `-32600`; `params` que não é
 objeto, `-32602`; `tools/call` com `name` ou `arguments` inválidos,
-`-32602`; qualquer outro defeito vira `-32603`, e o laço continua.
+`-32602`; qualquer outro defeito vira `-32603`, e o laço continua. A
+resposta que repete um texto sem forma em UTF-8 (o escape `\ud800` no
+`id` ou no `termo`) vai com escapes `\uXXXX`; a que não vira JSON vira
+`-32603`.
 
 ### 13.7 Arquivos de contexto, índice e pacote (`compartilhar/preparo.py`, `compartilhar/chatgpt.py`)
 

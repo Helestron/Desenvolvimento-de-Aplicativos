@@ -173,8 +173,7 @@ def _e_ligacao(entrada: os.DirEntry) -> bool:
         return True
 
 
-def _candidatos(sigilosos: Path, prefixo: str = "",
-                fora: tuple[str, ...] | None = None) -> list[Path]:
+def _candidatos(sigilosos: Path, fora: tuple[str, ...] | None = None) -> list[Path]:
     """Os arquivos que contam na pasta dos sigilosos: os autos (PDF) e, dentro
     de Transcricoes, as transcrições (DOCX) e o que estiver numa pasta _audio
     (gravações e diários).
@@ -184,12 +183,13 @@ def _candidatos(sigilosos: Path, prefixo: str = "",
     primeiros níveis, onde o download grava. A pasta pode ter sido apontada
     para algo grande, como os Documentos: os dois primeiros níveis são
     sempre lidos inteiros e, abaixo deles, no máximo MAX_PASTAS pastas (sem
-    as _controle dos lotes, as escondidas e os atalhos). 'prefixo': só os
-    arquivos cujo nome começa por ele. 'fora': as partes (minúsculas,
+    as _controle dos lotes, as escondidas e os atalhos). Todos os nomes
+    contam, e não só os que começam pelo número: quem decide é o número que
+    o nome traz em qualquer posição ("Audiência - <número>.docx", os 20
+    dígitos, "Sentença <número>.pdf"). 'fora': as partes (minúsculas,
     relativas à pasta) de uma subpasta que não conta (o acervo, se estiver
     por engano dentro dela). Levanta OSError se a pasta não puder ser lida.
     """
-    prefixo = (prefixo or "").lower()
     achados: list[Path] = []
     transcricoes, audio = SUBPASTA_TRANSCRICOES.lower(), SUBPASTA_AUDIO.lower()
     # (pasta, partes relativas em minúsculas)
@@ -229,7 +229,7 @@ def _candidatos(sigilosos: Path, prefixo: str = "",
                     continue
                 if e_pasta:
                     sub = (*partes, minusculo)
-                    if em_audio and minusculo.startswith(prefixo):
+                    if em_audio:
                         achados.append(Path(e.path))   # a pasta de uma gravação em _audio
                     if profundidade + 1 > PROFUNDIDADE_MAX or (fora and sub == fora):
                         continue
@@ -238,8 +238,6 @@ def _candidatos(sigilosos: Path, prefixo: str = "",
                                               or _e_ligacao(e)):
                         continue
                     proximo.append((Path(e.path), sub))
-                    continue
-                if not minusculo.startswith(prefixo):
                     continue
                 if minusculo.endswith(".pdf") or em_audio or (
                         em_transcricoes and minusculo.endswith(".docx")):
@@ -281,16 +279,19 @@ def chaves_na_pasta(sigilosos, raiz=None) -> Sigilosas:
 
 def na_pasta(sigilosos, numero, herdar: bool = True) -> bool:
     """O processo tem autos, transcrição, gravação ou diário na pasta dos
-    sigilosos? O incidente também, se o principal tiver ('herdar'). (A
-    consulta de um número só: só conta o que tem o nome dele.)"""
+    sigilosos? O incidente também, se o principal tiver ('herdar').
+
+    Confere os mesmos arquivos que chaves_na_pasta, com o número em qualquer
+    posição do nome ("Audiência - <número>.docx", "Sentença <número>.pdf",
+    os 20 dígitos), e não só os que começam por ele: o download e a
+    transcrição dão a mesma resposta que o compartilhamento."""
     nome = _nome(numero)
     if not nome or not sigilosos:
         return False
     do_principal = principal(nome) if herdar else None
     alvos = {nome, do_principal} - {None}
-    prefixo = do_principal or nome      # o nome do incidente começa pelo do principal
     try:
-        candidatos = _candidatos(Path(sigilosos), prefixo)
+        candidatos = _candidatos(Path(sigilosos))
     except (OSError, ValueError, TypeError):
         return False
     for p in candidatos:

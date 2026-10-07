@@ -122,12 +122,15 @@ class SigilosoNaNuvem(RuntimeError):
               f"espelho foi feito: {espelho.resumo}.")
 
 
-def _longo(p: Path) -> str:
+def _longo(p: Path, sempre: bool = False) -> str:
     """O caminho como o Windows aceita acima de 260 caracteres ("\\\\?\\"):
     "OneDrive - <instituição>\\Helestron - Acervo\\Processos\\<lote>\\...parcial"
-    passa disso com facilidade. Fora do Windows, o caminho como está."""
+    passa disso com facilidade. Fora do Windows, o caminho como está.
+    'sempre': com o prefixo mesmo abaixo do limite - para varrer uma pasta,
+    em que os caminhos montados a partir dela herdam o prefixo e alcançam
+    as cópias de caminho longo."""
     texto = os.path.abspath(str(p))
-    if os.name != "nt" or len(texto) < 240 or texto.startswith("\\\\?\\"):
+    if os.name != "nt" or texto.startswith("\\\\?\\") or (len(texto) < 240 and not sempre):
         return texto
     if texto.startswith("\\\\"):
         return "\\\\?\\UNC\\" + texto[2:]
@@ -145,10 +148,6 @@ def _liberar_e(acao, caminho: str) -> None:
         except OSError:
             raise
         acao(caminho)
-
-
-def _apagar(p: Path) -> None:
-    _liberar_e(os.unlink, _longo(p))
 
 
 def _copiar(origem: Path, alvo: Path) -> None:
@@ -312,18 +311,33 @@ def _retirar_sigilosos(destino: Path, sigilosas: set[str]) -> list[tuple[Path, s
     refeita à mão, ou o segredo foi decretado depois e a pauta o mostrou);
     segredo de justiça não pode continuar na nuvem. Devolve as cópias que
     NÃO puderam ser apagadas, com o motivo.
+
+    A varredura usa o mesmo caminho longo ("\\\\?\\") da cópia: sem ele, o
+    Windows sem caminhos longos liberados não enxerga a cópia que passou de
+    260 caracteres (nem as pastas além do limite), e ela ficaria na nuvem
+    sem aviso.
     """
     ficaram: list[tuple[Path, str]] = []
-    if not sigilosas or not destino.is_dir():
+    base = _longo(destino, sempre=True)
+    if not sigilosas or not os.path.isdir(base):
         return ficaram
-    for p in destino.rglob("*"):
-        try:
-            if p.is_file() and _chave(p.name) in sigilosas:
-                _apagar(p)
+
+    def nao_li(erro: OSError) -> None:
+        log.warning("Não consegui conferir uma pasta do espelho na nuvem (%s): %s",
+                    getattr(erro, "filename", "") or destino, erro)
+
+    for raiz, _pastas, nomes in os.walk(base, onerror=nao_li):
+        sub = raiz[len(base):].lstrip("\\/")
+        for nome in nomes:
+            if _chave(nome) not in sigilosas:
+                continue
+            p = destino / sub / nome
+            try:
+                _liberar_e(os.unlink, os.path.join(raiz, nome))
                 log.warning("Retirei do espelho na nuvem %s: o processo é sigiloso (segredo "
                             "de justiça).", p.relative_to(destino))
-        except OSError as erro:
-            ficaram.append((p, _motivo(erro)))
-            log.error("ATENÇÃO: não consegui retirar do espelho na nuvem %s, de processo "
-                      "sigiloso (%s). Apague-o à mão.", p, erro)
+            except OSError as erro:
+                ficaram.append((p, _motivo(erro)))
+                log.error("ATENÇÃO: não consegui retirar do espelho na nuvem %s, de processo "
+                          "sigiloso (%s). Apague-o à mão.", p, erro)
     return ficaram

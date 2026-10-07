@@ -513,8 +513,9 @@ transcrições, da pauta exportada e dos registros do programa.
 > pasta dos sigilosos e a da pauta exportada não podem ficar dentro da
 > pasta da nuvem escolhida em **Ajustes › Compartilhar** (nem ser ela, nem
 > contê-la). Em branco, cada pasta volta ao padrão, que também é conferido.
-> Se a pasta dos sigilosos ou a da pauta estiver no OneDrive ou no Google
-> Drive, **Verificar a instalação** avisa.
+> Elas também não podem ficar em nenhuma outra pasta do OneDrive ou do
+> Google Drive: se ficarem, **Verificar a instalação** diz que isso não pode
+> e o que corrigir (escolha outra pasta e mova para ela o que está na atual).
 
 ### Seu nome e os dados da unidade
 
