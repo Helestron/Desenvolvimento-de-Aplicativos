@@ -25,6 +25,17 @@
 ;      ela já tem coisas de outro programa (ou do usuário)? Nesse caso o
 ;      Helestron vai para uma pasta própria dentro dela, <pasta>\Helestron,
 ;      e nada se mistura;
+;    * instalado em OUTRA pasta (o /D= ou o Procurar escolheram outra que não
+;      a da instalação registrada), o Helestron de lá é fechado e o programa
+;      dele sai, como numa atualização: nada fica aberto nem órfão (sem
+;      entrada em Aplicativos, com um desinstalador que apagaria a chave e os
+;      atalhos desta). E o desinstalador de uma cópia que não é a registrada
+;      não mexe na chave, nos atalhos nem nos conectores da registrada;
+;    * HKCU\Software\Helestron diz onde está o programa ("InstallLocation"),
+;      o Python dele ("Python") e a versão ("Versao"), e a pasta tem o
+;      helestron.cmd ("python.exe -I -m helestron ..."): quem chama o
+;      Helestron de fora (a skill do Claude, scripts da TI) o acha sem
+;      depender do PATH, que o instalador não altera;
 ;    * a atualização e a desinstalação apagam SÓ os arquivos que a instalação
 ;      pôs na pasta, um a um, pela lista gravada nela (arquivos-instalados.txt)
 ;      - nunca uma pasta inteira: o que o usuário tiver posto lá fica;
@@ -35,7 +46,10 @@
 ;      SHA-256 de cada arquivo e importa todos os módulos) e, se algo faltar,
 ;      diz o que é e onde está o relatório - em vez de o programa quebrar na
 ;      primeira tela, como o "No module named 'app.interface.pagina_config'";
-;    * desinstalador que pergunta antes de apagar configurações e senhas e
+;    * desinstalador que apaga sempre as sessões dos portais e os perfis do
+;      navegador (%LOCALAPPDATA%\Helestron\perfis: não são configuração, e
+;      nas instalações antigas guardavam cópia do perfil do Chrome, com
+;      senhas e cookies), pergunta antes de apagar configurações e senhas e
 ;      NUNCA apaga Documentos\Helestron (processos, transcrições, pauta);
 ;    * modo silencioso para o CI: Helestron-Setup.exe /S [/D=pasta].
 ;
@@ -64,6 +78,8 @@ CRCCheck force
 !define NOME "Helestron"
 !define VERSAO "@VERSAO@"
 !define CHAVE_DESINSTALAR "Software\Microsoft\Windows\CurrentVersion\Uninstall\Helestron"
+; onde está o programa, para quem o chama de fora (Python, Versao, InstallLocation)
+!define CHAVE_PROGRAMA "Software\Helestron"
 !define EXE "Helestron.exe"
 !define DESINSTALADOR "Desinstalar.exe"
 ; o --encerrar com uma audiência sendo transcrita (aplicativo/instancia.py)
@@ -107,6 +123,8 @@ Var PastaAfastados  ; ${PASTA_ANTIGOS}\<instante>
 Var NumAfastados
 Var PastaEscolhida  ; a pasta que o usuário (ou o /D=) escolheu, antes da conferência
 Var EraDoHelestron  ; 1 = a pasta já tinha uma instalação do Helestron (atualização)
+Var Registrada      ; a pasta da instalação registrada (InstallLocation), se for OUTRA e tiver o Helestron
+Var PastaNova       ; $INSTDIR guardado enquanto a instalação de outra pasta é removida
 
 ; ------------------------------------------------------------------ visual
 !define MUI_ICON "@ICONE@"
@@ -434,10 +452,11 @@ Function PodeGravarNaPasta
   Exch $0
 FunctionEnd
 
+!macro FuncoesDeInstalacoes UN
 ; A pasta $R0 tem uma instalação do Helestron? A lista dela (o cabeçalho
 ; "Helestron <versão> ...") ou o manifesto.json do Helestron (o de uma
 ; instalação de antes da lista: {"nome": "Helestron", ...}). Empurra 1 ou 0.
-Function EhDoHelestron
+Function ${UN}EhDoHelestron
   Exch $R0
   Push $R1
   Push $R2
@@ -492,6 +511,46 @@ Function EhDoHelestron
   Pop $R1
   Exch $R0
 FunctionEnd
+
+; A instalação registrada (o InstallLocation da chave de desinstalação) está
+; em OUTRA pasta que não $INSTDIR e ainda tem o Helestron? Empurra essa pasta,
+; ou "" (nenhuma registrada, a registrada é $INSTDIR, ou a pasta registrada
+; já não tem o Helestron - apagada à mão). Sem diferença de maiúsculas e de
+; minúsculas (o == do NSIS) nem da barra do fim.
+Function ${UN}OutraInstalacao
+  Push $R0
+  Push $R1
+  Push $R2
+  ClearErrors
+  ReadRegStr $R0 HKCU "${CHAVE_DESINSTALAR}" "InstallLocation"
+  StrCpy $R1 $R0 1 -1
+  ${If} $R1 == "\"
+    StrCpy $R0 $R0 -1          ; C:\ -> C:
+  ${EndIf}
+  StrCpy $R2 $INSTDIR
+  StrCpy $R1 $R2 1 -1
+  ${If} $R1 == "\"
+    StrCpy $R2 $R2 -1
+  ${EndIf}
+  ${If} $R0 == $R2
+    StrCpy $R0 ""
+  ${ElseIf} $R0 != ""
+    Push $R0
+    Call ${UN}EhDoHelestron
+    Pop $R1
+    ${If} $R1 != 1
+      StrCpy $R0 ""
+    ${EndIf}
+  ${EndIf}
+  ClearErrors
+  Pop $R2
+  Pop $R1
+  Exch $R0
+FunctionEnd
+!macroend
+
+!insertmacro FuncoesDeInstalacoes ""
+!insertmacro FuncoesDeInstalacoes "un."
 
 ; A pasta $R0 não existe ou está vazia? Empurra 1 ou 0. A .antigos que a
 ; limpeza agendada pelo Helestron vai apagar (o RunOnce desta pasta: uma
@@ -605,6 +664,18 @@ Function ConferirPasta
       StrCpy $INSTDIR $PastaEscolhida
       Abort
     ${EndIf}
+  ${EndIf}
+  ; o Helestron já instalado em outra pasta muda para esta (o programa sai
+  ; de lá; os dados do usuário não estão em nenhuma das duas)
+  Call OutraInstalacao
+  Pop $1
+  ${If} $1 != ""
+    ${If} ${Cmd} `MessageBox MB_OKCANCEL|MB_ICONINFORMATION "O Helestron já está instalado em outra pasta:$\r$\n$1$\r$\n$\r$\nEle será fechado e removido de lá e instalado na pasta escolhida:$\r$\n$INSTDIR$\r$\n$\r$\nAs configurações, as senhas, os processos e as transcrições são mantidos.$\r$\n$\r$\nClique em OK para continuar ou em Cancelar para escolher outra pasta." IDCANCEL`
+      StrCpy $INSTDIR $PastaEscolhida
+      Abort
+    ${EndIf}
+  ${EndIf}
+  ${If} $0 == "ajustada"
     ; a página relê a pasta do campo depois desta função (e o mostra de
     ; novo no Voltar): o campo passa a ter a pasta própria
     FindWindow $1 "#32770" "" $HWNDPARENT
@@ -727,11 +798,40 @@ Section "Helestron (programa)" SecPrograma
     Abort "Sem permissão para gravar em $INSTDIR."
   ${EndIf}
 
-  ; 1. fecha o Helestron aberto e espera os arquivos ficarem livres
+  ; 1. o Helestron registrado em OUTRA pasta: fechado e removido de lá, como
+  ;    numa atualização (a mesma audiência em andamento adia tudo, código 7,
+  ;    antes de qualquer mudança). Sem isso, ele ficava aberto - a instância
+  ;    é por usuário, e o "Abrir o Helestron" do fim só traria o antigo para
+  ;    a frente -, sem entrada em Aplicativos, com uns 850 MB, e o
+  ;    desinstalador dele apagaria a chave e os atalhos desta instalação.
+  Call OutraInstalacao
+  Pop $Registrada
+  ${If} $Registrada != ""
+    DetailPrint "O Helestron estava instalado em $Registrada: ele é fechado e removido de lá."
+    StrCpy $PastaNova $INSTDIR
+    StrCpy $INSTDIR $Registrada
+    Call FecharHelestron
+    Call EsperarArquivosLivres
+    RMDir /r "${PASTA_ANTIGOS}"
+    Call LiberarArquivos
+    SetDetailsPrint listonly
+    Call RemoverPrograma
+    Delete "$INSTDIR\${DESINSTALADOR}"
+    SetDetailsPrint both
+    Call AgendarLimpeza
+    ; só some se ficou vazia (nada do usuário é apagado aqui)
+    RMDir "$INSTDIR"
+    ; os atalhos eram dela (os desta instalação são criados abaixo)
+    Delete "$SMPROGRAMS\Helestron.lnk"
+    Delete "$DESKTOP\Helestron.lnk"
+    StrCpy $INSTDIR $PastaNova
+  ${EndIf}
+
+  ; 2. fecha o Helestron aberto e espera os arquivos ficarem livres
   Call FecharHelestron
   Call EsperarArquivosLivres
 
-  ; 2. remove o programa da versão anterior: só os arquivos que ela pôs aqui
+  ; 3. remove o programa da versão anterior: só os arquivos que ela pôs aqui
   ;    (os dados ficam em %LOCALAPPDATA%\Helestron e em Documentos\Helestron).
   ;    Restos de uma atualização anterior que já não estão em uso saem antes.
   ${If} $EraDoHelestron == 1
@@ -743,7 +843,7 @@ Section "Helestron (programa)" SecPrograma
     SetDetailsPrint both
   ${EndIf}
 
-  ; 3. copia o programa - a lista dele antes de tudo: uma cópia interrompida
+  ; 4. copia o programa - a lista dele antes de tudo: uma cópia interrompida
   ;    ainda é reconhecida (e removida) pela próxima instalação
   DetailPrint "Copiando o Helestron..."
   SetDetailsPrint listonly
@@ -754,11 +854,11 @@ Section "Helestron (programa)" SecPrograma
 
   WriteUninstaller "$INSTDIR\${DESINSTALADOR}"
 
-  ; 4. Menu Iniciar (direto em Programas, como no Windows 10 e 11)
+  ; 5. Menu Iniciar (direto em Programas, como no Windows 10 e 11)
   SetOutPath "$INSTDIR"
   CreateShortcut "$SMPROGRAMS\Helestron.lnk" "$INSTDIR\${EXE}" "" "$INSTDIR\${EXE}" 0 SW_SHOWNORMAL "" "Baixar processos, transcrever audiências, monitorar a pauta e compartilhar com a IA"
 
-  ; 5. Programas e Recursos / Aplicativos instalados
+  ; 6. Programas e Recursos / Aplicativos instalados
   WriteRegStr HKCU "${CHAVE_DESINSTALAR}" "DisplayName" "Helestron"
   WriteRegStr HKCU "${CHAVE_DESINSTALAR}" "DisplayVersion" "${VERSAO}"
   WriteRegStr HKCU "${CHAVE_DESINSTALAR}" "DisplayIcon" "$INSTDIR\${EXE},0"
@@ -771,7 +871,15 @@ Section "Helestron (programa)" SecPrograma
   WriteRegDWORD HKCU "${CHAVE_DESINSTALAR}" "NoModify" 1
   WriteRegDWORD HKCU "${CHAVE_DESINSTALAR}" "NoRepair" 1
 
-  ; 6. quem usava o Assessor Integrado (a versão anterior): o atalho dele sai
+  ; 7. onde está o programa, para quem o chama de fora (a skill do Claude,
+  ;    scripts da TI): o python.exe ("python.exe" -I -m helestron ...), a
+  ;    versão e a pasta - que também tem o helestron.cmd. O PATH não é
+  ;    alterado: outro Python do computador não é afetado, nem afeta este.
+  WriteRegStr HKCU "${CHAVE_PROGRAMA}" "Python" "$INSTDIR\python.exe"
+  WriteRegStr HKCU "${CHAVE_PROGRAMA}" "Versao" "${VERSAO}"
+  WriteRegStr HKCU "${CHAVE_PROGRAMA}" "InstallLocation" "$INSTDIR"
+
+  ; 8. quem usava o Assessor Integrado (a versão anterior): o atalho dele sai
   ;    da Área de Trabalho e do Menu Iniciar, e os conectores dele, do Claude
   ;    Desktop e do Codex - num processo à parte, sem console e sem esperar:
   ;    a limpeza nunca segura nem derruba a instalação
@@ -833,7 +941,7 @@ Section "-Conferir a instalação" SecConferir
 SectionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecPrograma} "O Helestron, com tudo de que precisa: Python, bibliotecas e o modelo de transcrição."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecPrograma} "O Helestron, com tudo de que precisa: Python, bibliotecas, os modelos de transcrição e a linha de comando (helestron.cmd)."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecAtalho} "Um atalho do Helestron na Área de Trabalho."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
@@ -851,8 +959,25 @@ Section "Uninstall"
   SetShellVarContext current
   SetDetailsPrint both
 
+  ; Esta é a instalação registrada? Uma cópia em outra pasta (a de antes de
+  ; uma instalação noutro lugar que não chegou a removê-la, uma cópia à mão)
+  ; sai sem levar a chave, os atalhos e os conectores da registrada - que
+  ; apontam para o python.exe dela, não daqui.
+  Call un.OutraInstalacao
+  Pop $Registrada
+
   Call un.FecharHelestron
   Call un.EsperarArquivosLivres
+
+  ; Sessões dos portais e perfis do navegador (em instalações antigas, cópia
+  ; do perfil do Chrome com senhas e cookies): não são configuração, saem
+  ; sempre - antes da pergunta sobre os dados, e também no modo silencioso.
+  ; No máximo, pedem um novo login no portal.
+  DetailPrint "Apagando as sessões dos portais e os perfis do navegador..."
+  RMDir /r "$LOCALAPPDATA\Helestron\perfis"
+  ${If} ${FileExists} "$LOCALAPPDATA\Helestron\perfis\*.*"
+    DetailPrint "Parte dos perfis do navegador estava em uso e ficou em $LOCALAPPDATA\Helestron\perfis: apague essa pasta depois."
+  ${EndIf}
 
   ; os conectores do acervo no Claude Desktop e no Codex/ChatGPT Work
   ; (%USERPROFILE%\.codex\config.toml) apontam para o python.exe daqui: sem
@@ -860,7 +985,9 @@ Section "Uninstall"
   ; impede o outro. As duas funções tiram o "helestron" e também os nomes
   ; da versão anterior (assessor-integrado e assessor_integrado), caso a
   ; limpeza da instalação não tenha rodado.
-  ${If} ${FileExists} "$INSTDIR\python.exe"
+  ${If} $Registrada != ""
+    DetailPrint "O Helestron continua instalado em $Registrada: os conectores, os atalhos e o registro dele ficam."
+  ${ElseIf} ${FileExists} "$INSTDIR\python.exe"
     DetailPrint "Removendo os conectores do Claude Desktop e do Codex/ChatGPT Work..."
     nsExec::Exec '"$INSTDIR\python.exe" -I -c "from helestron.compartilhar import claude; claude.remover_mcp()"'
     Pop $0
@@ -872,7 +999,7 @@ Section "Uninstall"
   SetDetailsPrint listonly
   RMDir /r "${PASTA_ANTIGOS}"
   Call un.LiberarArquivos
-  ; só o que a instalação pôs aqui (a lista dela): o resto fica
+  ; só o que a instalação pôs aqui (a lista dela, com o helestron.cmd): o resto fica
   Call un.RemoverPrograma
   Delete "$INSTDIR\${DESINSTALADOR}"
   SetDetailsPrint both
@@ -880,14 +1007,23 @@ Section "Uninstall"
   ; só some se ficou vazia (nada do usuário é apagado aqui)
   RMDir "$INSTDIR"
 
-  Delete "$SMPROGRAMS\Helestron.lnk"
-  Delete "$DESKTOP\Helestron.lnk"
-  DeleteRegKey HKCU "${CHAVE_DESINSTALAR}"
+  ${If} $Registrada == ""
+    Delete "$SMPROGRAMS\Helestron.lnk"
+    Delete "$DESKTOP\Helestron.lnk"
+    DeleteRegKey HKCU "${CHAVE_DESINSTALAR}"
+    ; só os valores que a instalação gravou; a chave só sai se ficou vazia
+    DeleteRegValue HKCU "${CHAVE_PROGRAMA}" "Python"
+    DeleteRegValue HKCU "${CHAVE_PROGRAMA}" "Versao"
+    DeleteRegValue HKCU "${CHAVE_PROGRAMA}" "InstallLocation"
+    DeleteRegKey /ifempty HKCU "${CHAVE_PROGRAMA}"
 
-  ; Configurações e senhas: só com o sim do usuário (no modo silencioso, não).
-  ; Documentos\Helestron (processos, transcrições, pauta) nunca é apagado.
-  MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Apagar também as configurações e as senhas guardadas do Helestron?$\r$\n$\r$\nElas ficam em $LOCALAPPDATA\Helestron (configurações, registros, senhas dos portais, perfis do navegador e a pauta monitorada). Se você pretende instalar o Helestron de novo, responda Não.$\r$\n$\r$\nOs processos, as transcrições e a pauta exportada (Documentos\Helestron) não são apagados em nenhum caso." /SD IDNO IDNO manter
-    DetailPrint "Apagando as configurações e as senhas..."
-    RMDir /r "$LOCALAPPDATA\Helestron"
-  manter:
+    ; Configurações e senhas: só com o sim do usuário (no modo silencioso,
+    ; não) - e só quando o Helestron sai do computador: com outra instalação
+    ; registrada, elas são dela. Documentos\Helestron (processos,
+    ; transcrições, pauta) nunca é apagado.
+    MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Apagar também as configurações e as senhas guardadas do Helestron?$\r$\n$\r$\nElas ficam em $LOCALAPPDATA\Helestron (configurações, registros, senhas dos portais e a pauta monitorada). Se você pretende instalar o Helestron de novo, responda Não.$\r$\n$\r$\nAs sessões dos portais e os perfis do navegador já foram apagados. Os processos, as transcrições e a pauta exportada (Documentos\Helestron) não são apagados em nenhum caso." /SD IDNO IDNO manter
+      DetailPrint "Apagando as configurações e as senhas..."
+      RMDir /r "$LOCALAPPDATA\Helestron"
+    manter:
+  ${EndIf}
 SectionEnd

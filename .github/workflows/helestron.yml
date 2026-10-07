@@ -4,17 +4,22 @@
 #
 #  testes     (Linux) a suíte inteira, com a interface no Chromium em modo
 #             demonstração; as capturas de tela viram artefato.
-#  construir  (Linux) baixa o modelo de transcrição do Hugging Face e gera o
-#             Helestron-Setup-<versão>.exe com construir/construir.py.
+#  construir  (Linux) confere que a tag (se houver) é a versão do programa,
+#             converte o whisper-small para int8 e gera o
+#             Helestron-Setup-<versão>.exe com construir/construir.py (com os
+#             modelos da separação de falantes: a falha deles reprova).
 #  windows    (Windows limpo) faz o que o usuário faz: roda o Setup.exe (em
 #             silêncio, numa pasta COM ESPAÇO E ACENTO), confere arquivos,
-#             atalhos e registro, roda a verificação da instalação, abre a
-#             janela de verdade (autoteste com capturas), transcreve uma fala
-#             sintetizada pela linha de comando, conversa com o servidor MCP,
-#             exporta a pauta em Excel, usa o cofre de senhas (DPAPI),
-#             instala de novo por cima (atualização) e desinstala - os
-#             documentos do usuário têm de ficar.
-#  publicar   (tags v*) cria a versão no GitHub com o instalador testado.
+#             atalhos e registro, roda a verificação da instalação, a linha
+#             de comando (helestron.cmd e o Python de HKCU\Software\Helestron),
+#             abre a janela de verdade (autoteste com capturas), transcreve
+#             uma fala sintetizada pela linha de comando, conversa com o
+#             servidor MCP, exporta a pauta em Excel, usa o cofre de senhas
+#             (DPAPI), instala de novo por cima (atualização) e desinstala -
+#             os documentos do usuário têm de ficar; as sessões dos portais,
+#             não.
+#  publicar   (tags v*) cria a versão no GitHub com o instalador testado - a
+#             tag tem de ser a versão do instalador.
 #
 #  Regra deste arquivo: os scripts dos passos ("run:") só têm ASCII - o
 #  runner os grava em arquivo temporário, e acento ali sai trocado no cmd e
@@ -99,6 +104,18 @@ jobs:
         with:
           python-version: '3.12'
 
+      # Antes de tudo (a construcao e a instalacao no Windows levam quase uma
+      # hora): numa tag, ela tem de ser a versao do programa. Senao, a versao
+      # "v1.0.2" publicaria o Helestron-Setup-1.0.1.exe.
+      - name: Versao do programa (e a tag da publicacao)
+        run: |
+          VERSAO=$(python construir/construir.py --versao)
+          echo "Versao do programa: $VERSAO"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$VERSAO" ]; then
+            echo "A tag $GITHUB_REF_NAME nao e a versao do programa (v$VERSAO, em helestron/__init__.py)."
+            exit 1
+          fi
+
       - name: Ferramentas (NSIS e MinGW-w64)
         run: |
           sudo apt-get update
@@ -107,7 +124,7 @@ jobs:
           x86_64-w64-mingw32-gcc --version | head -n 1
 
       - name: Bibliotecas da construção
-        run: python -m pip install --disable-pip-version-check installer pillow huggingface_hub
+        run: python -m pip install --disable-pip-version-check installer pillow
 
       - name: Downloads reaproveitados (Python para Windows e rodas)
         uses: actions/cache@v4
@@ -122,7 +139,8 @@ jobs:
       # CTranslate2 que vai no instalador (4.8.2; o conversor dele usa o
       # parametro dtype=, que pede transformers 4.56 ou mais novo). Com o
       # modelo em float16 o instalador passava de 500 MB, o limite para
-      # entrega por anexo.
+      # entrega por anexo. Os mesmos comandos estao em construir.py
+      # (COMANDOS_CONVERSAO), que recusa um model.bin fora da faixa do int8.
       - name: Modelo de transcrição (whisper-small convertido para int8)
         run: |
           python -m venv "$RUNNER_TEMP/conversao"
@@ -147,9 +165,13 @@ jobs:
           print("Modelo carregado:", modelo.is_multilingual)
           FIM
 
+      # Sem --sem-falantes: a falha ao obter os modelos da separacao de vozes
+      # reprova a construcao (o manual promete a separacao sem internet).
       - name: Construir (construir/construir.py)
         run: python construir/construir.py --modelo "$RUNNER_TEMP/faster-whisper-small" --saida dist
 
+      # construir.py ja recusa um instalador acima do limite; esta conferencia
+      # fica como segunda barreira, independente do script.
       - name: Tamanho do instalador (cabe no limite de 500 MiB para anexo)
         run: |
           for f in dist/Helestron-Setup-*.exe; do
@@ -249,20 +271,27 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $itens = @('Helestron.exe', 'Desinstalar.exe', 'python.exe', 'pythonw.exe', 'python312.dll',
                      'vcruntime140.dll', 'msvcp140.dll', 'manifesto.json', 'helestron.ico',
-                     'arquivos-instalados.txt',
+                     'arquivos-instalados.txt', 'helestron.cmd',
                      'Lib\site-packages\helestron\__main__.py',
                      'Lib\site-packages\helestron\__pycache__\__main__.cpython-312.pyc',
+                     'Lib\site-packages\helestron\nucleo\paginacao.py',
+                     'Lib\site-packages\helestron\download\acompanhamento.py',
                      'Lib\site-packages\helestron\web\index.html',
                      'Lib\site-packages\webview\__init__.py', 'Lib\site-packages\pythonnet\__init__.py',
                      'Lib\site-packages\faster_whisper\__init__.py', 'Lib\site-packages\pymupdf\__init__.py',
                      'Lib\site-packages\playwright\__init__.py',
-                     'modelos\faster-whisper-small\model.bin')
+                     'modelos\faster-whisper-small\model.bin',
+                     'modelos\falantes\sherpa-onnx-pyannote-segmentation-3-0\model.int8.onnx',
+                     'modelos\falantes\3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx')
           foreach ($item in $itens) {
             if (-not (Test-Path -LiteralPath (Join-Path $env:PASTA $item))) { throw "Faltou $item" }
           }
           $manifesto = Get-Content -LiteralPath (Join-Path $env:PASTA 'manifesto.json') -Raw -Encoding UTF8 | ConvertFrom-Json
           $quantos = @($manifesto.arquivos.PSObject.Properties).Count
-          Write-Host "Manifesto: versao $($manifesto.versao), $quantos arquivos"
+          Write-Host "Manifesto: versao $($manifesto.versao), $quantos arquivos, componentes $($manifesto.componentes | ConvertTo-Json -Compress)"
+          if (-not $manifesto.componentes.falantes) { throw 'O manifesto diz que os modelos da separacao de falantes nao foram embutidos' }
+          if ($manifesto.componentes.modelo_transcricao -ne 'faster-whisper-small') { throw 'O manifesto diz que o modelo de transcricao nao foi embutido' }
+          if (-not $manifesto.arquivos.'helestron.cmd') { throw 'O helestron.cmd ficou fora do manifesto' }
           $shell = New-Object -ComObject WScript.Shell
           $exe = Join-Path $env:PASTA 'Helestron.exe'
           foreach ($pasta in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
@@ -279,6 +308,15 @@ jobs:
           if ($reg.DisplayVersion -ne $manifesto.versao) { throw 'DisplayVersion diferente da versao do manifesto' }
           if ($reg.InstallLocation -ne $env:PASTA) { throw "InstallLocation errado: $($reg.InstallLocation)" }
           if ($reg.UninstallString -notlike '*Desinstalar.exe*') { throw 'UninstallString errado' }
+          # onde esta o programa, para quem o chama de fora (a skill do Claude)
+          $programa = Get-ItemProperty -LiteralPath 'HKCU:\Software\Helestron'
+          $programa | Format-List Python, Versao, InstallLocation
+          if ($programa.Python -ne (Join-Path $env:PASTA 'python.exe')) { throw "HKCU\Software\Helestron\Python errado: $($programa.Python)" }
+          if ($programa.Versao -ne $manifesto.versao) { throw "HKCU\Software\Helestron\Versao errada: $($programa.Versao)" }
+          if ($programa.InstallLocation -ne $env:PASTA) { throw "HKCU\Software\Helestron\InstallLocation errado: $($programa.InstallLocation)" }
+          # o PATH nao muda
+          $path = [Environment]::GetEnvironmentVariable('Path', 'User') + ';' + [Environment]::GetEnvironmentVariable('Path', 'Machine')
+          if ($path -like ('*' + $env:PASTA + '*')) { throw 'O instalador pos a pasta do programa no PATH' }
           # a versao anterior: o atalho dela saiu; o de mesmo nome que nao e dela ficou
           if (Test-Path -LiteralPath (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Assessor Integrado.lnk')) {
             throw 'O atalho da versao anterior (Assessor Integrado) ficou na Area de Trabalho'
@@ -307,6 +345,40 @@ jobs:
           if (Test-Path -LiteralPath $relatorio) { Get-Content -LiteralPath $relatorio -Encoding UTF8 }
           else { Write-Host 'O relatorio nao foi gravado.' }
           if ($p.ExitCode -ne 0) { throw "A verificacao terminou com o codigo $($p.ExitCode)" }
+
+      # Como a skill do Claude chama o programa: pelo Python de
+      # HKCU\Software\Helestron ou pelo helestron.cmd da pasta (sem PATH), numa
+      # pasta com espaco e acento - a saida em UTF-8 e o codigo de saida
+      # (0, 1, 2) chegam inteiros a quem chamou.
+      - name: Linha de comando (helestron.cmd e o Python do registro)
+        shell: powershell
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # a saida do programa e UTF-8 (caminhos com acento no JSON)
+          try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { Write-Host "A saida do console nao mudou: $_" }
+          $programa = Get-ItemProperty -LiteralPath 'HKCU:\Software\Helestron'
+          $cmd = Join-Path $programa.InstallLocation 'helestron.cmd'
+          $versao = (& $cmd --version | Out-String).Trim()
+          Write-Host "helestron.cmd --version: $versao (codigo $LASTEXITCODE)"
+          if ($LASTEXITCODE -ne 0) { throw "helestron.cmd --version terminou com o codigo $LASTEXITCODE" }
+          if ($versao -ne ('Helestron ' + $programa.Versao)) { throw "Versao diferente da do registro: $versao" }
+          $json = (& $cmd caminhos --json | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "helestron.cmd caminhos --json terminou com o codigo $LASTEXITCODE" }
+          $caminhos = $json | ConvertFrom-Json
+          Write-Host "python: $($caminhos.python); instalacao: $($caminhos.instalacao); recursos: $($caminhos.recursos -join ', ')"
+          if ($caminhos.python -ne $programa.Python) { throw "O programa diz outro python: $($caminhos.python)" }
+          if ($caminhos.instalacao -ne $programa.InstallLocation) { throw "O programa diz outra pasta: $($caminhos.instalacao)" }
+          if (-not $caminhos.instalado) { throw 'O programa nao se reconhece instalado' }
+          & $cmd baixar --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "helestron.cmd baixar --help terminou com o codigo $LASTEXITCODE" }
+          & $cmd baixar --opcao-que-nao-existe 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 2) { throw "O uso errado devia sair com 2 pelo helestron.cmd, saiu com $LASTEXITCODE" }
+          & $cmd pauta listar --json | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "helestron.cmd pauta listar terminou com o codigo $LASTEXITCODE" }
+          $direto = (& $programa.Python -I -m helestron --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $direto -ne $versao) { throw "O Python do registro respondeu: $direto ($LASTEXITCODE)" }
+          Write-Host 'Linha de comando OK.'
 
       - name: Autoteste da interface (janela real, capturas)
         shell: powershell
@@ -605,6 +677,10 @@ jobs:
         timeout-minutes: 10
         run: |
           $ErrorActionPreference = 'Stop'
+          # uma sessao de portal guardada: sai sempre, mesmo no modo silencioso
+          $perfis = Join-Path $env:LOCALAPPDATA 'Helestron\perfis'
+          New-Item -ItemType Directory -Force -Path (Join-Path $perfis 'esaj-TJAL') | Out-Null
+          Set-Content -LiteralPath (Join-Path $perfis 'esaj-TJAL\sessao.json') -Value '{}' -Encoding Ascii
           $desinstalar = Join-Path $env:PASTA 'Desinstalar.exe'
           $p = Start-Process -FilePath $desinstalar -ArgumentList '/S' -PassThru
           $null = $p.Handle
@@ -615,10 +691,12 @@ jobs:
           while (((Test-Path -LiteralPath (Join-Path $env:PASTA 'python312.dll')) -or (Test-Path -LiteralPath $chave)) -and ((Get-Date) -lt $limite)) {
             Start-Sleep -Seconds 2
           }
-          foreach ($item in @('Helestron.exe', 'python312.dll', 'Lib', 'manifesto.json', 'modelos')) {
+          foreach ($item in @('Helestron.exe', 'python312.dll', 'Lib', 'manifesto.json', 'modelos', 'helestron.cmd')) {
             if (Test-Path -LiteralPath (Join-Path $env:PASTA $item)) { throw "O programa ficou: $item" }
           }
           if (Test-Path -LiteralPath $chave) { throw 'A chave de desinstalacao ficou no registro' }
+          if (Test-Path -LiteralPath 'HKCU:\Software\Helestron') { throw 'HKCU\Software\Helestron ficou no registro' }
+          if (Test-Path -LiteralPath $perfis) { throw 'As sessoes dos portais e os perfis do navegador ficaram' }
           foreach ($pasta in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
             if (Test-Path -LiteralPath (Join-Path $pasta 'Helestron.lnk')) { throw "O atalho ficou em $pasta" }
           }
@@ -633,7 +711,7 @@ jobs:
           if ((Test-Path -LiteralPath $toml) -and ((Get-Content -LiteralPath $toml -Raw) -match 'mcp_servers\.helestron')) {
             throw 'O conector continuou registrado no Codex/ChatGPT Work'
           }
-          Write-Host 'Desinstalacao OK: programa removido, documentos e configuracao mantidos.'
+          Write-Host 'Desinstalacao OK: programa e sessoes removidos, documentos e configuracao mantidos.'
 
       - name: Pasta com arquivos do usuario (subpasta propria; nada do usuario e apagado)
         shell: powershell
@@ -740,14 +818,22 @@ jobs:
             (o programa, as bibliotecas e o modelo de transcrição vão dentro). Ao
             atualizar, os seus dados são mantidos. O arquivo .sha256 traz o código
             de conferência do instalador.
+        # A versao vem sempre do nome do instalador testado (um so). Numa tag,
+        # ela tem de ser a mesma: "v1.0.2" com o Helestron-Setup-1.0.1.exe
+        # publicaria a versao errada e ainda ocuparia a tag da verdadeira.
         run: |
           ls -l dist
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            TAG="$GITHUB_REF_NAME"
-          else
-            ARQ=$(ls dist/Helestron-Setup-*.exe | head -n 1)
-            VERSAO=$(basename "$ARQ" .exe | sed 's/^Helestron-Setup-//')
-            TAG="v$VERSAO"
+          QUANTOS=$(find dist -maxdepth 1 -name 'Helestron-Setup-*.exe' | wc -l)
+          if [ "$QUANTOS" -ne 1 ]; then
+            echo "Esperava um so instalador em dist, achei $QUANTOS."
+            exit 1
+          fi
+          ARQ=$(find dist -maxdepth 1 -name 'Helestron-Setup-*.exe')
+          VERSAO=$(basename "$ARQ" .exe | sed 's/^Helestron-Setup-//')
+          TAG="v$VERSAO"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$TAG" ]; then
+            echo "A tag $GITHUB_REF_NAME nao e a versao do instalador ($TAG)."
+            exit 1
           fi
           echo "Versao: $TAG (commit $GITHUB_SHA)"
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Helestron $TAG" --notes "$NOTAS"
