@@ -99,7 +99,9 @@ Cada processo::
       #                   "situacao", "inicio", "paginas"}], "partes" (modo completo)
       #   sem manifesto (PDF de versão anterior): {"garantida": false, "resumo":
       #   "paginação não conferida ...", "paginacao": null, "ultima": null,
-      #   "ausentes": null}
+      #   "ausentes": null}; com um manifesto que não descreve o PDF (página
+      #   incluída ou apagada depois do download, o texto sai nao_garantida):
+      #   o mesmo, com o resumo "NÃO garantida: o manifesto de paginação ..."
       "causa": "",                        # por que não deu OK (modelos.CAUSAS): login,
                                           # sessao, portal, portal_parou, navegador_ocupado,
                                           # falha, inesperado, pdf_aberto, gravacao,

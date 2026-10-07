@@ -525,6 +525,53 @@ class TestComandosParaAutomacao(unittest.TestCase):
                       saida)
         self.assertNotIn(f"{outro}.pdf:", saida)
 
+    def test_preparar_pasta_pdf_alterado_nao_tem_paginacao_garantida(self):
+        """Achado V12: o PDF alterado depois do download (página incluída ou
+        apagada num editor que conserva os anexos) tinha o texto
+        "nao_garantida", mas o JSON que a skill lê dizia garantida=true e
+        "página N = folha N": a citação "fl. N" saía errada sem aviso."""
+        import pymupdf
+
+        from helestron.nucleo import paginacao
+
+        lote = self.amb.raiz / "Lotes da skill" / "Lote 4"
+        lote.mkdir(parents=True)
+        esaj, eproc = "0700001-27.2024.8.02.0001", "0700002-02.2024.8.02.0001"
+        doc = pymupdf.open()
+        for folha in range(1, 4):
+            doc.new_page().insert_text((72, 72), f"Peça da folha {folha} dos autos")
+        paginacao.gravar_no_doc(doc, paginacao.manifesto_esaj(esaj, 3, {}, tribunal="TJAL"))
+        doc.new_page(0).insert_text((72, 72), "ANOTAÇÃO DO ASSESSOR")     # incluída depois
+        doc.save(str(lote / f"{esaj}.pdf"))
+        doc.close()
+        doc = pymupdf.open()
+        for i in range(1, 5):
+            doc.new_page().insert_text((72, 72), f"Página {i} do documento")
+        docs = [{"evento": 1, "rotulo": "INIC1", "origem": "pdf", "situacao": "ok",
+                 "inicio": 1, "paginas": 3},
+                {"evento": 5, "rotulo": "CONT1", "origem": "pdf", "situacao": "ok",
+                 "inicio": 4, "paginas": 2}]                  # descreve 5 páginas; o PDF tem 4
+        paginacao.gravar_no_doc(doc, paginacao.manifesto_eproc(eproc, docs, tribunal="TJAL"))
+        doc.save(str(lote / f"{eproc}.pdf"))
+        doc.close()
+        with self.assertLogs("helestron.compartilhar.textos", "WARNING"):
+            codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--json")
+        self.assertEqual(codigo, 0)
+        itens = {Path(i["pdf"]).stem: i for i in json.loads(saida)["itens"]}
+        for num, paginas, frase in ((esaj, 4, "o manifesto de paginação diz 3 folhas, mas o PDF "
+                                               "tem 4 páginas"),
+                                    (eproc, 4, "o manifesto de paginação descreve 5 páginas, "
+                                               "mas o PDF tem 4")):
+            with self.subTest(num):
+                item = itens[num]
+                self.assertEqual(item["paginas"], paginas)
+                self.assertEqual(set(item["paginacao"]), {"garantida", "resumo"})
+                self.assertFalse(item["paginacao"]["garantida"])
+                self.assertTrue(item["paginacao"]["resumo"].startswith("NÃO garantida: " + frase),
+                                item["paginacao"]["resumo"])
+                primeira = Path(item["texto"]).read_text(encoding="utf-8").split("\n", 1)[0]
+                self.assertIn("paginacao=nao_garantida", primeira)   # o mesmo que o texto
+
     def test_recursos_novos_e_versao_do_pacote(self):
         import helestron
 

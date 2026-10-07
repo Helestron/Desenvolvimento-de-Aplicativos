@@ -269,10 +269,11 @@ Processo dependente (incidente) tem o sufixo no nome: `0000000-00.0000.0.00.0000
    - `(pág. M do PDF)` é só a posição no arquivo, para navegar: **nunca a
      cite**. Páginas marcadas `NÃO INCLUÍDO`, `gravação fora do PDF` ou
      `capa gerada pelo Helestron` não são páginas dos autos;
-   - com `paginacao=nao_garantida` na 1ª linha do texto (PDF baixado por
-     versão anterior), a página do PDF **pode não ser** a folha: cite a folha
-     carimbada na própria página ou o documento, e sugira baixar o processo
-     de novo.
+   - com `paginacao=nao_garantida` na 1ª linha do texto (PDF de versão
+     anterior ou alterado depois do download), a página do PDF **pode não
+     ser** a folha: cite a folha carimbada na própria página ou o documento
+     (no eProc, nunca “fl.”: o evento e o documento, sem a página), e sugira
+     baixar o processo de novo.
 
    Não presuma fatos que não estejam nos autos; se faltar informação, diga o
    que falta e onde ela deveria estar.
@@ -356,7 +357,8 @@ description: Método de trabalho com o acervo judicial desta pasta — autos em 
     Helestron` não são páginas dos autos.
   - Com `paginacao=nao_garantida` (PDF de versão anterior ou alterado depois
     do download), a página do PDF pode não ser a folha: cite a folha
-    carimbada na página ou o documento.
+    carimbada na página ou o documento (no eProc, nunca “fl.”: o evento e o
+    documento, sem a página).
 - Não invente fato, lei, súmula ou julgado.
 - Estrutura de sentença: relatório, fundamentação (questões processuais,
   prejudiciais, mérito ponto a ponto, com as provas) e dispositivo (com
@@ -691,9 +693,14 @@ def _celula(texto: str) -> str:
 def _paginacao_do_pdf(acervo: Acervo, chave: str, pdf: Path) -> tuple[int, str, str, str]:
     """(páginas, sistema, paginação, ausentes) para o índice.
 
-    Pelo manifesto gravado no PDF; sem ele (PDF de versão anterior), pela 1ª
-    linha do texto extraído, se estiver em dia."""
+    Pelo manifesto gravado no PDF - a mesma conferência do texto: o
+    manifesto que não descreve o arquivo (página incluída ou apagada depois
+    do download) dá a paginação não garantida; sem ele (PDF de versão
+    anterior), pela 1ª linha do texto extraído, se estiver em dia."""
     n, m = textos.info_pdf(pdf)
+    if m and not textos.manifesto_confere(m, n):
+        return (n, _NOME_SISTEMA.get(m.get("sistema", ""), "—"),
+                textos.resumo_da_paginacao(m, n), "—")
     if m:
         sistema = _NOME_SISTEMA.get(m.get("sistema", ""), "—")
         if m.get("paginacao") == paginacao.FOLHAS:

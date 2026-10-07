@@ -237,21 +237,87 @@ COMO_CITAR_NAO_GARANTIDA = (
     "como folha. Cite a folha carimbada na própria página, se houver; senão, o documento "
     "(linha [documento: …]). Para a numeração exata, baixe o processo de novo pelo "
     "Helestron 1.0.2 ou mais novo.]")
+# O PDF do eProc cujo manifesto não descreve o arquivo: a regra do eProc vale
+# (nunca "fl."), inclusive para o carimbo "fls. N" que o documento migrado de
+# outro sistema (o e-SAJ, no TJAL) traz na página.
+COMO_CITAR_EPROC_NAO_GARANTIDA = (
+    "[Como citar: o eProc não numera folhas: nunca cite \"fl.\", nem o carimbo \"fls. N\" que "
+    "um documento vindo de outro sistema traga na página. \"pág. M do PDF\" é só a posição no "
+    "arquivo, para navegar: nunca a cite. Cite o evento e o documento que a linha "
+    "[documento: …] (ou a própria página) indicar, como \"evento N, RÓTULO\", sem a página, e "
+    "avise o magistrado de que a página não pôde ser conferida; para a página exata, baixe o "
+    "processo de novo.]")
+
+
+def _plural(n: int, um: str, varios: str) -> str:
+    return f"{n} {um if n == 1 else varios}"
+
+
+def manifesto_confere(m: dict | None, n: int) -> bool:
+    """O manifesto de paginação descreve este PDF de 'n' páginas? No e-SAJ, a
+    última folha tem de ser a última página; no eProc, a última página que os
+    documentos (ou, no modo completo, as partes do arquivo) ocupam. Página
+    incluída ou apagada depois do download (num editor que conserva os
+    anexos) faz o manifesto descrever outro arquivo.
+
+    É a conferência que decide se o texto sai com a paginação do manifesto
+    ou "nao_garantida"; o índice, o conector e o JSON (preparar --pasta,
+    baixar) a usam para dizer o mesmo que o texto. Sem manifesto: False."""
+    if not paginacao.valido(m):
+        return False
+    if m.get("paginacao") == paginacao.FOLHAS:
+        try:
+            return int(m.get("ultima") or 0) == n
+        except (TypeError, ValueError):
+            return False
+    fim = _fim_eproc(m)
+    return not fim or fim == n
+
+
+def _divergencia(m: dict, n: int) -> str:
+    """'o manifesto de paginação diz 3 folhas, mas o PDF tem 4 páginas'."""
+    if m.get("paginacao") == paginacao.FOLHAS:
+        try:
+            ultima = int(m.get("ultima") or 0)
+        except (TypeError, ValueError):
+            ultima = 0
+        return (f"o manifesto de paginação diz {_plural(ultima, 'folha', 'folhas')}, mas o PDF "
+                f"tem {_plural(n, 'página', 'páginas')}")
+    return (f"o manifesto de paginação descreve {_plural(_fim_eproc(m), 'página', 'páginas')}, "
+            f"mas o PDF tem {n}")
+
+
+def resumo_da_paginacao(m: dict | None, n: int) -> str:
+    """A frase do índice, do conector e do JSON sobre a paginação de um PDF
+    de 'n' páginas - a mesma que o texto dele dá: a do manifesto
+    (paginacao.resumo), se ele descreve o arquivo; a de paginação não
+    garantida, se não descreve (alterado depois do download); a de PDF de
+    versão anterior, sem manifesto."""
+    if not paginacao.valido(m):
+        return paginacao.resumo(None)
+    if manifesto_confere(m, n):
+        return paginacao.resumo(m)
+    if m.get("paginacao") == paginacao.FOLHAS:
+        efeito = "a página do PDF pode não ser a folha"
+    else:
+        efeito = ("o evento, o documento e a página do eProc de cada página do PDF não são "
+                  "garantidos")
+    return (f"NÃO garantida: {_divergencia(m, n)} (o arquivo foi alterado depois do "
+            f"download?): {efeito}; baixe o processo de novo")
 
 
 def _plano_esaj(m: dict, n: int, toc) -> _Plano:
     ultima = int(m.get("ultima") or 0)
     aus = paginacao.ausentes(m)
     docs = _documento_por_pagina(toc, n)
-    if ultima != n:
+    if not manifesto_confere(m, n):
         # O manifesto não descreve este arquivo (alterado depois?): não há
         # como garantir que a página é a folha.
         log.warning("manifesto do e-SAJ diz %d folhas, mas o PDF tem %d páginas", ultima, n)
         plano = _plano_sem_garantia(toc, n, ESAJ)
-        plano.linhas.insert(0, f"[{_processo(m)}autos do e-SAJ{_do_tribunal(m)}: o manifesto "
-                               f"de paginação diz {ultima} folhas, mas o PDF tem {n} páginas "
-                               "(o arquivo foi alterado depois do download?): a página do "
-                               "PDF NÃO é garantidamente a folha.]")
+        plano.linhas.insert(0, f"[{_processo(m)}autos do e-SAJ{_do_tribunal(m)}: "
+                               f"{_divergencia(m, n)} (o arquivo foi alterado depois do "
+                               "download?): a página do PDF NÃO é garantidamente a folha.]")
         return plano
     linhas = [f"[{_processo(m)}autos do e-SAJ{_do_tribunal(m)}. A página N deste PDF é "
               f"sempre a folha N dos autos (fls. 1 a {ultima}).]", COMO_CITAR_ESAJ]
@@ -379,19 +445,17 @@ def _fim_eproc(m: dict) -> int:
 
 
 def _plano_eproc(m: dict, n: int, toc) -> _Plano:
-    fim = _fim_eproc(m)
-    if fim and fim != n:
+    if not manifesto_confere(m, n):
         # Como no e-SAJ: o manifesto não descreve este arquivo (página apagada
         # ou incluída depois do download, num editor que conserva os anexos),
-        # e cada marca citaria outra página, sem aviso nenhum.
-        log.warning("manifesto do eProc descreve %d páginas, mas o PDF tem %d", fim, n)
+        # e cada marca citaria outra página, sem aviso nenhum. A instrução de
+        # citação é a do eProc (nunca "fl."), e não a do e-SAJ.
+        log.warning("manifesto do eProc descreve %d páginas, mas o PDF tem %d", _fim_eproc(m), n)
         plano = _plano_sem_garantia(toc, n, EPROC)
-        plano.linhas.insert(0, f"[{_processo(m)}autos do eProc{_do_tribunal(m)}: o manifesto "
-                               f"de paginação descreve {fim} páginas, mas o PDF tem {n} (o "
-                               "arquivo foi alterado depois do download?): o evento, o "
-                               "documento e a página do eProc de cada página do PDF NÃO são "
-                               "garantidos.]")
-        plano.linhas += _texto_capa(m)
+        plano.linhas = [f"[{_processo(m)}autos do eProc{_do_tribunal(m)}: {_divergencia(m, n)} "
+                        "(o arquivo foi alterado depois do download?): o evento, o documento e "
+                        "a página do eProc de cada página do PDF NÃO são garantidos.]",
+                        COMO_CITAR_EPROC_NAO_GARANTIDA] + _texto_capa(m)
         return plano
     if str(m.get("modo") or "") == "completo":
         return _plano_eproc_completo(m, n, toc)

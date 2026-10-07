@@ -924,6 +924,35 @@ class TestCliParaAutomacao(BaseCli):
                                                "--rebaixar-incompletos")
         self.assertIn("não muda o desfecho", motivos[D.formatado])
 
+    def test_retomar_pdf_alterado_volta_com_rebaixar_incompletos(self):
+        """Achado V12: o PDF alterado depois do download (o manifesto não o
+        descreve mais) tem a paginação não garantida. O --retomar diz como
+        baixá-lo de novo, e com --rebaixar-incompletos (o que a seção 7 da
+        integração manda fazer com garantida=false) ele volta ao motor."""
+        import pymupdf
+
+        destino = self.tmp / "Lote"
+        pdf = self.pdf_na_pasta(destino, A, ausentes={})
+        with pymupdf.open(str(pdf)) as doc:       # a 1ª página apagada depois do download
+            doc.delete_page(0)
+            doc.save(str(pdf.with_name("alterado.pdf.novo")))
+        pdf.with_name("alterado.pdf.novo").replace(pdf)
+        motor._gravar_relatorio(destino / "_controle" / "relatorio.csv", [
+            [1, A.formatado, "TJAL", "esaj", "OK", 6, 3, "", "não", "", "", "", ""],
+            [2, B.formatado, "TJAL", "esaj", "ERRO", "", "", "", "não", "", "x", "", "falha"]])
+        arq = self.tmp / "lote.json"
+        self.rodar([A.formatado, B.formatado, "--destino", str(destino), "--retomar", "--json",
+                    str(arq)])
+        self.assertEqual([n.formatado for n in self.capturado["numeros"]], [B.formatado])
+        motivos = {i["numero"]: i["motivo"] for i in self.ler_json(arq)["ignorados_por_retomar"]}
+        self.assertEqual(motivos[A.formatado], "baixado, com a paginação não garantida (o PDF foi "
+                                               "alterado depois do download?): para baixá-lo de "
+                                               "novo, use --rebaixar-incompletos")
+        self.rodar([A.formatado, B.formatado, "--destino", str(destino), "--retomar",
+                    "--rebaixar-incompletos"])
+        self.assertEqual([n.formatado for n in self.capturado["numeros"]],
+                         [A.formatado, B.formatado])
+
     # ---------------------------------------------- opções, cofre, trava
     def test_sem_cofre_e_opcoes_novas_chegam_ao_motor(self):
         (self.tmp / "credenciais.json").write_text("{}", encoding="utf-8")

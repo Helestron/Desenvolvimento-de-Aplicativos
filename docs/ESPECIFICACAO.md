@@ -326,9 +326,9 @@ python -m helestron baixar [NÚMEROS...] [--lista ARQ|URL] [--destino PASTA] [--
 |---|---|
 | `--completar J.TR.OOOO` | completa os números curtos da linha de comando (`NNNNNNN-DD.AAAA`, com ou sem `/NN`) com segmento, tribunal e foro. Argumento que não dá número nenhum não some em silêncio: vai para `ignorados` (`{argumento, motivo}`) e é impresso como “ignorado” |
 | `--sem-cofre` | não usa o cofre (`OpcoesDownload.usar_cofre = False`) nem pergunta senha: no modo `senha`, o grupo entra como `manual` (`motor._opcoes_do_grupo`), com o navegador visível na tela de entrada |
-| `--rebaixar-incompletos` | baixa de novo o PDF que já está na pasta só se ele tem `incompleto` ou não tem o manifesto de paginação (seção 13) |
+| `--rebaixar-incompletos` | baixa de novo o PDF que já está na pasta só se ele tem `incompleto`, não tem o manifesto de paginação ou tem um que não o descreve, porque foi alterado depois do download (seção 13) |
 | `--texto` | depois do lote, `textos.garantir_texto` de cada PDF OK ou JA_BAIXADO: fora do acervo, em `<pasta do PDF>/_texto/<nome>.txt` (o do sigiloso fica na própria pasta de sigilosos); dentro do acervo, em `<acervo>/_ia/texto`. Autos de sigiloso presos no acervo não viram texto (`sigiloso_ignorado`). `textos.analisar` dá as páginas sem texto extraível de cada um (`paginas_sem_texto`, impressas e no JSON) |
-| `--retomar` | com a relação, ou só com `--destino`: baixa os números da relação que o relatório da pasta do lote (`motor.ler_relatorio_do_lote`, que lê também o relatório completo da pasta de sigilosos) não tem ou cuja linha `pede_nova_tentativa`, o `SIGILOSO_SEM_SENHA` cuja senha a relação agora traz e as linhas do relatório que pedem nova tentativa. Da linha OK ou JA_BAIXADO, volta o que o motor baixaria de novo (`cli._baixado_que_volta`, com as mesmas regras de `_registro_anterior` e `_baixar_de_novo`): o PDF que já não está na pasta do lote nem na de sigilosos dele; com `--rebaixar-incompletos`, o que tem `incompleto` ou não tem o manifesto; e o do e-SAJ de versão anterior com sinal de numeração deslocada. O que fica de fora é impresso e vai para `ignorados_por_retomar`, com o porquê (o que só `--rebaixar-incompletos` refaria diz isso); sem nada a retomar, sai com 0. Só com `--destino` e sem o relatório de um lote em `_controle` (caminho errado), sai com 2 (`causa_erro` `sem_processos`) |
+| `--retomar` | com a relação, ou só com `--destino`: baixa os números da relação que o relatório da pasta do lote (`motor.ler_relatorio_do_lote`, que lê também o relatório completo da pasta de sigilosos) não tem ou cuja linha `pede_nova_tentativa`, o `SIGILOSO_SEM_SENHA` cuja senha a relação agora traz e as linhas do relatório que pedem nova tentativa. Da linha OK ou JA_BAIXADO, volta o que o motor baixaria de novo (`cli._baixado_que_volta`, com as mesmas regras de `_registro_anterior` e `_baixar_de_novo`): o PDF que já não está na pasta do lote nem na de sigilosos dele; com `--rebaixar-incompletos`, o que tem `incompleto`, não tem o manifesto ou tem a paginação não garantida; e o do e-SAJ de versão anterior com sinal de numeração deslocada. O que fica de fora é impresso e vai para `ignorados_por_retomar`, com o porquê (o que só `--rebaixar-incompletos` refaria diz isso); sem nada a retomar, sai com 0. Só com `--destino` e sem o relatório de um lote em `_controle` (caminho errado), sai com 2 (`causa_erro` `sem_processos`) |
 | `--esperar-navegador MIN` | o `NavegadorOcupado` (outro download usa o perfil do navegador do portal; ou a subclasse `CopiaAntigaPresa`, do modo certificado: a cópia antiga do perfil inteiro do Chrome ainda não pôde ser apagada) antes de o grupo começar: tenta de novo a cada `ESPERA_NAVEGADOR_S` (30 s) até o prazo, com o evento `navegador_ocupado` e o aviso do motivo real (`motivo` `outro_download` ou `copia_antiga_presa`: “ocupado por outro download”, ou a cópia antiga e o que fechar); sem a opção, o grupo termina em ERRO com a causa `navegador_ocupado`, e o detalhe diz qual dos dois. MIN é finito, de 0 a 1440 (`MAX_ESPERA_NAVEGADOR_MIN`, um dia); fora disso, erro de uso |
 | `--json ARQ` | o acompanhamento em JSON (abaixo) |
 | `--eventos` | cada evento numa linha `HELESTRON-EVENTO {json}` da saída padrão (`contexto.linha_de_evento`) |
@@ -407,7 +407,9 @@ relação. Cada processo: `ordem`, `numero` (o real, mesmo sigiloso),
 `incompleto`, `paginacao` (`null` sem PDF; senão `garantida` e o essencial
 do manifesto, `motor.essencial_da_paginacao`: `sistema`, `paginacao`,
 `resumo`, `ultima` e `ausentes` e, no e-SAJ, `folhas_ausentes` e `origem`;
-no eProc, `modo`, `documentos` e, no modo completo, `partes`), `causa`,
+no eProc, `modo`, `documentos` e, no modo completo, `partes`; sem o
+manifesto, ou com um que não descreve o PDF, `garantida` é `false`, com o
+`resumo` e o resto `null`), `causa`,
 `refazer`, `consultas`, `detalhe`, `midias`, `segundos` e `data_hora`.
 
 **Eventos** (`contexto.EVENTOS`; `Contexto.evento()` não faz nada na base e
@@ -468,7 +470,12 @@ incompleto, detalhe, paginacao, sigiloso, consultas, baixado_em}`. O
 processo que já está na pasta (JA_BAIXADO) conserva o registro, das três
 fontes, da menos para a mais confiável: a linha anterior do relatório, o
 `_meta.json` e o manifesto do PDF (`paginacao.ler_do_pdf`, a fonte primária
-do sistema, da paginação e, no e-SAJ, do `incompleto`). O detalhe vira “já
+do sistema, da paginação e, no e-SAJ, do `incompleto`). O manifesto que
+não descreve o PDF (`textos.manifesto_confere`: página incluída ou
+apagada depois do download) dá a paginação `{garantida: false, resumo}`
+(`textos.resumo_da_paginacao`), a mesma do texto, que sai
+`nao_garantida`; com `--rebaixar-incompletos`, esse PDF é baixado de
+novo. O detalhe vira “já
 estava na pasta (não baixei de novo); <detalhe anterior>”, sem os trechos
 que só valiam para a rodada anterior; sem registro nenhum, “sem registro
 do download anterior: paginação não conferida”. O PDF do e-SAJ sem
@@ -525,7 +532,9 @@ deu certo. `SUFIXOS_CONTROLE` (`_capa.txt`, `_capa.json`,
   inclui os PDFs da pasta de sigilosos do lote, com o texto em
   `<sigilosos do lote>/_texto` (ou na subpasta relativa de `--texto-em`
   que fique dentro dela; nunca no acervo). Cada item: `pdf`, `texto`, `situacao`, `erro`,
-  `sigiloso`, `paginas`, `paginacao` (sempre com `garantida`),
+  `sigiloso`, `paginas`, `paginacao` (sempre com `garantida`, que é
+  `false`, com o `resumo`, sem o manifesto ou com um que não descreve o
+  PDF: a mesma conferência do texto, `textos.manifesto_confere`),
   `paginas_sem_texto` e `paginas_sem_texto_pdf`. Códigos: 0, 1 (algum PDF
   falhou) ou 2 (pasta que não existe; `--texto-em` ou
   `--incluir-sigilosos` sem `--pasta`; `--sem-texto` com `--pasta`).
@@ -2402,7 +2411,10 @@ do `os.replace`).
   aviso; no e-SAJ, as próprias folhas).
 * **Preâmbulo**: linhas entre colchetes, tiradas do manifesto — o que o
   arquivo é, como citar (`COMO_CITAR_ESAJ`, `COMO_CITAR_EPROC`,
-  `COMO_CITAR_NAO_GARANTIDA`), as folhas com aviso e o motivo, as notas do
+  `COMO_CITAR_NAO_GARANTIDA` e, no eProc cujo manifesto não descreve o
+  PDF, `COMO_CITAR_EPROC_NAO_GARANTIDA`: nunca “fl.”, nem o carimbo
+  “fls. N” de documento vindo de outro sistema; cita-se o evento e o
+  documento, sem a página), as folhas com aviso e o motivo, as notas do
   download e, no eProc, a capa, as partes, os documentos não incluídos, as
   gravações e os eventos sem documento. Nenhuma delas contém `=== [`.
 * **Marcas** (o que vai entre os colchetes é o que se cita):
@@ -2418,7 +2430,10 @@ do `os.replace`).
     partes, `parte j, pág. Y` e `(pág. M do PDF)`). Como no e-SAJ, se a
     última página que o manifesto descreve (documentos ou partes do arquivo)
     não é a última do PDF (arquivo alterado depois do download), o texto
-    sai `nao_garantida`, com o aviso e a capa no preâmbulo;
+    sai `nao_garantida`, com o aviso, a instrução de citação do eProc e a
+    capa no preâmbulo. A conferência é uma só, `manifesto_confere(m, n)`,
+    que o índice, o conector, o `preparar --pasta` e o JA_BAIXADO do motor
+    também usam, com a frase de `resumo_da_paginacao(m, n)`;
   - sem paginação garantida: `=== [pág. M do PDF] ===`.
   “(pág. M do PDF)” é só a posição no arquivo, para navegar: nunca se cita.
   Abaixo da marca, `[documento: …]` (o marcador do PDF da página).
@@ -2442,7 +2457,8 @@ do `os.replace`).
 * **Funções**: `marcas`, `cabecalho`, `preambulo`, `citacao_na_posicao`,
   `buscar_citando` (a busca ignora o cabeçalho, as marcas e as linhas do
   programa, e preserva a posição para o acento), `faixa_do_documento`,
-  `eventos_do_rotulo`, `info_pdf`, `recortar_paginas` e `folha_na_posicao`
+  `eventos_do_rotulo`, `info_pdf`, `manifesto_confere`,
+  `resumo_da_paginacao`, `recortar_paginas` e `folha_na_posicao`
   (página do PDF), `analisar(caminho) → (texto, info)` (PDF, `.txt` ou
   `.docx`) e `info_do_texto` (`versao`, `sistema`, `paginacao`, `paginas`,
   `ausentes`, `paginas_sem_texto` — citadas como os autos as citam:
@@ -2455,14 +2471,16 @@ do `os.replace`).
 As quatro ferramentas continuam com os mesmos nomes, todas só de leitura:
 
 * `listar_acervo`: os processos, com as páginas, o caminho e
-  `paginacao.resumo` de cada PDF, e as transcrições, com o tamanho em
-  caracteres;
+  `textos.resumo_da_paginacao` de cada PDF (o `paginacao.resumo` do
+  manifesto que descreve o arquivo; “NÃO garantida…” se ele não o
+  descreve), e as transcrições, com o tamanho em caracteres;
 * `ler_processo {numero, folha_inicial?, folha_final?, evento?,
   documento?}`: o texto pela faixa de páginas do PDF (no e-SAJ, as folhas)
   ou, no eProc, pelo evento e o documento (o rótulo que aparece em mais de
   um evento pede o evento). A resposta começa por um cabeçalho (sistema,
   páginas, “Página N = folha N.”, as folhas ausentes, ou como citar no
-  eProc, ou o aviso de paginação não garantida) e pelo preâmbulo do texto.
+  eProc, ou o aviso de paginação não garantida, que no eProc manda citar o
+  evento e o documento, nunca “fl.”) e pelo preâmbulo do texto.
   A faixa além do fim ou invertida dá `isError` (“o PDF tem só N
   página(s)…”); `folha_final` maior que o total é cortada no total. A
   resposta acima de `LIMITE_CARACTERES` (90.000) é cortada no começo de uma
@@ -2501,9 +2519,13 @@ resposta que repete um texto sem forma em UTF-8 (o escape `\ud800` no
   recebê-la. O rodapé diz que o programa mantém o arquivo em dia. O
   conteúdo traz as regras: no e-SAJ, página N = folha N, e a página de
   aviso não é prova; no eProc, cita-se evento, rótulo e p. Y;
-  “(pág. M do PDF)” nunca se cita; o que fazer com `nao_garantida`.
+  “(pág. M do PDF)” nunca se cita; o que fazer com `nao_garantida` (PDF
+  de versão anterior ou alterado depois do download; no eProc, nunca
+  “fl.”).
 * **`INDICE.md`**: as colunas Processo, Tribunal, **Sistema**, Páginas,
-  **Paginação** (`paginacao.resumo`; para PDF sem manifesto, vem da 1ª
+  **Paginação** (`textos.resumo_da_paginacao`: o `paginacao.resumo` do
+  manifesto que descreve o arquivo; “NÃO garantida…”, sem as ausentes, se
+  ele não o descreve, como o texto; para PDF sem manifesto, vem da 1ª
   linha do texto em dia), **Ausentes**, Lote, Autos, Texto e Transcrições,
   e uma linha com a regra de citação. Aceita um mapeador de caminhos (o
   pacote usa `autos/`, `texto/` e `audiencias/`, e lista só o que foi

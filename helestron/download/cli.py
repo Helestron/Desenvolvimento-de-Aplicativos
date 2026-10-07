@@ -512,6 +512,9 @@ def _baixado_que_volta(n, linha: dict, pastas, opcoes, motor, modelos) -> tuple[
     if not reg["paginacao"]:
         return False, (f"{rotulo}, sem o manifesto de paginação (PDF de versão anterior): para "
                        "baixá-lo de novo, use --rebaixar-incompletos")
+    if reg["paginacao"].get("garantida") is False:
+        return False, (f"{rotulo}, com a paginação não garantida (o PDF foi alterado depois do "
+                       "download?): para baixá-lo de novo, use --rebaixar-incompletos")
     return False, f"{rotulo}: uma nova tentativa não muda o desfecho"
 
 
