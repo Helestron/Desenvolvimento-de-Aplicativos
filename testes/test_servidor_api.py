@@ -342,6 +342,32 @@ class TestRelacao(ServidorDeTeste):
         envios = Path(self.app.pasta_envios())
         self.assertEqual(list(envios.glob("*")) if envios.exists() else [], [])
 
+    def test_envio_multipart_de_planilha_exportada(self):
+        # Planilha do Excel exportada por sistema (dimensão declarada "A1"),
+        # enviada pela tela como o navegador envia: o defeito relatado era a
+        # recusa dela ("nenhum número de processo").
+        import io
+        import re
+        import zipfile
+        import openpyxl
+        livro = openpyxl.Workbook()
+        livro.active.append(["Processo"])
+        livro.active.append([TJAL])
+        bruto = io.BytesIO()
+        livro.save(bruto)
+        saida = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(bruto.getvalue())) as zi, \
+                zipfile.ZipFile(saida, "w") as zo:
+            for item in zi.infolist():
+                dados = zi.read(item.filename)
+                if item.filename.startswith("xl/worksheets/sheet"):
+                    dados = re.sub(rb'<dimension ref="[^"]*"/>', b'<dimension ref="A1"/>', dados)
+                zo.writestr(item, dados)
+        status, env = self.cliente.enviar("/api/relacao/arquivo", "Relação exportada.xlsx",
+                                          saida.getvalue())
+        self.assertEqual(status, 200, env)
+        self.assertEqual([p["numero"] for p in env["dados"]["processos"]], [TJAL])
+
     def test_envio_ilegivel_400(self):
         status, env = self.cliente.enviar("/api/relacao/arquivo", "vazio.txt", b"sem numero")
         self.assertEqual(status, 400)

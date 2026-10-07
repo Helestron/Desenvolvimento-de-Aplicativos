@@ -326,6 +326,14 @@ def _de_xlsx(caminho: Path, col: _Coletor) -> None:
                 if getattr(aba, "sheet_state", "visible") != "visible":
                     alvo.leitura.avisos.append(f"aba oculta '{nome}' ignorada")
                     continue
+                # No modo read_only, o openpyxl lê só até a "dimensão" que o
+                # arquivo declara - e as planilhas exportadas por sistemas
+                # (o próprio SAJ, relatórios, Apache POI) costumam declarar
+                # "A1": lia-se a primeira linha e mais nada, e a relação
+                # inteira era recusada ("nenhum número de processo").
+                redefinir = getattr(aba, "reset_dimensions", None)
+                if callable(redefinir):
+                    redefinir()
                 linhas = list(aba.iter_rows(values_only=True))
                 _ler_linhas(alvo, linhas, nome)
         finally:
@@ -334,20 +342,79 @@ def _de_xlsx(caminho: Path, col: _Coletor) -> None:
             except Exception:
                 pass
 
-    tentar(True, col)
-    if not col.leitura.processos:
+    erro_openpyxl: ListaInvalida | None = None
+    try:
+        tentar(True, col)
+    except ListaInvalida as erro:
+        erro_openpyxl = erro
+    if not col.leitura.processos and erro_openpyxl is None:
         # De novo, pelo texto das fórmulas. As células numéricas e as abas
         # ocultas são as mesmas da primeira leitura: os corrompidos e os
         # avisos não são contados de novo (a tela diria o dobro de linhas).
         formulas = _Coletor()
-        tentar(False, formulas)
+        try:
+            tentar(False, formulas)
+        except ListaInvalida:
+            pass
         for n in formulas.leitura.processos:
             col.numero(n, formulas.leitura.senhas.get(n.formatado, ""))
+    if not col.leitura.processos:
+        # O openpyxl recusa variantes legítimas do formato (Strict Open XML,
+        # arquivos gerados por outros programas com estilos que ele não
+        # entende): lê-se o texto das células direto do XML.
+        _de_xlsx_bruto(caminho, col)
+    if not col.leitura.processos and erro_openpyxl is not None:
+        raise erro_openpyxl
+
+
+_RE_CELULA_XML = re.compile(rb"<(?:\w+:)?(?:t|v)(?:\s[^>]*)?>([^<]*)</(?:\w+:)?(?:t|v)>")
+
+
+def _de_xlsx_bruto(caminho: Path, col: _Coletor) -> None:
+    """O texto das células (textos compartilhados e das abas), sem o
+    openpyxl: só o que é texto entra, como na leitura normal."""
+    try:
+        with zipfile.ZipFile(caminho) as z:
+            nomes = z.namelist()
+            if "xl/workbook.bin" in nomes:
+                raise ListaInvalida(
+                    "esta é uma pasta de trabalho binária do Excel (.xlsb), que o "
+                    "programa não lê. No Excel, use Salvar como > Pasta de Trabalho "
+                    "do Excel (.xlsx), ou CSV, e escolha de novo.")
+            partes = [n for n in nomes if n == "xl/sharedStrings.xml"
+                      or (n.startswith("xl/worksheets/") and n.endswith(".xml"))]
+            for nome in partes:
+                dados = z.read(nome)
+                for m in _RE_CELULA_XML.finditer(dados):
+                    bruto = m.group(1).decode("utf-8", errors="ignore")
+                    texto = (bruto.replace("&amp;", "&").replace("&lt;", "<")
+                             .replace("&gt;", ">").replace("&quot;", '"')
+                             .replace("&apos;", "'"))
+                    # Só texto: o valor numérico de uma célula (<v> de célula
+                    # numérica) não tem os 20 dígitos do CNJ de forma confiável.
+                    if re.search(r"\D", texto.strip()):
+                        col.texto(texto)
+    except ListaInvalida:
+        raise
+    except Exception as erro:
+        log.debug("leitura direta do XML da planilha falhou: %s", type(erro).__name__)
 
 
 def _de_xls(caminho: Path, col: _Coletor) -> None:
     import xlrd
 
+    try:
+        cabeca = caminho.read_bytes()[:1_000_000]
+    except OSError:
+        cabeca = b""
+    if "EncryptedPackage".encode("utf-16-le") in cabeca:
+        # .xlsx com senha de abertura: o Excel o guarda dentro de um arquivo
+        # OLE, com a mesma cara de um .xls antigo.
+        raise ListaInvalida(
+            "esta planilha está protegida por senha de abertura, e o programa não a "
+            "abre. No Excel, abra-a, tire a senha (Arquivo > Informações > Proteger "
+            "pasta de trabalho > Criptografar com senha, e apague a senha), salve e "
+            "escolha de novo.")
     try:
         livro = xlrd.open_workbook(str(caminho))
     except Exception as erro:
