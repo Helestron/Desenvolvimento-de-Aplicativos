@@ -24,7 +24,8 @@ futuras, os existentes não mudam de sentido)::
       "codigo_saida": null,               # 0, 1 ou 2 quando concluido (como o do processo)
       "erro": "",                         # por que nada pôde ser feito (saída antecipada)
       "causa_erro": "",                   # uso | relacao_invalida | sem_processos | destino |
-                                          # lote_em_andamento | interrompido | inesperado
+                                          # pastas_em_conflito | lote_em_andamento |
+                                          # interrompido | inesperado
       "destino": "C:\\...\\Lote 2026-10-04 10h00",
       "sigilosos_do_lote": "C:\\...\\Sigilosos\\Lote 2026-10-04 10h00",
       "relatorio": "...\\_controle\\relatorio.csv",      # o do lote (sigilosos mascarados)

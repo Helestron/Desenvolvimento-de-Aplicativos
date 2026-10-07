@@ -1,7 +1,7 @@
 """A regra única do processo sigiloso (segredo de justiça).
 
-O programa sabe que um processo corre em segredo de justiça por três fontes,
-e qualquer uma basta:
+O programa sabe que um processo corre em segredo de justiça por quatro
+fontes, e qualquer uma basta:
 
 1. os AUTOS estão na pasta dos sigilosos (<sigilosos>/<número>.pdf ou
    <sigilosos>/<lote>/<número>.pdf, como o download grava, ou numa subpasta
@@ -11,7 +11,11 @@ e qualquer uma basta:
    a audiência que já foi sigilosa uma vez continua sigilosa;
 3. a PAUTA de audiências o marca sigiloso, em qualquer registro (o do
    portal, o do relatório importado, o que já saiu da pauta): o sigilo é do
-   processo, não da linha (Armazem.sigilosas, contrato C4).
+   processo, não da linha (Armazem.sigilosas, contrato C4);
+4. um DOWNLOAD já o apurou em segredo de justiça (o portal mostrou o selo):
+   fica no registro ao lado do da pauta (LOCAL/download.sigilo.json:
+   lembrar_do_download). Com a separação dos sigilosos desligada, os autos
+   ficam no acervo, e é só por ele que o resto do programa sabe do sigilo.
 
 O INCIDENTE (o dependente "...0001-01", o cumprimento de sentença, por
 exemplo) herda o sigilo do principal: as partes e o conteúdo são os mesmos.
@@ -68,6 +72,8 @@ PROFUNDIDADE_MAX = 4
 MAX_PASTAS = 2000
 # O registro do que a pauta já apurou, ao lado do banco: pauta.sqlite3 -> pauta.sigilo.json
 SUFIXO_APURADO = ".sigilo.json"
+# E o do que o download já apurou, ao lado dele: download.sigilo.json
+NOME_DO_DOWNLOAD = "download"
 
 # Por que o processo é sigiloso, para a tela, a linha de comando e o relatório
 MOTIVO_PASTA = ("os autos, uma transcrição ou uma gravação dele estão na pasta dos "
@@ -78,6 +84,9 @@ MOTIVO_PASTA_PRINCIPAL = ("é incidente de um processo sigiloso: os autos, uma t
                           "uma gravação do principal estão na pasta dos sigilosos")
 MOTIVO_PAUTA_PRINCIPAL = ("é incidente de um processo sigiloso: a pauta de audiências indica "
                           "que o principal corre em segredo de justiça")
+MOTIVO_DOWNLOAD = "um download anterior apurou que ele corre em segredo de justiça"
+MOTIVO_DOWNLOAD_PRINCIPAL = ("é incidente de um processo sigiloso: um download anterior apurou "
+                             "que o principal corre em segredo de justiça")
 
 PAUTA_DO_PROGRAMA = object()   # o banco da pauta do programa (caminhos.ARQUIVO_PAUTA)
 VALIDADE_PAUTA_S = 30.0        # releitura forçada, mesmo sem mudança aparente no banco
@@ -401,13 +410,13 @@ def _ler_apuradas(arquivo: Path | None) -> tuple[frozenset[str], bool]:
     except FileNotFoundError:
         return frozenset(), True
     except (OSError, ValueError) as erro:
-        log.warning("não consegui ler o registro dos processos que a pauta já indicou em segredo "
-                    "de justiça (%s): %s", arquivo.name, str(erro)[:160])
+        log.warning("não consegui ler o registro dos processos já apurados em segredo de "
+                    "justiça (%s): %s", arquivo.name, str(erro)[:160])
         return frozenset(), False
     lista = dados.get("processos") if isinstance(dados, dict) else None
     if not isinstance(lista, list):
-        log.warning("o registro dos processos que a pauta já indicou em segredo de justiça (%s) "
-                    "não tem a lista 'processos'.", arquivo.name)
+        log.warning("o registro dos processos já apurados em segredo de justiça (%s) não tem a "
+                    "lista 'processos'.", arquivo.name)
         return frozenset(), False
     return frozenset(n for n in (_nome(x) for x in lista if isinstance(x, str)) if n), True
 
@@ -419,12 +428,22 @@ def apuradas_da_pauta(pauta=PAUTA_DO_PROGRAMA) -> Sigilosas:
     return Sigilosas(_ler_apuradas(arquivo_apurado(pauta))[0])
 
 
-def lembrar_da_pauta(processos, pauta=PAUTA_DO_PROGRAMA) -> bool:
-    """Acrescenta 'processos' (Numero, número como a pauta mostra ou
-    nome_arquivo) ao registro do que a pauta já apurou. Só acrescenta, nunca
-    tira; gravação atômica (temporário + os.replace). Nunca levanta: False se
-    não gravou (o registro ilegível não é sobrescrito)."""
-    arquivo = arquivo_apurado(pauta)
+_SOBRE_A_PAUTA = ("Processos que a pauta de audiências do Helestron já indicou em segredo de "
+                  "justiça. O sigilo, uma vez apurado, fica: eles continuam sigilosos mesmo que "
+                  "a pauta seja apagada ou refeita.")
+_SOBRE_O_DOWNLOAD = ("Processos que um download do Helestron já apurou em segredo de justiça "
+                     "(o portal do tribunal mostrou o selo). O sigilo, uma vez apurado, fica: "
+                     "eles continuam sigilosos mesmo que os autos fiquem no acervo, com a "
+                     "separação dos sigilosos desligada.")
+_DESFAZER = (" Para desfazer uma marcação errada, veja no manual do Helestron a seção sobre o "
+             "processo marcado como sigiloso por engano.")
+
+
+def _acrescentar(arquivo: Path | None, processos, sobre: str) -> bool:
+    """Acrescenta 'processos' ao registro 'arquivo' (lembrar_da_pauta,
+    lembrar_do_download). Só acrescenta, nunca tira; gravação atômica
+    (temporário + os.replace). Nunca levanta: False se não gravou (o registro
+    ilegível não é sobrescrito)."""
     nomes = {n for n in (_nome(p) for p in processos or []) if n}
     if arquivo is None or not nomes:
         return False
@@ -434,27 +453,53 @@ def lembrar_da_pauta(processos, pauta=PAUTA_DO_PROGRAMA) -> bool:
             return False
         if nomes <= ja:
             return True
-        dados = {"sobre": "Processos que a pauta de audiências do Helestron já indicou em "
-                          "segredo de justiça. O sigilo, uma vez apurado, fica: eles continuam "
-                          "sigilosos mesmo que a pauta seja apagada ou refeita. Para desfazer "
-                          "uma marcação errada, veja no manual do Helestron a seção sobre o "
-                          "processo marcado como sigiloso por engano.",
-                 "processos": sorted(ja | nomes)}
+        dados = {"sobre": sobre + _DESFAZER, "processos": sorted(ja | nomes)}
         temporario = arquivo.with_name(f".{arquivo.name}.{os.getpid()}."
                                        f"{threading.get_ident()}.tmp")
         try:
+            arquivo.parent.mkdir(parents=True, exist_ok=True)
             temporario.write_text(json.dumps(dados, ensure_ascii=False, indent=1) + "\n",
                                   encoding="utf-8")
             os.replace(temporario, arquivo)
         except OSError as erro:
-            log.warning("não consegui guardar o registro dos processos que a pauta indicou em "
-                        "segredo de justiça (%s): %s", arquivo.name, str(erro)[:160])
+            log.warning("não consegui guardar o registro dos processos apurados em segredo de "
+                        "justiça (%s): %s", arquivo.name, str(erro)[:160])
             try:
                 temporario.unlink()
             except OSError:
                 pass
             return False
     return True
+
+
+def lembrar_da_pauta(processos, pauta=PAUTA_DO_PROGRAMA) -> bool:
+    """Acrescenta 'processos' (Numero, número como a pauta mostra ou
+    nome_arquivo) ao registro do que a pauta já apurou. Só acrescenta, nunca
+    tira; gravação atômica (temporário + os.replace). Nunca levanta: False se
+    não gravou (o registro ilegível não é sobrescrito)."""
+    return _acrescentar(arquivo_apurado(pauta), processos, _SOBRE_A_PAUTA)
+
+
+def arquivo_do_download(pauta=PAUTA_DO_PROGRAMA) -> Path | None:
+    """O registro dos processos que um download já apurou em segredo de
+    justiça, ao lado do da pauta (LOCAL/download.sigilo.json)."""
+    arquivo = _arquivo_da_pauta(pauta)
+    return None if arquivo is None else arquivo.with_name(NOME_DO_DOWNLOAD + SUFIXO_APURADO)
+
+
+def apuradas_no_download(pauta=PAUTA_DO_PROGRAMA) -> Sigilosas:
+    """Os processos (Numero.nome_arquivo) que um download já apurou em
+    segredo de justiça (lembrar_do_download). Nunca levanta."""
+    return Sigilosas(_ler_apuradas(arquivo_do_download(pauta))[0])
+
+
+def lembrar_do_download(processos, pauta=PAUTA_DO_PROGRAMA) -> bool:
+    """Acrescenta 'processos' ao registro do que o download já apurou: o
+    portal mostrou o segredo de justiça. Com a separação dos sigilosos
+    desligada, os autos ficam no acervo, e só este registro diz ao resto do
+    programa (o índice, o texto para a IA, o conector, o pacote, a nuvem, a
+    transcrição) que o processo é sigiloso. Só acrescenta; nunca levanta."""
+    return _acrescentar(arquivo_do_download(pauta), processos, _SOBRE_O_DOWNLOAD)
 
 
 def lembrar_do_banco(banco, pauta=PAUTA_DO_PROGRAMA) -> int:
@@ -537,10 +582,13 @@ def esquecer_pauta() -> None:
 # ===================================================================== regra
 def chaves_sigilosas(sigilosos, raiz=None, pauta=PAUTA_DO_PROGRAMA) -> Sigilosas:
     """TODOS os processos sigilosos que o programa conhece (Numero.nome_arquivo):
-    os da pasta dos sigilosos (autos, transcrição, gravação, diário) e os
-    que a pauta marca. 'raiz': o acervo (ver chaves_na_pasta). Num
-    Sigilosas: 'chave in ...' vale também para o incidente de um deles."""
-    return Sigilosas(chaves_na_pasta(sigilosos, raiz) | chaves_da_pauta(pauta))
+    os da pasta dos sigilosos (autos, transcrição, gravação, diário), os
+    que a pauta marca e os que um download já apurou. 'raiz': o acervo (ver
+    chaves_na_pasta); 'pauta': o banco da pauta, com o registro do download
+    ao lado (None: nem um nem outro). Num Sigilosas: 'chave in ...' vale
+    também para o incidente de um deles."""
+    return Sigilosas(chaves_na_pasta(sigilosos, raiz) | chaves_da_pauta(pauta)
+                     | apuradas_no_download(pauta))
 
 
 def motivo_da_pasta(sigilosos, numero) -> str:
@@ -563,17 +611,32 @@ def motivo_da_pauta(numero, pauta=PAUTA_DO_PROGRAMA) -> str:
     return ""
 
 
+def motivo_do_download(numero, pauta=PAUTA_DO_PROGRAMA) -> str:
+    """MOTIVO_DOWNLOAD, MOTIVO_DOWNLOAD_PRINCIPAL (o incidente de um processo
+    que um download apurou sigiloso) ou ""."""
+    nome = _nome(numero)
+    if not nome:
+        return ""
+    chaves = apuradas_no_download(pauta)
+    if frozenset.__contains__(chaves, nome):
+        return MOTIVO_DOWNLOAD
+    return MOTIVO_DOWNLOAD_PRINCIPAL if contem(chaves, nome) else ""
+
+
 def motivo(cfg, numero, pauta=PAUTA_DO_PROGRAMA) -> str:
     """Por que o programa já sabe que o processo é sigiloso ("" = não sabe):
-    MOTIVO_PASTA ou MOTIVO_PAUTA (ou, no incidente de um processo sigiloso,
-    MOTIVO_PASTA_PRINCIPAL ou MOTIVO_PAUTA_PRINCIPAL). Nunca levanta."""
+    MOTIVO_PASTA, MOTIVO_PAUTA ou MOTIVO_DOWNLOAD (ou, no incidente de um
+    processo sigiloso, MOTIVO_PASTA_PRINCIPAL, MOTIVO_PAUTA_PRINCIPAL ou
+    MOTIVO_DOWNLOAD_PRINCIPAL). Nunca levanta."""
     try:
         sigilosos = cfg.pasta_sigilosos
     except Exception:
         sigilosos = None
-    return motivo_da_pasta(sigilosos, numero) or motivo_da_pauta(numero, pauta)
+    return (motivo_da_pasta(sigilosos, numero) or motivo_da_pauta(numero, pauta)
+            or motivo_do_download(numero, pauta))
 
 
 def processo_sigiloso(cfg, numero, pauta=PAUTA_DO_PROGRAMA) -> bool:
-    """O processo é sigiloso pela regra única (pasta dos sigilosos ou pauta)?"""
+    """O processo é sigiloso pela regra única (pasta dos sigilosos, pauta ou
+    o que um download já apurou)?"""
     return bool(motivo(cfg, numero, pauta))

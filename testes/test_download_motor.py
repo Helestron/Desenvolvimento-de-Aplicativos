@@ -192,6 +192,49 @@ class TestSigilosos(BaseMotor):
         self.assertTrue((self.destino / f"{TJAL1.nome_arquivo}.pdf").exists())
         self.assertTrue(resumo.itens[0].sigiloso)
 
+    def test_sigilo_do_portal_vale_na_regra_unica_antes_de_o_pdf_ir_para_o_lote(self):
+        """Achado R19: com a separação desligada, o PDF do processo que o
+        portal mostrou em segredo de justiça fica no acervo, e a regra única
+        (índice, texto para a IA, conector, pacote, nuvem) não sabia dele."""
+        vistos = {}
+        original = motor._Lote._guardar
+
+        def guardar(lote, r, n, provisorio):
+            vistos[n.nome_arquivo] = sigilo.processo_sigiloso(self.cfg, n)
+            return original(lote, r, n, provisorio)
+
+        with mock.patch.object(motor._Lote, "_guardar", guardar):
+            resumo = self.rodar([TJAL1, TJAL2], roteiro={TJAL1.formatado: ["ok_sigiloso"]},
+                                separar_sigilosos=False)
+        self.assertEqual([r.situacao for r in resumo.itens], [modelos.OK, modelos.OK])
+        self.assertEqual(vistos, {TJAL1.nome_arquivo: True, TJAL2.nome_arquivo: False})
+        self.assertEqual(sigilo.motivo(self.cfg, TJAL1), sigilo.MOTIVO_DOWNLOAD)
+        self.assertIn(TJAL1.nome_arquivo,
+                      sigilo.chaves_sigilosas(self.tmp / "Sigilosos", self.tmp / "Acervo"))
+        # o sigiloso sem senha (o portal disse que é sigiloso) também fica sabido
+        self.rodar([TJAL3], roteiro={TJAL3.formatado: ["sigiloso_sem_senha"]})
+        self.assertEqual(sigilo.apuradas_no_download(),
+                         {TJAL1.nome_arquivo, TJAL3.nome_arquivo})
+
+    def test_lote_de_antes_com_o_sigiloso_no_acervo_passa_a_valer_na_regra(self):
+        self.destino.mkdir(parents=True)
+        (self.destino / f"{TJAL1.nome_arquivo}.pdf").write_bytes(apoio.pdf_bytes(2))
+        motor._gravar_relatorio(self.destino / "_controle" / "relatorio.csv", [
+            [1, TJAL1.formatado, "TJAL", "esaj", "OK", 2, 1, f"{TJAL1.nome_arquivo}.pdf", "sim",
+             "", "", "2026-10-01 10:00:00", ""]])
+        self.assertFalse(sigilo.processo_sigiloso(self.cfg, TJAL1))
+        r = self.rodar([TJAL1], separar_sigilosos=False).itens[0]
+        self.assertEqual((r.situacao, r.sigiloso), (modelos.JA_BAIXADO, True))
+        self.assertEqual(sigilo.motivo(self.cfg, TJAL1), sigilo.MOTIVO_DOWNLOAD)
+
+    def test_registro_do_sigilo_fica_na_pasta_do_teste(self):
+        """O sigilo que um teste registra não vale para o seguinte (os
+        números são os mesmos em todos)."""
+        for arquivo in (caminhos.ARQUIVO_PAUTA, sigilo.arquivo_apurado(),
+                        sigilo.arquivo_do_download()):
+            self.assertTrue(motor._dentro(arquivo, self.tmp), arquivo)
+        self.assertEqual(sigilo.apuradas_no_download(), set())
+
     def test_sigiloso_sem_senha_nao_e_repetido(self):
         resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["sigiloso_sem_senha"]})
         r = resumo.itens[0]
@@ -477,6 +520,17 @@ class TestSigiloSabidoPeloPrograma(BaseMotor):
         self.assertIn(f"tratado como sigiloso: {sigilo.MOTIVO_PASTA_PRINCIPAL}",
                       resumo.itens[0].detalhe)
         self.assertTrue((self.sig / f"{inc.nome_arquivo}.pdf").exists())
+
+    def test_sigilo_apurado_noutro_lote_vale_mesmo_sem_o_selo(self):
+        """Achado R19: o que um download apurou (num lote com a separação
+        desligada) vale para o download do mesmo processo noutro lote."""
+        destino = self.destino
+        self.destino = self.tmp / "Fora" / "Lote antigo"
+        self.rodar([TJAL1], roteiro={TJAL1.formatado: ["ok_sigiloso"]},
+                   separar_sigilosos=False)
+        self.destino = destino
+        resumo = self.rodar([TJAL1, TJAL2])         # o portal responde "ok", sem selo
+        self.conferir_sigiloso(resumo, sigilo.MOTIVO_DOWNLOAD)
 
     def test_tela_do_sigiloso_sabido_nao_vai_para_o_diagnostico(self):
         """O navegador fica sabendo que a tela é de processo sigiloso enquanto

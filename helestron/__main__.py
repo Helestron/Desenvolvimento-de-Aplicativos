@@ -369,6 +369,7 @@ def _caminhos(opcoes) -> int:
     """Os caminhos do programa, sem criar nada (nem o config.ini) e sem os
     perfis do navegador, o arquivo de senhas e a sessão guardada - que nenhum
     programa de fora deve ler."""
+    from . import servicos
     from .nucleo import caminhos, config
 
     cfg = config.carregar(criar=False)
@@ -377,6 +378,14 @@ def _caminhos(opcoes) -> int:
     for sistema in ("esaj", "eproc"):
         modo = (cfg.texto(sistema, "login") or "").strip().lower()
         login[sistema] = modo if modo in ("senha", "certificado", "manual") else "senha"
+    # A mesma regra (e a mesma frase) com que o baixar recusa começar
+    # (pastas_em_conflito): além de acervo x sigilosos x pauta, o acervo que
+    # contém a pasta do programa ou a das senhas e dos perfis do navegador.
+    try:
+        conflito = servicos.problema_nas_pastas(cfg.pasta_acervo, cfg.pasta_sigilosos,
+                                                servicos.pasta_pauta(cfg)) or ""
+    except Exception:
+        conflito = cfg.conflito_de_pastas()
     dados = {
         "versao": _versao(),
         "recursos": list(RECURSOS),
@@ -398,7 +407,7 @@ def _caminhos(opcoes) -> int:
         "separar_sigilosos": cfg.flag("download", "separar_sigilosos"),
         "login": login,
         "espera_login_min": cfg.inteiro("download", "espera_login_minutos"),
-        "conflito_de_pastas": cfg.conflito_de_pastas(),
+        "conflito_de_pastas": conflito,
     }
     if opcoes.json:
         _imprimir_json(dados)
@@ -480,28 +489,35 @@ def _preparar_pasta(opcoes, cfg) -> int:
         return 2
     texto_em = Path(opcoes.texto_em).expanduser()
     acervo = Path(cfg.pasta_acervo)
-    no_acervo = _dentro(pasta, acervo)
-    # Dentro do acervo, o que é sigiloso pela regra única não vira texto ali
-    sigilosas = sigilo.chaves_sigilosas(cfg.pasta_sigilosos, raiz=acervo) if no_acervo else None
-    pastas = [(pasta, texto_em if texto_em.is_absolute() else pasta / texto_em, False)]
+    textos_em = texto_em if texto_em.is_absolute() else pasta / texto_em
+    # O texto do processo sigiloso pela regra única não é gravado no acervo:
+    # nem quando os PDFs estão nele, nem quando --texto-em aponta para ele (o
+    # lote fora do acervo com o texto em <acervo>\_ia\texto, por exemplo).
+    no_acervo = _dentro(pasta, acervo) or _dentro(textos_em, acervo)
+    # Fora do acervo o texto é gerado, mas o JSON diz que o processo é sigiloso
+    sigilosas = sigilo.chaves_sigilosas(cfg.pasta_sigilosos, raiz=acervo)
+    pastas = [(pasta, textos_em, False)]
     if opcoes.incluir_sigilosos:
         sig = motor.pasta_sigilosos_do_lote(cfg.pasta_sigilosos, pasta,
                                             getattr(cfg, "pasta_processos", None))
         # O texto do sigiloso fica com ele, na pasta de sigilosos - nunca na
-        # pasta pedida em --texto-em (que pode ser o acervo)
+        # pasta pedida em --texto-em (que pode ser o acervo), nem fora dela
+        # por um relativo com "..".
         alvo = sig / (texto_em if not texto_em.is_absolute() else Path("_texto"))
+        if not _dentro(alvo, sig) or _dentro(alvo, acervo):
+            alvo = sig / "_texto"
         if sig.is_dir():
             pastas.append((sig, alvo, True))
     itens: list[dict] = []
     for origem, destino, da_pasta_de_sigilosos in pastas:
         for pdf in sorted(p for p in origem.glob("*.pdf") if p.is_file()):
             chave = motor.chave_do_nome(pdf.name)
+            sigiloso = da_pasta_de_sigilosos or bool(chave and sigilo.contem(sigilosas, chave))
             item = {"pdf": str(pdf), "texto": "", "situacao": "", "erro": "",
-                    "sigiloso": da_pasta_de_sigilosos, "paginas": 0, "paginacao": None,
+                    "sigiloso": sigiloso, "paginas": 0, "paginacao": None,
                     "paginas_sem_texto": "", "paginas_sem_texto_pdf": ""}
-            if sigilosas is not None and not da_pasta_de_sigilosos and chave \
-                    and sigilo.contem(sigilosas, chave):
-                item.update(situacao="sigiloso_ignorado", sigiloso=True,
+            if sigiloso and no_acervo and not da_pasta_de_sigilosos:
+                item.update(situacao="sigiloso_ignorado",
                             erro="processo sigiloso: o texto não é gerado dentro do acervo")
                 itens.append(item)
                 continue

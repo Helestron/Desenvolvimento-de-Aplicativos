@@ -336,6 +336,76 @@ class TestComandosParaAutomacao(unittest.TestCase):
         self.assertEqual(codigo, 0)
         self.assertIn(f"acervo: {self.acervo}", saida)
 
+    def test_caminhos_diz_o_conflito_com_que_o_baixar_recusa_comecar(self):
+        """Achado R15: com o acervo contendo a pasta das senhas e dos perfis,
+        'caminhos' dizia as pastas em ordem, e o 'baixar' saía com 2
+        (pastas_em_conflito)."""
+        self.amb.cfg.definir("geral", "pasta_acervo", str(self.amb.local))   # a das senhas
+        codigo, saida, _ = self.rodar("caminhos", "--json")
+        self.assertEqual(codigo, 0)
+        conflito = json.loads(saida)["conflito_de_pastas"]
+        self.assertTrue(conflito.startswith("O acervo não pode conter a pasta em que o programa "
+                                            "guarda as senhas"), conflito)
+        from helestron.download import cli
+
+        erros = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(erros):
+            codigo = cli.main(["0700001-27.2024.8.02.0001", "--destino",
+                               str(self.amb.raiz / "Lote")], configurar_log=False)
+        self.assertEqual(codigo, 2)
+        self.assertIn(conflito, erros.getvalue(), "a mesma frase com que o baixar recusa")
+        # pastas em ordem: vazio
+        self.amb.cfg.definir("geral", "pasta_acervo", str(self.acervo))
+        self.assertEqual(json.loads(self.rodar("caminhos", "--json")[1])["conflito_de_pastas"],
+                         "")
+
+    def test_preparar_pasta_nao_grava_texto_de_sigiloso_no_acervo(self):
+        """Achados R8 e R21: o lote fora do acervo com --texto-em dentro dele
+        gravava no acervo o texto do processo sigiloso pela regra única, e o
+        JSON o dava como "sigiloso": false."""
+        from helestron.download import motor
+
+        lote = self.amb.raiz / "Lotes da skill" / "Lote 9"          # fora do acervo
+        publico, sigiloso = "0700001-27.2024.8.02.0001", "0700002-02.2024.8.02.0001"
+        self.pdf(lote / f"{publico}.pdf", "autos públicos")
+        self.pdf(lote / f"{sigiloso}.pdf", "PARTES EM SEGREDO DE JUSTIÇA")
+        # sigiloso pela regra única: a transcrição dele está na pasta dos sigilosos
+        (self.sigilosos / "Transcricoes").mkdir(parents=True)
+        (self.sigilosos / "Transcricoes" / f"{sigiloso}.docx").write_bytes(b"PK")
+        destino = self.acervo / "_ia" / "texto"
+        for texto_em in (str(destino), os.path.relpath(destino, lote)):
+            with self.subTest(texto_em=texto_em):
+                codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--texto-em",
+                                              texto_em, "--json")
+                self.assertEqual(codigo, 0)
+                itens = {Path(i["pdf"]).stem: i for i in json.loads(saida)["itens"]}
+                self.assertEqual(itens[sigiloso]["situacao"], "sigiloso_ignorado")
+                self.assertTrue(itens[sigiloso]["sigiloso"])
+                self.assertEqual(itens[sigiloso]["texto"], "")
+                self.assertIn(itens[publico]["situacao"], ("novo", "em_dia"))
+                self.assertFalse(itens[publico]["sigiloso"])
+                self.assertFalse((destino / f"{sigiloso}.txt").exists())
+                self.assertTrue((destino / f"{publico}.txt").exists())
+        # fora do acervo o texto é gerado, mas o JSON diz que o processo é sigiloso
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--json")
+        itens = {Path(i["pdf"]).stem: i for i in json.loads(saida)["itens"]}
+        self.assertEqual(itens[sigiloso]["situacao"], "novo")
+        self.assertTrue(itens[sigiloso]["sigiloso"])
+        self.assertFalse(itens[publico]["sigiloso"])
+        # --incluir-sigilosos: um relativo com ".." não leva o texto dos
+        # sigilosos do lote para o acervo; fica na pasta deles
+        sig = motor.pasta_sigilosos_do_lote(self.sigilosos, lote, self.acervo / "Processos")
+        outro = "0700003-40.2024.8.02.0001"
+        self.pdf(sig / f"{outro}.pdf", "outro em segredo")
+        fuga = os.path.relpath(destino, sig)
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--texto-em", fuga,
+                                      "--incluir-sigilosos", "--json")
+        self.assertEqual(codigo, 0)
+        item = [i for i in json.loads(saida)["itens"] if Path(i["pdf"]).stem == outro][0]
+        self.assertEqual(Path(item["texto"]), sig / "_texto" / f"{outro}.txt")
+        self.assertFalse((destino / f"{outro}.txt").exists())
+        self.assertEqual(sorted(p.name for p in destino.iterdir()), [f"{publico}.txt"])
+
     def test_preparar_rejeita_argumento_e_mostra_ajuda(self):
         codigo, saida, _ = self.rodar("preparar", "-h")
         self.assertEqual(codigo, 0)

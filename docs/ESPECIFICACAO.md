@@ -243,12 +243,17 @@ python_exe(janela=False) -> INSTALACAO/python.exe | pythonw.exe | sys.executable
 ```
 
 O registro do sigilo apurado pela pauta fica ao lado do banco
-(`sigilo.arquivo_apurado`: `pauta.sqlite3` → `pauta.sigilo.json`), e o
-download grava os registros do `baixar --json` sem `--log` em
-`LOGS/execucoes/baixar-<data>-<pid>.log` (`download/cli.log_padrao`).
+(`sigilo.arquivo_apurado`: `pauta.sqlite3` → `pauta.sigilo.json`), e o do
+apurado pelo download também (`sigilo.arquivo_do_download`:
+`download.sigilo.json`). O download grava os registros do `baixar --json`
+sem `--log` em `LOGS/execucoes/baixar-<data>-<pid>.log`
+(`download/cli.log_padrao`).
 
 Os testes isolam tudo com `HELESTRON_LOCAL` e `HELESTRON_DADOS` apontando para
-pastas temporárias (ou com `mock.patch` nas constantes, como já fazem).
+pastas temporárias (ou com `mock.patch` nas constantes, como já fazem). A
+base `testes/apoio_download.PastaTemporaria` põe também `ARQUIVO_PAUTA` (e
+com ele os registros do sigilo apurado) na pasta de cada teste: o sigilo
+que o download de um teste registra não vale para o seguinte.
 
 ## 5. Linha de comando (`python -m helestron`)
 
@@ -344,10 +349,15 @@ Regras:
   `LoginFalhou` orienta a usar `--visivel`. Senha e código nunca são lidos
   de arquivo.
 * **Um download por pasta de lote.** A trava `_controle/.executando`
-  (`motor.TravaDoLote`, `{pid, inicio}`) recusa o segundo download na mesma
-  pasta com `LoteEmAndamento` (código 2, `causa_erro` `lote_em_andamento`).
-  Trava de processo morto (`motor.processo_vivo`: `OpenProcess` e
-  `GetExitCodeProcess` no Windows) ou com mais de 48 h é desfeita.
+  (`motor.TravaDoLote`, `{pid, inicio, criado}`) recusa o segundo download
+  na mesma pasta com `LoteEmAndamento` (código 2, `causa_erro`
+  `lote_em_andamento`). Trava de processo morto (`motor.processo_vivo`:
+  `OpenProcess` e `GetExitCodeProcess` no Windows) ou com mais de 48 h é
+  desfeita, e também a do número que o sistema deu a outro programa depois
+  que o download morreu: o processo com esse número começou noutro momento
+  (`motor.momento_de_criacao`: `GetProcessTimes` no Windows,
+  `/proc/<pid>/stat` no Linux) que o `criado` da trava ou, na trava sem
+  ele, depois do `inicio` e da data do arquivo.
 * **A pasta de sigilosos do lote** (`motor.pasta_sigilosos_do_lote`): o lote
   de `Processos/<nome>` usa `<sigilosos>/<nome>`, como sempre; o lote em
   outra pasta usa `<sigilosos>/<nome> (<8 hex do SHA-1 do caminho>)` e
@@ -358,8 +368,8 @@ Regras:
   acervo, salvo se algo saiu do acervo durante o lote.
 * **Códigos de saída:** 0 tudo certo; 1 parte falhou ou ficou pendente (ou
   Ctrl+C); 2 nada pôde ser feito (uso errado, relação inválida, nenhum
-  número, destino que não pode ser criado, lote em andamento, nenhum
-  processo baixado nem já na pasta).
+  número, destino que não pode ser criado, pastas em conflito, lote em
+  andamento, nenhum processo baixado nem já na pasta).
 
 **O JSON (`helestron.baixar/1`).** O formato completo está no docstring de
 `download/acompanhamento.py`; campos novos podem aparecer, e os existentes
@@ -367,10 +377,10 @@ não mudam de sentido. A gravação é atômica (`ARQ.parcial` + `os.replace`,
 repetido se quem lê prende o arquivo), no máximo uma por segundo
 (`INTERVALO_S`) e imediata em cada evento; a última traz `concluido: true` e
 `codigo_saida`. Também é gravado na saída antecipada (uso errado, relação
-inválida, sem processos, destino, lote em andamento, Ctrl+C, erro
-inesperado), com `erro` e `causa_erro` (`uso`, `relacao_invalida`,
-`sem_processos`, `destino`, `lote_em_andamento`, `interrompido`,
-`inesperado`). No topo: `formato`, `versao`, `pid`, `inicio`,
+inválida, sem processos, destino, pastas em conflito, lote em andamento,
+Ctrl+C, erro inesperado), com `erro` e `causa_erro` (`uso`, `relacao_invalida`,
+`sem_processos`, `destino`, `pastas_em_conflito`, `lote_em_andamento`,
+`interrompido`, `inesperado`). No topo: `formato`, `versao`, `pid`, `inicio`,
 `atualizado_em`, `concluido`, `codigo_saida`, `erro`, `causa_erro`,
 `destino`, `sigilosos_do_lote`, `relatorio`, `relatorio_completo`, `log`,
 `status`, `navegador_visivel`, `progresso` (`feitos`, `total`,
@@ -456,7 +466,13 @@ do download anterior: paginação não conferida”. O PDF do e-SAJ sem
 manifesto e sem `_meta.json` cuja linha anterior mostra sinal de numeração
 deslocada (`incompleto` preenchido, “peça a peça” ou “confira” no detalhe)
 é baixado de novo, com o detalhe “PDF de versão anterior com numeração
-possivelmente deslocada”. `SUFIXOS_CONTROLE` (`_capa.txt`, `_capa.json`,
+possivelmente deslocada”. A rodada que não troca o PDF que já estava na
+pasta (falha ao baixá-lo de novo, item interrompido, grupo sem login, item
+ainda pendente quando o programa é fechado à força) não apaga esse
+registro: a linha dela leva o `incompleto` e os `documentos` da anterior e,
+depois de “o PDF anterior continua na pasta”, o detalhe dela
+(`_Lote._pdf_que_fica`), e a rodada seguinte a lê como a de um download que
+deu certo. `SUFIXOS_CONTROLE` (`_capa.txt`, `_capa.json`,
 `_meta.json`) acompanham o PDF quando ele muda de pasta
 (`_levar_arquivos`, `retirar_do_acervo`).
 
@@ -468,8 +484,10 @@ possivelmente deslocada”. `SUFIXOS_CONTROLE` (`_capa.txt`, `_capa.json`,
   `instalacao`, `instalado`, `config`, `config_existe`, `logs`, `acervo`,
   `processos`, `transcricoes`, `sigilosos`, `pauta`, `separar_sigilosos`,
   `login` (`{esaj, eproc}`: `senha`, `certificado` ou `manual`, como o
-  download lê), `espera_login_min` e `conflito_de_pastas` (a frase, ou
-  vazio). Não expõe `PERFIS`, o cofre, a sessão nem a pasta `LOCAL`.
+  download lê), `espera_login_min` e `conflito_de_pastas` (a frase de
+  `servicos.problema_nas_pastas`, a mesma com que o `baixar` recusa
+  começar, ou vazio). Não expõe `PERFIS`, o cofre, a sessão nem a pasta
+  `LOCAL`.
   `recursos` (`__main__.RECURSOS`) diz o que esta versão oferece a quem a
   automatiza; recurso novo vai no fim, e nenhum sai nem muda de sentido:
   `versao`, `caminhos`, `baixar.json`, `baixar.eventos`, `baixar.log`,
@@ -491,11 +509,13 @@ possivelmente deslocada”. `SUFIXOS_CONTROLE` (`_capa.txt`, `_capa.json`,
 * **`preparar --pasta PASTA [--texto-em DIR] [--incluir-sigilosos]
   [--json]`**: só o texto dos autos dos PDFs da pasta de lote, em
   `<PASTA>/_texto` (ou `--texto-em`, relativo à pasta ou absoluto); não
-  grava `CLAUDE.md`, `AGENTS.md`, `INDICE.md` nem `Produtos`. Dentro do
-  acervo, o processo sigiloso pela regra única fica de fora
-  (`sigiloso_ignorado`). `--incluir-sigilosos` inclui os PDFs da pasta de
-  sigilosos do lote, com o texto em `<sigilosos do lote>/_texto` (nunca na
-  pasta de `--texto-em`). Cada item: `pdf`, `texto`, `situacao`, `erro`,
+  grava `CLAUDE.md`, `AGENTS.md`, `INDICE.md` nem `Produtos`. Com a pasta
+  ou o destino do texto (`--texto-em`) dentro do acervo, o processo
+  sigiloso pela regra única fica de fora (`sigiloso_ignorado`); fora dele,
+  o texto é gerado, e o item diz `sigiloso: true`. `--incluir-sigilosos`
+  inclui os PDFs da pasta de sigilosos do lote, com o texto em
+  `<sigilosos do lote>/_texto` (ou na subpasta relativa de `--texto-em`
+  que fique dentro dela; nunca no acervo). Cada item: `pdf`, `texto`, `situacao`, `erro`,
   `sigiloso`, `paginas`, `paginacao` (sempre com `garantida`),
   `paginas_sem_texto` e `paginas_sem_texto_pdf`. Códigos: 0, 1 (algum PDF
   falhou) ou 2 (pasta que não existe; `--texto-em` ou
@@ -1813,10 +1833,20 @@ dados ficam com a instalação registrada.
     **pauta** o marca sigiloso em qualquer registro (do portal, do
     relatório importado, já fora da pauta: `Armazem.sigilosas`, contrato
     C4) — o sigilo é do processo, não da linha —, e a pauta só marca com
-    indicação positiva e inequívoca (seção 8.5). `sigilo.chaves_sigilosas`
-    dá todos; `sigilo.motivo` diz por quê (“os autos, uma transcrição ou
-    uma gravação dele estão na pasta dos sigilosos” ou “a pauta de
-    audiências indica que ele corre em segredo de justiça”). O banco da
+    indicação positiva e inequívoca (seção 8.5); (4) um **download** já o
+    apurou: o portal mostrou o selo (o resultado sigiloso, o
+    `SigilosoSemSenha`, os `sigilosos_apurados` do portal) ou um relatório
+    anterior do lote o deu como sigiloso. O motor o guarda
+    (`sigilo.lembrar_do_download`, em `LOCAL/download.sigilo.json`, ao lado
+    do registro da pauta: `arquivo_do_download`, `apuradas_no_download`)
+    antes de levar o PDF para o lote; com a separação dos sigilosos
+    desligada, os autos ficam no acervo, e é por esse registro que o
+    preparo, o MCP, o pacote, a nuvem e a transcrição o deixam de fora.
+    `sigilo.chaves_sigilosas` dá todos; `sigilo.motivo` diz por quê (“os
+    autos, uma transcrição ou uma gravação dele estão na pasta dos
+    sigilosos”, “a pauta de audiências indica que ele corre em segredo de
+    justiça” ou “um download anterior apurou que ele corre em segredo de
+    justiça”). O banco da
     pauta só é lido se já existir e só para consulta: `chaves_da_pauta` não
     abre o `Armazem`, mas o SQLite em `file:…?mode=ro` (a URI montada à
     mão, com `%XX`, para servir a `C:/` e a `\\servidor`), com `PRAGMA

@@ -703,7 +703,8 @@ versão anterior à 1.0.2 não tem esse registro, e a página dele pode não
 ser a folha. Quando o relatório do lote mostra que o download antigo de um
 processo do e-SAJ teve folhas ausentes ou foi montado peça a peça, o
 Helestron o baixa de novo sozinho na próxima vez que a relação for
-baixada; para refazer os demais, use **Baixar de novo o que já existe**
+baixada (e de novo nas seguintes, enquanto essa nova tentativa não der
+certo); para refazer os demais, use **Baixar de novo o que já existe**
 (ou, na linha de comando, `--rebaixar-incompletos`).
 
 ### Bom saber
@@ -755,8 +756,9 @@ Com **Separar os sigilosos** ligado (o padrão):
   “atenção: …”, com o arquivo e o que fazer, e o lote avisa **Arquivo de
   processo sigiloso no acervo** (veja [Regras de sigilo](#regras-de-sigilo));
 - o processo que o Helestron **já sabe sigiloso** (os autos, uma transcrição
-  ou uma gravação dele na pasta dos sigilosos, ou a pauta de audiências
-  indicando segredo de justiça) vai para a pasta dos sigilosos mesmo que a
+  ou uma gravação dele na pasta dos sigilosos, a pauta de audiências
+  indicando segredo de justiça, ou um download anterior que o encontrou em
+  segredo de justiça) vai para a pasta dos sigilosos mesmo que a
   página do portal não mostre o selo, e o mesmo vale para os incidentes dele
   (`...0001-01`); e o que um lote já deu como sigiloso continua sigiloso
   quando você usa **Tentar de novo**.
@@ -898,6 +900,8 @@ audiência de um processo que ele já sabe ser sigiloso:
   gravação anterior dele já foi para lá;
 - a pauta de audiências indica segredo de justiça em alguma audiência desse
   processo (vinda do portal ou de um relatório importado);
+- um download anterior encontrou o processo em segredo de justiça no
+  portal do tribunal;
 - o processo é **incidente** (`...0001-01`) de um processo que se enquadra
   num dos casos acima: a tela diz “Este processo é incidente de um processo
   sigiloso: …”.
@@ -1416,7 +1420,8 @@ nuvem em conflito**, com o caminho para corrigir.
   para a nuvem, para o conector ou para o índice, seja qual for a ferramenta.
   Quem decide o que é sigiloso é a regra única descrita em
   [Segredo de justiça](#segredo-de-justiça): os autos, a transcrição ou a
-  gravação na pasta dos sigilosos, ou a pauta de audiências.
+  gravação na pasta dos sigilosos, a pauta de audiências ou um download
+  anterior.
 - Antes de entregar o acervo a qualquer ferramenta (e antes de espelhá-lo na
   nuvem), o Helestron confere o acervo e, com **Separar os processos
   sigilosos** ligado (o padrão), leva para a pasta dos sigilosos tudo o que
@@ -1481,7 +1486,7 @@ pauta.
 
 ### Quando o processo é sigiloso para o Helestron
 
-Basta uma destas três situações:
+Basta uma destas quatro situações:
 
 1. **os autos** do processo estão na pasta dos sigilosos
    (`Sigilosos\<nome do lote>\` ou soltos em `Sigilosos\`);
@@ -1496,7 +1501,12 @@ Basta uma destas três situações:
    “Nível 1” no local da audiência, “Segredo de justiça: não” ou “Sem
    segredo de justiça” não marcam (veja [Segredo de justiça na
    pauta](#segredo-de-justiça-na-pauta)). Na pauta, o sigilo, uma vez
-   apurado, não se desfaz.
+   apurado, não se desfaz;
+4. um **download** do Helestron já encontrou o processo em segredo de
+   justiça no portal do tribunal, mesmo que os autos tenham ficado no
+   acervo (com **Separar os processos sigilosos** desligado): o sigilo,
+   uma vez apurado, fica guardado num registro à parte, o
+   `download.sigilo.json`.
 
 O **incidente** de um processo sigiloso (o `...0001-01`, como o cumprimento
 de sentença) também é sigiloso: as partes e o conteúdo são os mesmos. O
@@ -1508,7 +1518,8 @@ um incidente.
 - **Baixar processos**: os autos vão para a pasta dos sigilosos, fora do
   acervo, inclusive quando a página do processo no portal não mostra o selo
   de segredo de justiça (o segredo decretado depois, por exemplo): basta
-  que o Helestron já o saiba sigiloso, pela pasta ou pela pauta. Veja
+  que o Helestron já o saiba sigiloso, pela pasta, pela pauta ou por um
+  download anterior. Veja
   [Segredo de justiça no download](#segredo-de-justiça-no-download).
 - **Transcrever audiência**: a transcrição e a gravação vão para
   `Sigilosos\Transcricoes`, mesmo com o interruptor **Segredo de justiça**
@@ -1552,9 +1563,10 @@ um incidente.
 
 A marcação de sigilo **não se desfaz sozinha**, e não há botão para
 desfazê-la: a pauta não esquece um sigilo já apurado (ele fica gravado no
-banco da pauta e também num registro à parte, o `pauta.sigilo.json`), e os
-arquivos levados para a pasta dos sigilosos continuam lá (enquanto
-estiverem, o processo continua sigiloso). É de propósito: na dúvida, o
+banco da pauta e também num registro à parte, o `pauta.sigilo.json`), o
+download também não (o `download.sigilo.json`), e os arquivos levados para
+a pasta dos sigilosos continuam lá (enquanto estiverem, o processo
+continua sigiloso). É de propósito: na dúvida, o
 processo fica do lado seguro, fora da IA e da nuvem, e nada vaza. Uma
 versão anterior do Helestron
 podia marcar por engano, por exemplo, o processo com “Nível 1” no local da
@@ -1580,14 +1592,22 @@ Se o processo é público e você precisa dele no acervo:
    **antes** de baixar processos ou de transcrever audiências: até lá, o
    Helestron também deixa de saber o sigilo dos outros processos que só a
    pauta indicava.
-4. Leve de volta para o acervo o que o Helestron pôs na pasta dos sigilosos:
+4. Se a marcação veio de um download (o processo foi baixado como
+   sigiloso), mova também para outra pasta o `download.sigilo.json`, da
+   mesma pasta `%LOCALAPPDATA%\Helestron`, e guarde-o: sem movê-lo, o
+   processo continua sigiloso. Os outros processos que um download achou
+   em segredo de justiça continuam sigilosos se os autos deles estiverem
+   na pasta dos sigilosos; os que ficaram no acervo (com **Separar os
+   processos sigilosos** desligado) deixam de sê-lo até serem baixados de
+   novo: baixe de novo os lotes deles antes de compartilhar o acervo.
+5. Leve de volta para o acervo o que o Helestron pôs na pasta dos sigilosos:
    os autos, de `Sigilosos\<nome do lote>\` para
    `Acervo\Processos\<nome do lote>\`; as transcrições, de
    `Sigilosos\Transcricoes\` para `Acervo\Transcricoes\` (e as gravações, de
    `Sigilosos\Transcricoes\_audio\` para `Acervo\Transcricoes\_audio\`); e o
    que mais tiver o número dele no nome (uma minuta em
    `Sigilosos\Produtos\`, por exemplo).
-5. Abra o Helestron e, na tela Compartilhar, clique em **Preparar acervo
+6. Abra o Helestron e, na tela Compartilhar, clique em **Preparar acervo
    para a IA**.
 
 Na dúvida, não faça nada: um processo público marcado por engano só fica

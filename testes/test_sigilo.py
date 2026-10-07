@@ -167,6 +167,60 @@ class TestRegistroDoApurado(Base):
             self.assertEqual(sigilo.lembrar_do_banco(lixo, self.pauta), 0)
 
 
+class TestRegistroDoDownload(Base):
+    """Achado R19: o sigilo que o portal mostrou num download vale na regra
+    única (a quarta fonte), mesmo com os autos no acervo."""
+
+    def test_registro_ao_lado_do_da_pauta(self):
+        x, inc, y = _numero("0700881"), _numero("0700881", dependente="01"), _numero("0700882")
+        self.assertIsNone(sigilo.arquivo_do_download(None))
+        self.assertEqual(sigilo.arquivo_do_download(),
+                         self.pauta.with_name("download.sigilo.json"))
+        self.assertFalse(sigilo.processo_sigiloso(self.cfg, x))
+        self.assertTrue(sigilo.lembrar_do_download([x]))
+        dados = json.loads(sigilo.arquivo_do_download().read_text(encoding="utf-8"))
+        self.assertEqual(dados["processos"], [x.nome_arquivo])
+        self.assertIn("download", dados["sobre"])
+        self.assertFalse(self.pauta.exists(), "o registro não cria o banco da pauta")
+        self.assertEqual(sigilo.apuradas_no_download(), {x.nome_arquivo})
+        # a regra única: o processo e o incidente dele; a pauta não muda
+        self.assertTrue(sigilo.processo_sigiloso(self.cfg, x))
+        self.assertEqual(sigilo.motivo(self.cfg, x), sigilo.MOTIVO_DOWNLOAD)
+        self.assertEqual(sigilo.motivo(self.cfg, inc), sigilo.MOTIVO_DOWNLOAD_PRINCIPAL)
+        self.assertEqual(sigilo.motivo(self.cfg, y), "")
+        chaves = sigilo.chaves_sigilosas(self.sigilosos)
+        self.assertIn(x.nome_arquivo, chaves)
+        self.assertIn(inc.nome_arquivo, chaves)
+        self.assertNotIn(y.nome_arquivo, chaves)
+        self.assertEqual(sigilo.chaves_da_pauta(), set())
+        self.assertEqual(sigilo.motivo_da_pauta(x), "")
+        # pauta=None não consulta nem a pauta nem o registro ao lado dela
+        self.assertEqual(sigilo.chaves_sigilosas(self.sigilosos, pauta=None), set())
+        # os autos na pasta dos sigilosos continuam dizendo o motivo deles
+        self.arquivo(f"Lote 1/{x.nome_arquivo}.pdf")
+        self.assertEqual(sigilo.motivo(self.cfg, x), sigilo.MOTIVO_PASTA)
+
+    def test_so_acrescenta_e_nao_sobrescreve_o_ilegivel(self):
+        a, b = _numero("0700883"), _numero("0700884")
+        self.assertTrue(sigilo.lembrar_do_download([a]))
+        self.assertTrue(sigilo.lembrar_do_download([b.formatado, "não é número"]))
+        self.assertTrue(sigilo.lembrar_do_download([a]))
+        self.assertEqual(sigilo.apuradas_no_download(), {a.nome_arquivo, b.nome_arquivo})
+        self.assertEqual(sigilo.apuradas_da_pauta(), set(), "o da pauta é outro registro")
+        registro = sigilo.arquivo_do_download()
+        registro.write_text("{estragado", encoding="utf-8")
+        with self.assertLogs("nucleo.sigilo", "WARNING"):
+            self.assertFalse(sigilo.lembrar_do_download([_numero("0700885")]))
+        self.assertEqual(registro.read_text(encoding="utf-8"), "{estragado")
+
+    def test_pasta_local_ainda_inexistente_e_criada(self):
+        pauta = self.tmp / "nova" / "local" / "pauta.sqlite3"
+        x = _numero("0700886")
+        self.assertTrue(sigilo.lembrar_do_download([x], pauta))
+        self.assertEqual(sigilo.apuradas_no_download(pauta), {x.nome_arquivo})
+        self.assertFalse(pauta.exists())
+
+
 class TestPastaFunda(Base):
     """Achado 16: o que o preparo leva para a pasta dos sigilosos conta."""
 

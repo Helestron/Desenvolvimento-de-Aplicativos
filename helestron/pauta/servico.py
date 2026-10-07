@@ -362,10 +362,11 @@ class ServicoPauta:
     def _sigilosas_fora_do_banco(self) -> sigilo.Sigilosas:
         """Os processos (Numero.nome_arquivo) sigilosos pela pasta dos sigilosos
         (sigilo.chaves_na_pasta: autos, transcrições, gravações e diários, como
-        o download grava e como o preparo os leva) e pelo registro do que a
+        o download grava e como o preparo os leva), pelo registro do que a
         pauta já apurou (sigilo.apuradas_da_pauta - vale mesmo que o banco
-        tenha sido refeito). Lidos uma vez a cada poucos segundos, e não uma
-        vez por audiência."""
+        tenha sido refeito) e pelo do que o download já apurou
+        (sigilo.apuradas_no_download). Lidos uma vez a cada poucos segundos,
+        e não uma vez por audiência."""
         try:
             pasta = Path(self.cfg.pasta_sigilosos)
         except Exception:
@@ -379,7 +380,8 @@ class ServicoPauta:
         if guardado_onde == onde and _time.monotonic() - quando < CACHE_SIGILOSOS_S:
             return nomes
         nomes = sigilo.Sigilosas(sigilo.chaves_na_pasta(pasta, acervo)
-                                 | sigilo.apuradas_da_pauta(self.arquivo_banco))
+                                 | sigilo.apuradas_da_pauta(self.arquivo_banco)
+                                 | sigilo.apuradas_no_download(self.arquivo_banco))
         self._fora_do_banco = (_time.monotonic(), onde, nomes)
         return nomes
 
