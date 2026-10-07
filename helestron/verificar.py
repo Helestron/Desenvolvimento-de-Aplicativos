@@ -1044,8 +1044,16 @@ def nuvem_da_pasta(pasta, detectadas: list[tuple[str, Path]] | None = None) -> s
 def checar_local(cfg) -> Item:
     """Onde ficam as pastas: fora do OneDrive, da rede e de caminho curto - e
     os sigilosos e a pauta exportada fora de toda pasta sincronizada com a
-    nuvem (OneDrive, Google Drive)."""
+    nuvem (OneDrive, Google Drive).
+
+    Os sigilosos ou a pauta na nuvem não são recomendação: é a regra de
+    config.conflito_com_a_nuvem (nada de segredo de justiça na nuvem) valendo
+    para qualquer pasta do OneDrive ou do Google Drive, e o item diz que não
+    pode e o que corrigir. Fica no nível de aviso, como os conflitos de
+    pastas de checar_pastas: a instalação está boa, e a troca é feita em
+    Ajustes (o instalador, que roda esta checagem, não manda reinstalar)."""
     nome = "Local das pastas"
+    graves, correcoes = [], []
     problemas, acoes = [], []
     # Primeiro o mais grave: o que é de segredo de justiça saindo do computador.
     detectadas = _nuvens_detectadas()
@@ -1058,10 +1066,10 @@ def checar_local(cfg) -> Item:
              "a pauta")):
         servico = nuvem_da_pasta(pasta, detectadas)
         if servico:
-            problemas.append(f"a pasta {rotulo} ({pasta}) está dentro do {servico}: {porque} "
-                             "ao alcance dos conectores da IA")
-            acoes.append(f"em {AJUSTES_PASTAS}, escolha para {alvo} uma pasta fora do OneDrive "
-                         "e do Google Drive")
+            graves.append(f"a pasta {rotulo} ({pasta}) está dentro do {servico}, e isso não "
+                          f"pode: {porque} ao alcance dos conectores da IA")
+            correcoes.append(f"em {AJUSTES_PASTAS}, escolha para {alvo} uma pasta fora do "
+                             "OneDrive e do Google Drive e mova para ela o que está na pasta atual")
     if caminhos.dentro_do_onedrive(cfg.pasta_acervo):
         problemas.append(f"a pasta do acervo ({cfg.pasta_acervo}) está dentro do OneDrive, cuja "
                          "sincronização trava arquivos em uso")
@@ -1080,6 +1088,14 @@ def checar_local(cfg) -> Item:
         if pasta.startswith("\\\\"):
             problemas.append(f"a pasta {rotulo} fica numa pasta de rede")
             acoes.append("instale e use o Helestron no próprio computador")
+    if graves:
+        detalhe = "; ".join(graves) + "."
+        if problemas:
+            detalhe += " Além disso: " + "; ".join(problemas) + "."
+        acao = "Corrija: " + "; ".join(correcoes) + "."
+        if acoes:
+            acao += " Recomendado: " + "; ".join(acoes) + "."
+        return Item(nome, AVISO, detalhe[0].upper() + detalhe[1:], codigo="local", acao=acao)
     if problemas:
         return Item(nome, AVISO, "Atenção: " + "; ".join(problemas) + ".",
                     obrigatorio=False, codigo="local",

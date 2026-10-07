@@ -736,8 +736,26 @@ def servir(raiz: Path, entrada=None, saida=None) -> None:
                 if not respostas:
                     continue
                 resposta = respostas if isinstance(msg, list) else respostas[0]
-        saida.write(json.dumps(resposta, ensure_ascii=False).encode("utf-8") + b"\n")
+        try:
+            dados = _linha(resposta)
+        except Exception:  # noqa: BLE001 - uma resposta ruim não encerra o servidor
+            log.exception("falha ao montar uma resposta")
+            dados = _linha({"jsonrpc": "2.0",
+                            "id": resposta.get("id") if isinstance(resposta, dict) else None,
+                            "error": {"code": -32603, "message": "erro interno"}})
+        saida.write(dados)
         saida.flush()
+
+
+def _linha(resposta) -> bytes:
+    """A resposta numa linha em UTF-8. O pedido pode trazer um escape JSON
+    válido que não se codifica em UTF-8 (o surrogate isolado "\\ud800", no
+    'id' ou num texto que a resposta repete): a linha vai então só com
+    escapes \\uXXXX, que devolvem o mesmo texto, e o servidor não cai."""
+    try:
+        return json.dumps(resposta, ensure_ascii=False).encode("utf-8") + b"\n"
+    except UnicodeEncodeError:
+        return json.dumps(resposta, ensure_ascii=True).encode("ascii") + b"\n"
 
 
 def _tratar_sem_cair(servidor: Servidor, msg) -> dict | None:

@@ -12,7 +12,10 @@ Regressões (1.0.2):
   refeito o banco, o processo voltava a ser público;
 * a regra só procurava os autos nos dois primeiros níveis da pasta dos
   sigilosos, mas o preparo leva o arquivo para o mesmo caminho que ele
-  tinha no acervo (Lote 1/Concluídos/X.pdf, Transcricoes/2025/X.docx).
+  tinha no acervo (Lote 1/Concluídos/X.pdf, Transcricoes/2025/X.docx);
+* a consulta de um número só (download e transcrição) via o arquivo cujo
+  nome começa pelo número, e o compartilhamento o via em qualquer posição
+  do nome: a regra dava duas respostas para o mesmo processo.
 """
 
 from __future__ import annotations
@@ -278,6 +281,43 @@ class TestPastaFunda(Base):
     def test_pasta_inexistente(self):
         self.assertEqual(sigilo.chaves_na_pasta(self.tmp / "nao existe"), set())
         self.assertFalse(sigilo.na_pasta(self.tmp / "nao existe", _numero("0700601")))
+
+
+class TestUmaSoResposta(Base):
+    """Achado R20: a consulta de um número (na_pasta, que o download e a
+    transcrição usam) só via os arquivos cujo nome COMEÇA pelo número, e o
+    compartilhamento (chaves_na_pasta) aceita o número em qualquer posição.
+    O processo era sigiloso para a nuvem e público para a transcrição nova,
+    que ia para o acervo."""
+
+    def test_numero_em_qualquer_posicao_do_nome(self):
+        from helestron.transcricao import documento
+
+        renomeada, digitos, minuta, gravacao = (_numero(s) for s in (
+            "0700701", "0700702", "0700703", "0700704"))
+        self.arquivo(f"Transcricoes/Audiência de instrução - {renomeada.nome_arquivo}.docx")
+        self.arquivo(f"Lote 1/{digitos.digitos}.pdf")
+        self.arquivo(f"Produtos/Sentença {minuta.nome_arquivo}.pdf")
+        self.arquivo(f"Transcricoes/_audio/Audiência {gravacao.nome_arquivo} 2026-09-16/p1.wav")
+        cfg = mock.Mock(pasta_sigilosos=self.sigilosos,
+                        pasta_transcricoes=self.tmp / "Acervo" / "Transcricoes")
+        todos = (renomeada, digitos, minuta, gravacao)
+        self.assertEqual(sigilo.chaves_na_pasta(self.sigilosos),
+                         {n.nome_arquivo for n in todos})
+        for n in todos:
+            self.assertTrue(sigilo.na_pasta(self.sigilosos, n), n)
+            self.assertEqual(sigilo.motivo_da_pasta(self.sigilosos, n), sigilo.MOTIVO_PASTA)
+            self.assertTrue(sigilo.processo_sigiloso(cfg, n), n)
+            self.assertEqual(documento.pasta_das_transcricoes(cfg, n),
+                             self.sigilosos / "Transcricoes", n)
+        # o incidente herda do principal também assim
+        incidente = _numero("0700703", dependente="01")
+        self.assertEqual(sigilo.motivo_da_pasta(self.sigilosos, incidente),
+                         sigilo.MOTIVO_PASTA_PRINCIPAL)
+        # e o que não tem o número continua de fora
+        outro = _numero("0700799")
+        self.assertFalse(sigilo.na_pasta(self.sigilosos, outro))
+        self.assertEqual(documento.pasta_das_transcricoes(cfg, outro), cfg.pasta_transcricoes)
 
 
 class TestPreparoESigiloDuravel(unittest.TestCase):

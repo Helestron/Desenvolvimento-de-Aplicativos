@@ -353,7 +353,8 @@ class TestChecagens(unittest.TestCase):
             self.assertEqual(verificar.checar_pastas(self.cfg).situacao, OK)
 
     def test_acervo_no_onedrive_e_aviso(self):
-        with mock.patch.dict(os.environ, {"OneDrive": str(self.pasta)}):
+        # só o acervo no OneDrive (os sigilosos e a pauta, fora: ver TestSigilososForaDaNuvem)
+        with mock.patch.dict(os.environ, {"OneDrive": str(self.pasta / "Acervo")}):
             item = verificar.checar_local(self.cfg)
         self.assertEqual((item.situacao, item.obrigatorio), (AVISO, False))
         self.assertIn("OneDrive", item.detalhe)
@@ -613,29 +614,49 @@ class TestSigilososForaDaNuvem(unittest.TestCase):
         self.assertIn("sigilosos e pauta fora da nuvem", item.detalhe)
 
     def test_sigilosos_no_onedrive(self):
+        # Achado R33: era só "Recomendado", num aviso opcional junto dos
+        # conselhos de conforto. É a regra de config.conflito_com_a_nuvem
+        # (nada de segredo de justiça na nuvem): o item diz que não pode e
+        # manda corrigir, no nível dos conflitos de pastas (aviso).
         od = self.pasta / "OD"
         self.cfg.definir("geral", "pasta_sigilosos", str(od / "Sigilosos"))
         item = self.local({"OneDrive": str(od)})
-        self.assertEqual((item.situacao, item.obrigatorio, item.codigo), (AVISO, False, "local"))
-        self.assertIn("a pasta dos processos em segredo de justiça", item.detalhe)
-        self.assertIn("está dentro do OneDrive", item.detalhe)
+        self.assertEqual((item.situacao, item.obrigatorio, item.codigo), (AVISO, True, "local"))
+        self.assertTrue(item.detalhe.startswith(
+            f"A pasta dos processos em segredo de justiça ({od / 'Sigilosos'}) está dentro do "
+            "OneDrive, e isso não pode: os autos"), item.detalhe)
         self.assertNotIn("pauta exportada", item.detalhe)      # a pauta ficou fora
-        self.assertIn("escolha para os sigilosos uma pasta fora do OneDrive e do Google Drive",
-                      item.acao)
-        self.assertIn("Ajustes › Pastas", item.acao)
-        # o mais grave primeiro: o segredo de justiça saindo do computador
-        self.assertTrue(item.detalhe.startswith("Atenção: a pasta dos processos em segredo"))
+        self.assertEqual(item.acao, "Corrija: em Ajustes › Pastas, escolha para os sigilosos uma "
+                                    "pasta fora do OneDrive e do Google Drive e mova para ela o "
+                                    "que está na pasta atual.")
+        self.assertNotIn("Recomendado", item.acao)
+        # aviso, e não falha: a instalação está boa (o instalador não manda reinstalar)
+        self.assertEqual(verificar.resumir([item])["resultado"], AVISO)
+
+    def test_sigilosos_na_nuvem_vem_antes_dos_conselhos(self):
+        od = self.pasta / "OD"
+        for chave, secao, nome in (("pasta_sigilosos", "geral", "Sigilosos"),
+                                   ("pasta_acervo", "geral", "Acervo")):
+            self.cfg.definir(secao, chave, str(od / nome))
+        item = self.local({"OneDrive": str(od)})
+        self.assertEqual((item.situacao, item.obrigatorio), (AVISO, True))
+        self.assertTrue(item.detalhe.startswith("A pasta dos processos em segredo"))
+        self.assertIn(". Além disso: a pasta do acervo", item.detalhe)
+        self.assertTrue(item.acao.startswith("Corrija: em Ajustes › Pastas, escolha para os "
+                                             "sigilosos"), item.acao)
+        self.assertIn(". Recomendado: em Ajustes › Pastas, escolha uma pasta fora do OneDrive "
+                      "(para ter o acervo na nuvem", item.acao)
 
     def test_pauta_no_google_drive_detectado(self):
         gd = self.pasta / "GD"
         self.detectar.return_value = {"Google Drive": gd}
         self.cfg.definir("pauta", "pasta", str(gd / "Pauta"))
         item = self.local()
-        self.assertEqual(item.situacao, AVISO)
-        self.assertIn("a pasta da pauta exportada", item.detalhe)
-        self.assertIn("está dentro do Google Drive", item.detalhe)
+        self.assertEqual((item.situacao, item.obrigatorio), (AVISO, True))
+        self.assertIn("A pasta da pauta exportada", item.detalhe)
+        self.assertIn("está dentro do Google Drive, e isso não pode", item.detalhe)
         self.assertIn("sai do computador e fica ao alcance", item.detalhe)
-        self.assertIn("para a pauta", item.acao)
+        self.assertIn("Corrija: em Ajustes › Pastas, escolha para a pauta", item.acao)
 
     def test_google_drive_pelo_nome_da_pasta(self):
         self.cfg.definir("geral", "pasta_sigilosos", str(self.pasta / "Google Drive" / "Sig"))
