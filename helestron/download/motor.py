@@ -2415,6 +2415,14 @@ class _Lote:
             # eProc, o registro do download diz melhor (evento não listado).
             if essencial.get("paginacao") == paginacao.FOLHAS or not reg["incompleto"]:
                 reg["incompleto"] = _incompleto_do_manifesto(essencial)
+            # O manifesto que não descreve o PDF (página incluída ou apagada
+            # depois do download) não garante a paginação: a mesma conferência
+            # do texto, que sai "nao_garantida".
+            from ..compartilhar import textos
+            paginas = _paginas(existente)
+            if not textos.manifesto_confere(manifesto, paginas):
+                reg["paginacao"] = {"garantida": False,
+                                    "resumo": textos.resumo_da_paginacao(manifesto, paginas)}
         return reg
 
     def _baixar_de_novo(self, reg: dict, portal) -> str:
@@ -2428,6 +2436,9 @@ class _Lote:
             if not reg["paginacao"]:
                 return ("já estava na pasta, mas sem o manifesto de paginação (PDF de versão "
                         "anterior)")
+            if reg["paginacao"].get("garantida") is False:
+                return ("já estava na pasta, mas com a paginação não garantida (o PDF foi "
+                        "alterado depois do download?)")
         # PDF do e-SAJ de versão anterior à 1.0.2, cujo download deixou sinal
         # de numeração deslocada (folhas ausentes, montagem peça a peça, índice
         # que não fechava): a página do PDF pode não ser a folha. O registro

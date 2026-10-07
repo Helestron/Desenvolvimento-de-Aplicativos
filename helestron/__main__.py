@@ -481,7 +481,7 @@ def _preparar_pasta(opcoes, cfg) -> int:
     """preparar --pasta: o texto dos autos de uma pasta de lote, e nada mais."""
     from .compartilhar import textos
     from .download import motor
-    from .nucleo import paginacao, sigilo
+    from .nucleo import sigilo
 
     pasta = Path(opcoes.pasta).expanduser()
     if not pasta.is_dir():
@@ -529,13 +529,18 @@ def _preparar_pasta(opcoes, cfg) -> int:
                 textos.garantir_texto(pdf, alvo)
                 novo = antes is None or alvo.stat().st_mtime != antes \
                     or versao != textos.VERSAO_TEXTO
+                paginas, m = textos.info_pdf(pdf)       # o PDF aberto uma vez só
                 item.update(texto=str(alvo), situacao="novo" if novo else "em_dia",
-                            paginas=textos.contar_paginas(pdf))
-                m = paginacao.ler_do_pdf(pdf)
-                essencial = motor.essencial_da_paginacao(m)
+                            paginas=paginas)
+                # A mesma conferência do texto: o manifesto que não descreve o
+                # arquivo (página incluída ou apagada depois do download) não
+                # garante nada, e o texto sai "nao_garantida"
+                essencial = (motor.essencial_da_paginacao(m)
+                             if textos.manifesto_confere(m, paginas) else {})
                 # "garantida" sempre presente, como no JSON do baixar
                 item["paginacao"] = ({"garantida": True, **essencial} if essencial else
-                                     {"garantida": False, "resumo": paginacao.resumo(None)})
+                                     {"garantida": False,
+                                      "resumo": textos.resumo_da_paginacao(m, paginas)})
             except Exception as erro:   # PDF corrompido não para o resto
                 item.update(situacao="falhou", erro=str(erro)[:300])
             else:

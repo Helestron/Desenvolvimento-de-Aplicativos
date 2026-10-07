@@ -362,7 +362,7 @@ os mesmos ajustes da tela Processos:
 | `--sem-cofre` | não usa as senhas guardadas: no modo **Usuário e senha**, o navegador abre na tela de entrada, e você entra |
 | `--visivel` | mostra a janela do navegador |
 | `--rebaixar` | baixa de novo o que já está na pasta |
-| `--rebaixar-incompletos` | baixa de novo só o que tem folhas (ou documentos) ausentes, ou o PDF de versão anterior, sem o manifesto de paginação |
+| `--rebaixar-incompletos` | baixa de novo só o que tem folhas (ou documentos) ausentes, o PDF de versão anterior, sem o manifesto de paginação, ou o PDF alterado depois do download (página incluída ou apagada), cuja paginação deixou de ser garantida |
 | `--midias` | baixa também as gravações de audiência |
 | `--texto` | ao fim, extrai o texto de cada PDF, com a marca de cada página (em `_texto`, ao lado dos PDFs; dentro do acervo, em `_ia\texto`) |
 | `--retomar` | refaz só o que o relatório da pasta do lote diz que pede nova tentativa (falhou, ficou pendente ou foi interrompido), os números que ainda não estão nele e o processo baixado cujo PDF já não está na pasta; com `--rebaixar-incompletos`, também o que tem folhas (ou documentos) ausentes. Com `--destino`, dispensa a relação; se a pasta não tiver o relatório de um lote, sai com o código 2 |
@@ -1371,6 +1371,10 @@ Clique em **Preparar acervo para a IA**. O Helestron:
     os marcadores dele confirmam a numeração; senão, a marca é a posição no
     PDF, e a primeira linha diz `paginacao=nao_garantida`. O texto antigo
     (formato 1) é refeito sozinho no próximo preparo;
+  - o mesmo vale para o PDF alterado depois do download (uma página
+    incluída ou apagada): a paginação deixa de ser garantida no texto, no
+    `INDICE.md` e no conector, e no eProc a IA cita o evento e o documento,
+    nunca “fl.”. Para voltar à numeração exata, baixe o processo de novo;
 - escreve o `CLAUDE.md` e o `AGENTS.md` com as **regras de trabalho**:
   indicar a folha ou o evento de cada afirmação (no e-SAJ, a página N é a
   folha N, e a página de aviso não é prova; no eProc, “evento N, RÓTULO,

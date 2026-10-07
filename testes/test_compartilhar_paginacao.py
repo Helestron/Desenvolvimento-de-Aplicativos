@@ -9,6 +9,7 @@ veio do e-SAJ tem só uma página de aviso, que não é prova.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -250,6 +251,53 @@ class TestFormato2Eproc(unittest.TestCase):
         self.assertIn("paginacao=nao_garantida", texto.split("\n", 1)[0])
         self.assertNotIn("arquivo completo do eProc, pág.", texto)
         self.assertIn("=== [pág. 2 do PDF] ===\ndois", texto)
+
+    def test_alterado_cita_o_evento_e_nunca_a_folha_carimbada(self):
+        """Achado V1: o PDF do eProc alterado depois do download recebia a
+        instrução de citação do e-SAJ ("cite a folha carimbada na própria
+        página"). No TJAL em transição, o documento migrado do e-SAJ traz o
+        carimbo "fls. N" antigo, e a IA citava "fl. 38" num processo do eProc,
+        contra a regra do eProc (nunca "fl.")."""
+        docs = [{"evento": 1, "rotulo": "INIC1", "descricao": "INICIAL", "origem": "pdf",
+                 "situacao": "ok", "inicio": 1, "paginas": 3},
+                {"evento": 2, "rotulo": "CONT1", "descricao": "CONTESTAÇÃO", "origem": "pdf",
+                 "situacao": "ok", "inicio": 4, "paginas": 2}]
+        m = paginacao.manifesto_eproc("0700001-70.2024.8.02.0001", docs, tribunal="TJAL")
+        # a última página apagada depois do download; a inicial veio do e-SAJ
+        pdf = _pdf(self.base / "alterado.pdf",
+                   ["Petição inicial do autor, página 1\nfls. 37",
+                    "Petição inicial do autor, página 2\nfls. 38",
+                    "Petição inicial do autor, página 3\nfls. 39",
+                    "Contestação do réu, página 1"],
+                   [[1, "Evento 1 — INICIAL — INIC1 (01/01/2024)", 1],
+                    [1, "Evento 2 — CONTESTAÇÃO — CONT1 (02/01/2024)", 4]], m)
+        with self.assertLogs("helestron.compartilhar.textos", "WARNING"):
+            texto = textos.texto_pdf(pdf)
+        self.assertIn("sistema=eproc | paginacao=nao_garantida", texto.split("\n", 1)[0])
+        self.assertIn("=== [pág. 2 do PDF] ===\n[documento: Evento 1 — INICIAL — INIC1 "
+                      "(01/01/2024)]", texto)
+        cabeca = textos.preambulo(texto)
+        self.assertNotIn("folha carimbada", cabeca)
+        self.assertNotIn("1.0.2 ou mais novo", cabeca)    # o PDF já é da 1.0.2
+        self.assertIn("o eProc não numera folhas: nunca cite \"fl.\", nem o carimbo \"fls. N\"",
+                      cabeca)
+        self.assertIn("como \"evento N, RÓTULO\", sem a página", cabeca)
+        self.assertIn("o manifesto de paginação descreve 5 páginas, mas o PDF tem 4", cabeca)
+        self.assertNotIn("=== [", cabeca)
+        # o conector diz o mesmo no cabeçalho de ler_processo
+        cab = mcp_servidor.Acervo._cabecalho_resposta("0700001-70.2024.8.02.0001",
+                                                      textos.cabecalho(texto), 4, 1, 4, "")
+        self.assertIn("nunca cite \"fl.\"", cab)
+        self.assertNotIn("folha carimbada", cab)
+        # o e-SAJ alterado continua com a instrução dele: lá a folha carimbada vale
+        with self.assertLogs("helestron.compartilhar.textos", "WARNING"):
+            texto = textos.texto_pdf(_pdf(self.base / "esaj.pdf", ["um", "dois"],
+                                          manifesto=_manifesto_esaj(NUM, 3)))
+        self.assertIn("Cite a folha carimbada", textos.preambulo(texto))
+        self.assertIn("o manifesto de paginação diz 3 folhas, mas o PDF tem 2 páginas",
+                      textos.preambulo(texto))
+        cab = mcp_servidor.Acervo._cabecalho_resposta(NUM, textos.cabecalho(texto), 2, 1, 2, "")
+        self.assertIn("cite a folha carimbada ou o documento", cab)
 
     def test_pdf_antigo_com_avisos(self):
         """eProc da 1.0.1: o aviso de documento que não veio e o de gravação
@@ -685,6 +733,71 @@ class TestPreparoRegrasNovas(BaseAcervo):
         self.assertIn("ev. 4 PET1; ev. 7 VIDEO1 (gravação)", linha)
         linha = next(l for l in indice.splitlines() if l.startswith(f"| {antigo} |"))
         self.assertIn("conferida pelos marcadores", linha)
+
+    def test_indice_e_conector_com_o_pdf_alterado_depois_do_download(self):
+        """Achado V12: com uma página incluída ou apagada depois do download
+        (num editor que conserva os anexos), o texto saía "nao_garantida",
+        mas o INDICE.md - que o CLAUDE.md manda ler "para saber como cada PDF
+        está paginado" - e o listar_acervo do conector davam a paginação do
+        manifesto ("página N = folha N") como garantida."""
+        # e-SAJ: manifesto das fls. 1 a 3, com uma página incluída no início
+        _pdf(self.raiz / "Processos" / "Lote 1" / f"{NUM}.pdf",
+             ["ANOTAÇÃO DO ASSESSOR", "Petição inicial", "Contestação", "Sentença"],
+             manifesto=_manifesto_esaj(NUM, 3, {2: "N"}))
+        # eProc: o manifesto descreve 7 páginas, e o PDF tem 6 (a 1ª apagada)
+        _pdf(self.raiz / "Processos" / "Lote 2" / f"{EPROC}.pdf", ["página"] * 6,
+             manifesto=paginacao.manifesto_eproc(EPROC, _docs_eproc(), tribunal="TJRS"))
+        for extrair in (False, True):        # o índice não depende do texto extraído
+            with self.subTest(extrair_texto=extrair):
+                # a extração avisa, no registro, que o manifesto não confere
+                with (self.assertLogs("helestron.compartilhar.textos", "WARNING") if extrair
+                      else contextlib.nullcontext()):
+                    preparo.atualizar_contexto(raiz=self.raiz, extrair_texto=extrair)
+                indice = (self.raiz / "INDICE.md").read_text(encoding="utf-8")
+                linha = next(l for l in indice.splitlines() if l.startswith(f"| {NUM} |"))
+                self.assertIn("| e-SAJ | 4 | NÃO garantida: o manifesto de paginação diz 3 "
+                              "folhas, mas o PDF tem 4 páginas", linha)
+                self.assertNotIn("página N = folha N", linha)
+                self.assertNotIn("fls. 2", linha)        # as folhas do manifesto, não do PDF
+                linha = next(l for l in indice.splitlines() if l.startswith(f"| {EPROC} |"))
+                self.assertIn("| eProc | 6 | NÃO garantida: o manifesto de paginação descreve 7 "
+                              "páginas, mas o PDF tem 6", linha)
+                self.assertNotIn("igual à do eProc", linha)
+        for chave in (NUM, EPROC):          # o texto diz o mesmo
+            texto = (self.raiz / "_ia" / "texto" / f"{chave}.txt").read_text(encoding="utf-8")
+            self.assertIn("paginacao=nao_garantida", texto.split("\n", 1)[0])
+        lista = mcp_servidor.Acervo(self.raiz, sigilosos=None, pauta=None).listar_acervo()
+        linha = next(l for l in lista.splitlines() if l.startswith(f"- {NUM} "))
+        self.assertIn("— 4 pág. —", linha)
+        self.assertIn("NÃO garantida: o manifesto de paginação diz 3 folhas", linha)
+        self.assertNotIn("página N = folha N", linha)
+        linha = next(l for l in lista.splitlines() if l.startswith(f"- {EPROC} "))
+        self.assertIn("NÃO garantida: o manifesto de paginação descreve 7 páginas", linha)
+        # o PDF intacto continua com a paginação garantida
+        self.assertEqual(textos.resumo_da_paginacao(_manifesto_esaj(NUM, 4), 4),
+                         "página N = folha N (fls. 1 a 4)")
+        self.assertTrue(textos.manifesto_confere(_manifesto_esaj(NUM, 4), 4))
+        self.assertFalse(textos.manifesto_confere(None, 4))
+        self.assertIn("versão anterior", textos.resumo_da_paginacao(None, 4))
+
+    def test_nao_garantida_vale_tambem_para_o_pdf_alterado(self):
+        """Achado V14: o CLAUDE.md e o AGENTS.md diziam que paginacao=
+        nao_garantida é "PDF baixado por versão anterior"; o texto do PDF da
+        1.0.2 alterado depois do download também sai assim. E, no eProc, a
+        regra da folha carimbada não vale (nunca "fl.")."""
+        preparo.atualizar_contexto(raiz=self.raiz, extrair_texto=False)
+        skill = self.raiz / ".claude" / "skills" / "acervo-judicial" / "SKILL.md"
+        for nome, texto in (("CLAUDE.md", (self.raiz / "CLAUDE.md").read_text(encoding="utf-8")),
+                            ("AGENTS.md", (self.raiz / "AGENTS.md").read_text(encoding="utf-8")),
+                            ("SKILL.md", skill.read_text(encoding="utf-8")),
+                            ("conector", mcp_servidor.INSTRUCOES)):
+            with self.subTest(nome):
+                plano = " ".join(texto.split())
+                self.assertNotIn("PDF baixado por versão anterior)", plano)
+                regra = plano[plano.index("paginacao=nao_garantida"):][:400]
+                self.assertIn("versão anterior ou alterado depois do download", regra)
+                self.assertRegex(regra, r"no eProc, nunca .fl\..: o evento e o documento, sem "
+                                        r"a página")
 
     def test_preparos_simultaneos_nao_falham(self):
         erros = []

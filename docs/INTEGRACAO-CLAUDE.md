@@ -215,7 +215,7 @@ lote. O desfecho é o `codigo_saida` do JSON, e não o código do comando.
 | `--eventos` | cada evento numa linha `HELESTRON-EVENTO {…}` (útil sem `--desanexar`) |
 | `--desanexar` | o lote roda sozinho; exige `--json`. Escreva as opções por extenso: o `baixar` não aceita abreviação |
 | `--retomar` | refaz só o que pede nova tentativa (seção 12) e o processo baixado cujo PDF saiu da pasta; com `--rebaixar-incompletos`, também o PDF com folhas (ou documentos) ausentes |
-| `--rebaixar-incompletos` | baixa de novo o PDF com folhas (ou documentos) ausentes ou sem o manifesto de paginação |
+| `--rebaixar-incompletos` | baixa de novo o PDF com folhas (ou documentos) ausentes, sem o manifesto de paginação ou com a paginação não garantida (alterado depois do download) |
 | `--visivel`, `--midias`, `--rebaixar`, `--sem-ia` | mostrar o navegador; baixar as gravações; baixar tudo de novo; não atualizar os arquivos de contexto da IA no fim |
 
 Para um ou dois processos, dá para rodar sem `--desanexar`, com
@@ -330,7 +330,10 @@ No eProc: `"paginacao": "documento"`, `modo` (`documentos` ou `completo`),
 `documentos` (`[{evento, rotulo, descricao, data, origem, situacao, inicio,
 paginas}]`) e, no modo completo, `partes`. Sem manifesto (PDF de versão
 anterior): `{"garantida": false, "resumo": "paginação não conferida …",
-"paginacao": null, …}`.
+"paginacao": null, …}`. Com um manifesto que não descreve o PDF (página
+incluída ou apagada depois do download; o texto sai `nao_garantida`), o
+mesmo, com o `resumo` “NÃO garantida: o manifesto de paginação diz 3
+folhas, mas o PDF tem 4 páginas …”.
 
 ## 6. Eventos
 
@@ -395,11 +398,13 @@ cite**. No modo completo (o arquivo do próprio eProc, intacto), cite o
 evento e o documento que a página ou o marcador indicarem.
 
 **Paginação não garantida.** Com `paginacao.garantida` igual a `false`
-(PDF baixado por versão anterior à 1.0.2), a página do PDF pode não ser a
+(PDF baixado por versão anterior à 1.0.2, ou alterado depois do download:
+o manifesto não descreve mais o arquivo), a página do PDF pode não ser a
 folha. Baixe de novo com `--retomar --rebaixar-incompletos` (na mesma
 `--destino`) antes de citar; se não
 der, cite a folha carimbada na própria página ou o documento, e avise o
-magistrado.
+magistrado. No eProc, nunca “fl.” (nem o carimbo “fls. N” de documento
+vindo de outro sistema): cite o evento e o documento, sem a página.
 
 ## 8. O texto dos autos (formato 2)
 
@@ -465,7 +470,9 @@ pasta deles), que a IA não pode ler.
 
 O JSON traz `pasta`, `itens` (cada um com `pdf`, `texto`, `situacao`,
 `erro`, `sigiloso`, `paginas`, `paginacao`, `paginas_sem_texto` e
-`paginas_sem_texto_pdf`) e `codigo_saida`. Códigos: 0 tudo certo; 1 algum
+`paginas_sem_texto_pdf`) e `codigo_saida`. A `paginacao` é a do texto:
+`garantida` igual a `false` sem o manifesto ou com um que não descreve o
+PDF (seção 7). Códigos: 0 tudo certo; 1 algum
 PDF falhou; 2 uso errado (pasta que não existe).
 
 O `preparar` sem `--pasta` prepara o acervo inteiro (como o botão da

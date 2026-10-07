@@ -357,6 +357,46 @@ class TestJaBaixadoPreservaORegistro(BaseRegistro):
         self.assertEqual(r.paginacao["ultima"], 4)
         self.assertEqual(r.paginacao["ausentes"], [{"evento": 4, "rotulo": "PET1"}])
 
+    def test_pdf_alterado_depois_do_download_nao_tem_paginacao_garantida(self):
+        """Achado V12: o PDF que já estava na pasta, com uma página incluída
+        depois do download (num editor que conserva os anexos), tinha o
+        texto "nao_garantida", mas o JA_BAIXADO do JSON dizia garantida=true e
+        "página N = folha N"."""
+        from helestron.download import acompanhamento
+
+        m = paginacao.manifesto_esaj(TJAL1.formatado, 3, origem="servidor", tribunal="TJAL")
+        pdf_com_manifesto(self.destino / f"{TJAL1.nome_arquivo}.pdf", 4, m)   # uma a mais
+        r = self.rodar([TJAL1]).itens[0]
+        self.assertEqual((r.situacao, r.sistema, r.paginas), (modelos.JA_BAIXADO, "esaj", 4))
+        self.assertEqual(set(r.paginacao), {"garantida", "resumo"})
+        self.assertFalse(r.paginacao["garantida"])
+        self.assertIn("NÃO garantida: o manifesto de paginação diz 3 folhas, mas o PDF tem 4 "
+                      "páginas", r.paginacao["resumo"])
+        p = acompanhamento.paginacao_json(r)
+        self.assertEqual((p["garantida"], p["paginacao"], p["ultima"], p["ausentes"]),
+                         (False, None, None, None))
+        self.assertEqual(apoio.PortalFalso.todos[0].chamadas, [])     # sem a opção, fica
+        # --rebaixar-incompletos o baixa de novo, e diz por quê
+        self.assertTrue(self.destino.joinpath(f"{TJAL1.nome_arquivo}.pdf").exists())
+        r = self.rodar([TJAL1], rebaixar_incompletos=True).itens[0]
+        self.assertEqual(r.situacao, modelos.OK)
+        self.assertEqual(len(apoio.PortalFalso.todos[0].chamadas), 1)
+        self.assertIn("paginação não garantida", r.detalhe)
+        # o eProc também: o manifesto descreve 4 páginas, e o PDF tem 3
+        docs = [{"evento": 1, "rotulo": "INIC1", "situacao": "ok", "inicio": 1, "paginas": 4}]
+        pdf_com_manifesto(self.destino / f"{TJRS1.nome_arquivo}.pdf", 3,
+                          paginacao.manifesto_eproc(TJRS1.formatado, docs, tribunal="TJRS"))
+        r = self.rodar([TJRS1]).itens[0]
+        self.assertEqual((r.situacao, r.sistema), (modelos.JA_BAIXADO, "eproc"))
+        self.assertFalse(r.paginacao["garantida"])
+        self.assertIn("descreve 4 páginas, mas o PDF tem 3", r.paginacao["resumo"])
+        # o intacto continua garantido (o essencial do manifesto, sem "garantida")
+        m = paginacao.manifesto_esaj(TJAL2.formatado, 2)
+        pdf_com_manifesto(self.destino / f"{TJAL2.nome_arquivo}.pdf", 2, m)
+        r = self.rodar([TJAL2]).itens[0]
+        self.assertNotIn("garantida", r.paginacao)
+        self.assertTrue(acompanhamento.paginacao_json(r)["garantida"])
+
     def test_ok_guarda_a_paginacao_do_pdf(self):
         m = paginacao.manifesto_esaj(TJAL1.formatado, 2, {2: "N"})
 
