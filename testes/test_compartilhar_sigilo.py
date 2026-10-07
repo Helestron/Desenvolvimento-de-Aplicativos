@@ -387,6 +387,57 @@ class TestRestosDoSigiloso(BaseSigilo):
         self.assertIn("que ainda traz o número dele (está aberto no Excel?)", frase)
 
 
+class TestSeparacaoDesligada(BaseSigilo):
+    """Achado R19: com a separação dos sigilosos desligada, o processo que o
+    portal mostrou em segredo de justiça fica no acervo - e ia para o índice,
+    o _ia/texto, o conector e a nuvem, porque a regra única não sabia dele."""
+
+    def test_sigiloso_do_portal_fica_fora_do_indice_do_texto_do_conector_e_da_nuvem(self):
+        from helestron.download import motor
+        from testes import apoio_download as apoio
+
+        x, y = cnj.ler(X), cnj.ler(Y)
+        (self.lote / f"{Y}.pdf").unlink()
+        self.cfg.definir("download", "separar_sigilosos", False)
+        fp, fn = apoio.fabricas({X: ["ok_sigiloso"]})
+        opcoes = apoio.opcoes_de_teste(self.base, pasta_sigilosos=self.sig,
+                                       separar_sigilosos=False)
+        resumo = motor.executar([x, y], self.lote, opcoes, apoio.ContextoGravador(),
+                                fabrica_portal=fp, fabrica_navegador=fn, cfg=self.cfg)
+        self.assertEqual([(r.situacao, r.sigiloso) for r in resumo.itens],
+                         [("OK", True), ("OK", False)])
+        self.assertTrue((self.lote / f"{X}.pdf").exists(), "desligada, a separação não move")
+        # a regra única sabe, e diz por quê
+        self.assertTrue(sigilo.processo_sigiloso(self.cfg, x))
+        self.assertEqual(sigilo.motivo(self.cfg, x), sigilo.MOTIVO_DOWNLOAD)
+        self.assertEqual(sigilo.motivo(self.cfg, f"{X}-01"), sigilo.MOTIVO_DOWNLOAD_PRINCIPAL)
+        self.assertFalse(sigilo.processo_sigiloso(self.cfg, y))
+        # a audiência dele é sigilosa, e a tela diz por quê
+        from helestron.servidor import audiencia
+        from helestron.transcricao import documento
+
+        app = mock.Mock(cfg=self.cfg)
+        app.pauta_ou_none.return_value = None
+        self.assertEqual(audiencia.sigilo_conhecido(app, x), audiencia.MOTIVO_DOWNLOAD)
+        self.assertEqual(audiencia.sigilo_conhecido(app, cnj.ler(f"{X}/01")),
+                         audiencia.MOTIVO_DOWNLOAD_PRINCIPAL)
+        self.assertEqual(audiencia.sigilo_conhecido(app, y), "")
+        self.assertEqual(documento.pasta_das_transcricoes(self.cfg, x), self.sig / "Transcricoes")
+        # o preparo, o conector e a nuvem o deixam de fora
+        rel = preparo.atualizar_contexto(self.cfg, extrair_texto=True)
+        self.assertEqual(rel.processos, 1)
+        self.assertFalse((self.acervo / "_ia" / "texto" / f"{X}.txt").exists())
+        self.assertTrue((self.acervo / "_ia" / "texto" / f"{Y}.txt").exists())
+        self.assertNotIn(X, (self.acervo / "INDICE.md").read_text(encoding="utf-8"))
+        ac = mcp_servidor.Acervo(self.acervo, sigilosos=self.sig)
+        self.assertEqual(set(ac.pdfs()), {Y})
+        nuvem_dir = self.base / "Nuvem"
+        nuvem_dir.mkdir()
+        nuvem.espelhar(self.acervo, nuvem_dir, sigilosos=self.sig)
+        self.assertEqual(list(nuvem_dir.rglob(f"{X}*")), [])
+        self.assertTrue(list(nuvem_dir.rglob(f"{Y}.pdf")))
+
+
 class TestBuscarNumAcervoGrande(unittest.TestCase):
     """'buscar' sem número: a listagem do acervo e a regra do sigilo uma vez
     por pedido, e não uma vez por processo (O(N²))."""

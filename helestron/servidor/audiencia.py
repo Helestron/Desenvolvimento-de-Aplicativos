@@ -460,15 +460,18 @@ MOTIVO_AUTOS_PRINCIPAL = ("Este processo é incidente de um processo sigiloso: o
                           "sigilosos.")
 MOTIVO_PAUTA_PRINCIPAL = ("Este processo é incidente de um processo sigiloso: a pauta de "
                           "audiências indica que o principal corre em segredo de justiça.")
+MOTIVO_DOWNLOAD = "Um download anterior apurou que este processo corre em segredo de justiça."
+MOTIVO_DOWNLOAD_PRINCIPAL = ("Este processo é incidente de um processo sigiloso: um download "
+                             "anterior apurou que o principal corre em segredo de justiça.")
 
 
 def sigilo_conhecido(app, numero) -> str:
     """Por que o programa já sabe que o processo é sigiloso ("" = não sabe).
 
-    Os arquivos na pasta dos sigilosos (autos, transcrição, gravação) ou a
-    pauta (o portal disse "segredo de justiça") - do próprio processo ou, no
-    incidente, do principal. Nunca levanta: pauta indisponível ou ocupada
-    não impede a audiência.
+    Os arquivos na pasta dos sigilosos (autos, transcrição, gravação), a
+    pauta (o portal disse "segredo de justiça") ou um download que o apurou
+    - do próprio processo ou, no incidente, do principal. Nunca levanta:
+    pauta indisponível ou ocupada não impede a audiência.
     """
     from ..nucleo import sigilo
 
@@ -491,6 +494,10 @@ def sigilo_conhecido(app, numero) -> str:
     try:
         if sigilo.motivo_da_pauta(numero) == sigilo.MOTIVO_PAUTA_PRINCIPAL:
             return MOTIVO_PAUTA_PRINCIPAL
+        motivo = sigilo.motivo_do_download(numero)
+        if motivo:
+            return MOTIVO_DOWNLOAD if motivo == sigilo.MOTIVO_DOWNLOAD \
+                else MOTIVO_DOWNLOAD_PRINCIPAL
     except Exception:              # nunca impede a audiência
         pass
     return ""

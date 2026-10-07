@@ -437,6 +437,46 @@ class TestPdfAntigoDoESAJ(BaseRegistro):
         r = self.rodar([TJAL1]).itens[0]
         self.assertEqual((r.situacao, r.incompleto), (modelos.JA_BAIXADO, "6-7"))
 
+    def test_rodada_que_nao_troca_o_pdf_nao_apaga_o_sinal(self):
+        """Achado R9: a nova tentativa que falhava (ou o grupo sem login, ou o
+        Parar) regravava a linha sem o sinal, e a rodada seguinte aceitava o
+        PDF antigo como já baixado, com saída 0 e sem as folhas ausentes."""
+        login = {"TJAL": [modelos.LoginFalhou("a senha expirou")]}
+        casos = (
+            ("falha", dict(incompleto="6-7"), dict(roteiro={TJAL1.formatado: ["erro"] * 2})),
+            ("login", dict(detalhe="montado peça a peça (x)"), dict(falha_entrar=login)),
+            ("parar", dict(detalhe="o índice soma 10 páginas e o PDF tem 8; confira"),
+             dict(roteiro={TJAL1.formatado: ["cancelar"]})),
+        )
+        for i, (rotulo, linha, rodada) in enumerate(casos):
+            with self.subTest(rotulo):
+                self.destino = self.tmp / "Acervo" / "Processos" / f"Lote {i}"
+                self.preparar(**linha)
+                self.ctx = ContextoComEventos()
+                r = self.rodar([TJAL1], **rodada).itens[0]
+                self.assertIn(r.situacao, (modelos.ERRO, modelos.CANCELADO))
+                self.assertTrue((self.destino / f"{TJAL1.nome_arquivo}.pdf").exists())
+                csv_ = ler_relatorio(self.destino / "_controle" / "relatorio.csv")
+                gravada = dict(zip(csv_[0], csv_[1]))
+                self.assertEqual(gravada["incompleto"], linha.get("incompleto", ""))
+                self.assertIn(motor.PDF_ANTERIOR, gravada["detalhe"])
+                # a rodada seguinte, com o portal em ordem, ainda o baixa de novo
+                self.ctx = ContextoComEventos()
+                r = self.rodar([TJAL1]).itens[0]
+                self.assertEqual(r.situacao, modelos.OK)
+                self.assertEqual(len(apoio.PortalFalso.todos[0].chamadas), 1)
+                self.assertIn("numeração possivelmente deslocada", r.detalhe)
+        # sem sinal nenhum, a falha não o torna suspeito: fica, sem "sem registro"
+        self.destino = self.tmp / "Acervo" / "Processos" / "Lote sem sinal"
+        self.preparar()
+        self.ctx = ContextoComEventos()
+        self.assertEqual(self.rodar([TJAL1], falha_entrar=login).itens[0].situacao, modelos.ERRO)
+        r = self.rodar([TJAL1]).itens[0]
+        self.assertEqual(r.situacao, modelos.JA_BAIXADO)
+        self.assertEqual(apoio.PortalFalso.todos[0].chamadas, [])
+        self.assertNotIn(motor.SEM_REGISTRO, r.detalhe)
+        self.assertNotIn(motor.PDF_ANTERIOR, r.detalhe)
+
     def test_rebaixar_incompletos(self):
         # com folhas ausentes no registro: baixa de novo
         self.preparar(incompleto="6-7")
@@ -616,10 +656,14 @@ class TestPreparoForaDoAcervo(BaseRegistro):
 # ==================================================================== trava
 class TestTravaDoLote(BaseRegistro):
     def test_segundo_download_na_mesma_pasta_e_recusado(self):
+        from datetime import datetime
+
         controle = self.destino / "_controle"
         controle.mkdir(parents=True)
+        # o dono (vivo) começou antes de gravar a trava, como todo download
+        agora = datetime.now().isoformat(timespec="seconds")
         (controle / motor.NOME_TRAVA).write_text(
-            json.dumps({"pid": os.getppid(), "inicio": "2026-10-04T10:00:00"}), encoding="utf-8")
+            json.dumps({"pid": os.getppid(), "inicio": agora}), encoding="utf-8")
         fp, fn = fabricas_com()
         with self.assertRaises(motor.LoteEmAndamento) as erro:
             self.executar([TJAL1], fp, fn)
@@ -647,4 +691,57 @@ class TestTravaDoLote(BaseRegistro):
         self.assertFalse((controle / motor.NOME_TRAVA).exists())
         self.assertFalse(motor.processo_vivo(morto.pid))
         self.assertTrue(motor.processo_vivo(os.getpid()))
+
+    def outro_programa(self) -> subprocess.Popen:
+        """Um processo vivo que começa agora (o número reaproveitado)."""
+        if motor.momento_de_criacao(os.getpid()) is None:
+            self.skipTest("este sistema não diz quando um processo começou")
+        outro = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(outro.wait)
+        self.addCleanup(outro.kill)
+        return outro
+
+    def test_numero_reaproveitado_por_outro_programa_nao_segura_a_trava(self):
+        """Achado R16: o download morto à força deixava a trava; quando o
+        sistema dava o número dele a outro programa, a pasta do lote ficava
+        bloqueada (lote_em_andamento) por até 48 h."""
+        import time
+        from datetime import datetime, timedelta
+
+        outro = self.outro_programa()
+        controle = self.destino / "_controle"
+        controle.mkdir(parents=True)
+        trava = controle / motor.NOME_TRAVA
+        # a trava, gravada há uma hora pelo download que morreu
+        de_manha = (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds")
+        trava.write_text(json.dumps({"pid": outro.pid, "inicio": de_manha}), encoding="utf-8")
+        os.utime(trava, (time.time() - 3600, time.time() - 3600))
+        self.assertTrue(motor.processo_vivo(outro.pid))
+        self.assertIsNone(motor.TravaDoLote(controle).ocupada_por())
+        fp, fn = fabricas_com()
+        self.assertEqual(self.executar([TJAL1], fp, fn).itens[0].situacao, modelos.OK)
+
+    def test_trava_guarda_quando_o_dono_comecou(self):
+        from datetime import datetime
+
+        outro = self.outro_programa()
+        controle = self.destino / "_controle"
+        controle.mkdir(parents=True)
+        trava = controle / motor.NOME_TRAVA
+        criado = motor.momento_de_criacao(outro.pid)
+        agora = datetime.now().isoformat(timespec="seconds")
+        trava.write_text(json.dumps({"pid": outro.pid, "inicio": agora, "criado": criado}),
+                         encoding="utf-8")
+        self.assertIsNotNone(motor.TravaDoLote(controle).ocupada_por(), "o dono está vivo")
+        # o mesmo número, mas outro programa (começou noutro momento)
+        trava.write_text(json.dumps({"pid": outro.pid, "inicio": agora,
+                                     "criado": criado - 3600}), encoding="utf-8")
+        self.assertIsNone(motor.TravaDoLote(controle).ocupada_por())
+        # a trava do próprio download diz quando ele começou
+        trava.unlink()
+        propria = motor.TravaDoLote(controle)
+        propria.adquirir()
+        self.addCleanup(propria.soltar)
+        dados = json.loads(trava.read_text(encoding="utf-8"))
+        self.assertAlmostEqual(dados["criado"], motor.momento_de_criacao(os.getpid()), delta=1)
         self.assertFalse(motor.processo_vivo(0))

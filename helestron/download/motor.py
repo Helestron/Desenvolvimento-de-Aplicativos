@@ -103,11 +103,13 @@ NOME_TRAVA = ".executando"       # em _controle: o lote está sendo baixado agor
 
 JA_ESTAVA = "já estava na pasta (não baixei de novo)"
 SEM_REGISTRO = "sem registro do download anterior: paginação não conferida"
+# Na linha da rodada que não trocou o PDF que já estava na pasta (falha,
+# item interrompido, grupo sem login): depois disto vem o que se sabia dele.
+PDF_ANTERIOR = "o PDF anterior continua na pasta"
 # Pedaços do detalhe que valem só para a rodada em que foram escritos: não
 # são copiados quando o processo, já na pasta, é visto de novo.
 _SO_DA_RODADA = (JA_ESTAVA, SEM_REGISTRO, "levado agora para a pasta de sigilosos",
-                 "baixado de novo", "o PDF anterior continua na pasta", "atenção:",
-                 "ATENÇÃO:")
+                 "baixado de novo", PDF_ANTERIOR, "atenção:", "ATENÇÃO:")
 
 # Erro de conexão (o portal ou a rede fora), e não página lenta: só estes
 # contam para MAX_INDISPONIVEL_SEGUIDOS. "Timeout" solto não entra - o
@@ -1215,6 +1217,19 @@ def _detalhe_de_antes(texto) -> str:
     return "; ".join(p for p in partes if p and not p.startswith(_SO_DA_RODADA))
 
 
+def _detalhe_do_pdf(linha: dict) -> str | None:
+    """O detalhe do PDF que a linha do relatório registra: o da linha de um
+    download que deu certo (OK, JA_BAIXADO) ou, na de uma rodada que não o
+    trocou, o que vem depois de PDF_ANTERIOR. None se a linha não registra
+    PDF nenhum (falha sem PDF de antes)."""
+    detalhe = str(linha.get("detalhe") or "")
+    if (linha.get("situacao") or "").strip().upper() in (OK, JA_BAIXADO):
+        return detalhe
+    if PDF_ANTERIOR in detalhe:
+        return detalhe.split(PDF_ANTERIOR, 1)[1].lstrip("; ").strip()
+    return None
+
+
 # ------------------------------------------------------- trava do lote
 class LoteEmAndamento(RuntimeError):
     """Outro download está usando esta pasta de lote agora."""
@@ -1223,6 +1238,7 @@ class LoteEmAndamento(RuntimeError):
 _TRAVAS_DESTE_PROCESSO: set[str] = set()
 _TRAVA_DAS_TRAVAS = threading.Lock()
 VALIDADE_TRAVA_S = 48 * 3600     # trava mais velha que isso é de um lote que morreu
+TOLERANCIA_CRIACAO_S = 2.0       # relógios e arredondamentos ao comparar o início do processo
 
 
 def processo_vivo(pid: int) -> bool:
@@ -1265,6 +1281,45 @@ def processo_vivo(pid: int) -> bool:
     return True
 
 
+def momento_de_criacao(pid: int) -> float | None:
+    """Quando o processo 'pid' começou (segundos desde 1970), ou None se não
+    der para saber. Distingue o download que gravou a trava de outro
+    programa que recebeu o mesmo número depois (o Windows os reaproveita)."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    if sys.platform == "win32":  # pragma: no cover - só no Windows
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)    # cópia própria: argtypes locais
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        k32.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4
+        k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        alca = k32.OpenProcess(0x1000, False, pid)       # PROCESS_QUERY_LIMITED_INFORMATION
+        if not alca:
+            return None
+        try:
+            tempos = [wintypes.FILETIME() for _ in range(4)]
+            if not k32.GetProcessTimes(alca, *(ctypes.byref(t) for t in tempos)):
+                return None
+            criacao = (tempos[0].dwHighDateTime << 32) | tempos[0].dwLowDateTime
+            return (criacao - 116444736000000000) / 1e7   # 100 ns desde 1601 -> desde 1970
+        finally:
+            k32.CloseHandle(alca)
+    try:                         # Linux: /proc/<pid>/stat (início, em tiques desde o boot)
+        with open(f"/proc/{pid}/stat", encoding="ascii", errors="replace") as f:
+            campos = f.read().rsplit(")", 1)[1].split()
+        with open("/proc/stat", encoding="ascii", errors="replace") as f:
+            boot = next(int(l.split()[1]) for l in f if l.startswith("btime "))
+        return boot + int(campos[19]) / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError, StopIteration):
+        return None
+
+
 class TravaDoLote:
     """_controle/.executando: {pid, inicio} do download que usa a pasta do
     lote. Um segundo download na mesma pasta (a mesma relação rodada de novo
@@ -1296,10 +1351,30 @@ class TravaDoLote:
         if pid == os.getpid() or not processo_vivo(pid):
             return None
         try:
-            idade = time.time() - self.arquivo.stat().st_mtime
+            gravada = self.arquivo.stat().st_mtime
         except OSError:
-            idade = 0
-        return None if idade > VALIDADE_TRAVA_S else dados
+            gravada = time.time()
+        if time.time() - gravada > VALIDADE_TRAVA_S:
+            return None
+        # O número de um download que morreu (fechado à força, queda de
+        # energia) pode ter ido para outro programa: este não segura a trava.
+        criado = momento_de_criacao(pid)
+        if criado is not None:
+            registrado = dados.get("criado")
+            if isinstance(registrado, (int, float)) and not isinstance(registrado, bool):
+                if abs(criado - registrado) > TOLERANCIA_CRIACAO_S:
+                    return None
+            else:
+                # Trava sem o momento em que o dono começou: ele começou
+                # antes de gravá-la ("inicio" e a data do arquivo).
+                antes = gravada
+                try:
+                    antes = min(antes, datetime.fromisoformat(str(dados.get("inicio"))).timestamp())
+                except (TypeError, ValueError, OverflowError, OSError):
+                    pass
+                if criado > antes + TOLERANCIA_CRIACAO_S:
+                    return None
+        return dados
 
     def adquirir(self) -> None:
         dono = self.ocupada_por()
@@ -1314,6 +1389,9 @@ class TravaDoLote:
             _TRAVAS_DESTE_PROCESSO.add(self.chave)
         self._minha = True
         dados = {"pid": os.getpid(), "inicio": datetime.now().isoformat(timespec="seconds")}
+        criado = momento_de_criacao(os.getpid())
+        if criado is not None:
+            dados["criado"] = round(criado, 2)
         try:
             from ..nucleo.sistema import gravar_atomico
             gravar_atomico(self.arquivo, json.dumps(dados).encode("utf-8"))
@@ -1409,6 +1487,9 @@ class _Lote:
         # substituem as antigas, e as demais continuam - senão o relatório do
         # lote, e os "Últimos lotes", ficavam só com os refeitos.
         self._linhas_anteriores = self._ler_relatorio_anterior()
+        # chave -> (incompleto, documentos, detalhe) do PDF que o processo já
+        # tinha na pasta, ou None (_pdf_que_fica)
+        self._pdfs_que_ficam: dict[str | None, tuple[str, str, str] | None] = {}
 
     # ------------------------------------------------------------ apoio
     @property
@@ -1479,11 +1560,40 @@ class _Lote:
             if r.arquivo and r.sigiloso and r.situacao in (OK, JA_BAIXADO) \
                     and not str(r.arquivo).startswith(str(self.destino)):
                 arquivo += " (na pasta de sigilosos)"
+            documentos, incompleto, detalhe = r.documentos or "", r.incompleto, r.detalhe
+            fica = None if r.situacao in (OK, JA_BAIXADO) else \
+                self._pdf_que_fica(_chave_relatorio(r.numero))
+            if fica is not None:
+                # A rodada não trocou o PDF que já estava na pasta (falhou,
+                # foi interrompida ou ainda não chegou nele): a linha leva o
+                # que se sabia dele, para a próxima rodada não o perder.
+                incompleto = incompleto or fica[0]
+                documentos = documentos or fica[1]
+                if PDF_ANTERIOR not in detalhe:
+                    detalhe = _juntar(detalhe, PDF_ANTERIOR)
+                detalhe = _juntar(detalhe, fica[2])
             w.writerow([ordem, r.numero, r.tribunal, r.sistema, r.situacao or "PENDENTE",
-                        r.paginas or "", r.documentos or "", arquivo,
-                        "sim" if r.sigiloso else "não", r.incompleto, r.detalhe, r.data_hora,
+                        r.paginas or "", documentos, arquivo,
+                        "sim" if r.sigiloso else "não", incompleto, detalhe, r.data_hora,
                         r.causa])
         return saida.getvalue()
+
+    def _pdf_que_fica(self, chave: str | None) -> tuple[str, str, str] | None:
+        """(incompleto, documentos, detalhe) do PDF que o processo já tinha na
+        pasta do lote (ou na de sigilosos dele), pela linha anterior do
+        relatório - a de um download que deu certo ou a de uma rodada que
+        não o trocou. None se não há esse PDF ou registro dele. Visto uma
+        vez por lote: o que esta rodada não troca continua como estava."""
+        if chave not in self._pdfs_que_ficam:
+            saida = None
+            linha = self._linha_anterior(chave) if chave else None
+            detalhe = _detalhe_do_pdf(linha) if linha is not None else None
+            if detalhe is not None and any(_pdf_valido(pasta / f"{chave}.pdf")
+                                           for pasta in (self.destino, self.pasta_sigilosos)):
+                saida = ((linha.get("incompleto") or "").strip(),
+                         (linha.get("documentos") or "").strip(), _detalhe_de_antes(detalhe))
+            self._pdfs_que_ficam[chave] = saida
+        return self._pdfs_que_ficam[chave]
 
     @staticmethod
     def _linha_antiga(linha: dict, ordem: int, mascarar: bool) -> list:
@@ -1628,7 +1738,17 @@ class _Lote:
                     return SIGILO_ANTERIOR
         except OSError:
             pass
-        return sigilo.motivo_da_pasta(self.raiz_sigilosos, n) or sigilo.motivo_da_pauta(n)
+        return (sigilo.motivo_da_pasta(self.raiz_sigilosos, n) or sigilo.motivo_da_pauta(n)
+                or sigilo.motivo_do_download(n))
+
+    def _lembrar_sigilo(self, n: Numero) -> None:
+        """O sigilo que o portal mostrou passa a valer na regra única
+        (sigilo.lembrar_do_download): o índice, o texto para a IA, o conector,
+        o pacote, a nuvem e a transcrição deixam o processo de fora mesmo com
+        os autos no acervo (separação dos sigilosos desligada, ou presos)."""
+        if not sigilo.lembrar_do_download([n]):
+            log.warning("    não consegui guardar no registro do sigilo que %s corre em segredo "
+                        "de justiça; o lote o trata como sigiloso assim mesmo.", n.formatado)
 
     def _levar(self, origem_dir: Path, alvo_dir: Path, n: Numero,
                r: ResultadoProcesso | None,
@@ -2253,18 +2373,23 @@ class _Lote:
         relatório, o registro do download (_controle/<número>_meta.json, ao
         lado do PDF) e o manifesto de paginação gravado DENTRO do PDF - que
         anda com ele para onde ele for e diz o sistema e as folhas ausentes.
+        A linha vale se é de um download que deu certo ou de uma rodada que
+        não trocou o PDF (a que falhou ao baixá-lo de novo, por exemplo):
+        esta leva adiante, depois de PDF_ANTERIOR, o que se sabia dele.
         """
         nome = n.nome_arquivo
         reg: dict = {"sistema": "", "tribunal": "", "documentos": 0, "incompleto": "",
                      "detalhe": "", "paginacao": {}, "linha": None, "meta": False,
                      "manifesto": False}
         linha = self._linha_anterior(nome)
-        if linha is not None and (linha.get("situacao") or "").strip().upper() in (OK, JA_BAIXADO):
-            reg.update(linha=linha, sistema=(linha.get("sistema") or "").strip(),
+        do_pdf = _detalhe_do_pdf(linha) if linha is not None else None
+        if do_pdf is not None:
+            reg.update(linha=dict(linha, detalhe=do_pdf),
+                       sistema=(linha.get("sistema") or "").strip(),
                        tribunal=(linha.get("tribunal") or "").strip(),
                        documentos=_inteiro(linha.get("documentos")),
                        incompleto=(linha.get("incompleto") or "").strip(),
-                       detalhe=_detalhe_de_antes(linha.get("detalhe")))
+                       detalhe=_detalhe_de_antes(do_pdf))
         meta = ler_meta(existente.parent, nome)
         if meta:
             reg["meta"] = True
@@ -2324,6 +2449,8 @@ class _Lote:
         r.arquivo = str(existente)
         r.paginas = _paginas(existente)
         r.sigiloso = _mesma_pasta(existente.parent, self.pasta_sigilosos) or bool(motivo)
+        if motivo == SIGILO_ANTERIOR:
+            self._lembrar_sigilo(n)      # lote de antes desta regra, com o sigiloso no acervo
         if reg["sistema"]:
             r.sistema = reg["sistema"]
         r.documentos = reg["documentos"] or r.documentos
@@ -2514,7 +2641,12 @@ class _Lote:
         # tentativa que falhou, ou um download anterior, vale para esta.
         if n.nome_arquivo in (getattr(portal, "sigilosos_apurados", None) or ()):
             r.sigiloso = True
-        elif not r.sigiloso and motivo:
+        if r.sigiloso or motivo == SIGILO_ANTERIOR:
+            # O sigilo que o portal mostrou (agora ou numa rodada anterior
+            # deste lote) passa a valer na regra única ANTES de o PDF ir para
+            # o lote: com a separação desligada, ele fica no acervo.
+            self._lembrar_sigilo(n)
+        if not r.sigiloso and motivo:
             r.sigiloso = True
             if r.situacao == OK:
                 r.detalhe = _juntar(r.detalhe, f"tratado como sigiloso: {motivo}")
@@ -2537,8 +2669,10 @@ class _Lote:
                 r.arquivo, r.midias = "", []       # a área provisória é apagada
             self._limpar_parcial(n)
         if de_novo:
+            # Sem OK, o relatório leva adiante o que se sabia do PDF anterior
+            # (_pdf_que_fica): a próxima rodada tenta de novo.
             r.detalhe = _juntar(r.detalhe, f"baixado de novo: {de_novo}" if r.situacao == OK
-                                else "o PDF anterior continua na pasta")
+                                else PDF_ANTERIOR)
         consulta = {"sistema": r.sistema, "situacao": r.situacao}
         if r.causa:
             consulta["causa"] = r.causa

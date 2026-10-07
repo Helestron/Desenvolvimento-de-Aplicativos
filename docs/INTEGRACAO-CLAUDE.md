@@ -100,7 +100,7 @@ navegador nem sessões.
 | `separar_sigilosos` | se o download separa os sigilosos (tem de ser `true`: seção 11) |
 | `login` | `{esaj, eproc}`: o modo de entrada nos Ajustes (`senha`, `certificado` ou `manual`) |
 | `espera_login_min` | quanto tempo o programa espera o usuário concluir o login na janela |
-| `conflito_de_pastas` | vazio, ou a frase do problema: a pasta dos sigilosos (ou a da pauta) dentro do acervo, ou o acervo dentro dela |
+| `conflito_de_pastas` | vazio, ou a frase do problema: a pasta dos sigilosos (ou a da pauta) dentro do acervo, o acervo dentro dela, ou o acervo contendo a pasta do programa ou a das senhas e perfis (a mesma regra com que o `baixar` recusa começar) |
 | `comando` | o `helestron.cmd` da pasta do programa (ausente fora da instalação ou em instalação anterior à 1.0.2) |
 
 **Antes de qualquer download, confira:**
@@ -133,7 +133,7 @@ Os recursos da 1.0.2:
 | `capa.v2` | a capa completa, `_capa.txt` e `_capa.json` (seção 10) |
 | `texto.paginas-sem-texto` | `paginas_sem_texto` no JSON do `baixar --texto` e do `preparar --pasta` |
 | `baixar.codigo-na-janela` | sem terminal, o código do e-mail do e-SAJ é digitado na janela do navegador |
-| `baixar.pastas-em-conflito` | o `baixar` recusa começar (código 2, `pastas_em_conflito` no JSON) com a pasta dos sigilosos ou a da pauta dentro do acervo |
+| `baixar.pastas-em-conflito` | o `baixar` recusa começar (código 2, `pastas_em_conflito` no JSON) com as pastas em conflito (`conflito_de_pastas` não vazio) |
 | `comando.cmd`, `registro.hkcu` | o `helestron.cmd` na pasta do programa e `HKCU\Software\Helestron` (`Python`, `Versao`, `InstallLocation`) |
 
 ## 3. O login é sempre do usuário
@@ -252,7 +252,7 @@ diretamente.
 |---|---|
 | 0 | tudo certo (ou nada a retomar) |
 | 1 | parte falhou ou ficou pendente, ou o lote foi interrompido (`causa_erro` `interrompido`) |
-| 2 | nada pôde ser feito: nenhum processo baixado nem já na pasta, ou o lote nem começou (`causa_erro`: `uso`, `relacao_invalida`, `sem_processos`, `destino`, `lote_em_andamento`, `inesperado`). `--retomar` só com `--destino` numa pasta sem o relatório de um lote (caminho errado) também sai com 2 (`sem_processos`) |
+| 2 | nada pôde ser feito: nenhum processo baixado nem já na pasta, ou o lote nem começou (`causa_erro`: `uso`, `relacao_invalida`, `sem_processos`, `destino`, `pastas_em_conflito`, `lote_em_andamento`, `inesperado`). `--retomar` só com `--destino` numa pasta sem o relatório de um lote (caminho errado) também sai com 2 (`sem_processos`) |
 
 O `codigo_saida` do JSON é sempre o código com que o comando sai.
 
@@ -454,8 +454,10 @@ tem os PDFs, sem baixar nada:
 ```
 
 O texto vai para `<pasta>\_texto` (ou `--texto-em DIR`). Não grava
-`CLAUDE.md`, `AGENTS.md`, `INDICE.md` nem `Produtos`. Dentro do acervo, o
-processo sigiloso fica de fora (`sigiloso_ignorado`). **Não use
+`CLAUDE.md`, `AGENTS.md`, `INDICE.md` nem `Produtos`. Com a pasta ou o
+`--texto-em` dentro do acervo, o processo sigiloso fica de fora
+(`sigiloso_ignorado`); fora dele, o texto é gerado, mas o item traz
+`sigiloso` igual a `true`, e esse texto não vai para a IA. **Não use
 `--incluir-sigilosos`** numa skill: ele gera o texto dos sigilosos (na
 pasta deles), que a IA não pode ler.
 
