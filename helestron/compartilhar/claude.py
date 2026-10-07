@@ -323,7 +323,8 @@ def remover_conectores_antigos(arquivos: list[Path] | None = None) -> list[Path]
 PROMPT_INICIAL = (
     "Você vai trabalhar no acervo judicial desta pasta. Leia primeiro o CLAUDE.md "
     "(ou o AGENTS.md) e o INDICE.md. Depois, aguarde a minha tarefa — por exemplo: "
-    "\"faça o relatório do processo <número>, com as folhas (no eProc, os eventos)\" "
+    "\"faça o relatório do processo <número>, com a folha de cada informação (no eProc, o "
+    "evento, o documento e a página)\" "
     "ou \"resuma os depoimentos da audiência do processo <número>\".")
 
 
@@ -378,7 +379,8 @@ def gerar_plugin_cowork(destino: Path) -> Path:
         "name": "acervo-judicial",
         "version": __version__,
         "description": "Método de trabalho com o acervo judicial do Helestron: "
-                       "autos em PDF nomeados pelo número CNJ, texto com a página marcada "
+                       "autos em PDF nomeados pelo número CNJ, texto com a marca de citação "
+                       "de cada página (no e-SAJ, a folha; no eProc, evento, rótulo e página) "
                        "e transcrições de audiência.",
         "author": {"name": "Helestron"},
     }

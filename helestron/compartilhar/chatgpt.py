@@ -13,10 +13,10 @@ integrado ao mais simples:
   o AGENTS.md - o equivalente ao Claude Code;
 * ESPELHO NA NUVEM (nuvem.py): o acervo copiado para o OneDrive/Google
   Drive, que os conectores do ChatGPT leem;
-* PACOTE: uma pasta (e um .zip) com os autos, o texto com as folhas
-  marcadas, as transcrições de audiência (quando houver), o índice e as
-  instruções, pronta para arrastar para uma conversa ou um Projeto do
-  ChatGPT.
+* PACOTE: uma pasta (e um .zip) com os autos, o texto com a marca de
+  citação de cada página, as transcrições de audiência (quando houver), o
+  índice e as instruções, pronta para arrastar para uma conversa ou um
+  Projeto do ChatGPT.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from ..nucleo import cnj, sistema
+from ..nucleo import cnj, sigilo, sistema
 from . import preparo
 from .claude import _abrir_terminal, entrada_mcp
 from .mcp_servidor import Acervo
@@ -285,22 +285,64 @@ def _config():
 
 NOTA_PASTAS_DO_PACOTE = (
     "> **Neste pacote, as pastas têm outro nome:** os autos (`Processos/`) estão em "
-    "`autos/`, o texto com as folhas marcadas (`_ia/texto/`) em `texto/` e as "
-    "transcrições de audiência (`Transcricoes/`) em `audiencias/`. Os nomes dos "
+    "`autos/`, o texto com a marca de citação de cada página (`_ia/texto/`) em `texto/` e "
+    "as transcrições de audiência (`Transcricoes/`) em `audiencias/`. Os nomes dos "
     "arquivos são os mesmos.\n\n")
+PREFIXO_PACOTE = "Pacote para o ChatGPT"
+_RE_NUMERO_CNJ = re.compile(r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}(?:-\d{2})?")
+
+
+class Pacote(tuple):
+    """(pasta, zip) do pacote - desempacota como antes -, com o que mais quem
+    chamou precisa mostrar: 'faltaram' (números pedidos que não estão no
+    acervo, ou são sigilosos), 'avisos' (frases para a tela) e 'tamanho_zip'
+    (bytes)."""
+
+    def __new__(cls, pasta: Path, arquivo_zip: Path, faltaram=(), avisos=(), tamanho_zip=0):
+        obj = super().__new__(cls, (pasta, arquivo_zip))
+        obj.faltaram = list(faltaram)
+        obj.avisos = list(avisos)
+        obj.tamanho_zip = int(tamanho_zip)
+        return obj
+
+    @property
+    def pasta(self) -> Path:
+        return self[0]
+
+    @property
+    def arquivo_zip(self) -> Path:
+        return self[1]
+
+    @property
+    def grande_demais(self) -> bool:
+        return self.tamanho_zip > LIMITE_ARQUIVO_MB * 1024 * 1024
+
+
+def _frase_faltaram(faltaram: list[str]) -> str:
+    if len(faltaram) == 1:
+        return (f"O processo {faltaram[0]} não está no acervo (ou corre em segredo de justiça) "
+                "e não foi para o pacote.")
+    return (f"Os processos {', '.join(faltaram)} não estão no acervo (ou correm em segredo "
+            "de justiça) e não foram para o pacote.")
 
 
 def gerar_pacote(acervo: Path, destino: Path, numeros: list[str] | None = None,
                  incluir_pdf: bool = True, incluir_texto: bool | None = None,
-                 progresso=None, cfg=None) -> tuple[Path, Path]:
+                 progresso=None, cfg=None) -> Pacote:
     """Monta a pasta e o .zip para levar ao ChatGPT: os autos (autos/), o
-    texto com as páginas marcadas (texto/), as transcrições de audiência,
-    quando houver (audiencias/), o índice e as instruções.
+    texto com a marca de citação de cada página (texto/), as transcrições de
+    audiência, quando houver (audiencias/), o índice (só do que foi
+    empacotado, com os caminhos do pacote) e as instruções.
 
-    'numeros' restringe aos processos indicados (padrão: o acervo inteiro).
-    'incluir_texto' em branco segue a configuração ([compartilhar]
-    incluir_texto). Devolve (pasta, zip). Os textos são atualizados antes
-    (preparo).
+    'numeros' restringe aos processos indicados (padrão: o acervo inteiro);
+    o que foi pedido e não está no acervo (ou é sigiloso) volta em
+    'faltaram', com um aviso. 'incluir_texto' em branco segue a configuração
+    ([compartilhar] incluir_texto). Devolve o Pacote, que desempacota como
+    (pasta, zip); 'avisos' traz o que a tela deve mostrar (número que
+    faltou, arquivo ou .zip acima do limite do ChatGPT, pacote antigo que
+    não pôde perder o sigiloso). Os textos são atualizados antes (preparo),
+    e os pacotes antigos de 'destino' perdem o que for de processo que
+    virou sigiloso.
     """
     acervo = Path(acervo)
     if cfg is None:
@@ -315,16 +357,27 @@ def gerar_pacote(acervo: Path, destino: Path, numeros: list[str] | None = None,
         # compartilha.
         raise preparo.SigilosoNoAcervo(presos, cfg, getattr(rel, "motivos", None))
     ac = Acervo(acervo) if cfg is None else Acervo(acervo, sigilosos=cfg.pasta_sigilosos)
-    pdfs = ac.pdfs()
-    trans = ac.transcricoes()
+    with ac.pedido():
+        pdfs = ac.pdfs()
+        trans = ac.transcricoes()
+        sigilosas = ac.sigilosas()
+    avisos = retirar_sigilosos_dos_pacotes(Path(destino), sigilosas)
+    faltaram: list[str] = []
     if numeros:
-        escolhidos = {cnj.ler_nome_arquivo(n).nome_arquivo for n in numeros}
+        escolhidos: dict[str, str] = {}
+        for n in numeros:
+            escolhidos.setdefault(cnj.ler_nome_arquivo(n).nome_arquivo, str(n))
+        faltaram = [n for k, n in escolhidos.items() if k not in pdfs and k not in trans]
         pdfs = {k: v for k, v in pdfs.items() if k in escolhidos}
         trans = {k: v for k, v in trans.items() if k in escolhidos}
     if not pdfs and not trans:
-        raise LookupError("não há processo nem transcrição no acervo para empacotar")
+        raise LookupError("não há processo nem transcrição no acervo para empacotar"
+                          + (f" (pedidos e não encontrados: {', '.join(faltaram)})"
+                             if faltaram else ""))
+    if faltaram:
+        avisos.append(_frase_faltaram(faltaram))
 
-    nome = f"Pacote para o ChatGPT {datetime.now():%Y-%m-%d %Hh%M}"
+    nome = f"{PREFIXO_PACOTE} {datetime.now():%Y-%m-%d %Hh%M}"
     pasta = Path(destino) / nome
     n = 2
     while pasta.exists() or pasta.with_suffix(".zip").exists():
@@ -341,19 +394,16 @@ def gerar_pacote(acervo: Path, destino: Path, numeros: list[str] | None = None,
     for chave, lista in sorted(trans.items()):
         for t in lista:
             arquivos.append((t, f"audiencias/{t.name}"))
-    for nome_ctx in ("AGENTS.md", "INDICE.md"):
-        if (acervo / nome_ctx).exists():
-            arquivos.append((acervo / nome_ctx,
-                             "LEIA-ME - instrucoes.md" if nome_ctx == "AGENTS.md" else nome_ctx))
+    if (acervo / "AGENTS.md").exists():
+        arquivos.append((acervo / "AGENTS.md", "LEIA-ME - instrucoes.md"))
 
     grandes = []
     total = len(arquivos)
-    for i, (origem, rel) in enumerate(arquivos, 1):
-        alvo = pasta / rel
+    for i, (origem, rel_) in enumerate(arquivos, 1):
+        alvo = pasta / rel_
         alvo.parent.mkdir(parents=True, exist_ok=True)
-        if rel.endswith(".md"):
-            # As instruções e o índice falam das pastas do acervo; aqui elas
-            # têm outro nome.
+        if rel_.endswith(".md"):
+            # As instruções falam das pastas do acervo; aqui elas têm outro nome.
             # (em bytes: o Windows não troca as quebras de linha)
             texto = origem.read_bytes().decode("utf-8-sig", errors="replace")
             alvo.write_bytes((NOTA_PASTAS_DO_PACOTE + texto).encode("utf-8"))
@@ -363,18 +413,140 @@ def gerar_pacote(acervo: Path, destino: Path, numeros: list[str] | None = None,
             grandes.append(origem.name)
         if progresso:
             progresso(i, total, origem.name)
+    # O índice só do que foi empacotado, com os caminhos do pacote
+    (pasta / "INDICE.md").write_bytes(
+        _indice_do_pacote(ac, pdfs, trans, incluir_pdf, incluir_texto).encode("utf-8"))
     if grandes:
-        log.warning("Arquivos acima de %d MB (o ChatGPT pode recusar): %s",
-                    LIMITE_ARQUIVO_MB, ", ".join(grandes))
+        avisos.append(f"Arquivos acima de {LIMITE_ARQUIVO_MB} MB, que o ChatGPT pode recusar: "
+                      + ", ".join(grandes) + ".")
 
     arquivo_zip = pasta.with_suffix(".zip")
     with zipfile.ZipFile(arquivo_zip, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as z:
         for f in sorted(pasta.rglob("*")):
             if f.is_file():
                 z.write(f, f.relative_to(pasta).as_posix())
-    log.info("Pacote para o ChatGPT: %s (%d arquivo(s)). Leva %s.", pasta, total,
+    tamanho = arquivo_zip.stat().st_size
+    if tamanho > LIMITE_ARQUIVO_MB * 1024 * 1024:
+        avisos.append(f"O .zip tem {tamanho / 1024 / 1024:.0f} MB, acima do que o ChatGPT aceita "
+                      f"(cerca de {LIMITE_ARQUIVO_MB} MB): em vez dele, arraste os arquivos da "
+                      "pasta do pacote (o texto e as instruções primeiro), ou gere pacotes "
+                      "menores, com menos processos.")
+    for frase in avisos:
+        log.warning("Pacote para o ChatGPT: %s", frase)
+    log.info("Pacote para o ChatGPT: %s (%d arquivo(s)). Leva %s.", pasta, total + 1,
              conteudo_do_pacote(pdfs, trans, incluir_pdf, incluir_texto))
-    return pasta, arquivo_zip
+    return Pacote(pasta, arquivo_zip, faltaram, avisos, tamanho)
+
+
+def _indice_do_pacote(ac: Acervo, pdfs: dict, trans: dict, incluir_pdf: bool,
+                      incluir_texto: bool) -> str:
+    """O INDICE.md do pacote: só o que ele leva, com os caminhos dele."""
+    def caminho(tipo, chave, arquivo):
+        if tipo == "autos":
+            return f"autos/{chave}.pdf" if incluir_pdf else None
+        if tipo == "texto":
+            return f"texto/{chave}.txt" if incluir_texto else None
+        return f"audiencias/{Path(arquivo).name}"
+
+    return preparo._indice(ac, pdfs, trans, caminho)
+
+
+def _chave_do_nome(nome: str) -> str | None:
+    """A chave do processo num nome de arquivo ("X-01.pdf") ou num número
+    solto ("0700999-61.2024.8.02.0001": Path.stem cortaria o ".0001")."""
+    try:
+        return cnj.ler_nome_arquivo(str(nome)).nome_arquivo
+    except cnj.NumeroInvalido:
+        return None
+
+
+def retirar_sigilosos_dos_pacotes(pasta_pacotes: Path, sigilosas) -> list[str]:
+    """Tira dos pacotes já gerados (pastas e .zip "Pacote para o ChatGPT...")
+    o que é de processo que hoje se sabe sigiloso: os autos, o texto, a
+    transcrição e as linhas do índice e das instruções com o número dele.
+    Devolve avisos do que não pôde ser tirado (arquivo aberto): o pacote
+    antigo fica na pasta e poderia ser arrastado de novo para o ChatGPT."""
+    avisos: list[str] = []
+    if not sigilosas:
+        return avisos
+    try:
+        itens = sorted(Path(pasta_pacotes).glob(f"{PREFIXO_PACOTE}*"))
+    except OSError:
+        return avisos
+
+    def sigiloso(nome: str) -> bool:
+        chave = _chave_do_nome(nome)
+        return chave is not None and sigilo.contem(sigilosas, chave)
+
+    for item in itens:
+        try:
+            if item.is_dir():
+                for f in sorted(item.rglob("*")):
+                    if not f.is_file():
+                        continue
+                    if sigiloso(f.name):
+                        f.unlink()
+                        log.warning("Retirei do pacote antigo %s: o processo é sigiloso.", f)
+                    elif f.suffix.lower() == ".md":
+                        _tirar_linhas_sigilosas(f, sigilosas)
+            elif item.suffix.lower() == ".zip" and item.is_file():
+                _refazer_zip_sem_sigilosos(item, sigiloso, sigilosas)
+        except (OSError, zipfile.BadZipFile) as erro:
+            avisos.append(f"Não consegui tirar do pacote antigo “{item.name}” o que é de processo "
+                          f"em segredo de justiça ({erro}): apague-o à mão, em {item.parent}.")
+            log.warning("ATENÇÃO: pacote antigo com processo sigiloso: %s (%s)", item, erro)
+    return avisos
+
+
+def _linhas_sem_sigilosos(texto: str, sigilosas) -> str:
+    saida = []
+    for linha in texto.split("\n"):
+        chaves = {k for k in (_chave_do_nome(x) for x in _RE_NUMERO_CNJ.findall(linha)) if k}
+        if any(sigilo.contem(sigilosas, k) for k in chaves):
+            continue
+        saida.append(linha)
+    return "\n".join(saida)
+
+
+def _tirar_linhas_sigilosas(arquivo: Path, sigilosas) -> None:
+    texto = arquivo.read_bytes().decode("utf-8-sig", errors="replace")
+    novo = _linhas_sem_sigilosos(texto, sigilosas)
+    if novo != texto:
+        arquivo.write_bytes(novo.encode("utf-8"))
+
+
+def _refazer_zip_sem_sigilosos(arquivo: Path, sigiloso, sigilosas) -> None:
+    """O .zip não se edita no lugar: é refeito sem os arquivos do sigiloso e
+    com o índice sem as linhas dele, e troca o antigo."""
+    with zipfile.ZipFile(arquivo) as z:
+        infos = z.infolist()
+        tirar = {i.filename for i in infos if sigiloso(Path(i.filename).name)}
+        trocar = {}
+        for i in infos:
+            if i.filename.lower().endswith(".md") and i.filename not in tirar:
+                texto = z.read(i.filename).decode("utf-8-sig", errors="replace")
+                novo = _linhas_sem_sigilosos(texto, sigilosas)
+                if novo != texto:
+                    trocar[i.filename] = novo
+        if not tirar and not trocar:
+            return
+        tmp = arquivo.with_name(arquivo.name + ".tmp")
+        try:
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as saida:
+                for i in infos:
+                    if i.filename in tirar:
+                        continue
+                    if i.filename in trocar:
+                        saida.writestr(i, trocar[i.filename].encode("utf-8"))
+                        continue
+                    # Os autos, um a um e sem carregá-los inteiros na memória
+                    with z.open(i) as origem, saida.open(i, "w", force_zip64=True) as alvo:
+                        shutil.copyfileobj(origem, alvo, 1024 * 1024)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+    os.replace(tmp, arquivo)
+    log.warning("Retirei do pacote antigo %s o que era de processo sigiloso.", arquivo.name)
 
 
 def _contar(n: int, singular: str, plural: str) -> str:
@@ -383,12 +555,14 @@ def _contar(n: int, singular: str, plural: str) -> str:
 
 def conteudo_do_pacote(pdfs: dict, trans: dict, incluir_pdf: bool = True,
                        incluir_texto: bool = True) -> str:
-    """O que o pacote leva, numa frase: "2 processos (autos e texto com as
-    páginas marcadas), 1 transcrição de audiência, o índice e as instruções"."""
+    """O que o pacote leva, numa frase: "2 processos (autos e texto com a
+    marca de citação de cada página), 1 transcrição de audiência, o índice e
+    as instruções"."""
     itens = []
     if pdfs:
         leva = " e ".join(o for o, sim in (("autos", incluir_pdf),
-                                           ("texto com as páginas marcadas", incluir_texto)) if sim)
+                                           ("texto com a marca de citação de cada página",
+                                            incluir_texto)) if sim)
         itens.append(_contar(len(pdfs), "processo", "processos") + (f" ({leva})" if leva else ""))
     n = sum(len(v) for v in trans.values())
     if n:

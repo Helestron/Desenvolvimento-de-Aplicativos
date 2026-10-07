@@ -13,14 +13,16 @@ from pathlib import Path
 from unittest import mock
 
 from helestron.compartilhar import chatgpt, claude, mcp_servidor, nuvem, preparo, textos
-from helestron.nucleo import caminhos, cnj, config, sigilo
+from helestron.nucleo import caminhos, cnj, config, paginacao, sigilo
 
 NUM = "0800072-12.2024.8.02.0056"
 INCIDENTE = f"{NUM}-01"          # o mesmo número com /01, como o programa o grava
 SIGILOSO = "0700999-61.2024.8.02.0001"
 
 
-def _pdf(destino: Path, paginas: list[str], marcadores=None) -> Path:
+def _pdf(destino: Path, paginas: list[str], marcadores=None, manifesto=None) -> Path:
+    """PDF de teste: uma página por texto (cada linha numa linha da página),
+    com marcadores e o manifesto de paginação, se dados."""
     try:
         import pymupdf
     except ImportError:  # pragma: no cover
@@ -28,11 +30,21 @@ def _pdf(destino: Path, paginas: list[str], marcadores=None) -> Path:
     destino.parent.mkdir(parents=True, exist_ok=True)
     doc = pymupdf.open()
     for texto in paginas:
-        doc.new_page().insert_text((72, 72), texto)
+        pagina = doc.new_page()
+        for i, linha in enumerate(texto.split("\n")):
+            pagina.insert_text((72, 72 + 14 * i), linha)
     if marcadores:
         doc.set_toc(marcadores)
+    if manifesto:
+        paginacao.gravar_no_doc(doc, manifesto)
     doc.save(str(destino))
+    doc.close()
     return destino
+
+
+def _manifesto_esaj(numero: str, ultima: int, ausentes=None) -> dict:
+    return paginacao.manifesto_esaj(numero, ultima, ausentes or {}, origem="servidor",
+                                    tribunal="TJAL")
 
 
 def _sem_config(*args, **kwargs):
@@ -55,8 +67,10 @@ class BaseAcervo(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.raiz = Path(self.dir.name) / "Acervo"
+        # Autos do e-SAJ da 1.0.2: com o manifesto (página N = folha N)
         _pdf(self.raiz / "Processos" / "Lote 1" / f"{NUM}.pdf",
-             ["Petição inicial do autor", "Contestação: alega prescrição", "Sentença"])
+             ["Petição inicial do autor", "Contestação: alega prescrição", "Sentença"],
+             manifesto=_manifesto_esaj(NUM, 3))
         _docx(self.raiz / "Transcricoes" / f"{NUM}.docx",
               ["TRANSCRIÇÃO DE AUDIÊNCIA", "TESTEMUNHA [00:01:02] — vi o acidente"])
         # O que NÃO é autos: produto da IA, cache e arquivo-trava do Word
@@ -104,10 +118,13 @@ class TestServidorMCP(BaseAcervo):
         lista = r[2]["result"]["content"][0]["text"]
         self.assertIn(f"{NUM} — 3 pág.", lista)
         self.assertNotIn("Produtos", lista)
-        self.assertIn("fl. 2", r[3]["result"]["content"][0]["text"])
+        self.assertIn(f"{NUM}, fl. 2: …", r[3]["result"]["content"][0]["text"])
         texto = r[4]["result"]["content"][0]["text"]
         self.assertIn("=== [fl. 2] ===", texto)
-        self.assertNotIn("[fl. 1]", texto)
+        self.assertNotIn("=== [fl. 1] ===", texto)
+        self.assertIn("e-SAJ: 3 página(s) no PDF. Página N = folha N.", texto)
+        self.assertIn(textos.CABECA, texto)          # o cabeçalho vem sempre
+        self.assertIn("página N = folha N (fls. 1 a 3)", lista)
         self.assertIn("vi o acidente", r[5]["result"]["content"][0]["text"])
         self.assertEqual(r[6]["error"]["code"], -32601)
         self.assertTrue(r[7]["result"]["isError"])
@@ -208,6 +225,7 @@ class TestTextos(unittest.TestCase):
         achados = textos.buscar(texto, "CONTESTACAO")
         self.assertEqual(achados[0][0], 2)
         self.assertEqual(textos.recortar_paginas(texto, 2, 2).count("[fl."), 1)
+        self.assertEqual(textos.buscar_citando(texto, "contestação")[0][0], "fl. 2")
 
 
 class TestPreparo(BaseAcervo):
@@ -249,6 +267,9 @@ class TestPreparo(BaseAcervo):
         self.assertEqual(rel.arquivos, [])
         self.assertEqual(rel.textos_novos, 0)
         self.assertEqual((self.raiz / "CLAUDE.md").read_text(encoding="utf-8"), "minhas regras")
+        # editado sem a regra de citação nova: o preparo avisa como recebê-la
+        self.assertTrue(any("CLAUDE.md foi editado" in a and "pág. M do PDF" in a
+                            for a in rel.avisos), rel.avisos)
 
     def test_regra_do_sigilo_segue_a_configuracao(self):
         # Regressão: o CLAUDE.md/AGENTS.md dizia sempre que os sigilosos "não
@@ -272,10 +293,10 @@ class TestPreparo(BaseAcervo):
         self.assertIn("**Esta pasta pode conter processos em segredo de justiça**", texto)
         self.assertIn("sem autorização expressa do\n   magistrado", texto)
         self.assertRegex(texto, r"\n5\. \*\*Esta pasta[^\n]*\n(   \S[^\n]*\n)+6\. ")
-        # Criado o arquivo, o programa não o reescreve (o usuário pode tê-lo editado)
+        # Não editado, o arquivo acompanha a configuração (nos dois sentidos)
         cfg.definir("download", "separar_sigilosos", True)
         preparo.atualizar_contexto(cfg, raiz=self.raiz, extrair_texto=False)
-        self.assertNotIn(separados, (self.raiz / "CLAUDE.md").read_text(encoding="utf-8"))
+        self.assertIn(separados, (self.raiz / "CLAUDE.md").read_text(encoding="utf-8"))
 
     def test_pdf_corrompido_nao_derruba(self):
         (self.raiz / "Processos" / "Lote 1" / "0700123-45.2024.8.02.0001.pdf").write_bytes(b"lixo")
@@ -327,10 +348,20 @@ class TestDependente(BaseAcervo):
         textos.garantir_texto(principal, destino)
         self.assertIn("Petição inicial", destino.read_text(encoding="utf-8"))
         # Em dia, não é extraído de novo
-        destino.write_text("=== [fl. 1] ===\nmarca\n", encoding="utf-8")
+        destino.write_text(f"{textos.CABECA} | sistema=esaj | paginacao=folhas | paginas=3 | "
+                           "ausentes=\n=== [fl. 1] ===\nmarca\n", encoding="utf-8")
         os.utime(destino, (uma_hora_antes, uma_hora_antes))
         textos.garantir_texto(principal, destino)
         self.assertIn("marca", destino.read_text(encoding="utf-8"))
+        # Texto do formato anterior (sem a 1ª linha do formato 2), com a mesma
+        # data: é refeito - as marcas dele não dizem a paginação.
+        destino.write_text("=== [fl. 1] ===\nmarca\n", encoding="utf-8")
+        os.utime(destino, (uma_hora_antes, uma_hora_antes))
+        textos.garantir_texto(principal, destino)
+        refeito = destino.read_text(encoding="utf-8")
+        self.assertTrue(refeito.startswith(textos.CABECA + " | sistema=esaj | paginacao=folhas"))
+        self.assertIn("Petição inicial", refeito)
+        self.assertNotIn("\nmarca\n", refeito)
 
 
 class TestSigilo(BaseAcervo):
@@ -610,7 +641,10 @@ class TestRecorte(BaseAcervo):
 
 
 class TestTextosParaIA(BaseAcervo):
-    def test_documento_de_cada_pagina_no_eproc(self):
+    def test_documento_de_cada_pagina_no_eproc_antigo(self):
+        """PDF do eProc da 1.0.1 (capa do programa na página 1, sem manifesto):
+        a capa não é página dos autos, e o resto se cita por evento, rótulo e
+        página do documento - não por "fl." da página do PDF."""
         pdf = _pdf(self.raiz / "Processos" / "Lote 2" / "0700777-04.2025.8.02.0001.pdf",
                    ["PROCESSO 0700777-04.2025.8.02.0001 — eProc", "Petição inicial",
                     "continua", "Despacho"],
@@ -618,10 +652,16 @@ class TestTextosParaIA(BaseAcervo):
                     [1, "Evento 1 — PETIÇÃO INICIAL — INIC1 (03/02/2025)", 2],
                     [1, "Evento 3 — DESPACHO — DESPADEC1 (10/02/2025)", 4]])
         texto = textos.texto_pdf(pdf)
-        self.assertIn("=== [fl. 3] ===\n[documento: Evento 1 — PETIÇÃO INICIAL — INIC1 "
-                      "(03/02/2025)]\ncontinua", texto)
-        self.assertIn("=== [fl. 4] ===\n[documento: Evento 3 — DESPACHO", texto)
-        self.assertEqual(textos.recortar_paginas(texto, 3, 3).count("=== [fl."), 1)
+        self.assertTrue(texto.startswith(f"{textos.CABECA} | sistema=eproc | "
+                                         "paginacao=documento | paginas=4 | ausentes=\n"))
+        self.assertIn("=== [capa gerada pelo Helestron — não é página dos autos] "
+                      "(pág. 1 do PDF) ===", texto)
+        self.assertIn("=== [evento 1, INIC1, p. 2] (pág. 3 do PDF) ===\n[documento: Evento 1 "
+                      "— PETIÇÃO INICIAL — INIC1 (03/02/2025)]\ncontinua", texto)
+        self.assertIn("=== [evento 3, DESPADEC1, p. 1] (pág. 4 do PDF) ===", texto)
+        self.assertNotIn("[fl.", texto)
+        self.assertEqual(textos.recortar_paginas(texto, 3, 3).count("=== ["), 1)
+        self.assertEqual(textos.faixa_do_documento(texto, 1, "INIC1"), (2, 3))
 
     def test_regras_para_a_ia(self):
         preparo.atualizar_contexto(raiz=self.raiz)
@@ -630,10 +670,21 @@ class TestTextosParaIA(BaseAcervo):
         for texto in (contexto, skill, mcp_servidor.INSTRUCOES):
             self.assertIn("eProc", texto)
             self.assertIn("material das partes", texto)
-        self.assertIn("evento e o rótulo", contexto)
-        # O rodapé dizia que o arquivo era refeito a cada lote (não é)
+            # a regra nova de citação, em todos
+            plano = " ".join(texto.split())
+            self.assertIn("evento N, RÓTULO, p. Y", plano)
+            self.assertIn("pág. M do PDF", plano)
+            self.assertIn("[folha não disponível no e-SAJ:", plano)
+            self.assertIn("folha N", plano)
+            self.assertIn("nao_garantida", plano)
+            # o PDF do eProc não começa mais por uma capa
+            self.assertNotIn("1ª página do PDF é a capa", plano)
+            self.assertNotIn("começa por uma capa", plano)
+        # O rodapé dizia que o arquivo era refeito a cada lote (não é) e, depois,
+        # que o programa não o alterava (agora o mantém enquanto não é editado)
         self.assertNotIn("refeito a cada lote", contexto)
-        self.assertIn("O programa não o altera", contexto)
+        self.assertNotIn("O programa não o altera", contexto)
+        self.assertIn("O programa o mantém\natualizado enquanto você não o editar", contexto)
 
 
 class TestClaude(BaseAcervo):
@@ -920,8 +971,8 @@ class TestChatGPT(BaseAcervo):
         self.assertTrue(final, registro.output)
         self.assertIn("1 transcrição de audiência", final[-1])
         self.assertEqual(chatgpt.conteudo_do_pacote({NUM: None, SIGILOSO: None}, {NUM: [1, 2]}),
-                         "2 processos (autos e texto com as páginas marcadas), 2 transcrições de "
-                         "audiência, o índice e as instruções")
+                         "2 processos (autos e texto com a marca de citação de cada página), 2 "
+                         "transcrições de audiência, o índice e as instruções")
         self.assertEqual(chatgpt.conteudo_do_pacote({NUM: None}, {}, incluir_texto=False),
                          "1 processo (autos), o índice e as instruções")
 
