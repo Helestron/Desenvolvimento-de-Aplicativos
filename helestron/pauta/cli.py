@@ -4,6 +4,7 @@
     python -m helestron pauta exportar --de 2026-10-01 --ate 2026-10-31 [--pasta DIR]
     python -m helestron pauta importar relatorio.xls [outro.pdf ...]
     python -m helestron pauta listar [--de ...] [--ate ...] [--sistema esaj|eproc] [--json]
+                                     [--incluir-partes-sigilosos]
     python -m helestron pauta fontes [--adicionar TRIBUNAL SISTEMA [--url URL]] [--remover ID]
 
 O mesmo ServicoPauta da janela, com o mesmo banco (LOCAL/pauta.sqlite3) e a
@@ -11,13 +12,21 @@ mesma configuração. Na sincronização, o código de verificação do portal �
 pedido no próprio terminal. Serve ao CI do Windows (exportação da pauta) e
 a quem prefere o Prompt de Comando.
 
-Códigos de saída: 0 tudo certo; 1 falhou (a frase diz por quê); 2 uso
-errado (opção inválida, data ilegível).
+Códigos de saída: 0 tudo certo; 1 falhou (a frase diz por quê; também a
+fonte a remover que não existe); 2 uso errado (opção inválida, data
+ilegível, tribunal desconhecido ou que não usa o sistema).
 
 Se sincronizar ou importar revela processo em segredo de justiça que ainda
 tinha arquivos no acervo, o comando faz na hora o preparo rápido do acervo
 (como a janela): os autos e as transcrições vão para a pasta dos sigilosos,
 e o processo sai do índice e do texto lidos pela IA. A saída diz o que saiu.
+Vale também quando o comando é interrompido (Ctrl+C) ou falha no meio: o
+que já foi gravado na pauta conta.
+
+SIGILO na lista: as partes e as observações dos processos em segredo de
+justiça saem como "(segredo de justiça)" - no texto e no JSON (que um
+script ou a IA lê) -, e a busca não olha esses campos neles; só com
+--incluir-partes-sigilosos aparecem. "sigiloso": true diz quais são.
 """
 
 from __future__ import annotations
@@ -89,6 +98,9 @@ def criar_parser() -> argparse.ArgumentParser:
     li.add_argument("--situacao", help="só uma situação (ex.: Cancelada)")
     li.add_argument("--busca", metavar="TEXTO", help="só o que contiver este texto")
     li.add_argument("--json", action="store_true", help="saída em JSON (para scripts)")
+    li.add_argument("--incluir-partes-sigilosos", action="store_true",
+                    help="mostrar as partes e as observações dos processos em segredo de "
+                         "justiça (padrão: mascaradas, também no JSON)")
 
     f = sub.add_parser("fontes", help="mostra, adiciona ou remove as fontes da pauta")
     f.add_argument("--adicionar", nargs=2, metavar=("TRIBUNAL", "SISTEMA"),
@@ -115,15 +127,31 @@ def _configurar_registro() -> None:
         print(f"(aviso: o registro em disco não foi aberto: {erro})", file=sys.stderr)
 
 
-def _linha(a: dict) -> str:
+def _linha(a: dict, incluir_sigilosos: bool = False) -> str:
     data_ = date.fromisoformat(a["data"]).strftime("%d/%m/%Y")
     sig = "  [segredo de justiça]" if a.get("sigiloso") else ""
-    partes = "" if a.get("sigiloso") else (a.get("partes") or "")
+    partes = "" if a.get("sigiloso") and not incluir_sigilosos else (a.get("partes") or "")
     return (f"{data_} {a.get('hora') or '--:--'}  {a.get('processo') or '(sem número)':27} "
             f"{a.get('tipo', ''):22} {a.get('situacao', ''):13} {partes}{sig}").rstrip()
 
 
 # ================================================================ comandos
+def _ouvir_revelados(servico) -> list[str]:
+    """A lista que recebe, na hora, os processos que a pauta revela em segredo
+    de justiça - também os de uma sincronização ou importação interrompida no
+    meio (Ctrl+C), cujo resultado não chega."""
+    revelados: list[str] = []
+
+    def ouvir(numeros) -> None:
+        revelados.extend(n for n in numeros or [] if n not in revelados)
+
+    try:
+        servico.quando_revelar_sigilo(ouvir)
+    except Exception as erro:          # serviço sem o aviso: vale o resultado
+        log.debug("quando_revelar_sigilo: %s", erro)
+    return revelados
+
+
 def _sincronizar(args, servico) -> int:
     from ..download.contexto import ContextoTerminal
     from .monitor import ConfigMonitoramento
@@ -136,20 +164,24 @@ def _sincronizar(args, servico) -> int:
         return 2
     print(f"Sincronizando a pauta de {de:%d/%m/%Y} a {ate:%d/%m/%Y}...")
     ctx = ContextoTerminal()
+    revelados = _ouvir_revelados(servico)
     try:
         r = servico.sincronizar(ctx, args.fonte or None, de, ate)
     except KeyboardInterrupt:
         print("Interrompido.")
+        _aplicar_sigilo_revelado(servico.cfg, revelados)
         return 1
     except Exception as erro:
         print(f"Falhou: {erro}", file=sys.stderr)
+        _aplicar_sigilo_revelado(servico.cfg, revelados)
         return 1
     print(servico._frase_resultado(r))
     for aviso in r.get("avisos") or []:
         print(f"  aviso: {aviso}")
     for e in r.get("erros") or []:
         print(f"  {e['rotulo']}: {e['mensagem']}")
-    _aplicar_sigilo_revelado(servico.cfg, r.get("sigilosos_novos") or [])
+    revelados += [n for n in r.get("sigilosos_novos") or [] if n not in revelados]
+    _aplicar_sigilo_revelado(servico.cfg, revelados)
     return 1 if r.get("erros") else 0
 
 
@@ -176,23 +208,27 @@ def _exportar(args, servico) -> int:
 
 def _importar(args, servico) -> int:
     codigo = 0
-    revelados: list[str] = []
-    for nome in args.arquivos:
-        caminho = Path(nome.strip().strip('"')).expanduser()
-        try:
-            r = servico.importar(caminho)
-        except Exception as erro:
-            print(f"{caminho.name}: {erro}", file=sys.stderr)
-            codigo = 1
-            continue
-        total = r.get("total", r["novas"] + r["atualizadas"])
-        print(f"{caminho.name}: {_plural(total, 'audiência lida', 'audiências lidas')} · "
-              f"{_plural(r['novas'], 'nova', 'novas')} · "
-              f"{_plural(r['atualizadas'], 'atualizada', 'atualizadas')} · "
-              f"{_plural(r['ignoradas'], 'linha ignorada', 'linhas ignoradas')}.")
-        for aviso in r.get("avisos") or []:
-            print(f"  aviso: {aviso}")
-        revelados += [n for n in r.get("sigilosos_novos") or [] if n not in revelados]
+    revelados = _ouvir_revelados(servico)
+    try:
+        for nome in args.arquivos:
+            caminho = Path(nome.strip().strip('"')).expanduser()
+            try:
+                r = servico.importar(caminho)
+            except Exception as erro:
+                print(f"{caminho.name}: {erro}", file=sys.stderr)
+                codigo = 1
+                continue
+            total = r.get("total", r["novas"] + r["atualizadas"])
+            print(f"{caminho.name}: {_plural(total, 'audiência lida', 'audiências lidas')} · "
+                  f"{_plural(r['novas'], 'nova', 'novas')} · "
+                  f"{_plural(r['atualizadas'], 'atualizada', 'atualizadas')} · "
+                  f"{_plural(r['ignoradas'], 'linha ignorada', 'linhas ignoradas')}.")
+            for aviso in r.get("avisos") or []:
+                print(f"  aviso: {aviso}")
+            revelados += [n for n in r.get("sigilosos_novos") or [] if n not in revelados]
+    except KeyboardInterrupt:
+        print("Interrompido.")
+        codigo = 1
     _aplicar_sigilo_revelado(servico.cfg, revelados)
     return codigo
 
@@ -202,10 +238,16 @@ def _aplicar_sigilo_revelado(cfg, numeros: list[str]) -> None:
     acervo sai agora (o preparo rápido, como a janela faz), e a saída diz o quê."""
     from .servico import no_acervo, quem_corre
 
+    from .. import servicos
+
     lista = no_acervo(cfg, numeros) if numeros else []
     if not lista:
+        # Fora do acervo, um pacote antigo para o ChatGPT ainda pode trazer o
+        # processo: sai de lá também.
+        if numeros:
+            for aviso in servicos.retirar_sigilosos_dos_pacotes(cfg) or []:
+                print(f"  ATENÇÃO: {aviso}", file=sys.stderr)
         return
-    from .. import servicos
 
     um = len(lista) == 1
     print(f"Segredo de justiça: a pauta indica que {quem_corre(lista)} em segredo de justiça, "
@@ -215,6 +257,8 @@ def _aplicar_sigilo_revelado(cfg, numeros: list[str]) -> None:
         print("  Não consegui preparar o acervo (veja o registro). Antes de compartilhar o "
               "acervo com a IA, use: python -m helestron preparar", file=sys.stderr)
         return
+    for aviso in getattr(rel, "avisos_pacotes", None) or []:
+        print(f"  ATENÇÃO: {aviso}", file=sys.stderr)
     if rel.sigilosos_levados:
         print(f"  {_plural(rel.sigilosos_levados, 'processo levado', 'processos levados')} "
               "para a pasta dos sigilosos; fora do índice e do texto lidos pela IA.")
@@ -243,8 +287,11 @@ def _aplicar_sigilo_revelado(cfg, numeros: list[str]) -> None:
 def _listar(args, servico) -> int:
     de = args.de or date.today()
     ate = args.ate or de + timedelta(days=7)
+    incluir = bool(getattr(args, "incluir_partes_sigilosos", False))
+    # Sem a opção, as partes e as observações dos sigilosos não saem - nem no
+    # JSON, que um script ou a IA lê (a regra do sigilo: nada dele para a IA).
     dados = servico.listar(de, ate, sistema=args.sistema or "", situacao=args.situacao or "",
-                           busca=args.busca or "")
+                           busca=args.busca or "", mascarar_sigilosos=not incluir)
     if args.json:
         print(json.dumps(dados, ensure_ascii=False, indent=1))
         return 0
@@ -253,7 +300,7 @@ def _listar(args, servico) -> int:
         print(f"Nenhuma audiência de {de:%d/%m/%Y} a {ate:%d/%m/%Y}.")
         return 0
     for a in lista:
-        print(_linha(a))
+        print(_linha(a, incluir))
     r = dados["resumo"]
     print(f"\n{_plural(r['total'], 'audiência', 'audiências')} no período; {r['hoje']} hoje.")
     return 0
@@ -261,7 +308,10 @@ def _listar(args, servico) -> int:
 
 def _fontes(args, servico) -> int:
     if args.remover:
-        servico.remover_fonte(args.remover)
+        if servico.remover_fonte(args.remover) is False:
+            print(f"A fonte {args.remover} não existe (veja as fontes com: python -m helestron "
+                  "pauta fontes).", file=sys.stderr)
+            return 1
         print(f"Fonte {args.remover} removida (as audiências já trazidas continuam na pauta).")
         return 0
     if args.adicionar:

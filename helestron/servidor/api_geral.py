@@ -338,7 +338,11 @@ def gravar_acesso(p: Pedido) -> dict:
         # Senha em branco no pedido = manter a que já existe (o campo da tela
         # não mostra a senha guardada).
         senha = senha or guardada_s or sessao[1]
-        usuario = usuario or guardado_u or sessao[0]
+        anterior = guardado_u or sessao[0]
+        usuario = usuario or anterior
+        if anterior and usuario != anterior:
+            # outra pessoa: a sessão guardada (e o perfil) eram da anterior
+            _esquecer_sessoes(portal)
         if lembrar:
             if usuario or senha:
                 cofre.guardar(portal, usuario, senha)
@@ -397,8 +401,27 @@ def apagar_acesso(p: Pedido) -> dict:
         raise erro_400("Portal inválido.", "portal_invalido")
     servicos.cofre().apagar(portal)
     app.credenciais_sessao.pop(portal, None)
+    _esquecer_sessoes(portal)
     app.hub.publicar("estado", {})
     return {"portal": portal}
+
+
+def _esquecer_sessoes(portal: str) -> None:
+    """A sessão guardada e os perfis do navegador do portal: sem isso, o
+    login anterior seguia valendo por até 12 horas depois de apagado o
+    acesso (ou trocado o usuário)."""
+    try:
+        t = _tribunal_do_portal(portal)
+        portal = t.portal
+    except Exception:
+        pass
+    try:
+        from ..download import navegador
+        if not navegador.esquecer_portal(portal):
+            log.info("O navegador do %s está aberto: o perfil dele sai quando fechar.", portal)
+    except Exception as erro:
+        log.warning("não consegui apagar a sessão guardada de %s (%s)", portal,
+                    type(erro).__name__)
 
 
 def tribunal_pedido(texto: str, sistema_: str = ""):
@@ -485,7 +508,13 @@ def dialogo_arquivo(p: Pedido) -> dict:
     titulo = p.campo("titulo", padrao="Escolher arquivo", tipo=str)
     inicial = p.campo("inicial", padrao="", tipo=str)
     caminho = funcao(titulo, tipos_pywebview(p.campo("tipos", padrao=[], tipo=list)), inicial)
-    return {"caminho": str(caminho) if caminho else None}
+    if not caminho:
+        return {"caminho": None}
+    try:
+        tamanho = Path(str(caminho)).stat().st_size
+    except OSError:
+        tamanho = None
+    return {"caminho": str(caminho), "tamanho": tamanho}
 
 
 def dialogo_pasta(p: Pedido) -> dict:

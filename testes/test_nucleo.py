@@ -103,6 +103,24 @@ class TestCaminhos(unittest.TestCase):
                           "USERPROFILE": str(casa)})
         self.assertEqual(c["BASE_USUARIO"], str(casa / "Helestron"))
 
+    def test_documentos_no_google_drive_muda_a_base(self):
+        # Documentos dentro do Google Drive (modo espelho, %USERPROFILE%\Meu
+        # Drive): a pasta padrão dos sigilosos e da pauta não pode ficar na
+        # nuvem - a base vai para o perfil, como com o OneDrive.
+        casa = self.base / "casa"
+        sem_onedrive = {"OneDrive": "", "OneDriveCommercial": "", "OneDriveConsumer": ""}
+        with mock.patch.dict(os.environ, dict(sem_onedrive, HOME=str(casa), USERPROFILE=str(casa),
+                                              HELESTRON_DADOS="")):
+            for documentos in (casa / "Meu Drive" / "Documentos", casa / "My Drive (2)" / "Docs",
+                               casa / "Google Drive" / "Documentos"):
+                with self.subTest(documentos=documentos), \
+                        mock.patch.object(caminhos, "pasta_documentos", return_value=documentos):
+                    self.assertTrue(caminhos.no_google_drive(documentos))
+                    self.assertEqual(caminhos._base_usuario(), casa / "Helestron")
+            with mock.patch.object(caminhos, "pasta_documentos", return_value=casa / "Documents"):
+                self.assertFalse(caminhos.no_google_drive(casa / "Documents"))
+                self.assertEqual(caminhos._base_usuario(), casa / "Documents" / "Helestron")
+
     def test_instalado_pelo_manifesto(self):
         programa = self.base / "Programs" / "Helestron"
         programa.mkdir(parents=True)
@@ -626,8 +644,9 @@ class TestSigilo(unittest.TestCase):
         self._arquivo(f"Transcricoes/_audio/{diario.nome_arquivo} 2026-09-16 14h00.jsonl")
         self._arquivo(f"Transcricoes/_audio/{gravacao.nome_arquivo} 2026-09-16 15h00.flac")
         self._arquivo(f"Lote 1/{incidente.nome_arquivo}.pdf")
-        # três níveis abaixo não conta: a pasta pode ter sido apontada para os Documentos
-        self._arquivo(f"a/b/{fundo.nome_arquivo}.pdf")
+        # fundo demais não conta: a pasta pode ter sido apontada para os Documentos (o
+        # preparo leva até subpastas do lote: test_sigilo.TestPastaFunda)
+        self._arquivo(f"a/b/c/d/e/{fundo.nome_arquivo}.pdf")
         esperado = {n.nome_arquivo for n in (autos, lote, docx, diario, gravacao, incidente)}
         self.assertEqual(sigilo.chaves_na_pasta(self.sigilosos), esperado)
         for n in (autos, lote, docx, diario, gravacao, incidente):
@@ -671,11 +690,17 @@ class TestSigilo(unittest.TestCase):
         pauta_com_sigiloso(self.pauta, x)
         self.assertTrue(sigilo.na_pauta(x))
         pauta_com_sigiloso(self.pauta, _numero("0700778"))      # o banco mudou
-        with mock.patch("helestron.pauta.armazem.Armazem", side_effect=OSError("ocupado")), \
+        with mock.patch.object(sigilo, "_ler_banco", side_effect=OSError("ocupado")), \
                 self.assertLogs("nucleo.sigilo", "WARNING"):
             self.assertTrue(sigilo.na_pauta(x))
         sigilo.esquecer_pauta()
-        with mock.patch("helestron.pauta.armazem.Armazem", side_effect=OSError("ocupado")), \
+        # o que a pauta já apurou fica também no registro ao lado do banco
+        with mock.patch.object(sigilo, "_ler_banco", side_effect=OSError("ocupado")), \
+                self.assertLogs("nucleo.sigilo", "WARNING"):
+            self.assertTrue(sigilo.na_pauta(x))
+        sigilo.arquivo_apurado().unlink()
+        sigilo.esquecer_pauta()
+        with mock.patch.object(sigilo, "_ler_banco", side_effect=OSError("ocupado")), \
                 self.assertLogs("nucleo.sigilo", "WARNING"):
             self.assertFalse(sigilo.na_pauta(x))                 # nunca levanta
 

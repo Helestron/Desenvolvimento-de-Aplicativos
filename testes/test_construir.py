@@ -2,27 +2,37 @@
 
 O que é verificado sem rede e sem Windows:
   * manifesto.json: o formato que construir.py grava é o que o programa lê
-    (aplicativo/integridade.py) e acusa o arquivo alterado;
+    (aplicativo/integridade.py) e acusa o arquivo alterado, com os
+    componentes embutidos (modelos) e o helestron.cmd;
+  * a construção: --versao (o que o CI compara com a tag), o modelo de
+    transcrição obrigatório e em int8 (--modelo ou --sem-modelo), a falha dos
+    modelos de voz que interrompe (salvo --sem-falantes), o limite de 500 MiB
+    do Setup e o pacote helestron copiado inteiro (sem lista de módulos);
   * rodas: a escolha da roda certa para Windows/cp312 entre as publicadas, o
     hash travado, a roda gerada de código-fonte puro Python e o esquema de
     instalação (Lib/site-packages; os dados do msvc-runtime na raiz);
   * os requisitos travados com hash (Windows e testes);
   * o script NSIS renderizado: nenhum marcador sobrando, páginas, registro de
-    desinstalação, atalhos, --encerrar, a conferência final e o
-    desinstalador que nunca apaga Documentos\\Helestron (com o makensis, se
-    houver, ele é compilado de verdade);
+    desinstalação e HKCU\\Software\\Helestron, atalhos, --encerrar, a
+    instalação registrada em outra pasta, a conferência final e o
+    desinstalador que apaga sempre os perfis do navegador e nunca
+    Documentos\\Helestron (com o makensis, se houver, ele é compilado de
+    verdade);
   * com o makensis, o MinGW-w64 e o Wine de 64 bits: o instalador de verdade
     (alvo amd64), com um programa falso, roda no Wine - audiência em
     andamento (código 7), servidor MCP prendendo os arquivos (renomeados,
-    código 0), pasta sem permissão (código 8), sem janela (código 9) e a
-    desinstalação que tira os dois conectores;
+    código 0), pasta sem permissão (código 8), sem janela (código 9), a
+    mudança de pasta, o helestron.cmd, a desinstalação que tira os dois
+    conectores e os perfis, e a da cópia que não é a registrada;
   * o lançador: a fonte chama "-I -m helestron" pelo Py_Main do
     python312.dll carregado à mão; o manifesto e o .rc (com o MinGW, se
-    houver, compila e confere o executável);
+    houver, compila e confere o executável); o arquivo solto no ícone abre
+    o programa;
   * a marca: o .ico com todos os tamanhos em RGBA e cantos transparentes,
     os PNG, os BMP do instalador e o SVG;
-  * o workflow do GitHub Actions: YAML válido, os quatro trabalhos e os
-    scripts só com ASCII.
+  * o workflow do GitHub Actions: YAML válido, os quatro trabalhos, os
+    scripts só com ASCII e a tag conferida com a versão (rodando os scripts
+    dos passos).
 """
 
 from __future__ import annotations
@@ -141,6 +151,46 @@ class TestManifesto(unittest.TestCase):
         self.assertEqual(entrada["sha256"], hashlib.sha256(dados).hexdigest())
         total = sum(1 for p in self.arvore.rglob("*") if p.is_file()) - 1
         self.assertEqual(len(arquivos), total)
+        # o que foi embutido, lido da árvore: a verificação distingue o modelo
+        # que falta (defeito) da construção sem ele (--sem-modelo, --sem-falantes)
+        self.assertEqual(gravado["componentes"], {"modelo_transcricao": "", "falantes": True})
+        # o instalador reconhece a pasta do Helestron pelas 4 primeiras linhas
+        linhas = (self.arvore / "manifesto.json").read_text(encoding="utf-8").splitlines()[:4]
+        self.assertIn('"nome": "Helestron",', [l.strip() for l in linhas])
+
+    def test_componentes(self):
+        modelo = self.arvore / "modelos" / "faster-whisper-small" / "model.bin"
+        modelo.parent.mkdir(parents=True)
+        modelo.write_bytes(b"\0" * 16)
+        shutil.rmtree(self.arvore / "modelos" / "falantes")
+        self.assertEqual(construcao.componentes_da_arvore(self.arvore),
+                         {"modelo_transcricao": "faster-whisper-small", "falantes": False})
+
+    def test_helestron_cmd_entra_no_manifesto(self):
+        """A linha de comando para quem chama de fora: o Python da pasta, em
+        modo isolado, sem PATH; conferida pela verificação como os demais."""
+        from helestron.aplicativo import integridade
+
+        cmd = construcao.gravar_comando(self.arvore)
+        self.assertEqual(cmd, self.arvore / "helestron.cmd")
+        dados = cmd.read_bytes()
+        dados.decode("ascii")                      # o cmd lê na página de código do console
+        linhas = dados.decode("ascii").split("\r\n")
+        self.assertEqual(linhas[-1], "")           # CRLF até a última linha
+        self.assertNotIn("\n", "".join(linhas))
+        self.assertEqual(linhas[0], "@echo off")
+        # o Python é o último comando: o código de saída dele é o do .cmd
+        self.assertEqual(linhas[-2], '"%~dp0python.exe" -I -m helestron %*')
+        self.assertTrue(all(l.startswith("rem ") for l in linhas[1:-2]), linhas)
+        self.assertNotRegex(dados.decode("ascii"), r"(?i)\bset\s+path|setx|pythonw")
+        construcao.gerar_manifesto(self.arvore, "1.0.0")
+        _, entradas = integridade.ler_manifesto(self.arvore)
+        self.assertIn("helestron.cmd", {e.caminho for e in entradas})
+        cmd.write_bytes(dados.replace(b"-I ", b"   "))
+        problemas = {p.arquivo: p.motivo for p in integridade.conferir_completo(self.arvore)}
+        self.assertEqual(problemas, {"helestron.cmd": integridade.CONTEUDO})
+        registro = construcao.linhas_do_registro(self.arvore)
+        self.assertIn("A helestron.cmd", registro)
 
     def test_o_programa_le_e_confere_o_manifesto(self):
         from helestron.aplicativo import integridade
@@ -507,6 +557,16 @@ class TestModelos(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
+    def _modelo(self, tamanho: int = 2_000, sem: tuple[str, ...] = ()) -> Path:
+        origem = self.tmp / "baixado"
+        shutil.rmtree(origem, ignore_errors=True)
+        origem.mkdir()
+        for nome, n in (("model.bin", tamanho), ("config.json", 10), ("tokenizer.json", 10),
+                        ("vocabulary.json", 10), ("preprocessor_config.json", 10), ("README.md", 10)):
+            if nome not in sem:
+                (origem / nome).write_bytes(b"x" * n)
+        return origem
+
     def test_copia_o_modelo_para_a_pasta_que_o_programa_procura(self):
         from helestron.transcricao import modelos
 
@@ -516,7 +576,9 @@ class TestModelos(unittest.TestCase):
                               ("vocabulary.txt", 10), ("README.md", 10)):
             (origem / nome).write_bytes(b"x" * tamanho)
         arvore = self.tmp / "Helestron"
-        destino = construcao.copiar_modelo(origem, arvore)
+        # a faixa do int8 em miniatura (o de verdade tem ~250 MB)
+        with mock.patch.object(construcao, "LIMITES_MODELO", (1_000_000, 3_000_000)):
+            destino = construcao.copiar_modelo(origem, arvore)
         self.assertEqual(destino, arvore / "modelos" / "faster-whisper-small")
         self.assertEqual(sorted(p.name for p in destino.iterdir()),
                          ["config.json", "model.bin", "tokenizer.json", "vocabulary.txt"])
@@ -532,6 +594,49 @@ class TestModelos(unittest.TestCase):
         (origem / "model.bin").write_bytes(b"x" * 10)
         with self.assertRaises(construcao.ErroConstrucao):
             construcao.copiar_modelo(origem, self.tmp / "Helestron")
+        with mock.patch.object(construcao, "LIMITES_MODELO", (1_000, 3_000)):
+            with self.assertRaises(construcao.ErroConstrucao) as ctx:
+                construcao.conferir_modelo(self._modelo(sem=("vocabulary.json",)))
+            self.assertIn("vocabulary.*", str(ctx.exception))
+            with self.assertRaises(construcao.ErroConstrucao) as ctx:
+                construcao.conferir_modelo(self.tmp / "nao-existe")
+            self.assertIn("não existe", str(ctx.exception))
+
+    def test_modelo_em_float16_e_recusado(self):
+        """Sem --modelo, a construção baixava o faster-whisper-small do Hugging
+        Face, em float16 (~484 MB): um Setup acima de 500 MiB, diferente do
+        publicado. O model.bin fora da faixa do int8 é recusado, com os
+        comandos de conversão do CI."""
+        self.assertEqual(construcao.LIMITES_MODELO, (150_000_000, 350_000_000))
+        with mock.patch.object(construcao, "LIMITES_MODELO", (1_000, 3_000)):
+            construcao.conferir_modelo(self._modelo(2_000))
+            with self.assertRaises(construcao.ErroConstrucao) as ctx:
+                construcao.conferir_modelo(self._modelo(4_000))
+            texto = str(ctx.exception)
+            self.assertIn("float16", texto)
+            self.assertIn("--quantization int8", texto)
+            self.assertIn("--sem-modelo", texto)
+            with self.assertRaises(construcao.ErroConstrucao) as ctx:
+                construcao.conferir_modelo(self._modelo(500))
+            self.assertIn("cópia interrompida", str(ctx.exception))
+        self.assertFalse(hasattr(construcao, "baixar_modelo"))
+        self.assertFalse(hasattr(construcao, "REPO_MODELO"))
+
+    def test_comandos_de_conversao_iguais_aos_do_ci(self):
+        """COMANDOS_CONVERSAO (as mensagens de construir.py) e o passo do CI
+        não podem divergir: as mesmas versões e opções."""
+        passo = WORKFLOW.read_text(encoding="utf-8")
+        passo = passo[passo.index("- name: Modelo de transcrição"):]
+        passo = passo[:passo.index("- name:", 10)]
+        comandos = " ".join(construcao.COMANDOS_CONVERSAO)
+        for trecho in ("torch==2.7.1", "ctranslate2==4.8.2", "transformers==4.57.6",
+                       "https://download.pytorch.org/whl/cpu", "--model openai/whisper-small",
+                       "--copy_files tokenizer.json preprocessor_config.json", "--quantization int8",
+                       "ct2-transformers-converter"):
+            self.assertIn(trecho, comandos)
+            self.assertIn(trecho, passo)
+        minimo, maximo = construcao.LIMITES_MODELO
+        self.assertIn(f"{minimo:_} < tam < {maximo:_}", passo)
 
     def test_constantes_dos_falantes_vem_do_programa(self):
         try:
@@ -544,6 +649,143 @@ class TestModelos(unittest.TestCase):
         self.assertEqual(c["URL_EMBEDDING"], falantes.URL_EMBEDDING)
         self.assertEqual(c["SHA256"], falantes.SHA256)
         self.assertEqual(c["SUBPASTA_SEGMENTACAO"], falantes.SUBPASTA_SEGMENTACAO)
+
+
+# =================================================================== construção
+class _Parou(Exception):
+    """Para a construção num ponto conhecido (depois do que se quer ver)."""
+
+
+class TestConstrucao(unittest.TestCase):
+    """construir(): as etapas pesadas trocadas por dublês, para ver as
+    decisões - o que interrompe e o que segue."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.saida = io.StringIO()
+
+    def rodar(self, *argv: str, **dubles) -> tuple[int, str, dict]:
+        def extrair(tar, destino):
+            destino.mkdir(parents=True, exist_ok=True)
+
+        padrao = {"garantir_marca": mock.DEFAULT, "ferramenta": mock.DEFAULT,
+                  "achar_makensis": mock.DEFAULT,
+                  "baixar": mock.Mock(return_value=self.tmp / "python.tar.gz"),
+                  "extrair_python": mock.Mock(side_effect=extrair),
+                  "ler_requisitos": mock.Mock(return_value=[]),
+                  "obter_rodas": mock.Mock(return_value=[]), "instalar_rodas": mock.DEFAULT,
+                  "copiar_pacote": mock.DEFAULT, "enxugar": mock.Mock(return_value=0),
+                  "precompilar": mock.Mock(return_value=[]),
+                  "obter_falantes": mock.Mock(return_value=[]),
+                  "compilar_lancador": mock.Mock(side_effect=_Parou("etapa 6"))}
+        padrao.update(dubles)
+        opcoes = ["--obra", str(self.tmp / "obra"), "--saida", str(self.tmp / "dist"),
+                  "--cache", str(self.tmp / "cache"), *argv]
+        with mock.patch.multiple(construcao, **padrao) as chamados, \
+                mock.patch.object(construcao, "VERSAO_PYTHON", sys.version_info[:2]), \
+                contextlib.redirect_stdout(self.saida), contextlib.redirect_stderr(self.saida):
+            chamados = {**padrao, **(chamados or {})}
+            try:
+                codigo = construcao.main(opcoes)
+            except _Parou as parou:
+                codigo = f"parou: {parou}"
+        return codigo, self.saida.getvalue(), chamados
+
+    def test_versao(self):
+        """O CI compara a tag com isto antes de construir (uma linha, só a versão)."""
+        codigo, texto, chamados = self.rodar("--versao")
+        self.assertEqual(codigo, 0)
+        self.assertEqual(texto, construcao.versao_do_pacote() + "\n")
+        chamados["garantir_marca"].assert_not_called()
+        r = subprocess.run([sys.executable, str(CONSTRUIR / "construir.py"), "--versao"],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual((r.returncode, r.stdout), (0, construcao.versao_do_pacote() + "\n"), r.stderr)
+
+    def test_sem_dizer_de_onde_vem_o_modelo(self):
+        """Sem --modelo, baixava-se o do Hugging Face em float16: um Setup
+        acima de 500 MiB. Agora é preciso dizer: --modelo DIR ou --sem-modelo."""
+        codigo, texto, chamados = self.rodar()
+        self.assertEqual(codigo, 1)
+        self.assertIn("--modelo DIR", texto)
+        self.assertIn("--sem-modelo", texto)
+        self.assertIn("ct2-transformers-converter", texto)
+        chamados["garantir_marca"].assert_not_called()
+        # e o modelo errado é recusado antes do trabalho pesado
+        pasta = self.tmp / "modelo"
+        pasta.mkdir()
+        (pasta / "model.bin").write_bytes(b"x" * 10)
+        codigo, texto, chamados = self.rodar("--modelo", str(pasta))
+        self.assertEqual(codigo, 1)
+        self.assertIn("incompleto", texto)
+        chamados["extrair_python"].assert_not_called()
+
+    def test_falha_dos_modelos_de_voz_interrompe(self):
+        """Antes, a falha ao baixar os modelos da separação de falantes virava
+        um AVISO, e a construção publicava um instalador sem eles (código 0)."""
+        falha = mock.Mock(side_effect=construcao.ErroConstrucao(
+            "não foi possível baixar https://github.com/k2-fsa/sherpa-onnx/x: timed out"))
+        codigo, texto, chamados = self.rodar("--sem-modelo", obter_falantes=falha)
+        self.assertEqual(codigo, 1)
+        self.assertIn("ERRO: modelos da separação de falantes", texto)
+        self.assertIn("timed out", texto)
+        self.assertIn("--sem-falantes", texto)
+        self.assertNotIn("AVISO", texto)
+        chamados["compilar_lancador"].assert_not_called()
+        self.assertFalse((self.tmp / "dist").exists())
+
+    def test_sem_falantes_de_proposito(self):
+        codigo, texto, chamados = self.rodar("--sem-modelo", "--sem-falantes")
+        self.assertEqual(codigo, "parou: etapa 6")
+        chamados["obter_falantes"].assert_not_called()
+        self.assertIn("--sem-falantes: os modelos de voz", texto)
+
+    def test_instalador_acima_do_limite(self):
+        exe = self.tmp / "Helestron-Setup-1.0.0.exe"
+        exe.write_bytes(b"MZ" + b"\0" * 98)
+        construcao.conferir_tamanho_do_setup(exe, limite=100)
+        self.assertTrue(exe.is_file())
+        exe.write_bytes(b"MZ" + b"\0" * 99)
+        with self.assertRaises(construcao.ErroConstrucao) as ctx:
+            construcao.conferir_tamanho_do_setup(exe, limite=100)
+        self.assertIn("acima do limite", str(ctx.exception))
+        self.assertFalse(exe.exists())          # não fica em dist à espera de ser enviado
+        self.assertEqual(construcao.LIMITE_SETUP, 524288000)
+
+    def test_pacote_copiado_inteiro(self):
+        """Sem lista de módulos: o que está em helestron/ vai para o
+        instalador, inclusive os módulos novos."""
+        arvore = self.tmp / "Helestron"
+        destino = construcao.copiar_pacote(arvore)
+        self.assertEqual(destino, arvore / "Lib" / "site-packages" / "helestron")
+        pacote = REPOSITORIO / "helestron"
+        modulos = construcao.modulos_de(pacote)
+        self.assertEqual(construcao.modulos_de(destino), modulos)
+        for novo in ("nucleo/paginacao.py", "download/acompanhamento.py", "__main__.py",
+                     "verificar.py", "aplicativo/verificacao.py"):
+            self.assertIn(novo, modulos)
+            self.assertTrue((destino / novo).is_file(), novo)
+
+        def todos(pasta: Path) -> set[str]:
+            return {p.relative_to(pasta).as_posix() for p in pasta.rglob("*")
+                    if p.is_file() and "__pycache__" not in p.parts
+                    and p.suffix not in (".pyc", ".pyo", ".tmp", ".parcial")}
+
+        # os dados também (interface, recursos, catálogo de tribunais)
+        self.assertEqual(todos(destino), todos(pacote))
+        self.assertTrue((destino / "web" / "index.html").is_file())
+        self.assertFalse(any(p.name == "__pycache__" for p in destino.rglob("*")))
+
+    def test_modulo_que_nao_chegou_interrompe(self):
+        origem = self.tmp / "helestron"
+        origem.mkdir()
+        for nome in ("__init__.py", "__main__.py", "novo.py"):
+            (origem / nome).write_text("# m\n", encoding="utf-8")
+        with mock.patch.object(construcao, "IGNORAR_NO_PACOTE",
+                               (*construcao.IGNORAR_NO_PACOTE, "novo.py")):
+            with self.assertRaises(construcao.ErroConstrucao) as ctx:
+                construcao.copiar_pacote(self.tmp / "Helestron", origem)
+        self.assertIn("novo.py", str(ctx.exception))
 
 
 # =================================================================== NSIS
@@ -641,10 +883,12 @@ class TestScriptNsis(unittest.TestCase):
         self.assertIn(f'File "/oname=${{DESTINO}}" "{(self.tmp / "arquivos-instalados.txt").resolve().as_posix()}"',
                       self.script)
         # nenhuma pasta por nome: os únicos RMDir /r são a .antigos, as
-        # __pycache__ da lista, a pasta de dados do Helestron (com o sim do
+        # __pycache__ da lista, os perfis do navegador (sempre, na
+        # desinstalação), a pasta de dados do Helestron (com o sim do
         # usuário) e nunca $INSTDIR inteira
         recursivos = sorted(set(re.findall(r'RMDir /r "([^"]+)"', self.script)))
-        self.assertEqual(recursivos, ["$INSTDIR\\$1", "$LOCALAPPDATA\\Helestron", "${PASTA_ANTIGOS}"])
+        self.assertEqual(recursivos, ["$INSTDIR\\$1", "$LOCALAPPDATA\\Helestron",
+                                      "$LOCALAPPDATA\\Helestron\\perfis", "${PASTA_ANTIGOS}"])
         self.assertIn('${If} $2 == "\\__pycache__"\n          RMDir /r "$INSTDIR\\$1"', funcao)
         for nome in ("Scripts", "share", "tcl", "include", "libs", "Lib", "DLLs", "modelos"):
             self.assertNotIn(f'"$INSTDIR\\{nome}"', self.script)
@@ -662,7 +906,7 @@ class TestScriptNsis(unittest.TestCase):
                        "StrCpy $INSTDIR $R0", '"recusada"', '"ajustada"', '"atualizacao"', '"nova"'):
             self.assertIn(trecho, destino)
         # o manifesto de outro programa não conta: só o do Helestron
-        eh = self.script[self.script.index("Function EhDoHelestron"):]
+        eh = self.script[self.script.index("Function ${UN}EhDoHelestron"):]
         eh = eh[:eh.index("FunctionEnd")]
         self.assertIn("""${If} $R2 S== '"nome": "Helestron"'""", eh)
         self.assertIn('${If} $R2 S== "Helestron "', eh)
@@ -677,6 +921,17 @@ class TestScriptNsis(unittest.TestCase):
         self.assertLess(secao.index("Call ConferirDestino"), secao.index("Call PodeGravarNaPasta"))
         self.assertLess(secao.index("SetErrorLevel ${PASTA_OCUPADA}"), secao.index("File /r"))
         self.assertIn("3 = a pasta escolhida", self.script)
+
+    def test_atualizacao_decidida_pela_pasta_final(self):
+        """/D=<pasta> repetido na versão seguinte: a 'ajustada' com o
+        Helestron já na subpasta é atualização, e a versão anterior sai."""
+        secao = self.script[self.script.index('Section "Helestron (programa)"'):]
+        secao = secao[:secao.index("SectionEnd")]
+        self.assertRegex(secao, r'\$\{ElseIf\} \$0 == "ajustada"\n\s+Push \$INSTDIR\n'
+                                r'\s+Call EhDoHelestron\n\s+Pop \$1\n\s+\$\{If\} \$1 == 1\n'
+                                r'\s+StrCpy \$EraDoHelestron 1')
+        self.assertLess(secao.index('${ElseIf} $0 == "ajustada"'),
+                        secao.index("Call RemoverPrograma"))
 
     def test_restos_do_assessor_integrado(self):
         """O atalho "Assessor Integrado" da versão anterior ficava na Área de
@@ -717,6 +972,97 @@ class TestScriptNsis(unittest.TestCase):
         linhas = sum(max(1, -(-len(p) // 44)) for p in paragrafos)
         self.assertLessEqual(linhas, linhas_que_cabem - 1, paragrafos)
         self.assertIn("Ajustes", texto)
+
+    def secao(self, nome: str) -> str:
+        inicio = self.script.index(f'Section "{nome}"')
+        return self.script[inicio:self.script.index("SectionEnd", inicio)]
+
+    def funcao(self, nome: str) -> str:
+        inicio = self.script.index(f"Function {nome}\n")
+        return self.script[inicio:self.script.index("FunctionEnd", inicio)]
+
+    def test_desinstalador_apaga_sempre_as_sessoes_e_os_perfis(self):
+        """%LOCALAPPDATA%\\Helestron\\perfis (sessões dos portais e perfis do
+        navegador; nas instalações antigas, a cópia do perfil do Chrome com
+        senhas e cookies) só saía com o sim à pergunta, e o modo silencioso
+        dizia não."""
+        desinstalar = self.secao("Uninstall")
+        perfis = 'RMDir /r "$LOCALAPPDATA\\Helestron\\perfis"'
+        self.assertEqual(desinstalar.count(perfis), 1)
+        # depois de fechar o programa (o navegador dele solta os arquivos) e
+        # antes da pergunta, fora de qualquer condição
+        self.assertLess(desinstalar.index("Call un.EsperarArquivosLivres"), desinstalar.index(perfis))
+        self.assertLess(desinstalar.index(perfis), desinstalar.index("MessageBox"))
+        antes = desinstalar[:desinstalar.index(perfis)]
+        self.assertEqual(antes.count("${If}"), antes.count("${EndIf}"))
+        # a pergunta não diz mais que os perfis ficam
+        pergunta = re.search(r'MessageBox MB_YESNO\S* "([^"]+)"', desinstalar).group(1)
+        manter = pergunta[:pergunta.index("responda Não")]
+        self.assertNotIn("perfis", manter)
+        self.assertIn("As sessões dos portais e os perfis do navegador já foram apagados", pergunta)
+        self.assertIn("Documentos\\Helestron", pergunta)
+
+    def test_chave_do_programa_para_quem_chama_de_fora(self):
+        """HKCU\\Software\\Helestron: Python, Versao e InstallLocation, para a
+        skill do Claude achar o python.exe sem PATH (que não é alterado)."""
+        self.assertIn('!define CHAVE_PROGRAMA "Software\\Helestron"', self.script)
+        instalar = self.secao("Helestron (programa)")
+        for valor, dado in (("Python", "$INSTDIR\\python.exe"), ("Versao", "${VERSAO}"),
+                            ("InstallLocation", "$INSTDIR")):
+            self.assertIn(f'WriteRegStr HKCU "${{CHAVE_PROGRAMA}}" "{valor}" "{dado}"', instalar)
+        self.assertLess(instalar.index("File /r"), instalar.index('"${CHAVE_PROGRAMA}" "Python"'))
+        desinstalar = self.secao("Uninstall")
+        for valor in ("Python", "Versao", "InstallLocation"):
+            self.assertIn(f'DeleteRegValue HKCU "${{CHAVE_PROGRAMA}}" "{valor}"', desinstalar)
+        # só a chave vazia sai: nada do que outro lugar gravar nela se perde
+        self.assertIn('DeleteRegKey /ifempty HKCU "${CHAVE_PROGRAMA}"', desinstalar)
+        self.assertNotIn('DeleteRegKey HKCU "${CHAVE_PROGRAMA}"', desinstalar)
+        # o PATH não é tocado
+        self.assertNotRegex(self.script, r"(?i)EnVar|\bPath\b\"|Environment\"|setx")
+        # o helestron.cmd chega pela árvore (com o manifesto e a lista) e sai pela lista
+        self.assertIn("helestron.cmd", self.script)
+
+    def test_instalacao_registrada_em_outra_pasta_sai_de_la(self):
+        """Instalar com /D= (ou o Procurar) noutra pasta deixava a anterior
+        aberta e órfã; o desinstalador dela apagava depois a chave e os
+        atalhos desta."""
+        outra = self.funcao("${UN}OutraInstalacao")
+        self.assertIn('ReadRegStr $R0 HKCU "${CHAVE_DESINSTALAR}" "InstallLocation"', outra)
+        self.assertIn("Call ${UN}EhDoHelestron", outra)         # só se ainda for do Helestron
+        self.assertIn("${If} $R0 == $R2", outra)                # == do NSIS: sem caixa
+        self.assertIn("!insertmacro FuncoesDeInstalacoes \"un.\"", self.script)
+        instalar = self.secao("Helestron (programa)")
+        bloco = instalar[instalar.index("Call OutraInstalacao"):]
+        bloco = bloco[:bloco.index("StrCpy $INSTDIR $PastaNova")]
+        ordem = ["Pop $Registrada", "StrCpy $INSTDIR $Registrada", "Call FecharHelestron",
+                 "Call EsperarArquivosLivres", 'RMDir /r "${PASTA_ANTIGOS}"', "Call LiberarArquivos",
+                 "Call RemoverPrograma", 'Delete "$INSTDIR\\${DESINSTALADOR}"', "Call AgendarLimpeza",
+                 'RMDir "$INSTDIR"', 'Delete "$SMPROGRAMS\\Helestron.lnk"', 'Delete "$DESKTOP\\Helestron.lnk"']
+        posicoes = [bloco.index(t) for t in ordem]
+        self.assertEqual(posicoes, sorted(posicoes))
+        self.assertNotIn("RMDir /r \"$INSTDIR\"", bloco)
+        # antes de qualquer cópia, e depois de conferir a pasta nova
+        self.assertLess(instalar.index("Call PodeGravarNaPasta"), instalar.index("Call OutraInstalacao"))
+        self.assertLess(instalar.index("StrCpy $INSTDIR $PastaNova"), instalar.index("File /r"))
+        # na página da pasta, o usuário sabe antes (e pode escolher outra)
+        pagina = self.funcao("ConferirPasta")
+        self.assertIn("Call OutraInstalacao", pagina)
+        self.assertIn("O Helestron já está instalado em outra pasta", pagina)
+        self.assertLess(pagina.index("Call OutraInstalacao"), pagina.index("Call PodeGravarNaPasta"))
+
+    def test_desinstalador_de_uma_copia_nao_mexe_na_registrada(self):
+        desinstalar = self.secao("Uninstall")
+        self.assertLess(desinstalar.index("Call un.OutraInstalacao"), desinstalar.index("Call un.FecharHelestron"))
+        conectores = desinstalar.index("claude.remover_mcp()")
+        self.assertRegex(desinstalar[:conectores], r'\$\{If\} \$Registrada != ""\n.*\n\s+\$\{ElseIf\} '
+                                                   r'\$\{FileExists\} "\$INSTDIR\\python\.exe"\n')
+        registrada = desinstalar.index('${If} $Registrada == ""')
+        for trecho in ('Delete "$SMPROGRAMS\\Helestron.lnk"', 'Delete "$DESKTOP\\Helestron.lnk"',
+                       'DeleteRegKey HKCU "${CHAVE_DESINSTALAR}"', "MessageBox MB_YESNO",
+                       'RMDir /r "$LOCALAPPDATA\\Helestron"\n'):
+            self.assertGreater(desinstalar.index(trecho), registrada, trecho)
+        # o programa da cópia sai de qualquer jeito, pela lista dela
+        self.assertLess(desinstalar.index("Call un.RemoverPrograma"), registrada)
 
     def test_desinstalador_pergunta_e_preserva_documentos(self):
         desinstalar = self.script[self.script.index('Section "Uninstall"'):]
@@ -1087,6 +1433,7 @@ class TestInstaladorNoWine(unittest.TestCase):
         (arvore / "Lib" / "site-packages" / "helestron" / "__pycache__" / "__init__.cpython-312.pyc").write_bytes(b"pyc")
         (arvore / "modelos" / "faster-whisper-small").mkdir(parents=True)
         (arvore / "modelos" / "faster-whisper-small" / "model.bin").write_bytes(b"\0" * 32)
+        construcao.gravar_comando(arvore)                  # o helestron.cmd de verdade
         construcao.gerar_manifesto(arvore, "1.0.0")
         cls.setup = cls._compilar(arvore, "1.0.0")
         # a versão seguinte: sem o Lib\velho.py, com o Lib\novo.py
@@ -1148,13 +1495,37 @@ class TestInstaladorNoWine(unittest.TestCase):
             time.sleep(0.2)
         time.sleep(1)
 
-    def local_instalado(self) -> str:
-        saida = subprocess.run([WINE64, "reg", "query",
-                                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Helestron",
-                                "/v", "InstallLocation"], env=self.env, capture_output=True,
-                               text=True, timeout=60).stdout
-        achado = re.search(r"InstallLocation\s+REG_SZ\s+(.+?)\s*$", saida, re.M)
+    def valor_do_registro(self, chave: str, valor: str) -> str:
+        saida = subprocess.run([WINE64, "reg", "query", chave, "/v", valor], env=self.env,
+                               capture_output=True, text=True, timeout=60).stdout
+        achado = re.search(rf"{valor}\s+REG_SZ\s+(.+?)\s*$", saida, re.M)
         return achado.group(1) if achado else ""
+
+    def local_instalado(self) -> str:
+        return self.valor_do_registro(
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Helestron", "InstallLocation")
+
+    def programa(self) -> dict[str, str]:
+        """HKCU\\Software\\Helestron: o que a skill do Claude lê."""
+        return {v: self.valor_do_registro(r"HKCU\Software\Helestron", v)
+                for v in ("Python", "Versao", "InstallLocation")}
+
+    def dados_locais(self) -> Path:
+        """%LOCALAPPDATA%\\Helestron do usuário do Wine."""
+        local = [p for p in self.c.glob("users/*/AppData/Local") if p.parent.parent.name != "Public"]
+        self.assertEqual(len(local), 1, local)
+        return local[0] / "Helestron"
+
+    def atalhos_do_helestron(self) -> list[Path]:
+        return sorted(self.c.glob("users/*/Desktop/Helestron.lnk")) + sorted(
+            self.c.glob("users/*/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Helestron.lnk"))
+
+    def rodar_cmd(self, pasta_win: str, *args: str) -> int:
+        """helestron.cmd pelo cmd do Wine, como o PowerShell o chama."""
+        linha = 'cmd /c ""' + pasta_win + '\\helestron.cmd" ' + " ".join(args) + '"'
+        return subprocess.run([WINE64, str(self.rodar)], env=dict(self.env, RODAR_LINHA=linha),
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=120).returncode
 
     @staticmethod
     def conteudo(pasta: Path) -> dict[str, bytes]:
@@ -1283,6 +1654,30 @@ class TestInstaladorNoWine(unittest.TestCase):
         self.assertEqual({rel: d for rel, d in self.conteudo(pasta).items() if not rel.startswith("Helestron/")},
                          do_usuario)
 
+    def test_atualizacao_pela_pasta_mae_remove_a_versao_anterior(self):
+        """A TI repete 'Setup /S /D=C:\\Pasta' na versão seguinte (o que o
+        manual ensina): a pasta tem outras coisas e o Helestron já está na
+        subpasta. Isso era 'ajustada', não atualização, e a versão anterior
+        não saía: o Lib\\velho.py ficava, fora da lista nova (o desinstalador
+        nunca o apagaria)."""
+        pasta = self.c / "Pasta da TI"
+        shutil.rmtree(pasta, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, pasta, True)
+        pasta.mkdir()
+        (pasta / "leia-me.txt").write_bytes(b"leia")
+        subpasta = pasta / "Helestron"
+        self.assertEqual(self.instalar(r"C:\Pasta da TI"), 0)
+        self.assertTrue((subpasta / "Lib" / "velho.py").is_file())
+        self.assertEqual(self.instalar(r"C:\Pasta da TI", setup=self.setup2), 0)
+        self.assertTrue((subpasta / "Lib" / "novo.py").is_file())
+        self.assertFalse((subpasta / "Lib" / "velho.py").exists(), "a versão anterior sai")
+        self.assertTrue(self.registro(subpasta)[0].startswith("Helestron 1.0.1 - "))
+        self.assertEqual(self.local_instalado(), r"C:\Pasta da TI\Helestron")
+        self.assertEqual(self.conteudo(pasta)["leia-me.txt"], b"leia")
+        self.desinstalar(subpasta)
+        restos = {rel for rel in self.conteudo(pasta) if rel.startswith("Helestron/")}
+        self.assertLessEqual(restos, {"Helestron/chamadas.txt"})          # o registro do programa falso
+
     def test_pasta_e_subpasta_com_outras_coisas_recusa_sem_copiar(self):
         pasta = self.c / "Pasta Cheia"
         shutil.rmtree(pasta, ignore_errors=True)
@@ -1339,11 +1734,125 @@ class TestInstaladorNoWine(unittest.TestCase):
         (self.alvo / "verificar-codigo.txt").write_text("1")
         self.assertEqual(self.instalar(), 2)
 
+    def test_chave_do_programa_e_helestron_cmd(self):
+        """A skill do Claude acha o Python em HKCU\\Software\\Helestron, ou usa
+        o helestron.cmd da pasta: os argumentos e o código de saída chegam
+        inteiros. A desinstalação tira os dois."""
+        self.assertEqual(self.programa(), {"Python": self.ALVO_WIN + r"\python.exe", "Versao": "1.0.0",
+                                           "InstallLocation": self.ALVO_WIN})
+        self.assertEqual((self.alvo / "helestron.cmd").read_bytes(), construcao.CONTEUDO_COMANDO.encode())
+        self.assertIn("A helestron.cmd", self.registro(self.alvo))
+        (self.alvo / "chamadas.txt").unlink(missing_ok=True)
+        (self.alvo / "encerrar-codigo.txt").write_text("10")
+        self.addCleanup((self.alvo / "encerrar-codigo.txt").unlink, missing_ok=True)
+        self.assertEqual(self.rodar_cmd(self.ALVO_WIN, "--encerrar"), 10)
+        chamadas = (self.alvo / "chamadas.txt").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("python.exe -I -m helestron --encerrar", chamadas)
+        (self.alvo / "encerrar-codigo.txt").unlink()
+        self.desinstalar(self.alvo)
+        self.assertFalse((self.alvo / "helestron.cmd").exists())
+        self.assertEqual(self.programa(), {"Python": "", "Versao": "", "InstallLocation": ""})
+        r = subprocess.run([WINE64, "reg", "query", r"HKCU\Software\Helestron"], env=self.env,
+                           capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(r.returncode, 0, r.stdout)        # a chave vazia saiu
+
+    def test_desinstalacao_apaga_sempre_os_perfis_do_navegador(self):
+        local = self.dados_locais()
+        sessao = local / "perfis" / "esaj-TJAL" / "sessao.json"
+        sessao.parent.mkdir(parents=True, exist_ok=True)
+        sessao.write_text("{}", encoding="utf-8")
+        (local / "perfis" / "esaj-TJAL-certificado" / "Default").mkdir(parents=True, exist_ok=True)
+        (local / "config.ini").write_text("[geral]\n", encoding="utf-8")
+        self.addCleanup(shutil.rmtree, local, True)
+        self.desinstalar(self.alvo)                    # /S: a pergunta dos dados responde Não
+        self.assertFalse((local / "perfis").exists())
+        self.assertTrue((local / "config.ini").is_file())
+
+    def test_instalar_em_outra_pasta_tira_a_registrada(self):
+        """Antes, a instalação com /D= noutra pasta deixava a registrada
+        aberta (a instância é por usuário) e órfã, com uns 850 MB."""
+        nova_win = r"C:\Outra Pasta\Helestron"
+        nova = self.c / "Outra Pasta" / "Helestron"
+        shutil.rmtree(nova.parent, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, nova.parent, True)
+        (self.alvo / "Lib" / "minhas-notas.txt").write_bytes(b"notas")
+        (self.alvo / "chamadas.txt").unlink(missing_ok=True)
+        self.assertEqual(self.instalar(nova_win), 0)
+        # a registrada foi fechada (pelo --encerrar dela) e o programa saiu de lá
+        chamadas = (self.alvo / "chamadas.txt").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("Helestron.exe --encerrar", chamadas)
+        for rel in ("Helestron.exe", "python.exe", "python312.dll", "Lib/os.py", "manifesto.json",
+                    "arquivos-instalados.txt", "Desinstalar.exe", "helestron.cmd", "modelos"):
+            self.assertFalse((self.alvo / rel).exists(), rel)
+        self.assertEqual((self.alvo / "Lib" / "minhas-notas.txt").read_bytes(), b"notas")
+        # a nova é a registrada, com os atalhos
+        self.assertTrue((nova / "python312.dll").is_file())
+        self.assertEqual(self.local_instalado(), nova_win)
+        self.assertEqual(self.programa()["Python"], nova_win + r"\python.exe")
+        self.assertEqual(len(self.atalhos_do_helestron()), 2)
+        # o helestron.cmd numa pasta com espaço, com argumento com espaço
+        (nova / "chamadas.txt").unlink(missing_ok=True)
+        self.assertEqual(self.rodar_cmd(nova_win, "baixar", "--lista", r'"C:\Minhas Listas\lote 1.xlsx"'), 0)
+        self.assertIn(r"python.exe -I -m helestron baixar --lista C:\Minhas Listas\lote 1.xlsx",
+                      (nova / "chamadas.txt").read_text(encoding="utf-8", errors="replace"))
+        # de volta para a pasta de antes (vazia: com as notas do usuário, o
+        # Helestron iria para uma subpasta), com uma audiência na registrada:
+        # nada muda
+        shutil.rmtree(self.alvo)
+        (nova / "encerrar-codigo.txt").write_text("10")
+        self.assertEqual(self.instalar(), 7)
+        self.assertTrue((nova / "python312.dll").is_file())
+        self.assertFalse((self.alvo / "python312.dll").exists())
+        self.assertEqual(self.local_instalado(), nova_win)
+        (nova / "encerrar-codigo.txt").unlink()
+        self.assertEqual(self.instalar(), 0)
+        self.assertFalse((nova / "python312.dll").exists())
+        self.assertTrue((self.alvo / "python312.dll").is_file())
+        self.assertEqual(self.local_instalado(), self.ALVO_WIN)
+
+    def test_desinstalador_de_uma_copia_nao_mexe_na_registrada(self):
+        """Uma cópia do programa noutra pasta (de antes da mudança, ou feita à
+        mão): o desinstalador dela apagava a chave, os atalhos e os conectores
+        da instalação registrada."""
+        copia = self.c / "Copia" / "Helestron"
+        shutil.rmtree(copia.parent, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, copia.parent, True)
+        shutil.copytree(self.alvo, copia)
+        (copia / "chamadas.txt").unlink(missing_ok=True)
+        antes = self.programa()
+        self.desinstalar(copia)
+        self.assertFalse((copia / "python312.dll").exists())        # o programa da cópia saiu
+        self.assertEqual(self.local_instalado(), self.ALVO_WIN)
+        self.assertEqual(self.programa(), antes)
+        self.assertEqual(len(self.atalhos_do_helestron()), 2)
+        chamadas = (copia / "chamadas.txt").read_text(encoding="utf-8", errors="replace") \
+            if (copia / "chamadas.txt").exists() else ""
+        self.assertNotIn("remover_mcp", chamadas)
+        self.assertTrue((self.alvo / "python312.dll").is_file())
+        # a registrada continua desinstalando tudo
+        self.desinstalar(self.alvo)
+        self.assertEqual(self.local_instalado(), "")
+        self.assertEqual(self.atalhos_do_helestron(), [])
+        self.assertIn("claude.remover_mcp()", (self.alvo / "chamadas.txt").read_text(
+            encoding="utf-8", errors="replace"))
+
 
 # =================================================================== lançador
 class TestLancador(unittest.TestCase):
     def setUp(self):
         self.fonte = (CONSTRUIR / "lancador" / "helestron.c").read_text(encoding="utf-8")
+
+    def test_arquivo_solto_no_icone_abre_o_programa(self):
+        """A fonte: só caminhos completos de arquivos que existem viram
+        "abrir o programa" (um comando nunca é caminho completo)."""
+        funcao = self.fonte[self.fonte.index("static int so_arquivos_soltos"):]
+        funcao = funcao[:funcao.index("\n}\n")]
+        self.assertIn("caminho_completo(argv[i])", funcao)
+        self.assertIn("GetFileAttributesW(argv[i]) == INVALID_FILE_ATTRIBUTES", funcao)
+        principal = self.fonte[self.fonte.index("int WINAPI wWinMain"):]
+        self.assertLess(principal.index("so_arquivos_soltos(argc, argv)"),
+                        principal.index("chamada_do_instalador(argc, argv)"))
+        self.assertIn("argc = 1;", principal)
 
     def test_fonte_chama_o_python_isolado(self):
         self.assertRegex(self.fonte, r'L"-I";\s*\n\s*novo\[n\+\+\] = L"-m";\s*\n\s*novo\[n\+\+\] = L"helestron";')
@@ -1597,6 +2106,33 @@ class TestLancadorNoWine(unittest.TestCase):
         self.assertEqual(self.abrir("--encerrar", modo="1")[:2], (1, None))
         self.assertEqual(self.abrir("--verificar-instalacao", modo="2")[:2], (2, None))
 
+    def test_arquivo_solto_no_icone_abre_o_programa(self):
+        """Arrastar a relação para o ícone (ou o "Abrir com") passava o caminho
+        como comando: "comando desconhecido", código 2, num stderr que sem
+        console não vai a lugar nenhum - nem janela nem mensagem."""
+        relacao = self.pasta.parent / "Relação de processos.xlsx"
+        relacao.write_bytes(b"xlsx")
+        self.addCleanup(relacao.unlink, missing_ok=True)
+        relacao_win = "C:\\Relação de processos.xlsx"
+        codigo, caixa, chamado = self.abrir(relacao_win)
+        self.assertEqual((codigo, caixa), (0, None))
+        self.assertEqual(chamado.split(), ["-I", "-m", "helestron"])      # como pelo atalho
+        # vários arquivos (e pastas) soltos de uma vez também
+        codigo, caixa, chamado = self.abrir(relacao_win, "C:\\")
+        self.assertEqual(chamado.split(), ["-I", "-m", "helestron"])
+        # ... e com a mesma vigia do atalho: fechou logo, sem janela, aponta o registro
+        codigo, caixa, chamado = self.abrir(relacao_win, modo="1")
+        self.assertIsNotNone(caixa)
+        self.assertIn("sem abrir a janela (código 1)", caixa)
+        # o que não é arquivo que existe, com o caminho completo, segue para a
+        # linha de comando como sempre (comando, opção, caminho relativo)
+        for args in (("C:\\nao-existe.xlsx",), ("baixar", relacao_win), ("--autoteste", "C:\\"),
+                     ("relacao.xlsx",)):
+            with self.subTest(args=args):
+                codigo, caixa, chamado = self.abrir(*args, modo="2")
+                self.assertEqual((codigo, caixa), (2, None))
+                self.assertGreater(len(chamado.split()), 3, chamado)
+
 
 # =================================================================== marca
 def _entradas_ico(dados: bytes) -> list[dict]:
@@ -1745,14 +2281,17 @@ class TestWorkflow(unittest.TestCase):
         self.assertIn("--require-hashes -r construir/requisitos-teste.txt", scripts("testes"))
         construir = scripts("construir")
         self.assertIn("nsis mingw-w64", construir)
-        self.assertIn("huggingface_hub", construir)
+        self.assertIn("construir/construir.py --versao", construir)
         self.assertIn("construir/construir.py --modelo", construir)
+        # sem --sem-falantes: a falha dos modelos de voz reprova a construção
+        self.assertNotIn("--sem-falantes", construir)
+        self.assertNotIn("--sem-modelo", construir)
         windows = scripts("windows")
         for trecho in ("'/S /D=' + $env:PASTA", "--verificar-instalacao", "--autoteste",
                        "System.Speech", "-I -m helestron transcrever --ao-vivo", "notifications/initialized",
                        "pauta exportar", "pauta importar", "CofreSenhas", "Desinstalar.exe",
                        "GetFolderPath('Desktop')", "CurrentVersion\\Uninstall\\Helestron",
-                       "$p.ExitCode -ne 0"):
+                       "$p.ExitCode -ne 0", "HKCU:\\Software\\Helestron", "'helestron.cmd'"):
             self.assertIn(trecho, windows)
         self.assertIn("gh release create", scripts("publicar"))
         nomes_artefatos = [p["with"]["name"] for p in jobs["construir"]["steps"]
@@ -1867,6 +2406,167 @@ if (-not $mcp.WaitForExit(30000)) {{ $mcp.Kill(); throw 'o MCP nao saiu' }}
         self.assertIn("PASTA: 'C:\\Teste Área\\Helestron'", self.texto)
         self.assertIn("audiência de instrução e julgamento", self.texto)
 
+    def passo(self, job: str, comeco: str) -> str:
+        dados = yaml.safe_load(self.texto)
+        return next(p["run"] for p in dados["jobs"][job]["steps"] if p.get("name", "").startswith(comeco))
+
+    @staticmethod
+    def bash(script: str, pasta: Path, **env) -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", "-e", "-c", script], cwd=str(pasta), capture_output=True, text=True,
+                              timeout=120, env={**os.environ, **env})
+
+    @unittest.skipUnless(yaml and shutil.which("bash"), "PyYAML ou o bash ausente")
+    def test_construcao_confere_a_tag_antes_de_construir(self):
+        script = self.passo("construir", "Versao do programa")
+        versao = construcao.versao_do_pacote()
+        casos = ({"GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": f"v{versao}"}, 0,
+                 {"GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v9.9.9"}, 1,
+                 {"GITHUB_REF_TYPE": "branch", "GITHUB_REF_NAME": "main"}, 0)
+        for env, esperado in zip(casos[::2], casos[1::2]):
+            with self.subTest(**env):
+                # o "python" do passo é o Python do CI; aqui, o dos testes
+                r = self.bash(script.replace("python construir", f'"{sys.executable}" construir'),
+                              REPOSITORIO, **env)
+                self.assertEqual(r.returncode, esperado, r.stdout + r.stderr)
+                self.assertIn(f"Versao do programa: {versao}", r.stdout)
+        construir = yaml.safe_load(self.texto)["jobs"]["construir"]["steps"]
+        nomes = [p.get("name", "") for p in construir]
+        # antes do trabalho pesado
+        self.assertLess(nomes.index("Versao do programa (e a tag da publicacao)"),
+                        next(i for i, n in enumerate(nomes) if n.startswith("Modelo de transc")))
+
+    # Um gh falso: registra a chamada e, no "gh api", responde pelo arquivo
+    # de GH_RESPOSTAS com o caminho pedido ("/" vira "_"), aplicando o --jq
+    # com o jq; sem o arquivo, "Not Found (HTTP 404)", como o gh de verdade.
+    GH_FALSO = """#!/usr/bin/env bash
+echo "gh $*" >> "$GH_LOG"
+if [ "$1" = "api" ]; then
+  resposta="$GH_RESPOSTAS/$(printf '%s' "$2" | tr '/' '_')"
+  if [ -f "$resposta.erro" ]; then cat "$resposta.erro" >&2; exit 1; fi
+  if [ ! -f "$resposta" ]; then
+    echo '{"message":"Not Found","status":"404"}'
+    echo "gh: Not Found (HTTP 404)" >&2
+    exit 1
+  fi
+  if [ "$3" = "--jq" ]; then jq -r "$4" "$resposta"; else cat "$resposta"; fi
+fi
+"""
+
+    def preparar_publicacao(self):
+        """O passo de publicar, numa pasta com o dist/ do instalador 1.0.1 e
+        o gh falso. Devolve (a pasta, a das respostas da API, publicar(**env))."""
+        script = self.passo("publicar", "Criar a vers")
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        binarios = tmp / "bin"
+        binarios.mkdir()
+        (binarios / "gh").write_text(self.GH_FALSO, encoding="utf-8")
+        (binarios / "gh").chmod(0o755)
+        respostas = tmp / "api"
+        respostas.mkdir()
+        dist = tmp / "dist"
+        dist.mkdir()
+        (dist / "Helestron-Setup-1.0.1.exe").write_bytes(b"MZ")
+        (dist / "Helestron-Setup-1.0.1.exe.sha256").write_text("x  Helestron-Setup-1.0.1.exe\n")
+        base = {"PATH": f"{binarios}{os.pathsep}{os.environ['PATH']}", "GH_LOG": str(tmp / "gh.log"),
+                "GH_RESPOSTAS": str(respostas), "GITHUB_SHA": "abc",
+                "GITHUB_REPOSITORY": "Helestron/x", "NOTAS": "notas"}
+
+        def publicar(**env) -> tuple[int, str]:
+            (tmp / "gh.log").unlink(missing_ok=True)
+            r = self.bash(script, tmp, **base, **env)
+            log = (tmp / "gh.log").read_text() if (tmp / "gh.log").exists() else ""
+            return r.returncode, log + r.stdout
+
+        return tmp, respostas, publicar
+
+    @unittest.skipUnless(yaml and shutil.which("bash"), "PyYAML ou o bash ausente")
+    def test_publicacao_confere_a_tag_com_o_instalador(self):
+        """A tag v1.0.2 com o Helestron-Setup-1.0.1.exe criava a versão
+        "Helestron v1.0.2" com o instalador da 1.0.1 (e ocupava a tag)."""
+        tmp, _respostas, publicar = self.preparar_publicacao()
+        dist = tmp / "dist"
+        codigo, saida = publicar(GITHUB_REF_TYPE="tag", GITHUB_REF_NAME="v1.0.2")
+        self.assertEqual(codigo, 1)
+        self.assertNotIn("gh release", saida)
+        self.assertIn("nao e a versao do instalador (v1.0.1)", saida)
+        codigo, saida = publicar(GITHUB_REF_TYPE="tag", GITHUB_REF_NAME="v1.0.1")
+        self.assertEqual(codigo, 0, saida)
+        self.assertIn("gh release create v1.0.1 dist/Helestron-Setup-1.0.1.exe", saida)
+        self.assertIn("--title Helestron v1.0.1", saida)
+        # o disparo manual (sem tag): a versão do nome do instalador
+        codigo, saida = publicar(GITHUB_REF_TYPE="branch", GITHUB_REF_NAME="main")
+        self.assertEqual(codigo, 0, saida)
+        self.assertIn("gh release create v1.0.1 ", saida)
+        # dois instaladores: qual publicar? nenhum
+        (dist / "Helestron-Setup-1.0.0.exe").write_bytes(b"MZ")
+        codigo, saida = publicar(GITHUB_REF_TYPE="tag", GITHUB_REF_NAME="v1.0.1")
+        self.assertEqual(codigo, 1)
+        self.assertNotIn("gh release", saida)
+
+    @unittest.skipUnless(yaml and shutil.which("bash") and shutil.which("jq"),
+                         "PyYAML, o bash ou o jq ausente")
+    def test_disparo_manual_nao_publica_em_tag_de_outro_commit(self):
+        """A tag v1.0.1 empurrada antes (o run dela reprovou, sem versão) e o
+        disparo manual depois, de outro commit: o gh ignora o --target quando
+        a tag já existe, e o instalador deste commit ia para a tag do outro."""
+        _tmp, respostas, publicar = self.preparar_publicacao()
+        ref = respostas / "repos_Helestron_x_git_ref_tags_v1.0.1"
+        manual = {"GITHUB_REF_TYPE": "branch", "GITHUB_REF_NAME": "main"}
+        # tag leve em outro commit
+        ref.write_text(json.dumps({"ref": "refs/tags/v1.0.1",
+                                   "object": {"type": "commit", "sha": "outro"}}))
+        codigo, saida = publicar(**manual)
+        self.assertEqual(codigo, 1, saida)
+        self.assertNotIn("gh release", saida)
+        self.assertIn("A tag v1.0.1 ja existe em outro commit (outro)", saida)
+        # tag anotada: vale o commit para onde ela aponta
+        ref.write_text(json.dumps({"ref": "refs/tags/v1.0.1",
+                                   "object": {"type": "tag", "sha": "objeto-da-tag"}}))
+        anotada = respostas / "repos_Helestron_x_git_tags_objeto-da-tag"
+        anotada.write_text(json.dumps({"object": {"type": "commit", "sha": "outro"}}))
+        codigo, saida = publicar(**manual)
+        self.assertEqual(codigo, 1, saida)
+        self.assertNotIn("gh release", saida)
+        # a tag já está neste mesmo commit: publica nela
+        anotada.write_text(json.dumps({"object": {"type": "commit", "sha": "abc"}}))
+        codigo, saida = publicar(**manual)
+        self.assertEqual(codigo, 0, saida)
+        self.assertIn("gh release create v1.0.1 ", saida)
+        # sem conseguir perguntar (a API fora do ar), não publica às cegas
+        ref.unlink()
+        ref.with_name(ref.name + ".erro").write_text("gh: Server Error (HTTP 502)\n")
+        codigo, saida = publicar(**manual)
+        self.assertEqual(codigo, 1, saida)
+        self.assertNotIn("gh release", saida)
+        self.assertIn("Nao consegui conferir se a tag v1.0.1 ja existe", saida)
+        # pela própria tag (o push dela), a API nem é consultada
+        codigo, saida = publicar(GITHUB_REF_TYPE="tag", GITHUB_REF_NAME="v1.0.1")
+        self.assertEqual(codigo, 0, saida)
+        self.assertNotIn("gh api", saida)
+        self.assertIn("gh release create v1.0.1 ", saida)
+
+    @unittest.skipUnless(yaml, "PyYAML ausente")
+    def test_windows_confere_modelos_de_voz_linha_de_comando_e_perfis(self):
+        conferir = self.passo("windows", "Conferir arquivos, atalhos e registro")
+        c = construcao.constantes_falantes()
+        segmentacao = f"modelos\\falantes\\{c['SUBPASTA_SEGMENTACAO']}\\{c['ARQUIVO_SEGMENTACAO']}"
+        for item in (segmentacao, f"modelos\\falantes\\{c['ARQUIVO_EMBEDDING']}", "helestron.cmd",
+                     "Lib\\site-packages\\helestron\\nucleo\\paginacao.py",
+                     "Lib\\site-packages\\helestron\\download\\acompanhamento.py"):
+            self.assertIn(f"'{item}'", conferir)
+        self.assertIn("$manifesto.componentes.falantes", conferir)
+        self.assertIn("HKCU:\\Software\\Helestron", conferir)
+        linha = self.passo("windows", "Linha de comando")
+        for trecho in ("'helestron.cmd'", "--version", "caminhos --json", "$LASTEXITCODE -ne 2",
+                       "& $programa.Python -I -m helestron", "[Console]::OutputEncoding"):
+            self.assertIn(trecho, linha)
+        desinstalar = self.passo("windows", "Desinstalar em silencio")
+        self.assertIn("'Helestron\\perfis'", desinstalar)
+        self.assertIn("Test-Path -LiteralPath $perfis", desinstalar)
+        self.assertIn("'HKCU:\\Software\\Helestron'", desinstalar)
+        self.assertIn("'helestron.cmd'", desinstalar)
+
 
 # =================================================================== repositório
 class TestRepositorio(unittest.TestCase):
@@ -1884,7 +2584,8 @@ class TestRepositorio(unittest.TestCase):
         r = subprocess.run([sys.executable, str(CONSTRUIR / "construir.py"), "--help"],
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
-        for opcao in ("--sem-modelo", "--modelo", "--cache", "--python-tar", "--saida", "--sem-falantes"):
+        for opcao in ("--sem-modelo", "--modelo", "--cache", "--python-tar", "--saida", "--sem-falantes",
+                      "--versao"):
             self.assertIn(opcao, r.stdout)
         # em português, como as outras linhas de comando do programa
         self.assertIn("uso: python construir/construir.py", r.stdout)

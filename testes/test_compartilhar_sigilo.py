@@ -157,6 +157,9 @@ class TestBloqueioSoDosAutos(BaseSigilo):
         with mock.patch.object(motor, "_mover", preso), self.assertLogs("compartilhar", "ERROR"):
             rel = self.preparar()
             self.assertEqual(sorted(rel.sigilosos_no_acervo), sorted([autos, self.concluido]))
+            # o resumo (o que a linha de comando imprime) diz a trava à parte
+            self.assertTrue(rel.resumo.endswith(
+                "2 autos de processo sigiloso presos no acervo; não compartilhe"), rel.resumo)
             app = mock.Mock(cfg=self.cfg, sigilosos_presos=[], sigilosos_avisos=[],
                             sigilosos_motivos={})
             api.registrar_presos(app, rel.sigilosos_no_acervo, rel.motivos)
@@ -213,9 +216,29 @@ class TestBloqueioSoDosAutos(BaseSigilo):
         with mock.patch.object(motor, "_mover", sem_pasta), self.assertLogs("compartilhar"):
             rel = self.preparar()
         self.assertIn(autos, rel.sigilosos_no_acervo)
+        self.assertIn("presos no acervo; não compartilhe", rel.resumo)
         frase = preparo.frase_sigilosos_no_acervo([autos], self.cfg, rel.motivos)
         self.assertIn("a pasta dos sigilosos não está acessível", frase)
         self.assertNotIn("aberto em outro programa", frase)
+
+
+class TestResumoDoPreparo(unittest.TestCase):
+    def test_autos_presos_tem_parte_propria_no_resumo(self):
+        rel = preparo.RelatorioPreparo(processos=3, transcricoes=1)
+        self.assertEqual(rel.resumo, "3 processos, 1 transcrição")
+        self.assertNotIn("não compartilhe", rel.resumo)
+        rel.sigilosos_no_acervo = [Path("Processos", "Lote 1", f"{X}.pdf")]
+        rel.erros = ["frase dos autos presos"]
+        self.assertEqual(rel.resumo, "3 processos, 1 transcrição, 1 arquivo com problema, "
+                                     "autos de 1 processo sigiloso presos no acervo; não "
+                                     "compartilhe")
+        rel.sigilosos_no_acervo.append(Path("Processos", "Lote 2", f"{X}.pdf"))
+        self.assertTrue(rel.resumo.endswith(
+            ", 2 autos de processo sigiloso presos no acervo; não compartilhe"), rel.resumo)
+        # o resto que ficou (a minuta aberta) continua só avisado, sem a trava
+        so_aviso = preparo.RelatorioPreparo(sigilosos_avisos=[Path("Minutas", "x.docx")])
+        self.assertIn("1 arquivo de processo sigiloso ficou no acervo", so_aviso.resumo)
+        self.assertNotIn("não compartilhe", so_aviso.resumo)
 
 
 class TestIncidenteDoSigiloso(BaseSigilo):
@@ -364,6 +387,104 @@ class TestRestosDoSigiloso(BaseSigilo):
         self.assertIn("que ainda traz o número dele (está aberto no Excel?)", frase)
 
 
+class TestSeparacaoDesligada(BaseSigilo):
+    """Achado R19: com a separação dos sigilosos desligada, o processo que o
+    portal mostrou em segredo de justiça fica no acervo - e ia para o índice,
+    o _ia/texto, o conector e a nuvem, porque a regra única não sabia dele."""
+
+    def test_sigiloso_do_portal_fica_fora_do_indice_do_texto_do_conector_e_da_nuvem(self):
+        from helestron.download import motor
+        from testes import apoio_download as apoio
+
+        x, y = cnj.ler(X), cnj.ler(Y)
+        (self.lote / f"{Y}.pdf").unlink()
+        self.cfg.definir("download", "separar_sigilosos", False)
+        fp, fn = apoio.fabricas({X: ["ok_sigiloso"]})
+        opcoes = apoio.opcoes_de_teste(self.base, pasta_sigilosos=self.sig,
+                                       separar_sigilosos=False)
+        resumo = motor.executar([x, y], self.lote, opcoes, apoio.ContextoGravador(),
+                                fabrica_portal=fp, fabrica_navegador=fn, cfg=self.cfg)
+        self.assertEqual([(r.situacao, r.sigiloso) for r in resumo.itens],
+                         [("OK", True), ("OK", False)])
+        self.assertTrue((self.lote / f"{X}.pdf").exists(), "desligada, a separação não move")
+        # a regra única sabe, e diz por quê
+        self.assertTrue(sigilo.processo_sigiloso(self.cfg, x))
+        self.assertEqual(sigilo.motivo(self.cfg, x), sigilo.MOTIVO_DOWNLOAD)
+        self.assertEqual(sigilo.motivo(self.cfg, f"{X}-01"), sigilo.MOTIVO_DOWNLOAD_PRINCIPAL)
+        self.assertFalse(sigilo.processo_sigiloso(self.cfg, y))
+        # a audiência dele é sigilosa, e a tela diz por quê
+        from helestron.servidor import audiencia
+        from helestron.transcricao import documento
+
+        app = mock.Mock(cfg=self.cfg)
+        app.pauta_ou_none.return_value = None
+        self.assertEqual(audiencia.sigilo_conhecido(app, x), audiencia.MOTIVO_DOWNLOAD)
+        self.assertEqual(audiencia.sigilo_conhecido(app, cnj.ler(f"{X}/01")),
+                         audiencia.MOTIVO_DOWNLOAD_PRINCIPAL)
+        self.assertEqual(audiencia.sigilo_conhecido(app, y), "")
+        self.assertEqual(documento.pasta_das_transcricoes(self.cfg, x), self.sig / "Transcricoes")
+        # o preparo, o conector e a nuvem o deixam de fora
+        rel = preparo.atualizar_contexto(self.cfg, extrair_texto=True)
+        self.assertEqual(rel.processos, 1)
+        self.assertFalse((self.acervo / "_ia" / "texto" / f"{X}.txt").exists())
+        self.assertTrue((self.acervo / "_ia" / "texto" / f"{Y}.txt").exists())
+        self.assertNotIn(X, (self.acervo / "INDICE.md").read_text(encoding="utf-8"))
+        ac = mcp_servidor.Acervo(self.acervo, sigilosos=self.sig)
+        self.assertEqual(set(ac.pdfs()), {Y})
+        nuvem_dir = self.base / "Nuvem"
+        nuvem_dir.mkdir()
+        nuvem.espelhar(self.acervo, nuvem_dir, sigilosos=self.sig)
+        self.assertEqual(list(nuvem_dir.rglob(f"{X}*")), [])
+        self.assertTrue(list(nuvem_dir.rglob(f"{Y}.pdf")))
+
+    def test_lote_de_antes_do_registro_fica_fora_de_tudo(self):
+        """Achado V2: o lote baixado com a separação desligada ANTES do
+        registro do download (a versão anterior), ou com ele perdido (a pasta
+        LOCAL apagada pela desinstalação, o acervo levado para outro
+        computador): o relatório do lote diz sigiloso=sim, mas o índice, o
+        texto para a IA, o conector, o pacote e a nuvem o tratavam como
+        público."""
+        from helestron.download import motor
+        from testes import apoio_download as apoio
+
+        x, y = cnj.ler(X), cnj.ler(Y)
+        (self.lote / f"{Y}.pdf").unlink()
+        self.cfg.definir("download", "separar_sigilosos", False)
+        fp, fn = apoio.fabricas({X: ["ok_sigiloso"]})
+        opcoes = apoio.opcoes_de_teste(self.base, pasta_sigilosos=self.sig,
+                                       separar_sigilosos=False)
+        motor.executar([x, y], self.lote, opcoes, apoio.ContextoGravador(),
+                       fabrica_portal=fp, fabrica_navegador=fn, cfg=self.cfg)
+        self.assertTrue((self.lote / f"{X}.pdf").exists())
+        sigilo.arquivo_do_download().unlink()        # a versão anterior não o gravava
+        sigilo.esquecer_pauta()
+        self.assertFalse(sigilo.processo_sigiloso(self.cfg, x))
+        # o preparo, o índice, o conector, a nuvem e o pacote o deixam de fora
+        rel = preparo.atualizar_contexto(self.cfg, extrair_texto=True)
+        self.assertEqual(rel.processos, 1)
+        self.assertFalse((self.acervo / "_ia" / "texto" / f"{X}.txt").exists())
+        self.assertTrue((self.acervo / "_ia" / "texto" / f"{Y}.txt").exists())
+        self.assertNotIn(X, (self.acervo / "INDICE.md").read_text(encoding="utf-8"))
+        ac = mcp_servidor.Acervo(self.acervo, sigilosos=self.sig)
+        self.assertEqual(set(ac.pdfs()), {Y})
+        self.assertNotIn(X, ac.listar_acervo())
+        nuvem_dir = self.base / "Nuvem"
+        nuvem_dir.mkdir()
+        nuvem.espelhar(self.acervo, nuvem_dir, sigilosos=self.sig)
+        self.assertEqual(list(nuvem_dir.rglob(f"{X}*")), [])
+        self.assertTrue(list(nuvem_dir.rglob(f"{Y}.pdf")))
+        import zipfile
+        pacote = chatgpt.gerar_pacote(self.acervo, self.base / "Pacotes", cfg=self.cfg)
+        with zipfile.ZipFile(pacote.arquivo_zip) as z:
+            self.assertEqual([n for n in z.namelist() if X in n], [])
+            self.assertTrue([n for n in z.namelist() if Y in n])
+        # e o sigilo voltou ao registro do download, para o resto do programa
+        self.assertEqual(sigilo.apuradas_no_download(), {X})
+        self.assertEqual(sigilo.motivo(self.cfg, x), sigilo.MOTIVO_DOWNLOAD)
+        from helestron.transcricao import documento
+        self.assertEqual(documento.pasta_das_transcricoes(self.cfg, x), self.sig / "Transcricoes")
+
+
 class TestBuscarNumAcervoGrande(unittest.TestCase):
     """'buscar' sem número: a listagem do acervo e a regra do sigilo uma vez
     por pedido, e não uma vez por processo (O(N²))."""
@@ -457,6 +578,80 @@ class TestRestosDaVersaoAnterior(unittest.TestCase):
             with mock.patch("sys.stdout", saida):
                 self.assertEqual(migracao.main([]), 0)
             self.assertIn("Nada da versão anterior a limpar.", saida.getvalue())
+
+    def test_reapontar_conectores_da_instalacao_que_mudou_de_pasta(self):
+        from helestron.compartilhar import migracao
+
+        acervo = str(self.base / "Acervo")
+        antigo = {"command": "C:/Velha/Helestron/python.exe",
+                  "args": ["-I", "-m", "helestron", "mcp", "--pasta", acervo]}
+        self.json.write_text(json.dumps({"mcpServers": {"helestron": antigo, "outro": {"command": "x"}},
+                                         "preferencias": {"y": 2}}), encoding="utf-8")
+        self.toml.write_text('model = "x"\n\n[mcp_servers.helestron]\n'
+                             "command = 'C:/Velha/Helestron/python.exe'\n"
+                             f"args = ['-I', '-m', 'helestron', 'mcp', '--pasta', '{acervo}']\n\n"
+                             '[mcp_servers.outro]\ncommand = "y"\n', encoding="utf-8")
+        with mock.patch.object(claude, "arquivos_config_desktop", return_value=[self.json]), \
+                mock.patch.object(chatgpt, "arquivo_config_codex", return_value=self.toml):
+            # fora da instalação, nada muda
+            self.assertEqual(migracao.reapontar_conectores(), [])
+            feito = migracao.reapontar_conectores(forcar=True)
+            self.assertEqual(len(feito), 2, feito)
+            esperada = claude.entrada_mcp(Path(acervo))
+            dados = json.loads(self.json.read_text(encoding="utf-8"))
+            self.assertEqual(dados["mcpServers"]["helestron"], esperada)
+            self.assertEqual(dados["mcpServers"]["outro"], {"command": "x"})
+            self.assertEqual(dados["preferencias"], {"y": 2})
+            codex = tomllib.loads(self.toml.read_text(encoding="utf-8"))
+            self.assertEqual(codex["mcp_servers"]["helestron"]["command"], esperada["command"])
+            self.assertIn(str(Path(acervo).resolve()), codex["mcp_servers"]["helestron"]["args"])
+            self.assertEqual(codex["model"], "x")
+            self.assertIn("outro", codex["mcp_servers"])
+            # de novo: já aponta para esta instalação, nada a fazer
+            self.assertEqual(migracao.reapontar_conectores(forcar=True), [])
+
+    def test_reapontar_mantem_o_conector_desligado_e_as_outras_chaves(self):
+        """O bloco do Codex era reescrito inteiro, com 'enabled = true': o
+        conector que o usuário desligou (para o ChatGPT não ler o acervo)
+        voltava ligado depois da instalação, sem aviso."""
+        from helestron.compartilhar import migracao
+
+        acervo = str(self.base / "Acervo")
+        self.json.write_text("{}", encoding="utf-8")
+        self.toml.write_text('model = "x"\n\n[mcp_servers.helestron]\n'
+                             "command = 'C:/Velha/Helestron/python.exe'\n"
+                             f"args = ['-I', '-m', 'helestron', 'mcp', '--pasta', '{acervo}']\n"
+                             "enabled = false\n"
+                             "startup_timeout_sec = 30\n"
+                             "tool_timeout_sec = 120.5\n"
+                             "disabled_tools = ['buscar', \"ler 'pagina'\"]\n"
+                             '"chave com espaço" = 1\n\n'
+                             "[mcp_servers.helestron.env]\nHTTPS_PROXY = 'http://proxy:8080'\n\n"
+                             "[mcp_servers.helestron.tools.ler_pagina]\napproval = 'approve'\n\n"
+                             '[mcp_servers.outro]\ncommand = "y"\n', encoding="utf-8")
+        with mock.patch.object(claude, "arquivos_config_desktop", return_value=[self.json]), \
+                mock.patch.object(chatgpt, "arquivo_config_codex", return_value=self.toml), \
+                mock.patch.object(caminhos, "INSTALADO", True):
+            feito = migracao.reapontar_conectores()
+            self.assertEqual(len(feito), 1, feito)
+            esperada = claude.entrada_mcp(Path(acervo))
+            codex = tomllib.loads(self.toml.read_text(encoding="utf-8"))
+            bloco = codex["mcp_servers"]["helestron"]
+            self.assertEqual(bloco.pop("command"), esperada["command"])
+            self.assertEqual(bloco.pop("args"), esperada["args"])
+            self.assertEqual(bloco, {"enabled": False, "startup_timeout_sec": 30,
+                                     "tool_timeout_sec": 120.5,
+                                     "disabled_tools": ["buscar", "ler 'pagina'"],
+                                     "chave com espaço": 1,
+                                     "env": {"HTTPS_PROXY": "http://proxy:8080"},
+                                     "tools": {"ler_pagina": {"approval": "approve"}}})
+            self.assertEqual(codex["mcp_servers"]["outro"], {"command": "y"})
+            self.assertEqual(codex["model"], "x")
+            self.assertEqual(migracao.reapontar_conectores(), [])
+            # o "Conectar" da tela é o usuário pedindo: liga
+            chatgpt.registrar_mcp_codex(Path(acervo), self.toml)
+            codex = tomllib.loads(self.toml.read_text(encoding="utf-8"))
+            self.assertIs(codex["mcp_servers"]["helestron"]["enabled"], True)
 
     def test_arquivo_invalido_nao_e_tocado(self):
         self.json.write_text("{ isto não é json", encoding="utf-8")

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
+import os
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from helestron.nucleo import caminhos, cnj, sigilo
-from helestron.transcricao import cli, falantes, modelos
+from helestron.transcricao import cli, documento, falantes, modelos
 from testes.apoio_transcricao import (NUMERO, NUMERO_CI, ModeloDuble, PastaTemporaria, ficha,
                                      gravar_wav, ler_docx, roteiro_audiencia)
 
@@ -105,6 +108,93 @@ class TestCli(unittest.TestCase):
         self.assertEqual(codigo, 0, saida)
         self.assertIn(cli.MOTIVO_GRAVACAO, saida)
         self.assertTrue((self.cfg.pasta_sigilosos / "Transcricoes" / f"{NUMERO}.docx").exists())
+
+    def test_incidente_com_hifen_segue_o_sigilo_do_incidente(self):
+        """Achado 33: --processo "...0001-01" (o nome do DOCX do incidente)
+        virava o principal: a transcrição do incidente sigiloso ia para o
+        acervo, com o nome do principal."""
+        self.cfg.pasta_sigilosos.mkdir(parents=True)
+        (self.cfg.pasta_sigilosos / f"{NUMERO}-01.pdf").write_bytes(b"%PDF")
+        codigo, saida = rodar(["transcrever", str(self.wav), "--processo", f"{NUMERO}-01",
+                               "--config", str(self.tmp.ini), "--sem-falantes"])
+        self.assertEqual(codigo, 0, saida)
+        self.assertIn(f"Processo em segredo de justiça ({sigilo.MOTIVO_PASTA})", saida)
+        docx = self.cfg.pasta_sigilosos / "Transcricoes" / f"{NUMERO}-01.docx"
+        self.assertTrue(docx.exists())
+        self.assertIn(f"Transcrição gravada em: {docx}", saida)
+        self.assertEqual(ficha(ler_docx(docx)[1])["Processo nº"], f"{NUMERO}/01")
+        self.assertFalse(list(self.cfg.pasta_transcricoes.rglob("*.docx")))
+
+    def test_destino_que_e_pasta(self):
+        """Achado 36: uma pasta no --destino derrubava a CLI no fim, depois
+        de transcrever tudo (IsADirectoryError no Linux; no Windows, uma
+        "cópia" sem extensão ao lado da pasta)."""
+        pasta = self.tmp.raiz / "Saida"
+        pasta.mkdir()
+        codigo, saida = rodar(["transcrever", str(self.wav), "--processo", NUMERO,
+                               "--config", str(self.tmp.ini), "--sem-falantes",
+                               "--destino", str(pasta)])
+        self.assertEqual(codigo, 0, saida)
+        self.assertTrue((pasta / f"{NUMERO}.docx").exists())
+        # de novo: não sobrescreve a anterior
+        codigo, saida = rodar(["transcrever", str(self.wav), "--processo", NUMERO,
+                               "--config", str(self.tmp.ini), "--sem-falantes",
+                               "--destino", str(pasta) + os.sep])
+        self.assertEqual(codigo, 0, saida)
+        self.assertTrue((pasta / f"{NUMERO} (2).docx").exists())
+
+    def test_destino_sem_extensao_ganha_docx(self):
+        codigo, saida = rodar(["transcrever", str(self.wav), "--processo", NUMERO,
+                               "--config", str(self.tmp.ini), "--sem-falantes",
+                               "--destino", str(self.tmp.raiz / "Ata.2024")])
+        self.assertEqual(codigo, 0, saida)
+        self.assertTrue((self.tmp.raiz / "Ata.2024.docx").exists())
+        self.assertFalse((self.tmp.raiz / "Ata.2024").exists())
+
+    def test_destino_impossivel_recusado_antes_de_transcrever(self):
+        arquivo = self.tmp.raiz / "relatorio.txt"
+        arquivo.write_text("x", encoding="utf-8")
+        codigo, saida = rodar(["transcrever", str(self.wav), "--processo", NUMERO,
+                               "--config", str(self.tmp.ini), "--sem-falantes",
+                               "--destino", str(arquivo / "ata.docx")])
+        self.assertEqual(codigo, 2, saida)
+        self.assertIn("é um arquivo, não uma pasta", saida)
+        # pasta sem o número para dar nome ao documento
+        codigo, saida = rodar(["transcrever", str(self.wav), "--config", str(self.tmp.ini),
+                               "--sem-falantes", "--destino", str(self.tmp.raiz)])
+        self.assertEqual(codigo, 2, saida)
+        self.assertIn("--processo", saida)
+        self.assertEqual(self.modelo.chamadas, [])     # nada foi transcrito à toa
+
+    def test_falha_ao_gravar_no_destino_nao_perde_a_transcricao(self):
+        destino = self.tmp.raiz / "Externo" / "ata.docx"
+        original = documento.sistema.gravar_atomico
+
+        def disco(alvo, dados):
+            if Path(alvo) == destino:
+                raise OSError(errno.ENOSPC, "Não há espaço no disco", str(alvo))
+            return original(alvo, dados)
+
+        with mock.patch.object(documento.sistema, "gravar_atomico", side_effect=disco), \
+                self.assertLogs("transcricao.arquivo", "WARNING"):
+            codigo, saida = rodar(["transcrever", str(self.wav), "--processo", NUMERO,
+                                   "--config", str(self.tmp.ini), "--sem-falantes",
+                                   "--destino", str(destino)])
+        self.assertEqual(codigo, 0, saida)
+        salvo = self.cfg.pasta_transcricoes / f"{NUMERO}.docx"
+        self.assertTrue(salvo.exists())
+        self.assertIn(f"não consegui gravar em {destino}", saida)
+        self.assertIn(f"Transcrição gravada em: {salvo}", saida)
+
+    def test_erro_de_disco_vira_mensagem_e_codigo_1(self):
+        def disco(alvo, dados):
+            raise OSError(errno.ENOSPC, "Não há espaço no disco", str(alvo))
+
+        with mock.patch.object(documento.sistema, "gravar_atomico", side_effect=disco):
+            codigo, saida = rodar(["transcrever", str(self.wav), "--processo", NUMERO,
+                                   "--config", str(self.tmp.ini), "--sem-falantes"])
+        self.assertEqual(codigo, 1, saida)
+        self.assertIn("Não consegui concluir a transcrição: Não há espaço no disco", saida)
 
     def test_transcrever_arquivo_sem_numero(self):
         codigo, saida = rodar(["transcrever", str(self.wav), "--config", str(self.tmp.ini)])

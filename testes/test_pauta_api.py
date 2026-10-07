@@ -54,6 +54,23 @@ class TestExportarPelaApi(ServidorDeTeste):
         self.assertEqual(self.partes_na_planilha({"incluir_partes_sigilosos": "false"}),
                          modelos.MASCARA_SIGILO)
 
+    def test_erro_inesperado_sem_o_texto_da_celula(self):
+        """Achado 28: a falha interna da planilha volta com uma frase, sem o texto de
+        uma célula (o nome de uma parte) no detalhe."""
+        from helestron.pauta import exportacao
+
+        class IllegalCharacterError(Exception):
+            pass
+
+        with mock.patch.object(exportacao, "exportar", side_effect=IllegalCharacterError(
+                f"{PARTES} cannot be used in worksheets.")):
+            status, envelope = self.cliente.pedir("POST", "/api/pauta/exportar",
+                                                  {"de": DIA.isoformat(), "ate": DIA.isoformat()})
+        self.assertEqual(status, 500)
+        self.assertNotIn("Maria", str(envelope))
+        self.assertIn("Não consegui gerar a planilha da pauta", str(envelope))
+        self.assertIn("planilha_falhou", str(envelope))
+
 
 class _Portal:
     instancias: list = []
@@ -214,6 +231,25 @@ class TestSigiloReveladoPelaPauta(ServidorDeTeste):
         self.assertTrue(_ate(lambda: self.sigiloso_saiu(self.n1)))
         self.assertTrue(self.avisos[0]["mensagem"].endswith(
             "sai do índice e do texto lidos pela IA e do espelho na nuvem."), self.avisos)
+
+    def test_so_o_incidente_no_acervo(self):
+        """Achado 26: a pauta revela o principal; no acervo só há o incidente dele
+        ("...-01.pdf"), que herda o sigilo: ele sai na hora, com o aviso."""
+        incidente = self.lote / f"{self.n3}-01.pdf"
+        incidente.write_bytes(apoio.pdf_bytes(1, "autos do incidente"))
+        from helestron import servicos
+
+        servicos.atualizar_indice(self.cfg)
+        self.assertIn(f"{self.n3}-01", self.indice())
+        arquivo = self.relatorio((self.n3, "", "(Segredo de Justiça)"))
+        r = self.cliente.dados("POST", "/api/pauta/importar", {"caminho": str(arquivo)})
+        self.assertEqual(r["sigilosos_novos"], [self.n3])
+        self.assertTrue(_ate(lambda: not incidente.exists() and self.n3 not in self.indice()),
+                        "o incidente do processo sigiloso ficou no acervo (ou no índice)")
+        self.assertTrue((self.sig / "Lote 1" / f"{self.n3}-01.pdf").exists())
+        self.assertTrue(_ate(lambda: len(self.avisos) == 1), self.avisos)
+        self.assertIn(f"o processo {self.n3} corre em segredo de justiça",
+                      self.avisos[0]["mensagem"])
 
     def test_separacao_desligada_e_nuvem_manual(self):
         self.cfg.definir("download", "separar_sigilosos", False)

@@ -68,6 +68,8 @@ LIMITE_CAMINHO = 100
 # Onde a tela de Ajustes mostra cada assunto (as ações citam o caminho).
 AJUSTES_PASTAS = "Ajustes › Pastas"
 AJUSTES_TRANSCRICAO = "Ajustes › Transcrição"
+AJUSTES_COMPARTILHAR = "Ajustes › Compartilhar"
+AJUSTES_ACESSOS = "Ajustes › Acessos aos portais"
 
 # (módulo, distribuição no PyPI, para que serve, só no Windows)
 BIBLIOTECAS: tuple[tuple[str, ...], ...] = (
@@ -511,9 +513,32 @@ def _nomes_dos_modelos(cfg) -> tuple[str, str]:
     return ao_vivo, revisao
 
 
+def _componentes_embutidos() -> dict:
+    """O que a construção declarou ter embutido (a chave 'componentes' do
+    manifesto.json: {"modelo_transcricao": "faster-whisper-small" ou "",
+    "falantes": bool}). Vazio fora da instalação e no manifesto sem a chave."""
+    if not caminhos.INSTALADO:
+        return {}
+    try:
+        dados = json.loads((Path(caminhos.INSTALACAO) / "manifesto.json")
+                           .read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    comp = dados.get("componentes") if isinstance(dados, dict) else None
+    return comp if isinstance(comp, dict) else {}
+
+
 def checar_modelo(cfg) -> Item:
     ao_vivo, revisao = _nomes_dos_modelos(cfg)
     instalado, pasta, embutido = _modelo_instalado(ao_vivo)
+    declarado = _componentes_embutidos().get("modelo_transcricao")
+    if not instalado and isinstance(declarado, str) and declarado == f"faster-whisper-{ao_vivo}":
+        # Veio no instalador e sumiu da pasta do programa (antivírus, cópia
+        # interrompida): não é "baixado no primeiro uso", é instalação com defeito.
+        return Item("Modelo de transcrição", FALHA,
+                    f"O modelo da transcrição ao vivo ({ao_vivo}) veio com o programa, mas não "
+                    "está mais na pasta do programa (o antivírus pode tê-lo retirado).",
+                    obrigatorio=False, codigo="modelo", acao=REINSTALAR)
     rev_ok, _, _ = _modelo_instalado(revisao)
     if revisao == ao_vivo:
         sobre_revisao = ""
@@ -911,6 +936,19 @@ def _problema_nas_pastas(cfg) -> tuple[str, str] | None:
                 "junto com o acervo.",
                 _ACAO_PASTAS.format("pastas separadas para o acervo, os sigilosos e a pauta "
                                     "(nenhuma dentro da outra)"))
+    # A pasta da nuvem do espelho (gravada à mão no config.ini, ou antes desta
+    # regra): os sigilosos ou a pauta dentro dela iriam para o OneDrive ou o
+    # Google Drive - a mesma regra da tela de Ajustes (config.conflito_com_a_nuvem).
+    try:
+        nuvem = str(cfg.texto("compartilhar", "pasta_nuvem") or "").strip()
+    except Exception:  # noqa: BLE001 - configuração sem a seção: não há espelho
+        nuvem = ""
+    frase = config.conflito_com_a_nuvem(nuvem, cfg.pasta_sigilosos, _pasta_pauta(cfg))
+    if frase:
+        return (f"{frase} (pasta da nuvem: {nuvem})",
+                "Corrija antes de espelhar o acervo: em " + AJUSTES_PASTAS + ", escolha para os "
+                "sigilosos e a pauta pastas fora da nuvem, ou, em " + AJUSTES_COMPARTILHAR
+                + ", outra pasta da nuvem (em branco, o acervo não é espelhado).")
     if caminhos.INSTALADO and _contem(acervo, caminhos.INSTALACAO):
         return (f"A pasta do acervo ({acervo}) contém a pasta do programa "
                 f"({caminhos.INSTALACAO}), que o instalador substitui a cada atualização.",
@@ -967,10 +1005,65 @@ def _caminhos_longos() -> bool:
         return False
 
 
+def _nuvens_detectadas() -> list[tuple[str, Path]]:
+    """[(rótulo, pasta)] das pastas do OneDrive e do Google Drive deste
+    computador (compartilhar.nuvem.detectar). Nunca levanta."""
+    try:
+        from .compartilhar import nuvem
+
+        return [(str(r), Path(p)) for r, p in nuvem.detectar().items()]
+    except Exception as erro:  # noqa: BLE001 - sem detecção, fica a dos nomes
+        log.debug("pastas de nuvem não detectadas: %s", erro)
+        return []
+
+
+def nuvem_da_pasta(pasta, detectadas: list[tuple[str, Path]] | None = None) -> str:
+    """"OneDrive" ou "Google Drive" se a pasta está dentro de uma pasta
+    sincronizada com a nuvem; "" se não está (ou não se sabe).
+
+    Depois das pastas detectadas, a regra é só do caminho (sem varrer as
+    unidades) e cobre todas as que compartilhar.nuvem.detectar procura: com
+    'detectadas=[]' (servicos.sigilo_na_nuvem, a cada estado da tela), o
+    resultado é o mesmo da verificação."""
+    if caminhos.dentro_do_onedrive(Path(pasta)):
+        return "OneDrive"
+    for rotulo, raiz in (detectadas if detectadas is not None else _nuvens_detectadas()):
+        if _contem(raiz, Path(pasta)):
+            return "Google Drive" if "google" in rotulo.lower() else "OneDrive"
+    # A regra do caminho é a do núcleo, a mesma que tira a pasta padrão da
+    # nuvem (caminhos._base_usuario).
+    return "Google Drive" if caminhos.no_google_drive(pasta) else ""
+
+
 def checar_local(cfg) -> Item:
-    """Onde ficam as pastas: fora do OneDrive, da rede e de caminho curto."""
+    """Onde ficam as pastas: fora do OneDrive, da rede e de caminho curto - e
+    os sigilosos e a pauta exportada fora de toda pasta sincronizada com a
+    nuvem (OneDrive, Google Drive).
+
+    Os sigilosos ou a pauta na nuvem não são recomendação: é a regra de
+    config.conflito_com_a_nuvem (nada de segredo de justiça na nuvem) valendo
+    para qualquer pasta do OneDrive ou do Google Drive, e o item diz que não
+    pode e o que corrigir. Fica no nível de aviso, como os conflitos de
+    pastas de checar_pastas: a instalação está boa, e a troca é feita em
+    Ajustes (o instalador, que roda esta checagem, não manda reinstalar)."""
     nome = "Local das pastas"
+    graves, correcoes = [], []
     problemas, acoes = [], []
+    # Primeiro o mais grave: o que é de segredo de justiça saindo do computador.
+    detectadas = _nuvens_detectadas()
+    for rotulo, pasta, porque, alvo in (
+            ("dos processos em segredo de justiça", cfg.pasta_sigilosos,
+             "os autos, as transcrições e as gravações sigilosas saem do computador e ficam",
+             "os sigilosos"),
+            ("da pauta exportada", _pasta_pauta(cfg),
+             "a planilha, com as partes dos processos sigilosos, sai do computador e fica",
+             "a pauta")):
+        servico = nuvem_da_pasta(pasta, detectadas)
+        if servico:
+            graves.append(f"a pasta {rotulo} ({pasta}) está dentro do {servico}, e isso não "
+                          f"pode: {porque} ao alcance dos conectores da IA")
+            correcoes.append(f"em {AJUSTES_PASTAS}, escolha para {alvo} uma pasta fora do "
+                             "OneDrive e do Google Drive e mova para ela o que está na pasta atual")
     if caminhos.dentro_do_onedrive(cfg.pasta_acervo):
         problemas.append(f"a pasta do acervo ({cfg.pasta_acervo}) está dentro do OneDrive, cuja "
                          "sincronização trava arquivos em uso")
@@ -989,12 +1082,20 @@ def checar_local(cfg) -> Item:
         if pasta.startswith("\\\\"):
             problemas.append(f"a pasta {rotulo} fica numa pasta de rede")
             acoes.append("instale e use o Helestron no próprio computador")
+    if graves:
+        detalhe = "; ".join(graves) + "."
+        if problemas:
+            detalhe += " Além disso: " + "; ".join(problemas) + "."
+        acao = "Corrija: " + "; ".join(correcoes) + "."
+        if acoes:
+            acao += " Recomendado: " + "; ".join(acoes) + "."
+        return Item(nome, AVISO, detalhe[0].upper() + detalhe[1:], codigo="local", acao=acao)
     if problemas:
         return Item(nome, AVISO, "Atenção: " + "; ".join(problemas) + ".",
                     obrigatorio=False, codigo="local",
                     acao="Recomendado: " + "; ".join(acoes) + ".")
     return Item(nome, OK, f"Programa em {programa}; dados em {caminhos.LOCAL}; acervo fora do "
-                "OneDrive.", obrigatorio=False, codigo="local")
+                "OneDrive; sigilosos e pauta fora da nuvem.", obrigatorio=False, codigo="local")
 
 
 def _formatar_gb(bytes_: float) -> str:
@@ -1051,20 +1152,50 @@ def checar_cofre() -> Item:
 def checar_tribunais() -> Item:
     from .nucleo import tribunais
 
+    nome = "Catálogo de tribunais"
+    locais = Path(tribunais.ARQUIVO_LOCAL)
     try:
         lista = tribunais.carregar()
     except Exception as erro:  # noqa: BLE001 - JSON editado à mão pode estar quebrado
-        return Item("Catálogo de tribunais", FALHA,
-                    f"O catálogo de tribunais (dados\\tribunais.json) não pôde ser lido: {erro}",
+        # carregar() lê o catálogo E as correções de endereço do usuário: o
+        # problema pode estar no enderecos-locais.json, e não no catálogo que
+        # vem com o programa (a frase antiga só falava do tribunais.json).
+        return Item(nome, FALHA,
+                    "O catálogo de tribunais (dados\\tribunais.json) ou as correções de "
+                    f"endereço ({locais}) não puderam ser lidos: {erro}",
                     codigo="tribunais",
-                    acao=("Desfaça a última edição do tribunais.json (ou do enderecos-locais.json, "
-                          f"na pasta de dados). Se não houve edição: {REINSTALAR}"))
+                    acao=(f"Desfaça a última edição do {locais.name} (na pasta de dados, "
+                          f"{locais.parent}) ou do tribunais.json. Se não houve edição: "
+                          f"{REINSTALAR}"))
     if not lista:
-        return Item("Catálogo de tribunais", FALHA, "O catálogo de tribunais está vazio.",
+        # O catálogo ilegível não levanta: carregar() devolve vazio e guarda o
+        # motivo (tribunais.problema), que diz o arquivo, a linha e a coluna.
+        try:
+            motivo = tribunais.problema()
+        except Exception:  # noqa: BLE001 - fica a frase genérica
+            motivo = ""
+        if motivo:
+            return Item(nome, FALHA, motivo[:1].upper() + motivo[1:] + ".", codigo="tribunais",
+                        acao=("Desfaça a última edição do dados\\tribunais.json. Se não houve "
+                              f"edição: {REINSTALAR}"))
+        return Item(nome, FALHA, "O catálogo de tribunais está vazio.",
                     codigo="tribunais", acao=RODE_O_INSTALADOR)
     suportados = sum(1 for t in lista if t.suportado)
-    return Item("Catálogo de tribunais", OK,
-                f"{len(lista)} tribunais no catálogo; {suportados} com e-SAJ ou eProc.", codigo="tribunais")
+    detalhe = f"{len(lista)} tribunais no catálogo; {suportados} com e-SAJ ou eProc."
+    # As correções de endereço fora do formato não derrubam mais o catálogo
+    # (ficam de fora, e vale o endereço dele) - mas o usuário precisa saber
+    # que a correção que fez não está valendo.
+    try:
+        problema_locais = tribunais.problema_locais()
+    except Exception as erro:  # noqa: BLE001
+        problema_locais = (f"as correções de endereço ({locais}) não puderam ser conferidas "
+                           f"({erro})")
+    if problema_locais:
+        return Item(nome, AVISO, f"{detalhe} Mas {problema_locais}.", codigo="tribunais",
+                    acao=(f"Em {AJUSTES_ACESSOS}, refaça a correção com "
+                          "“Corrigir o endereço de um portal” (ela regrava o arquivo sem o que "
+                          f"está fora do formato), ou desfaça a última edição do {locais.name}."))
+    return Item(nome, OK, detalhe, codigo="tribunais")
 
 
 def checar_regras_pauta() -> Item:
@@ -1100,9 +1231,34 @@ def _falantes_situacao() -> tuple[bool, str]:
         return False, "incompleta (faltam os modelos de voz)" if presente else "indisponível"
 
 
+def _falantes_faltam() -> tuple[bool, bool]:
+    """(falta a biblioteca sherpa-onnx, faltam os modelos de voz)."""
+    try:
+        from .transcricao import falantes
+
+        return not falantes.biblioteca_presente(), not falantes.modelos_presentes()
+    except Exception:
+        return not _presente("sherpa_onnx"), True
+
+
 def checar_falantes(completo: bool = False) -> Item:
     nome = "Separação de falantes (opcional)"
     disponivel, situacao = _falantes_situacao()
+    if not disponivel and _componentes_embutidos().get("falantes") is True:
+        # o que sumiu: a biblioteca (a DLL em quarentena), os modelos, ou os dois
+        sem_biblioteca, sem_modelos = _falantes_faltam()
+        if sem_biblioteca and not sem_modelos:
+            o_que = ("O componente da separação de vozes (sherpa-onnx) veio com o programa, mas "
+                     "não está mais na pasta do programa (o antivírus pode tê-lo retirado)")
+        elif sem_biblioteca:
+            o_que = ("O componente da separação de vozes (sherpa-onnx) e os modelos de voz "
+                     "vieram com o programa, mas não estão mais na pasta do programa (o "
+                     "antivírus pode tê-los retirado)")
+        else:
+            o_que = ("Os modelos de voz vieram com o programa, mas não estão mais na pasta do "
+                     "programa (o antivírus pode tê-los retirado)")
+        return Item(nome, FALHA, f"{o_que}: a revisão final não separa as vozes sozinha.",
+                    obrigatorio=False, codigo="falantes", acao=REINSTALAR)
     if not disponivel:
         if _presente("sherpa_onnx"):
             # A biblioteca veio; faltam só os modelos de voz (construção sem eles).

@@ -223,6 +223,9 @@ class TextosQueOUsuarioLe(unittest.TestCase):
         "Microsoft Edge WebView2 Runtime",                      # nome do produto da Microsoft
         "fl.", "evento 1, INIC1", "ignore as instruções anteriores",  # regras para a IA
         "Evento N — descrição — rótulo (data)",                 # marcador do PDF do eProc
+        # formas de citar uma página do eProc (capa.txt, rótulo de página do PDF)
+        "Download Completo do eProc, pág. M", "Download Completo do eProc, parte P, pág. M",
+        "Ev. N RÓTULO p. Y",
         "Acesso ao microfone",                                  # opção do Windows
     }
 
@@ -269,11 +272,49 @@ class TextosQueOUsuarioLe(unittest.TestCase):
                     self.assertEqual(int(n + ano + j + tr + origem + dv) % 97, 1)
         self.assertGreater(achados, 0)
 
+    def test_exportacao_da_pauta_fala_das_partes_e_das_observacoes(self):
+        # A planilha mascara as partes E as observações dos processos sigilosos
+        # (pauta.modelos.mascarar_sigiloso): o interruptor da exportação diz as duas.
+        texto = (WEB / "js" / "secao-pauta.js").read_text(encoding="utf-8")
+        self.assertIn('"Incluir as partes e as observações dos sigilosos"', texto)
+        self.assertIn("no lugar das partes e das observações", texto)
+        self.assertNotIn('"Incluir as partes dos sigilosos"', texto)
+
+    def test_demonstracao_traz_os_campos_do_servidor(self):
+        # O modo demonstração (?demo=1) devolve o que o servidor devolve: a linha
+        # do processo com a causa e o refazer (api_processos.item_json), o espelho
+        # com o que não foi copiado e o pacote com os avisos e o .zip grande demais
+        # (api_compartilhar.concluir_espelho e concluir_pacote) - e a tela de fim
+        # de tarefa os lê para o aviso âmbar.
+        demo = (WEB / "js" / "demo.js").read_text(encoding="utf-8")
+        app = (WEB / "js" / "app.js").read_text(encoding="utf-8")
+        servidor = "".join((RAIZ / "helestron" / "servidor" / nome).read_text(encoding="utf-8")
+                           for nome in ("api_processos.py", "api_compartilhar.py"))
+        for campo in ("causa", "refazer", "nao_copiados", "grande_demais", "avisos", "resumo"):
+            with self.subTest(campo=campo):
+                self.assertIn(f'"{campo}"', servidor)
+                self.assertRegex(demo, rf"\b{campo}: ")
+        for campo in ("nao_copiados", "grande_demais"):
+            with self.subTest(tela=campo):
+                self.assertIn(f"r.{campo}", app)
+
     def test_concordancia_dos_lotes(self):
         # "0 de 1 processo baixados": o particípio concorda com o total.
         for nome, texto in self._js_da_interface().items():
             with self.subTest(arquivo=nome):
                 self.assertNotRegex(texto, r'"processo", "processos"\)\} baixados')
+
+    def test_seletor_da_relacao_mostra_tudo_o_que_o_programa_le(self):
+        # A planilha .xlsm (com macros) era lida, mas não aparecia no filtro
+        # "Relações de processos" do diálogo nem no 'accept' do navegador.
+        from helestron.nucleo import listas
+
+        texto = (WEB / "js" / "secao-processos.js").read_text(encoding="utf-8")
+        filtro = re.search(r'const TIPOS_RELACAO = \["Relações de processos\|([^"]+)"', texto)
+        aceitar = re.search(r'const ACEITAR = "([^"]+)";', texto)
+        self.assertEqual(sorted(e.lstrip("*") for e in filtro.group(1).split(";")),
+                         sorted(listas.EXTENSOES))
+        self.assertEqual(sorted(aceitar.group(1).split(",")), sorted(listas.EXTENSOES))
 
 
 class MarcaEFontes(unittest.TestCase):

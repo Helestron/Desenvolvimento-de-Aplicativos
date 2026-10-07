@@ -277,9 +277,92 @@ class TestAoVivo(ServidorDeTeste):
             self.esperar_tarefa(self.cliente.dados(
                 "POST", "/api/transcricao/gravacao", {"revisao": True, "tipo": "Una"})["tarefa"])
         self.assertEqual(chamadas[0]["tipo"], "Instrução e julgamento")
-        self.assertEqual(chamadas[0]["participantes"], {"F1": "Juiz(a)", "F2": "Autor(a)"})
+        # A ficha é a da sessão (uma cópia), e o mapa das teclas F1-F8 não é
+        # lista de presença: não vira "participantes" da revisão (achado 38).
+        meta = chamadas[0]["meta"]
+        self.assertIsInstance(meta, MetaAudiencia)
+        self.assertIsNot(meta, sessao.meta)
+        self.assertEqual(meta.tipo, "Instrução e julgamento")
+        self.assertEqual(meta.participantes, {})
+        self.assertIsNone(chamadas[0]["participantes"])
+        self.assertEqual(self.app.audiencia.ultima["botoes"], {"F1": "Juiz(a)", "F2": "Autor(a)"})
         self.assertTrue(chamadas[0]["rotulos_manuais"])
         self.assertEqual(chamadas[1]["tipo"], "Una")
+
+    def test_revisar_leva_a_ficha_da_sessao_ao_vivo(self):
+        """Achado 38: a revisão pelo "Revisar" recebia só o tipo e os
+        participantes - perdia o início e o término da audiência e punha na
+        Data a da modificação do FLAC (o dia seguinte, numa audiência que passa
+        da meia-noite). Agora a ficha da sessão (cópia) vai a
+        servicos.transcrever_gravacao, como na revisão automática ao encerrar."""
+
+        class SessaoComFicha(SessaoFalsa):
+            """Separa os botões dos participantes, como a SessaoAoVivo."""
+
+            def __init__(self, numero, cfg, eventos, **kw):
+                super().__init__(numero, cfg, eventos, **kw)
+                todos = dict(kw.get("participantes") or {})
+                self.botoes = {k: v for k, v in todos.items() if k.startswith("F")}
+                self.meta = MetaAudiencia(
+                    numero=numero.formatado, tipo=kw.get("tipo", ""), unidade="2ª Vara Cível",
+                    magistrado="Camila Duarte Albuquerque",
+                    participantes={k: v for k, v in todos.items() if not k.startswith("F")})
+
+            def iniciar(self):
+                super().iniciar()
+                self.meta.inicio = self.meta.data = datetime(2026, 9, 16, 23, 40)
+
+            def encerrar(self, refinar=False):
+                self.meta.fim = datetime(2026, 9, 17, 0, 25)
+                return super().encerrar(refinar)
+
+        recebidas = []
+
+        def transcrever_arquivo(origem, numero, cfg, progresso=None, cancelado=None,
+                                rotulos_manuais=None, destino=None, *, meta=None, **kw):
+            recebidas.append(meta)
+            return Path(cfg.pasta_transcricoes) / "rev.docx"
+
+        with mock.patch("helestron.servicos.nova_sessao", side_effect=SessaoComFicha):
+            self.cliente.dados("POST", "/api/transcricao/iniciar", {
+                "processo": NUMERO, "tipo": "Instrução e julgamento",
+                "participantes": {"F1": "Juiz(a)", "F2": "Testemunha",
+                                  "Juiz(a)": "Camila Duarte Albuquerque"}})
+            sessao = SessaoFalsa.criadas[-1]
+            self.cliente.dados("POST", "/api/transcricao/encerrar", {"refinar": False})
+        ultima = self.app.audiencia.ultima
+        self.assertEqual(ultima["botoes"], {"F1": "Juiz(a)", "F2": "Testemunha"})
+        self.assertEqual(ultima["participantes"], {"Juiz(a)": "Camila Duarte Albuquerque"})
+        self.assertIsNot(ultima["meta"], sessao.meta)          # cópia
+        with mock.patch("helestron.transcricao.arquivo.transcrever_arquivo",
+                        side_effect=transcrever_arquivo), \
+                mock.patch("helestron.servidor.api_compartilhar.depois_de_salvar"):
+            tarefa = self.esperar_tarefa(self.cliente.dados(
+                "POST", "/api/transcricao/gravacao", {"revisao": True, "tipo": "Una"})["tarefa"])
+        self.assertEqual(tarefa["estado"], "concluida", tarefa)
+        meta = recebidas[0]
+        self.assertEqual((meta.inicio, meta.fim), (datetime(2026, 9, 16, 23, 40),
+                                                   datetime(2026, 9, 17, 0, 25)))
+        self.assertEqual(meta.data, datetime(2026, 9, 16, 23, 40))
+        self.assertEqual(meta.origem, "revisão")
+        self.assertEqual(meta.tipo, "Una")                     # o da tela prevalece
+        self.assertEqual(meta.participantes, {"Juiz(a)": "Camila Duarte Albuquerque"})
+        self.assertEqual((meta.unidade, meta.magistrado),
+                         ("2ª Vara Cível", "Camila Duarte Albuquerque"))
+        # a ficha guardada não foi mexida pela revisão
+        self.assertEqual(ultima["meta"].tipo, "Instrução e julgamento")
+        self.assertEqual(ultima["meta"].origem, "ao vivo")
+
+    def test_dependente_digitado_com_hifen_ou_barra(self):
+        """Achado 33: "...0001-01" (como o nome dos arquivos) era lido como o
+        principal pelo cnj.ler, e a audiência do incidente virava a do principal."""
+        for digitado in (f"{NUMERO}-01", f"{NUMERO}/01", f"{NUMERO}/0001"):
+            with self.subTest(digitado=digitado):
+                dados = self.cliente.dados("POST", "/api/transcricao/iniciar",
+                                           {"processo": digitado})
+                self.assertEqual(dados["processo"], f"{NUMERO}/01")
+                self.assertEqual(SessaoFalsa.criadas[-1].numero.dependente, "01")
+                self.cliente.dados("POST", "/api/transcricao/encerrar", {"refinar": False})
 
     def test_fechar_o_programa_salva_a_audiencia(self):
         self.cliente.dados("POST", "/api/transcricao/iniciar", {"processo": NUMERO})
@@ -327,6 +410,89 @@ class TestGravacaoERecuperacao(ServidorDeTeste):
         self.assertEqual(recebidos[0]["gravacao"], f"audiencia {NUMERO}.wav")
         self.assertTrue(tarefa["resultado"]["documento"].endswith(".docx"))
         self.assertFalse(tarefa["resultado"]["sigiloso"])
+
+    def test_numero_da_gravacao_mantem_o_dependente_do_nome_ou_da_pasta(self):
+        """Achado 33: o número digitado sem o dependente não apaga o "-01" que
+        o programa pôs no nome da gravação (ou na pasta da mídia dos autos)."""
+        from helestron.servidor.audiencia import numero_da_gravacao
+
+        nome = f"{NUMERO}-01 2026-09-16 14h00.flac"
+        self.assertEqual(numero_da_gravacao(nome, NUMERO).formatado, f"{NUMERO}/01")
+        self.assertEqual(numero_da_gravacao(nome, None).formatado, f"{NUMERO}/01")
+        midia = Path("Acervo") / "Processos" / "_controle" / "midias" / f"{NUMERO}-01" / \
+            "video_audiencia.mp4"
+        self.assertEqual(numero_da_gravacao(midia, None).formatado, f"{NUMERO}/01")
+        self.assertEqual(numero_da_gravacao(str(midia), NUMERO).formatado, f"{NUMERO}/01")
+        # o dependente digitado vale ("/02" ou "-02"), e outro processo é outro
+        self.assertEqual(numero_da_gravacao(nome, f"{NUMERO}/02").formatado, f"{NUMERO}/02")
+        self.assertEqual(numero_da_gravacao(nome, f"{NUMERO}-02").formatado, f"{NUMERO}/02")
+        outro = "0700124-68.2024.8.02.0001"
+        self.assertEqual(numero_da_gravacao(nome, outro).formatado, outro)
+        # sem dependente em lugar nenhum: o principal
+        self.assertEqual(numero_da_gravacao(f"{NUMERO} 2026.flac", None).formatado, NUMERO)
+
+    def test_gravacao_pelo_caminho_acha_o_numero_na_pasta(self):
+        """O diálogo do Windows manda o caminho inteiro: a mídia baixada com os
+        autos tem o número (com o dependente) só na pasta."""
+        pasta = self.amb.dados / "Acervo" / "Processos" / "_controle" / "midias" / f"{NUMERO}-01"
+        pasta.mkdir(parents=True)
+        video = pasta / "video_audiencia.mp4"
+        video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        with mock.patch("helestron.servicos.transcrever_gravacao",
+                        return_value=self.amb.raiz / "x.docx") as transcrever, \
+                mock.patch("helestron.servidor.api_compartilhar.depois_de_salvar"):
+            for processo in (None, NUMERO):
+                with self.subTest(processo=processo):
+                    corpo = {"caminho": str(video)}
+                    if processo:
+                        corpo["processo"] = processo
+                    self.esperar_tarefa(self.cliente.dados(
+                        "POST", "/api/transcricao/gravacao", corpo)["tarefa"])
+                    self.assertEqual(transcrever.call_args.args[1].formatado, f"{NUMERO}/01")
+
+    def test_envio_pelo_nome_original_mantem_o_dependente(self):
+        recebidos = []
+
+        def transcrever(origem, numero, cfg, progresso, cancelado, **kw):
+            recebidos.append(numero.formatado)
+            return Path(cfg.pasta_transcricoes) / "x.docx"
+
+        with mock.patch("helestron.servicos.transcrever_gravacao", side_effect=transcrever), \
+                mock.patch("helestron.servidor.api_compartilhar.depois_de_salvar"):
+            status, env = self.cliente.enviar(
+                "/api/transcricao/gravacao", "envio.wav", b"RIFF....WAVE",
+                {"processo": NUMERO, "nome_original": f"{NUMERO}-01 2026-09-16 14h00.wav"})
+            self.assertEqual(status, 200, env)
+            self.esperar_tarefa(env["dados"]["tarefa"])
+        self.assertEqual(recebidos, [f"{NUMERO}/01"])
+
+    def test_video_sem_audio_enviado_diz_o_nome_do_arquivo_do_usuario(self):
+        """O motor de verdade (PyAV), com um vídeo sem trilha de áudio enviado
+        pela página: a tarefa falha com a frase certa e com o nome do arquivo
+        do usuário - e não o do temporário "envio-3f6e….mp4" -, e o
+        temporário não fica no disco. O servidor não recusou pela extensão."""
+        try:
+            from testes.test_transcricao_formatos import gerar
+            import av  # noqa: F401
+        except ImportError:
+            self.skipTest("PyAV não instalado")
+        video = gerar(self.amb.raiz / "camera.dat", "mp4", None, "mpeg4")
+        nome = f"{NUMERO} câmera da sala 2.mp4"
+        leitor = self.eventos()
+        status, env = self.cliente.enviar("/api/transcricao/gravacao", nome, video.read_bytes())
+        self.assertEqual(status, 200, env)
+        tarefa = self.esperar_tarefa(env["dados"]["tarefa"], espera=60)
+        self.assertEqual(tarefa["estado"], "falhou", tarefa)
+        self.assertIn(f"'{nome}' é um vídeo sem trilha de áudio", tarefa["erro"])
+        self.assertNotIn("envio-", tarefa["erro"])
+        # o andamento ("Lendo o áudio de …") também diz o nome do usuário
+        lendo = leitor.esperar("tarefa", lambda d: d.get("id") == tarefa["id"]
+                               and "Lendo o áudio" in str(d.get("status")))
+        self.assertIn(nome, lendo["status"])
+        self.assertFalse([d for t, d in leitor.recebidos
+                          if t == "tarefa" and "envio-" in str(d.get("status"))])
+        envios = self.app.pasta_envios()
+        self.assertEqual(list(envios.glob("envio-*")) if envios.exists() else [], [])
 
     def test_gravacao_sem_numero_400(self):
         status, env = self.cliente.enviar("/api/transcricao/gravacao", "audio.wav", b"RIFF")
@@ -478,6 +644,23 @@ class TestGravacaoERecuperacao(ServidorDeTeste):
         lista = self.cliente.dados("GET", "/api/transcricao/recentes")
         self.assertEqual({x["numero"]: x["sigiloso"] for x in lista},
                          {NUMERO: False, "0700124-68.2024.8.02.0001": True})
+
+
+class TestNomeDoArquivoEnviadoNoErro(unittest.TestCase):
+    """O erro da transcrição de um arquivo enviado cita o nome do arquivo do
+    usuário, e não o do temporário; o erro do próprio Windows (com errno)
+    segue intacto, para a página receber a frase geral e não o caminho."""
+
+    def test_frase_do_programa_troca_o_nome_e_erro_do_windows_fica(self):
+        from helestron.servidor import api_audiencias
+
+        frase = ValueError("'envio-3f6e.mp4' é um vídeo sem trilha de áudio")
+        novo = api_audiencias._com_outro_nome(frase, "envio-3f6e.mp4", "Audiência.mp4")
+        self.assertIsInstance(novo, ValueError)
+        self.assertEqual(str(novo), "'Audiência.mp4' é um vídeo sem trilha de áudio")
+        preso = PermissionError(13, "Permission denied", r"C:\Users\x\temp\envio-3f6e.mp4")
+        self.assertIs(api_audiencias._com_outro_nome(preso, "envio-3f6e.mp4", "Audiência.mp4"),
+                      preso)
 
 
 class TestMicrofoneEModelos(ServidorDeTeste):

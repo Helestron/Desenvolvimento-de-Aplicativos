@@ -317,8 +317,14 @@
       if (r.documento) acoes.push({ rotulo: "Abrir documento", acao: () => api.abrir("arquivo", r.documento) });
     }
     // Concluída, mas com itens que não deram certo (lote com falhas, fonte da
-    // pauta que não respondeu): aviso âmbar, não o verde de "tudo certo".
-    const comProblema = r && typeof r === "object" && ((Number(r.falhas) || 0) > 0 || (Array.isArray(r.erros) && r.erros.length > 0));
+    // pauta que não respondeu, arquivo que o espelho não copiou para a nuvem,
+    // pacote com aviso ou grande demais para o ChatGPT): aviso âmbar, não o
+    // verde de "tudo certo".
+    const comProblema = r && typeof r === "object" && ((Number(r.falhas) || 0) > 0
+      || (Array.isArray(r.erros) && r.erros.length > 0)
+      || (Array.isArray(r.nao_copiados) && r.nao_copiados.length > 0)
+      || r.grande_demais === true
+      || (t.tipo === "pacote" && Array.isArray(r.avisos) && r.avisos.length > 0));
     if (t.estado === "concluida") {
       aviso({ titulo: t.titulo || "Concluído", mensagem: t.status || "Pronto.", tipo: comProblema ? "alerta" : "sucesso", acoes });
     } else if (t.estado === "falhou") {

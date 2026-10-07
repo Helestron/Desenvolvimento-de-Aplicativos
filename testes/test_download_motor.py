@@ -192,6 +192,142 @@ class TestSigilosos(BaseMotor):
         self.assertTrue((self.destino / f"{TJAL1.nome_arquivo}.pdf").exists())
         self.assertTrue(resumo.itens[0].sigiloso)
 
+    def test_sigilo_do_portal_vale_na_regra_unica_antes_de_o_pdf_ir_para_o_lote(self):
+        """Achado R19: com a separação desligada, o PDF do processo que o
+        portal mostrou em segredo de justiça fica no acervo, e a regra única
+        (índice, texto para a IA, conector, pacote, nuvem) não sabia dele."""
+        vistos = {}
+        original = motor._Lote._guardar
+
+        def guardar(lote, r, n, provisorio):
+            vistos[n.nome_arquivo] = sigilo.processo_sigiloso(self.cfg, n)
+            return original(lote, r, n, provisorio)
+
+        with mock.patch.object(motor._Lote, "_guardar", guardar):
+            resumo = self.rodar([TJAL1, TJAL2], roteiro={TJAL1.formatado: ["ok_sigiloso"]},
+                                separar_sigilosos=False)
+        self.assertEqual([r.situacao for r in resumo.itens], [modelos.OK, modelos.OK])
+        self.assertEqual(vistos, {TJAL1.nome_arquivo: True, TJAL2.nome_arquivo: False})
+        self.assertEqual(sigilo.motivo(self.cfg, TJAL1), sigilo.MOTIVO_DOWNLOAD)
+        self.assertIn(TJAL1.nome_arquivo,
+                      sigilo.chaves_sigilosas(self.tmp / "Sigilosos", self.tmp / "Acervo"))
+        # o sigiloso sem senha (o portal disse que é sigiloso) também fica sabido
+        self.rodar([TJAL3], roteiro={TJAL3.formatado: ["sigiloso_sem_senha"]})
+        self.assertEqual(sigilo.apuradas_no_download(),
+                         {TJAL1.nome_arquivo, TJAL3.nome_arquivo})
+
+    def test_lote_de_antes_com_o_sigiloso_no_acervo_passa_a_valer_na_regra(self):
+        self.destino.mkdir(parents=True)
+        (self.destino / f"{TJAL1.nome_arquivo}.pdf").write_bytes(apoio.pdf_bytes(2))
+        motor._gravar_relatorio(self.destino / "_controle" / "relatorio.csv", [
+            [1, TJAL1.formatado, "TJAL", "esaj", "OK", 2, 1, f"{TJAL1.nome_arquivo}.pdf", "sim",
+             "", "", "2026-10-01 10:00:00", ""]])
+        self.assertFalse(sigilo.processo_sigiloso(self.cfg, TJAL1))
+        r = self.rodar([TJAL1], separar_sigilosos=False).itens[0]
+        self.assertEqual((r.situacao, r.sigiloso), (modelos.JA_BAIXADO, True))
+        self.assertEqual(sigilo.motivo(self.cfg, TJAL1), sigilo.MOTIVO_DOWNLOAD)
+
+    @contextlib.contextmanager
+    def registro_preso(self):
+        """O download.sigilo.json preso de vez por outro programa: a troca dele
+        falha sempre (as esperas da insistência não contam no teste)."""
+        from helestron.nucleo import cofre_senhas
+        original = os.replace
+        falhas = []
+
+        def replace(origem, destino):
+            if str(destino).endswith("download.sigilo.json"):
+                falhas.append(destino)
+                raise PermissionError(13, "O arquivo já está sendo usado por outro processo",
+                                      str(destino))
+            return original(origem, destino)
+
+        with mock.patch.object(cofre_senhas.os, "replace", replace), \
+                mock.patch.object(cofre_senhas.time, "sleep"):
+            yield falhas
+
+    def test_registro_que_nao_grava_leva_o_sigiloso_para_a_pasta_de_sigilosos(self):
+        """Achado V3: com a separação desligada, o sigilo que não pôde ir para o
+        registro do download (arquivo preso) deixava o PDF no acervo, onde nada
+        dizia que ele é sigiloso: o preparo e o conector o expunham. Falha para
+        o lado seguro: ele vai para a pasta de sigilosos."""
+        nome = TJAL1.nome_arquivo
+        sig = self.tmp / "Sigilosos" / self.destino.name
+        with self.registro_preso() as falhas:
+            resumo = self.rodar([TJAL1, TJAL2], roteiro={TJAL1.formatado: ["ok_sigiloso"]},
+                                separar_sigilosos=False)
+        self.assertTrue(falhas, "a troca do registro não foi tentada")
+        r1, r2 = resumo.itens
+        self.assertEqual((r1.situacao, r1.sigiloso), (modelos.OK, True))
+        self.assertTrue((sig / f"{nome}.pdf").exists())
+        self.assertFalse((self.destino / f"{nome}.pdf").exists())
+        self.assertFalse((self.destino / "_controle" / f"{nome}_capa.txt").exists())
+        self.assertEqual(r1.arquivo, str(sig / f"{nome}.pdf"))
+        self.assertIn(motor.SEM_REGISTRO_DO_SIGILO, r1.detalhe)
+        self.assertFalse(sigilo.arquivo_do_download().exists())
+        # a regra única o vê pela pasta, sem o registro
+        self.assertEqual(sigilo.motivo(self.cfg, TJAL1), sigilo.MOTIVO_PASTA)
+        self.assertNotIn(nome, {chave for chave, _ in motor.processos_no_acervo(
+            self.tmp / "Acervo", self.tmp / "Sigilosos").items()})
+        # o público continua no acervo
+        self.assertEqual((r2.situacao, r2.sigiloso), (modelos.OK, False))
+        self.assertTrue((self.destino / f"{TJAL2.nome_arquivo}.pdf").exists())
+        # com o registro de volta, o próximo sigiloso fica no acervo, como pedido
+        self.rodar([TJAL3], roteiro={TJAL3.formatado: ["ok_sigiloso"]}, separar_sigilosos=False)
+        self.assertTrue((self.destino / f"{TJAL3.nome_arquivo}.pdf").exists())
+        self.assertEqual(sigilo.apuradas_no_download(), {TJAL3.nome_arquivo})
+
+    def test_lote_de_antes_sem_registro_possivel_sai_do_acervo(self):
+        """Achado V3, o lote de antes do registro: o sigilo que só o relatório
+        guarda não pôde ir para o registro; a cópia sai do acervo."""
+        nome = TJAL1.nome_arquivo
+        self.destino.mkdir(parents=True)
+        (self.destino / f"{nome}.pdf").write_bytes(apoio.pdf_bytes(2))
+        motor._gravar_relatorio(self.destino / "_controle" / "relatorio.csv", [
+            [1, TJAL1.formatado, "TJAL", "esaj", "OK", 2, 1, f"{nome}.pdf", "sim",
+             "", "", "2026-10-01 10:00:00", ""]])
+        with self.registro_preso():
+            r = self.rodar([TJAL1], separar_sigilosos=False).itens[0]
+        self.assertEqual((r.situacao, r.sigiloso), (modelos.JA_BAIXADO, True))
+        sig = self.tmp / "Sigilosos" / self.destino.name
+        self.assertTrue((sig / f"{nome}.pdf").exists())
+        self.assertFalse((self.destino / f"{nome}.pdf").exists())
+        self.assertIn(motor.SEM_REGISTRO_DO_SIGILO, r.detalhe)
+        self.assertEqual(sigilo.motivo(self.cfg, TJAL1), sigilo.MOTIVO_PASTA)
+
+    def test_sigilo_so_da_pauta_nao_vai_para_o_registro_do_download(self):
+        """Achado V4: na 2ª rodada, o sigilo que veio só da pauta (o relatório
+        da 1ª dizia sigiloso=sim) ia para o registro do download, com o motivo
+        falso "um download anterior apurou"; e desfazer a marcação errada da
+        pauta, como manda o manual, deixava de bastar."""
+        sigilo.lembrar_da_pauta([TJAL1])
+        # Primeiro com a separação desligada: os autos ficam no acervo, e só a
+        # pauta diz o sigilo (a pasta dos sigilosos ainda não tem nada dele).
+        for separar in (False, True):
+            with self.subTest(separar=separar):
+                destino = self.destino.with_name(f"Lote {separar}")
+                for rodada in (modelos.OK, modelos.JA_BAIXADO):
+                    self.opcoes = apoio.opcoes_de_teste(self.tmp, separar_sigilosos=separar)
+                    fp, fn = apoio.fabricas({TJAL1.formatado: ["ok"]})
+                    r = motor.executar([TJAL1], destino, self.opcoes, self.ctx,
+                                       fabrica_portal=fp, fabrica_navegador=fn).itens[0]
+                    self.assertEqual((r.situacao, r.sigiloso), (rodada, True))
+                    self.assertEqual(sigilo.apuradas_no_download(), set())
+                # nem a regra única, ao ler o relatório do lote no acervo
+                self.assertIn(TJAL1.nome_arquivo, sigilo.chaves_sigilosas(
+                    self.tmp / "Sigilosos", self.tmp / "Acervo"))
+                self.assertEqual(sigilo.apuradas_no_download(), set())
+        self.assertEqual(sigilo.motivo_do_download(TJAL1), "")
+        self.assertEqual(sigilo.motivo(self.cfg, TJAL1), sigilo.MOTIVO_PASTA)
+
+    def test_registro_do_sigilo_fica_na_pasta_do_teste(self):
+        """O sigilo que um teste registra não vale para o seguinte (os
+        números são os mesmos em todos)."""
+        for arquivo in (caminhos.ARQUIVO_PAUTA, sigilo.arquivo_apurado(),
+                        sigilo.arquivo_do_download()):
+            self.assertTrue(motor._dentro(arquivo, self.tmp), arquivo)
+        self.assertEqual(sigilo.apuradas_no_download(), set())
+
     def test_sigiloso_sem_senha_nao_e_repetido(self):
         resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["sigiloso_sem_senha"]})
         r = resumo.itens[0]
@@ -478,6 +614,17 @@ class TestSigiloSabidoPeloPrograma(BaseMotor):
                       resumo.itens[0].detalhe)
         self.assertTrue((self.sig / f"{inc.nome_arquivo}.pdf").exists())
 
+    def test_sigilo_apurado_noutro_lote_vale_mesmo_sem_o_selo(self):
+        """Achado R19: o que um download apurou (num lote com a separação
+        desligada) vale para o download do mesmo processo noutro lote."""
+        destino = self.destino
+        self.destino = self.tmp / "Fora" / "Lote antigo"
+        self.rodar([TJAL1], roteiro={TJAL1.formatado: ["ok_sigiloso"]},
+                   separar_sigilosos=False)
+        self.destino = destino
+        resumo = self.rodar([TJAL1, TJAL2])         # o portal responde "ok", sem selo
+        self.conferir_sigiloso(resumo, sigilo.MOTIVO_DOWNLOAD)
+
     def test_tela_do_sigiloso_sabido_nao_vai_para_o_diagnostico(self):
         """O navegador fica sabendo que a tela é de processo sigiloso enquanto
         o portal o busca: o diagnóstico dela (com as partes) não é guardado."""
@@ -706,9 +853,10 @@ class TestRelatorio(BaseMotor):
                             roteiro={TJAL2.formatado: ["ok_sigiloso"]})
         self.assertEqual(resumo.relatorio, self.destino / "_controle" / "relatorio.csv")
         linhas = ler_relatorio(resumo.relatorio)
+        # "causa" entrou no FIM (1.0.2): quem lê pelo nome da coluna não muda
         self.assertEqual(linhas[0], ["ordem", "processo", "tribunal", "sistema", "situacao",
                                      "paginas", "documentos", "arquivo", "sigiloso",
-                                     "incompleto", "detalhe", "data_hora"])
+                                     "incompleto", "detalhe", "data_hora", "causa"])
         # o relatório do acervo (que a IA lê) não diz QUAL processo é sigiloso
         self.assertEqual([l[1] for l in linhas[1:]],
                          [TJAL1.formatado, TJBA1.formatado, "(processo sigiloso)"])
@@ -832,13 +980,55 @@ class TestRetentativas(BaseMotor):
         self.assertEqual(resumo.falhas, [r])
         self.assertIn(TJAL1.formatado, resumo.a_refazer())
 
-    def test_pdf_aberto_no_leitor_explica_e_nao_insiste(self):
+    def test_arquivo_preso_na_area_provisoria_e_passageiro(self):
+        """O portal grava na área provisória, que ninguém abre: quem segura o
+        PDF recém-gravado ali é o antivírus ou o indexador, por instantes. Era
+        tratado como 'PDF aberto no leitor', sem nova tentativa."""
         resumo = self.rodar([TJAL1], roteiro={TJAL1.formatado: ["pdf_aberto", "ok"]},
                             tentativas=3)
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+        self.assertEqual(len(apoio.PortalFalso.todos[0].chamadas), 2)
+        resumo = self.rodar([TJAL2], roteiro={TJAL2.formatado: ["pdf_aberto"] * 5},
+                            tentativas=2)
         r = resumo.itens[0]
         self.assertEqual(r.situacao, modelos.ERRO)
+        self.assertEqual(r.causa, modelos.CAUSA_FALHA)
+        self.assertIn("preso por outro programa", r.detalhe)
+        self.assertNotIn("leitor de PDF", r.detalhe)
+        self.assertEqual(len(apoio.PortalFalso.todos[0].chamadas), 2)
+        self.assertTrue(r.refazer)
+
+    def test_pdf_aberto_fora_da_area_provisoria_nao_insiste(self):
+        fora = self.tmp / "aberto no leitor.pdf"
+        original = apoio.PortalFalso.baixar
+
+        def baixar(portal, numero, destino_pdf, senha=None):
+            portal.chamadas.append((numero.formatado, senha))
+            raise PermissionError(13, "Acesso negado", str(fora))
+        with mock.patch.object(apoio.PortalFalso, "baixar", baixar):
+            resumo = self.rodar([TJAL1], tentativas=3)
+        self.assertIs(apoio.PortalFalso.baixar, original)
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.ERRO)
+        self.assertEqual(r.causa, modelos.CAUSA_PDF_ABERTO)
         self.assertIn("aberto em outro programa", r.detalhe)
         self.assertEqual(len(apoio.PortalFalso.todos[0].chamadas), 1)
+
+    def test_pdf_do_lote_aberto_no_leitor_explica(self):
+        """Gravar NA PASTA DO LOTE, onde o usuário abre o PDF, é que pede
+        'feche o leitor de PDF'."""
+        original = motor._mover
+
+        def preso(origem, destino, *a, **k):
+            if Path(destino).suffix == ".pdf" and motor._dentro(destino, self.destino):
+                raise PermissionError(13, "Acesso negado", str(destino))
+            return original(origem, destino, *a, **k)
+        with mock.patch.object(motor, "_mover", preso):
+            resumo = self.rodar([TJAL1])
+        r = resumo.itens[0]
+        self.assertEqual(r.situacao, modelos.ERRO)
+        self.assertEqual(r.causa, modelos.CAUSA_PDF_ABERTO)
+        self.assertIn("leitor de PDF", r.detalhe)
 
     def test_nao_encontrado_nao_e_repetido(self):
         # TJRS: só eProc, sem sistema alternativo (o TJAL procuraria no eProc)

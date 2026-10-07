@@ -163,6 +163,33 @@ class TestTribunaisEAcessos(ServidorDeTeste):
         self.cliente.dados("DELETE", "/api/acessos/esaj:TJAL")
         self.assertEqual(self.cofre.obter("esaj:TJAL"), ("", ""))
 
+    def _sessao_guardada(self):
+        from helestron.nucleo import caminhos
+        sessao = caminhos.PERFIS / "esaj-TJAL" / "sessao.json"
+        sessao.parent.mkdir(parents=True, exist_ok=True)
+        sessao.write_text("{}")
+        (caminhos.PERFIS / "esaj-TJAL-certificado" / "Default").mkdir(parents=True, exist_ok=True)
+        return sessao
+
+    def test_apagar_acesso_apaga_a_sessao_e_os_perfis(self):
+        """Sem isto, o login apagado seguia valendo por até 12 horas."""
+        sessao = self._sessao_guardada()
+        self.cliente.dados("POST", "/api/acessos", {"portal": "esaj:TJAL",
+                                                    "usuario": "123", "senha": "s3"})
+        self.assertTrue(sessao.exists(), "a primeira gravação não é troca de usuário")
+        self.cliente.dados("DELETE", "/api/acessos/esaj:TJAL")
+        self.assertFalse(sessao.parent.exists())
+        self.assertFalse(sessao.parent.with_name("esaj-TJAL-certificado").exists())
+
+    def test_troca_de_usuario_apaga_a_sessao_do_anterior(self):
+        self.cliente.dados("POST", "/api/acessos", {"portal": "esaj:TJAL",
+                                                    "usuario": "123", "senha": "s3"})
+        sessao = self._sessao_guardada()
+        self.cliente.dados("POST", "/api/acessos", {"portal": "esaj:TJAL", "senha": "nova"})
+        self.assertTrue(sessao.exists(), "mesmo usuário, senha nova: a sessão fica")
+        self.cliente.dados("POST", "/api/acessos", {"portal": "esaj:TJAL", "usuario": "456"})
+        self.assertFalse(sessao.exists())
+
     def test_so_por_agora_nao_vai_para_o_disco(self):
         dados = self.cliente.dados("POST", "/api/acessos", {"portal": "eproc:TJAL", "usuario": "u",
                                                             "senha": "p", "lembrar": False})
@@ -315,12 +342,114 @@ class TestRelacao(ServidorDeTeste):
         envios = Path(self.app.pasta_envios())
         self.assertEqual(list(envios.glob("*")) if envios.exists() else [], [])
 
+    def test_envio_multipart_de_planilha_exportada(self):
+        # Planilha do Excel exportada por sistema (dimensão declarada "A1"),
+        # enviada pela tela como o navegador envia: o defeito relatado era a
+        # recusa dela ("nenhum número de processo").
+        import io
+        import re
+        import zipfile
+        import openpyxl
+        livro = openpyxl.Workbook()
+        livro.active.append(["Processo"])
+        livro.active.append([TJAL])
+        bruto = io.BytesIO()
+        livro.save(bruto)
+        saida = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(bruto.getvalue())) as zi, \
+                zipfile.ZipFile(saida, "w") as zo:
+            for item in zi.infolist():
+                dados = zi.read(item.filename)
+                if item.filename.startswith("xl/worksheets/sheet"):
+                    dados = re.sub(rb'<dimension ref="[^"]*"/>', b'<dimension ref="A1"/>', dados)
+                zo.writestr(item, dados)
+        status, env = self.cliente.enviar("/api/relacao/arquivo", "Relação exportada.xlsx",
+                                          saida.getvalue())
+        self.assertEqual(status, 200, env)
+        self.assertEqual([p["numero"] for p in env["dados"]["processos"]], [TJAL])
+
     def test_envio_ilegivel_400(self):
         status, env = self.cliente.enviar("/api/relacao/arquivo", "vazio.txt", b"sem numero")
         self.assertEqual(status, 400)
         self.assertEqual(env["erro"]["codigo"], "relacao_invalida")
         envios = Path(self.app.pasta_envios())
         self.assertEqual(list(envios.glob("*")) if envios.exists() else [], [])
+
+    def test_frase_do_erro_cita_o_arquivo_do_usuario(self):
+        # Achado R27: o leitor só conhece o temporário do envio, e a tela dizia
+        # "Li o arquivo envio-25ef208ac28d1cb2.txt".
+        status, env = self.cliente.enviar("/api/relacao/arquivo", "Minha relação.txt",
+                                          b"nenhum numero aqui")
+        self.assertEqual((status, env["erro"]["codigo"]), (400, "relacao_invalida"))
+        self.assertIn("Minha relação.txt", env["erro"]["mensagem"])
+        self.assertNotIn("envio-", env["erro"]["mensagem"])
+        status, env = self.cliente.enviar("/api/relacao/arquivo", "Minha relação.xlsx",
+                                          b"PK\x03\x04lixo-truncado")
+        self.assertEqual((status, env["erro"]["codigo"]), (400, "relacao_invalida"))
+        self.assertIn("O arquivo Minha relação.xlsx parece danificado", env["erro"]["mensagem"])
+        envios = Path(self.app.pasta_envios())
+        self.assertEqual(list(envios.glob("*")) if envios.exists() else [], [])
+
+    def test_arquivo_enviado_preso_nao_mostra_o_caminho(self):
+        # Achado V9: a troca do nome do temporário refazia também o erro do
+        # Windows, sem o errno, e a página recebia "[Errno 13] Permission
+        # denied: '...\\envios\\Sigilosos - Fulano.txt'", em inglês e com o
+        # caminho. Preso entre o reconhecimento e a leitura (o leitor relança
+        # o OSError) ou já na abertura (o leitor o embrulha na frase dele): a
+        # frase geral, e o caminho só no registro.
+        from helestron.nucleo import listas
+
+        def preso(caminho, *args, **kwargs):
+            raise PermissionError(13, "Permission denied", str(caminho))
+
+        ler = Path.read_bytes
+
+        def leitura_presa(caminho):
+            if caminho.name.startswith("envio-"):
+                preso(caminho)
+            return ler(caminho)
+
+        for nome, trava in (
+                ("leitura", mock.patch.object(Path, "read_bytes", leitura_presa)),
+                ("abertura", mock.patch.object(listas, "open", preso, create=True))):
+            with self.subTest(nome):
+                with trava, self.assertLogs("servidor", "WARNING") as registro:
+                    status, env = self.cliente.enviar("/api/relacao/arquivo",
+                                                      "Sigilosos - Fulano.txt", TJAL.encode())
+                self.assertEqual((status, env["erro"]["codigo"]), (409, "arquivo_preso"), env)
+                mensagem = env["erro"]["mensagem"]
+                self.assertIn("aberto em outro programa", mensagem)
+                for vazado in ("Errno", "Permission", "envios", "Fulano", "envio-"):
+                    self.assertNotIn(vazado, mensagem)
+                self.assertIn("envio-", "\n".join(registro.output))
+        envios = Path(self.app.pasta_envios())
+        self.assertEqual(list(envios.glob("*")) if envios.exists() else [], [])
+
+    def test_envio_de_planilha_com_valor_fora_do_padrao(self):
+        # Achado R25: a vírgula decimal noutra coluna era 400 'valor_invalido',
+        # com a frase do openpyxl em inglês.
+        from testes.test_listas_excel import linha, texto, xlsx_a_mao
+
+        arq = xlsx_a_mao(self.amb.raiz / "exportada.xlsx", [("Plan1",
+            linha(1, texto("A1", "Processo"), texto("B1", "Valor da causa"))
+            + linha(2, texto("A2", TJAL), '<c r="B2"><v>1500,50</v></c>'))])
+        status, env = self.cliente.enviar("/api/relacao/arquivo", "Relação exportada.xlsx",
+                                          arq.read_bytes())
+        self.assertEqual(status, 200, env)
+        self.assertEqual([p["numero"] for p in env["dados"]["processos"]], [TJAL])
+
+    def test_aviso_dos_corrompidos_manda_digitar_de_novo(self):
+        import openpyxl
+
+        livro = openpyxl.Workbook()
+        for valores in (["Processo"], [TJAL], [7.00012383202480e18]):
+            livro.active.append(valores)
+        arq = self.amb.raiz / "misto.xlsx"
+        livro.save(arq)
+        leitura = self.cliente.dados("POST", "/api/relacao/arquivo", {"caminho": str(arq)})
+        self.assertEqual(len(leitura["corrompidos"]), 1)
+        self.assertTrue(any("digite o número de novo" in a for a in leitura["avisos"]),
+                        leitura["avisos"])
 
     def test_envio_sem_campo_arquivo(self):
         status, env = self.cliente.enviar("/api/relacao/arquivo", "a.txt", TJAL.encode(),
@@ -380,6 +509,23 @@ class TestAbrirEDialogos(ServidorDeTeste):
             abrir_endereco.assert_called_once_with("https://claude.ai")
             self.assertEqual(abrir_arquivo.call_count, 1)
 
+    def test_erro_do_windows_nao_mostra_o_caminho(self):
+        """O PermissionError/FileNotFoundError do sistema traz o caminho (que
+        pode ser o de um processo sigiloso): a página recebe a frase geral; a
+        frase escrita pelo programa segue como está."""
+        caminho = r"C:\Sigilosos\1234567-89.2024.8.26.0100\autos.pdf"
+        with self.assertLogs("servidor", "WARNING"):
+            preso = self.app.traduzir_erro(PermissionError(13, "Permission denied", caminho))
+        self.assertEqual((preso.status, preso.codigo), (409, "arquivo_preso"))
+        self.assertNotIn("Sigilosos", preso.mensagem)
+        self.assertIn("aberto em outro programa", preso.mensagem)
+        with self.assertLogs("servidor", "WARNING"):
+            sumiu = self.app.traduzir_erro(FileNotFoundError(2, "No such file", caminho))
+        self.assertEqual((sumiu.status, sumiu.codigo), (404, "arquivo_inexistente"))
+        self.assertNotIn("1234567", sumiu.mensagem)
+        propria = self.app.traduzir_erro(PermissionError("o cofre está em uso; feche e tente de novo"))
+        self.assertEqual(propria.mensagem, "O cofre está em uso; feche e tente de novo")
+
     def test_nuvem_na_raiz_da_unidade_nao_abre_o_disco_todo(self):
         """Pasta da nuvem na raiz de uma unidade (gravada à mão): o /api/abrir
         não passa a abrir qualquer arquivo dela."""
@@ -408,10 +554,20 @@ class TestAbrirEDialogos(ServidorDeTeste):
         self.app.janela = janela
         dados = self.cliente.dados("POST", "/api/dialogo/arquivo", {
             "titulo": "Relação", "tipos": ["Planilhas|*.xlsx;*.xls", "Tudo|*.*", "Ruim|exe"]})
-        self.assertEqual(dados, {"caminho": "C:\\relacao.xlsx"})
+        # o arquivo não existe aqui: sem tamanho (a tela mostra o que vier)
+        self.assertEqual(dados, {"caminho": "C:\\relacao.xlsx", "tamanho": None})
         self.assertEqual(janela.dialogo_arquivo.call_args[0][1],
                          ["Planilhas (*.xlsx;*.xls)", "Tudo (*.*)"])
         self.assertEqual(self.cliente.dados("POST", "/api/dialogo/pasta", {}), {"caminho": None})
+
+    def test_dialogo_devolve_o_tamanho_do_arquivo(self):
+        arquivo = self.amb.raiz / "audiencia.mp4"
+        arquivo.write_bytes(b"x" * 1234)
+        janela = mock.Mock(tem_dialogos=True)
+        janela.dialogo_arquivo.return_value = str(arquivo)
+        self.app.janela = janela
+        dados = self.cliente.dados("POST", "/api/dialogo/arquivo", {"titulo": "Gravação"})
+        self.assertEqual(dados, {"caminho": str(arquivo), "tamanho": 1234})
 
     def test_tipos_pywebview_limpa_a_descricao(self):
         self.assertEqual(api_geral.tipos_pywebview(["Relatórios do e-SAJ|*.xls;*.html"]),

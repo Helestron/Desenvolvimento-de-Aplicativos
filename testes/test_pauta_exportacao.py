@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import date, datetime, time
+from unittest import mock
 
 from helestron.pauta import exportacao, modelos
 from helestron.pauta.servico import ServicoPauta
@@ -247,6 +248,85 @@ class TestTextoNaoViraFormula(apoio.PastaTemporaria):
             for nome in z.namelist():
                 if nome.startswith("xl/worksheets/"):
                     self.assertNotIn("<f>", z.read(nome).decode("utf-8"), nome)
+
+
+class TestCaracteresDeControle(apoio.PastaTemporaria):
+    """Achado 28: um caractere de controle (de PDF, HTML, CSV, XLS) não derruba a
+    planilha inteira, e o erro inesperado não ecoa o texto de uma célula."""
+
+    def setUp(self):
+        super().setUp()
+        self.amb = ap.config_temporaria(self.tmp)
+        self.servico = ServicoPauta(self.amb.cfg, self.tmp / "local" / "pauta.sqlite3",
+                                    relogio=lambda: AGORA)
+        self.addCleanup(self.servico.fechar)
+
+    def test_importado_e_ja_gravado(self):
+        from openpyxl import load_workbook
+
+        (self.tmp / "rel.csv").write_text(
+            "Data;Hora;Processo;Partes;Observações\n"
+            f"05/10/2026;09:00;{ap.numero('0700101')};JOSE DA SILVA\x02 x BANCO S/A;"
+            "obs\x07ervação\n", encoding="utf-8")
+        self.assertEqual(self.servico.importar(self.tmp / "rel.csv")["novas"], 1)
+        a = self.servico.listar(DE, ATE)["audiencias"][0]
+        self.assertEqual((a["partes"], a["observacoes"]), ("JOSE DA SILVA x BANCO S/A",
+                                                           "observação"))
+        # o registro gravado por uma versão anterior, ainda com o caractere
+        con = self.servico.armazem._c()
+        con.execute("UPDATE audiencias SET partes = ?, local = ?",
+                    ("JOSE\x02 x BANCO", "Sala\x1b 1"))
+        arquivo = self.servico.exportar(DE, ATE, self.amb.pauta, busca="abc\x02",
+                                        incluir_partes_sigilosos=True)
+        arquivo = self.servico.exportar(DE, ATE, self.amb.pauta)
+        aba = load_workbook(arquivo)["Pauta"]
+        self.assertEqual((aba.cell(5, 6).value, aba.cell(5, 9).value), ("JOSE x BANCO",
+                                                                         "Sala 1"))
+        vazio = self.servico.exportar(date(2026, 1, 1), date(2026, 1, 2), self.amb.pauta,
+                                      busca="abc\x02")
+        self.assertIn("busca “abc”", load_workbook(vazio)["Pauta"]["A2"].value)
+
+    def test_erro_inesperado_nao_ecoa_a_celula(self):
+        from helestron.pauta.servico import ErroPauta
+
+        class Ilegal(Exception):
+            pass
+
+        with mock.patch.object(exportacao, "exportar",
+                               side_effect=Ilegal("Fulana de Tal cannot be used in worksheets")), \
+                self.assertLogs("pauta.servico", "ERROR") as registro, \
+                self.assertRaises(ErroPauta) as erro:
+            self.servico.exportar(DE, ATE, self.amb.pauta)
+        self.assertNotIn("Fulana", str(erro.exception))
+        self.assertIn("Ilegal", str(erro.exception))
+        self.assertIsNone(erro.exception.__cause__)
+        self.assertTrue(erro.exception.__suppress_context__)
+        self.assertNotIn("Fulana", "\n".join(registro.output))
+
+
+class TestObservacoesDoSigiloso(TestExportacao):
+    """As observações (onde o portal põe o réu preso, a vítima) do processo sigiloso
+    também são mascaradas; as do público, não."""
+
+    def test_aba_pauta(self):          # já coberto na classe-mãe
+        pass
+
+    def test_observacoes(self):
+        sig, pub = self.lista[4], self.lista[1]
+        for f, texto in ((sig, "Vítima: Fulana"), (pub, "Testemunha: Pedro")):
+            a = modelos.nova(sistema="esaj", tribunal="TJAL", data_=f.data, processo=f.processo,
+                             hora=f.hora, tipo_original=f.tipo, situacao_original=f.situacao,
+                             partes=f.partes, sigiloso=f.sigiloso, observacoes=texto)
+            self.servico.armazem.gravar([a], "esaj-tjal", None, registrar_novas=False)
+        colunas = {t: j for j, (t, *_r) in enumerate(exportacao.COLUNAS, start=1)}
+        for incluir, esperado in ((False, "(segredo de justiça)"), (True, "Vítima: Fulana")):
+            aba = self.abrir(self.servico.exportar(DE, ATE, self.amb.pauta,
+                                                   incluir_partes_sigilosos=incluir))["Pauta"]
+            linhas = self.linhas_por_processo(aba)
+            self.assertEqual(aba.cell(linhas[sig.processo], colunas["Observações"]).value,
+                             esperado)
+            self.assertEqual(aba.cell(linhas[pub.processo], colunas["Observações"]).value,
+                             "Testemunha: Pedro")
 
 
 if __name__ == "__main__":

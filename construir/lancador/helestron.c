@@ -32,6 +32,9 @@
  * PRAZO_SAIDA_RAPIDA_MS sem ter mostrado janela nenhuma, a mensagem aponta o
  * registro do programa (Logs) - em vez de o clique no atalho não dar em nada.
  *
+ * Um arquivo solto no ícone (ou o "Abrir com") chega como argumento, com o
+ * caminho completo: abre o programa, como o atalho (so_arquivos_soltos).
+ *
  * Compilação (construir.py faz isto):
  *   x86_64-w64-mingw32-windres helestron.rc -O coff -o recursos.o
  *   x86_64-w64-mingw32-gcc -municode -mwindows -O2 -s helestron.c recursos.o -o Helestron.exe
@@ -123,6 +126,36 @@ static int chamada_do_instalador(int argc, wchar_t **argv)
             return 1;
     }
     return 0;
+}
+
+/* Caminho completo do Windows: C:\..., C:/... ou \\servidor\... */
+static int caminho_completo(const wchar_t *a)
+{
+    int letra = (a[0] >= L'A' && a[0] <= L'Z') || (a[0] >= L'a' && a[0] <= L'z');
+    if (letra && a[1] == L':' && (a[2] == L'\\' || a[2] == L'/'))
+        return 1;
+    return a[0] == L'\\' && a[1] == L'\\';
+}
+
+/*
+ * Um ou mais arquivos soltos no ícone do Helestron (no atalho da Área de
+ * Trabalho, no próprio Helestron.exe) ou o "Abrir com": o Windows passa o
+ * caminho completo de cada um como argumento. Não são comandos do programa:
+ * a linha de comando sairia com "comando desconhecido" (código 2), escrito
+ * num stderr que, sem console, não vai a lugar nenhum - nem a janela abria
+ * nem aparecia mensagem. Todos os argumentos caminhos completos de arquivos
+ * ou pastas que existem: o programa abre, como pelo atalho. Um comando ou
+ * uma opção nunca é caminho completo ("baixar", "--autoteste C:\x").
+ */
+static int so_arquivos_soltos(int argc, wchar_t **argv)
+{
+    if (argc < 2)
+        return 0;
+    for (int i = 1; i < argc; i++) {
+        if (!caminho_completo(argv[i]) || GetFileAttributesW(argv[i]) == INVALID_FILE_ATTRIBUTES)
+            return 0;
+    }
+    return 1;
 }
 
 static void avisar(const wchar_t *texto, DWORD codigo)
@@ -243,6 +276,10 @@ int WINAPI wWinMain(HINSTANCE instancia, HINSTANCE anterior, PWSTR linha, int mo
     wchar_t **argv = __wargv;
     if (argv == NULL || argc < 1)
         return SAIDA_SEM_MEMORIA;
+    /* Arquivos soltos no ícone: o programa abre, como pelo atalho (e com a
+       mesma vigia da saída rápida). */
+    if (so_arquivos_soltos(argc, argv))
+        argc = 1;
     int silencioso = chamada_do_instalador(argc, argv);
 
     wchar_t *pasta = pasta_do_programa();

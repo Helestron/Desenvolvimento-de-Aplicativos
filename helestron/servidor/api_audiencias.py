@@ -19,6 +19,11 @@ ROTULOS_MODELO = {"base": "Base", "small": "Small", "medium": "Medium",
                   "large-v3-turbo": "Large v3 Turbo"}
 RECOMENDADO = {"base": ["ao_vivo"], "small": ["ao_vivo"], "medium": ["revisao"],
                "large-v3-turbo": ["revisao"]}
+# O envio da gravação pela página (Edge, navegador, ou arrastada para a tela):
+# o vídeo de uma audiência longa tem gigabytes. O arquivo vai para o disco em
+# blocos, depois de conferido o espaço livre (rede.Pedido.envio). Escolhido
+# pelo diálogo do Windows, nada é enviado: vai só o caminho.
+LIMITE_ENVIO_GRAVACAO = 20 * 1024 ** 3
 
 
 def registrar(r: Roteador) -> None:
@@ -37,7 +42,8 @@ def registrar(r: Roteador) -> None:
     r.adicionar("GET", "/api/transcricao/estado", estado)
     r.adicionar("GET", "/api/transcricao/recuperaveis", recuperaveis)
     r.adicionar("POST", "/api/transcricao/recuperar", recuperar)
-    r.adicionar("POST", "/api/transcricao/gravacao", gravacao)
+    r.adicionar("POST", "/api/transcricao/gravacao", gravacao,
+                limite_envio=LIMITE_ENVIO_GRAVACAO)
     r.adicionar("GET", "/api/transcricao/recentes", recentes)
 
 
@@ -210,13 +216,53 @@ def data_da_gravacao(valor, nome: str = "") -> datetime | None:
     return None
 
 
+def _com_outro_nome(erro: Exception, temporario: str, nome: str) -> Exception:
+    """A mesma exceção (o mesmo tipo: a tarefa e o registro a reconhecem por
+    ele), com o nome do temporário trocado pelo do arquivo do usuário.
+
+    O erro do próprio Windows (com errno: "[Errno 13] Permission denied:
+    '<caminho>'") segue como está: refeito só com a frase, perderia o errno,
+    e a página receberia o caminho, que servidor.aplicacao.traduzir_erro
+    troca pela frase geral."""
+    if isinstance(erro, OSError) and erro.errno is not None:
+        return erro
+    texto = str(erro).replace(temporario, nome)
+    try:
+        return type(erro)(texto)
+    except Exception:                          # tipo que não se cria só com a frase
+        return RuntimeError(texto)
+
+
+def _transcricao_em_andamento(app) -> str:
+    """O título da transcrição de gravação (ou revisão) que está rodando, ou ""."""
+    try:
+        tarefa = app.tarefas.ativa("transcricao_arquivo")
+    except Exception:                          # a conferência é só um adianto
+        return ""
+    return str(getattr(tarefa, "titulo", "") or "Transcrever a gravação") if tarefa else ""
+
+
 def gravacao(p: Pedido) -> dict:
+    """Transcreve uma gravação: {caminho} (escolhida pelo diálogo do Windows:
+    nada é copiado), o envio da página (multipart, campo "arquivo", até
+    LIMITE_ENVIO_GRAVACAO) ou {revisao: true} (a última audiência ao vivo).
+
+    O arquivo não é recusado pela extensão: a decodificação (PyAV) é que
+    diz, na tarefa, se há trilha de áudio, se o arquivo está cortado ou se é
+    protegido por DRM.
+    """
     app = p.app
     cfg = app.cfg
     enviado: Path | None = None
     tamanho = None
     if p.tipo_corpo == "multipart/form-data":
-        envio = p.envio(app.pasta_envios())
+        # Uma transcrição de cada vez: com outra rodando, recusa ANTES de
+        # receber gigabytes que seriam jogados fora.
+        ocupada = _transcricao_em_andamento(app)
+        if ocupada:
+            raise ErroApi(409, "ocupado", f"Este trabalho já está em andamento: {ocupada}. "
+                                          "Espere ele terminar para transcrever outra gravação.")
+        envio = p.envio(app.pasta_envios(), LIMITE_ENVIO_GRAVACAO)
         arquivo = envio.arquivo("arquivo")
         dados = dict(envio.campos)
         if arquivo is None:
@@ -245,6 +291,7 @@ def gravacao(p: Pedido) -> dict:
             if not isinstance(dados.get("revisao"), bool) else dados["revisao"]
         rotulos = None
         participantes = None
+        meta = None
         tipo = str(dados.get("tipo") or "").strip()
         data = None
         if revisao:
@@ -260,10 +307,14 @@ def gravacao(p: Pedido) -> dict:
                               "revisão.")
             numero = ultima["numero"]
             rotulos = ultima.get("falas")
-            # A ficha da revisão é a da audiência: o tipo escolhido agora na
-            # tela, ou o da sessão ao vivo, e os participantes dela.
+            # A ficha da revisão é a da audiência (a MetaAudiencia da sessão
+            # ao vivo: início, término, data, unidade, magistrado e os
+            # participantes - nunca o mapa das teclas F1-F8), com o tipo
+            # escolhido agora na tela, ou o da sessão.
             tipo = tipo or str(ultima.get("tipo") or "").strip()
-            participantes = dict(ultima.get("participantes") or {}) or None
+            meta = ultima.get("meta")
+            if meta is None:
+                participantes = dict(ultima.get("participantes") or {}) or None
             # a revisão de audiência sigilosa continua fora do acervo
             extra = MOTIVO_ULTIMA if ultima.get("sigiloso") else ""
         else:
@@ -271,7 +322,11 @@ def gravacao(p: Pedido) -> dict:
                 raise erro_400("Escolha a gravação da audiência.", "campo_ausente")
             if enviado is None and not origem.is_file():
                 raise ErroApi(404, "arquivo_inexistente", f"Não encontrei o arquivo {origem.name}.")
-            numero = numero_da_gravacao(nome, str(dados.get("processo") or "").strip() or None)
+            # O caminho inteiro (o número pode estar na pasta: as mídias dos
+            # autos ficam em _controle/midias/<número>/) ou, no envio, o nome
+            # original - com o dependente "-NN" do nome ou da pasta.
+            numero = numero_da_gravacao(origem if enviado is None else nome,
+                                        str(dados.get("processo") or "").strip() or None)
             if enviado is None:
                 extra = MOTIVO_PASTA if servicos.na_pasta_dos_sigilosos(cfg, origem) else ""
             else:
@@ -287,12 +342,28 @@ def gravacao(p: Pedido) -> dict:
         raise
 
     def alvo(tw):
+        def progresso(fracao, texto=""):
+            # "Lendo o áudio de envio-3f6e….mp4": na tela, o nome do usuário
+            if enviado is not None and nome and texto:
+                texto = texto.replace(enviado.name, nome)
+            tw.definir_fracao(fracao, texto)
+
         try:
             tw.definir_fracao(0.0, f"{nome} → {numero.nome_arquivo}.docx")
+            extra = {"meta": meta} if meta is not None else {}
             documento = servicos.transcrever_gravacao(
-                origem, numero, cfg, lambda f, t="": tw.definir_fracao(f, t), tw.cancelado,
+                origem, numero, cfg, progresso, tw.cancelado,
                 rotulos_manuais=rotulos, tipo=tipo, participantes=participantes,
-                sigiloso=sigiloso, gravacao=nome if enviado is not None else "", data=data)
+                sigiloso=sigiloso, gravacao=nome if enviado is not None else "", data=data,
+                **extra)
+        except Exception as erro:
+            # O motor só conhece o temporário do envio: a frase ("'envio-3f6e….mp4'
+            # é um vídeo sem trilha de áudio") diz o nome do arquivo do usuário.
+            if enviado is not None and nome and enviado.name in str(erro):
+                novo = _com_outro_nome(erro, enviado.name, nome)
+                if novo is not erro:
+                    raise novo from erro
+            raise
         finally:
             if enviado is not None:
                 try:

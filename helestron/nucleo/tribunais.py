@@ -150,15 +150,71 @@ def _mtime(p: Path) -> float:
         return 0.0
 
 
-def _ler_locais() -> dict:
+# As entradas do enderecos-locais.json que não puderam valer na última
+# leitura ('eproc:TJAL', 'eproc:TJAL/1g'), para a Verificação mostrar.
+_DESCARTADOS: list[str] = []
+
+
+def _ler_locais() -> dict[str, dict[str, str]]:
+    """As correções do usuário, só as bem-formadas: {portal: {grau: url}}.
+
+    O arquivo é editado à mão (o suporte manda corrigir ali). Uma entrada
+    fora do formato - a URL como texto no lugar do objeto por grau, um
+    número, uma lista - derrubava toda consulta de tribunal (TypeError em
+    carregar(), para QUALQUER tribunal) e a própria tela que corrige o
+    endereço. Aqui ela é deixada de fora, com aviso no registro, e o resto
+    vale. A próxima correção pela tela regrava o arquivo sem ela.
+    """
     try:
         dados = _ler_json(ARQUIVO_LOCAL)
     except FileNotFoundError:
+        _anotar_descartados([])
         return {}
     except (OSError, ValueError) as erro:
-        log.warning("endereços corrigidos ilegíveis (%s): %s", ARQUIVO_LOCAL, erro)
+        _anotar_descartados([ARQUIVO_LOCAL.name], str(erro))
         return {}
-    return dados if isinstance(dados, dict) else {}
+    if not isinstance(dados, dict):
+        _anotar_descartados([ARQUIVO_LOCAL.name], "o conteúdo não é um objeto JSON")
+        return {}
+    limpos: dict[str, dict[str, str]] = {}
+    descartados: list[str] = []
+    for portal, graus in dados.items():
+        if not isinstance(graus, dict):
+            descartados.append(str(portal))
+            continue
+        bons = {str(g): u.strip() for g, u in graus.items() if isinstance(u, str) and u.strip()}
+        descartados += [f"{portal}/{g}" for g, u in graus.items()
+                        if not isinstance(u, str)]
+        if bons:
+            limpos[str(portal)] = bons
+    _anotar_descartados(descartados)
+    return limpos
+
+
+def _anotar_descartados(lista: list[str], ilegivel: str = "") -> None:
+    # carregar() lê o arquivo a cada consulta: o aviso vai para o registro
+    # só quando o que foi descartado muda, e não a cada processo da lista.
+    if lista != _DESCARTADOS:
+        if ilegivel:
+            log.warning("endereços corrigidos ilegíveis (%s): %s", ARQUIVO_LOCAL, ilegivel)
+        elif lista:
+            log.warning("Endereços corrigidos ignorados em %s (fora do formato "
+                        "{\"portal\": {\"grau\": \"https://...\"}}): %s",
+                        ARQUIVO_LOCAL, ", ".join(lista))
+        _DESCARTADOS[:] = lista
+
+
+def problema_locais() -> str:
+    """Frase para a Verificação quando parte do enderecos-locais.json foi
+    deixada de fora; "" se tudo valeu (ou se não há correções)."""
+    _ler_locais()
+    if not _DESCARTADOS:
+        return ""
+    if _DESCARTADOS == [ARQUIVO_LOCAL.name]:
+        return (f"as correções de endereço ({ARQUIVO_LOCAL}) não puderam ser lidas e foram "
+                "ignoradas; vale o endereço do catálogo")
+    return (f"parte das correções de endereço ({ARQUIVO_LOCAL}) está fora do formato e foi "
+            f"ignorada: {', '.join(_DESCARTADOS)}; vale o endereço do catálogo")
 
 
 def _com_locais(t: Tribunal, locais: dict) -> Tribunal:
@@ -187,6 +243,9 @@ def definir_endereco(portal: str, grau: str, url: str) -> None:
     Endereço em branco apaga a correção (volta o do catálogo).
     """
     locais = _ler_locais()
+    if _DESCARTADOS:
+        log.warning("A gravação do endereço corrigido retira de %s o que estava fora do "
+                    "formato: %s", ARQUIVO_LOCAL.name, ", ".join(_DESCARTADOS))
     entrada = locais.setdefault(portal, {})
     if url.strip():
         entrada[grau] = url.strip()

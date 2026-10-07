@@ -78,6 +78,44 @@ def dentro_do_onedrive(p: Path) -> bool:
     return "\\onedrive" in texto or "/onedrive" in texto
 
 
+# Google Drive para computador: a unidade virtual (G:\Meu Drive, G:\Drives
+# compartilhados) e o modo espelho, logo abaixo da pasta do perfil
+# (%USERPROFILE%\Meu Drive, também com um complemento entre parênteses, "My
+# Drive (2)": na dúvida, é nuvem).
+RAIZES_GOOGLE_DRIVE = ("meu drive", "my drive", "drives compartilhados", "shared drives")
+DRIVE_NO_PERFIL = ("meu drive", "my drive")
+
+
+def no_google_drive(p) -> bool:
+    """A pasta está numa pasta do Google Drive para computador? Só pelo
+    caminho (a pasta não precisa existir; nada de varrer as unidades): uma
+    parte "Google Drive"; no Windows, "Meu Drive"/"My Drive"/"Drives
+    compartilhados" logo abaixo da letra da unidade; ou "Meu Drive"/"My
+    Drive" logo abaixo da pasta do perfil (o modo espelho)."""
+    try:
+        real = Path(p).resolve()
+    except (OSError, RuntimeError, ValueError):
+        real = Path(p)
+    partes = [x.lower() for x in real.parts]
+    if "google drive" in partes or "googledrive" in partes:
+        return True
+    if sys.platform == "win32" and len(partes) > 1 and partes[1] in RAIZES_GOOGLE_DRIVE:
+        return True
+    try:
+        casa = Path.home()
+        try:
+            casa = casa.resolve()
+        except (OSError, RuntimeError, ValueError):
+            pass
+        resto = real.relative_to(casa).parts
+    except (KeyError, RuntimeError, ValueError):   # sem perfil, ou fora dele
+        return False
+    if not resto:
+        return False
+    primeira = resto[0].casefold()
+    return any(primeira == nome or primeira.startswith(nome + " (") for nome in DRIVE_NO_PERFIL)
+
+
 def _documentos_windows() -> Path | None:  # pragma: no cover - só no Windows
     """A pasta Documentos de verdade (SHGetKnownFolderPath): com o
     redirecionamento do OneDrive ou da TI, ela não é %USERPROFILE%\\Documents."""
@@ -127,7 +165,10 @@ def _base_usuario() -> Path:
     if propria:
         return Path(os.path.expandvars(propria)).expanduser()
     documentos = pasta_documentos()
-    if dentro_do_onedrive(documentos):
+    # Documentos no OneDrive ou no Google Drive (redirecionados pela TI ou
+    # pelo próprio serviço): a base vai para o perfil, fora da nuvem, porque
+    # os sigilosos e a pauta não podem ficar numa pasta sincronizada.
+    if dentro_do_onedrive(documentos) or no_google_drive(documentos):
         perfil = os.environ.get("USERPROFILE")
         return (Path(perfil) if perfil else Path.home()) / "Helestron"
     return documentos / "Helestron"

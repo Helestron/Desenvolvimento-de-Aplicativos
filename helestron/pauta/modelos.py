@@ -32,6 +32,25 @@ SITUACOES = ("Designada", "Realizada", "Cancelada", "Redesignada", "Não realiza
 SEM_AUDIENCIA = ("Cancelada", "Redesignada")
 JA_PASSOU = ("Realizada", "Não realizada")
 MASCARA_SIGILO = "(segredo de justiça)"
+# Os campos mascarados nos processos em segredo de justiça - os que identificam
+# as partes (a planilha e a lista em JSON da linha de comando, salvo escolha do
+# usuário): o portal costuma pôr nas observações o réu preso, a vítima, o advogado.
+CAMPOS_MASCARADOS = ("partes", "observacoes")
+
+
+def mascarar_sigiloso(a: dict) -> dict:
+    """A audiência (dict da API) de um processo em segredo de justiça, numa
+    cópia com as partes e as observações trocadas por MASCARA_SIGILO: as
+    partes sempre (a coluna diz de quem é a audiência), as observações quando
+    há alguma. A de processo público volta como está."""
+    if not a.get("sigiloso"):
+        return a
+    a = dict(a)
+    a["partes"] = MASCARA_SIGILO
+    if a.get("observacoes"):
+        a["observacoes"] = MASCARA_SIGILO
+    return a
+
 
 # Campos que, quando mudam, contam como alteração da audiência.
 CAMPOS_COMPARADOS = ("processo", "data", "hora", "tipo", "situacao", "local", "link", "classe",
@@ -119,11 +138,15 @@ def sem_acento(texto) -> str:
 
 
 _ESPACOS = re.compile(r"\s+")
+# Os caracteres de controle que não são espaço (os outros viram espaço em
+# _ESPACOS): chegam do PDF, do HTML, do CSV e do XLS e o Excel não os aceita.
+_CONTROLE = re.compile(r"[\x00-\x08\x0e-\x1b\x7f]")
 
 
 def limpar(texto) -> str:
-    """Espaços colapsados (inclusive o &nbsp; das tabelas do portal)."""
-    return _ESPACOS.sub(" ", str(texto or "").replace("\xa0", " ")).strip()
+    """Espaços colapsados (inclusive o &nbsp; das tabelas do portal), sem
+    caracteres de controle."""
+    return _ESPACOS.sub(" ", _CONTROLE.sub("", str(texto or "")).replace("\xa0", " ")).strip()
 
 
 def normalizar_texto(texto) -> str:

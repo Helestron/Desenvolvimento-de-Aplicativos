@@ -14,6 +14,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from helestron.download import modelos
 from helestron.download.contexto import Contexto
@@ -56,7 +57,12 @@ def png_bytes(largura: int = 60, altura: int = 30) -> bytes:
 
 
 class PastaTemporaria(unittest.TestCase):
-    """Base de testes com uma pasta temporária limpa a cada teste."""
+    """Base de testes com uma pasta temporária limpa a cada teste.
+
+    O banco da pauta e os registros do sigilo apurado, ao lado dele
+    (pauta.sigilo.json, download.sigilo.json), também ficam nela: o sigilo
+    que o download de um teste registra não vale para o teste seguinte, que
+    usa os mesmos números."""
 
     def setUp(self) -> None:
         # No Windows, o navegador recém-fechado ainda segura arquivos do
@@ -64,6 +70,13 @@ class PastaTemporaria(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory(prefix="helestron-teste-",
                                                 ignore_cleanup_errors=True)
         self.tmp = Path(self._tmp.name)
+        from helestron.nucleo import caminhos, sigilo
+
+        p = mock.patch.object(caminhos, "ARQUIVO_PAUTA", self.tmp / "local" / "pauta.sqlite3")
+        p.start()
+        self.addCleanup(p.stop)
+        sigilo.esquecer_pauta()
+        self.addCleanup(sigilo.esquecer_pauta)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()

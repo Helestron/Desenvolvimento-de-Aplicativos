@@ -329,19 +329,32 @@ class TestConteudo(unittest.TestCase):
         self.assertTrue(all(p.startswith(b"%PDF") for p in partes))
 
     def test_capa(self):
+        # A capa saiu do PDF (o eProc não numera folhas: página nenhuma antes
+        # dos documentos) e foi para o capa.txt, com o resumo do arquivo
         n = apoio.numero("5001234", tr="21")
         doc = Documento(4, "20/03/2024", "", "JUNTADA", "PET1", "x")
-        texto = eproc.texto_capa(n, "eProc do TJRS", {"classe": "PROCEDIMENTO COMUM"},
-                                 ["AUTOR: MARIA"], 7, [doc, doc], True, [doc], 1,
-                                 quando=datetime(2026, 10, 3, 9, 5))
-        self.assertTrue(texto.startswith(f"PROCESSO {n.formatado}\neProc do TJRS — autos "
-                                         "extraídos em 03/10/2026 às 09:05"))
-        self.assertIn("SEGREDO DE JUSTIÇA", texto)
+        eventos = [Evento(4, "20/03/2024", "", "JUNTADA", documentos=[doc]),
+                   Evento(5, "01/04/2024", "", "AUDIÊNCIA REALIZADA")]
+        capa = {"classe": "PROCEDIMENTO COMUM"}
+        m = eproc.manifesto_do_processo(n, "eProc do TJRS", "TJRS", capa, ["AUTOR: MARIA"],
+                                        eventos, True)
+        m["documentos"] = [eproc.info_do_documento(doc, "pdf", "ausente", motivo="HTTP 500")]
+        m["documentos"][0].update(inicio=1, paginas=1)
+        texto = eproc.texto_capa_txt(n, "eProc do TJRS", capa, ["AUTOR: MARIA"], eventos, True,
+                                     m, quando=datetime(2026, 10, 3, 9, 5))
+        self.assertTrue(texto.startswith(f"Processo {n.formatado} - eProc do TJRS\n"
+                                         "Capa extraída em 03/10/2026 09:05"))
+        self.assertIn("SEGREDO DE JUSTIÇA", texto[:2000])
         self.assertIn("Classe: PROCEDIMENTO COMUM", texto)
-        self.assertIn("  AUTOR: MARIA", texto)
-        self.assertIn("Documentos: 2", texto)
+        self.assertIn("== Partes ==\nAUTOR: MARIA", texto)
+        self.assertIn("Eventos: 2; documentos: 1; páginas do PDF: 1.", texto)
         self.assertIn("Documentos não incluídos (1): ev. 4 PET1", texto)
-        self.assertIn("evento 1, INIC1", texto)
+        self.assertIn("== Como citar ==", texto)
+        self.assertIn("evento N, RÓTULO, p. Y", texto)
+        self.assertIn("Evento 4 — JUNTADA — PET1 (20/03/2024) — pág. 1 do PDF — NÃO INCLUÍDO "
+                      "(página de aviso): HTTP 500", texto)
+        self.assertIn("Eventos sem documento (1)", texto)
+        self.assertIn("01/04/2024  Evento 5 - AUDIÊNCIA REALIZADA", texto)
 
 
 class TestConfiguracao(apoio.PastaTemporaria):
@@ -629,8 +642,11 @@ class TestRegressoesSemNavegador(apoio.PastaTemporaria):
         self.assertEqual(eproc.eventos_ausentes([ev(3), ev(2)]), "1")
         self.assertEqual(eproc.eventos_ausentes([ev(3), ev(2), ev(1)]), "")
         self.assertEqual(eproc.eventos_ausentes([ev(0)]), "")
-        texto = eproc.texto_capa(self.n, "eProc do TJRS", {}, [], 4, [], False, [], 0,
-                                 ausentes="1 a 3")
+        # sem capa no PDF: o aviso vai para o capa.txt e o manifesto
+        m = eproc.manifesto_do_processo(self.n, "eProc do TJRS", "TJRS", {}, [],
+                                        [ev(7), ev(6), ev(5), ev(4)], False, ausentes="1 a 3")
+        self.assertEqual(m["eventos_nao_listados"], "1 a 3")
+        texto = "\n".join(eproc.resumo_do_arquivo(m, [ev(7), ev(6), ev(5), ev(4)]))
         self.assertIn("os eventos 1 a 3 não apareceram", texto)
 
     def test_link_por_script_e_icone_com_data_doc_diferente(self):

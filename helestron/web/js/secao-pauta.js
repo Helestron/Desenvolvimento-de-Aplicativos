@@ -304,7 +304,7 @@
         const ate = el("input", { type: "date", classe: "campo", id: "exportar-ate" });
         de.value = fmt.iso(de0);
         ate.value = fmt.iso(ate0);
-        const partesSig = interruptor({ marcado: H.app.flag(H.app.valorConfig("pauta", "incluir_partes_sigilosos", "false")), rotulo: "Incluir as partes dos processos sigilosos" });
+        const partesSig = interruptor({ marcado: H.app.flag(H.app.valorConfig("pauta", "incluir_partes_sigilosos", "false")), rotulo: "Incluir as partes e as observações dos processos sigilosos" });
         const filtrosAtivos = [
           f.sistema ? "sistema " + nomeSistema(f.sistema) : "",
           f.situacao ? "situação " + f.situacao : "",
@@ -320,7 +320,7 @@
               el("div", {}, el("label", { classe: "rotulo", for: "exportar-ate", texto: "Até" }), ate)),
             filtrosAtivos.length ? el("p", { classe: "ajuda-campo", texto: "Com os filtros da tela: " + filtrosAtivos.join(", ") + "." }) : null,
             el("div", { classe: "grupo-lista", estilo: { boxShadow: "none" } },
-              H.ui.linha({ icone: "cadeado", cor: "navy", titulo: "Incluir as partes dos sigilosos", sub: "Desligado, a planilha mostra “(segredo de justiça)” no lugar das partes.", acessorio: partesSig })),
+              H.ui.linha({ icone: "cadeado", cor: "navy", titulo: "Incluir as partes e as observações dos sigilosos", sub: "Desligado, a planilha mostra “(segredo de justiça)” no lugar das partes e das observações.", acessorio: partesSig })),
             pastaPauta ? el("div", { classe: "ajuda-campo" },
               el("span", { texto: "A planilha fica fora do acervo da IA, em:" }),
               el("span", { classe: "caminho", estilo: { display: "block", marginTop: "2px" }, texto: pastaPauta })) : null,

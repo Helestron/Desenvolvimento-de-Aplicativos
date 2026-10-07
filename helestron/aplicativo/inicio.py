@@ -100,6 +100,17 @@ def limpar_antigos(pasta: Path | None = None) -> int:
     return apagados
 
 
+def limpar_perfis() -> int:
+    """As cópias antigas do perfil do Chrome (com senhas e cookies) e as
+    sessões guardadas em texto puro, das versões até a 1.0.1."""
+    try:
+        from ..download import navegador
+        return navegador.limpar_perfis_antigos()
+    except Exception as erro:
+        log.warning("limpeza dos perfis do navegador: %s", type(erro).__name__)
+        return 0
+
+
 def _espera_encerrar_s() -> float:
     try:
         from ..servidor import aplicacao
@@ -216,6 +227,7 @@ def _abrir(autoteste: Path | None) -> int:
             log.warning("não consegui gravar o registro da instância: %s", erro)
     threading.Thread(target=limpar_temporarios, name="limpar-temp", daemon=True).start()
     threading.Thread(target=limpar_antigos, name="limpar-antigos", daemon=True).start()
+    threading.Thread(target=limpar_perfis, name="limpar-perfis", daemon=True).start()
     if teste is None:
         # No autoteste, nada de sincronizar com os portais: a pauta é a das
         # pastas vazias, e o percurso não espera rede nem navegador.

@@ -205,10 +205,27 @@
   }
   const MOTIVO_PAUTA = "A pauta de audiências indica que este processo corre em segredo de justiça.";
   const MOTIVO_AUTOS = "Os autos deste processo (ou uma transcrição ou gravação dele) estão na pasta dos sigilosos.";
+  const MOTIVO_PAUTA_PRINCIPAL = "Este processo é incidente de um processo sigiloso: a pauta de audiências indica que o principal corre em segredo de justiça.";
+  /**
+   * O número como o servidor o devolve (cnj.Numero.formatado): o dependente
+   * digitado como "-1", "/0001" ou "-01" vira "/01".
+   */
+  function processoFormatado(processo) {
+    const texto = String(processo || "").trim();
+    const m = /^(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})(?:\s*[/-]\s*(?:inc)?0*(\d{1,4}))?$/i.exec(texto);
+    if (!m) return texto;
+    return m[1] + (m[2] !== undefined ? "/" + (m[2].replace(/^0+/, "") || "0").padStart(2, "0") : "");
+  }
+  /** O nome do documento: o dependente com "-NN" (o Windows não aceita "/"). */
+  const nomeDoProcesso = (processo) => processoFormatado(processo).replace("/", "-");
   /** Por que o programa já sabe que o processo é sigiloso ("" = não sabe). */
   function sigiloConhecido(numero) {
+    numero = processoFormatado(numero);
     if (recentes.some((r) => r.sigiloso && r.numero === numero)) return MOTIVO_AUTOS;
     if (pauta.some((a) => a.sigiloso && a.processo === numero)) return MOTIVO_PAUTA;
+    // o incidente ("/01") herda o sigilo do principal
+    const principal = numero.replace(/\/\d+$/, "");
+    if (principal !== numero && pauta.some((a) => a.sigiloso && a.processo === principal)) return MOTIVO_PAUTA_PRINCIPAL;
     return "";
   }
 
@@ -321,7 +338,7 @@
     ["pauta", "intervalo_horas", "inteiro", "Intervalo (horas)", "De quanto em quanto tempo conferir a pauta."],
     ["pauta", "dias_atras", "inteiro", "Dias para trás", "Período que a sincronização confere antes de hoje."],
     ["pauta", "dias_a_frente", "inteiro", "Dias à frente", "Período que a sincronização confere depois de hoje."],
-    ["pauta", "incluir_partes_sigilosos", "flag", "Incluir as partes dos sigilosos no Excel", "Desligado, a planilha mostra “(segredo de justiça)” no lugar das partes."],
+    ["pauta", "incluir_partes_sigilosos", "flag", "Mostrar as partes e as observações dos processos sigilosos na planilha", "Desligado (recomendado), as colunas Partes e Observações dos processos em segredo de justiça saem como “(segredo de justiça)”."],
     ["compartilhar", "pasta_nuvem", "pasta", "Pasta na nuvem", "OneDrive ou Google Drive para espelhar o acervo. Em branco, não espelha."],
     ["compartilhar", "espelhar_automaticamente", "flag", "Espelhar sozinho", "Ao fim de cada download e de cada transcrição."],
     ["compartilhar", "incluir_texto", "flag", "Gerar o texto dos autos para a IA", "Com a página e o documento marcados; a IA lê melhor e gasta menos."],
@@ -498,7 +515,8 @@
     };
     let baixados = 0, falhas = 0, jaTinha = 0, sigilosos = 0;
     let perguntou = false;
-    for (const n of numeros) emitirItem({ tarefa: t.id, numero: n, situacao: "", mensagem: "", arquivo: "", sigiloso: false });
+    // 'causa' e 'refazer': os do servidor (api_processos.item_json), os mesmos do relatório.
+    for (const n of numeros) emitirItem({ tarefa: t.id, numero: n, situacao: "", mensagem: "", arquivo: "", sigiloso: false, causa: "", refazer: true });
     await pausa(500);
     for (let i = 0; i < numeros.length; i++) {
       if (t._parar) break;
@@ -524,14 +542,14 @@
           return;
         }
       }
-      emitirItem({ tarefa: t.id, numero: n, situacao: "BAIXANDO", mensagem: "Abrindo a pasta digital…", arquivo: "", sigiloso: false });
+      emitirItem({ tarefa: t.id, numero: n, situacao: "BAIXANDO", mensagem: "Abrindo a pasta digital…", arquivo: "", sigiloso: false, causa: "", refazer: true });
       atualizar(t, { status: `Baixando ${n} no ${portal}`, progresso: { atual: n } });
       await pausa(650 + (i % 3) * 180);
-      let item = { tarefa: t.id, numero: n, situacao: "OK", mensagem: `${entre(18, 412)} páginas`, arquivo: pasta + "\\" + n + ".pdf", sigiloso: false };
-      if (LOTE_FALHA) item = Object.assign(item, { situacao: "ERRO", mensagem: "O portal não respondeu (tempo esgotado).", arquivo: "" });
+      let item = { tarefa: t.id, numero: n, situacao: "OK", mensagem: `${entre(18, 412)} páginas`, arquivo: pasta + "\\" + n + ".pdf", sigiloso: false, causa: "", refazer: false };
+      if (LOTE_FALHA) item = Object.assign(item, { situacao: "ERRO", mensagem: "O portal não respondeu (tempo esgotado).", arquivo: "", causa: "portal", refazer: true });
       else if (i === 2) item = Object.assign(item, { situacao: "JA_BAIXADO", mensagem: "O PDF já estava na pasta do lote." });
       if (i === 4 && opcoes.separar_sigilosos !== false) item = Object.assign(item, { sigiloso: true, mensagem: "Segredo de justiça: salvo na pasta dos sigilosos.", arquivo: PASTAS.sigilosos + "\\" + nomeLote + "\\" + n + ".pdf" });
-      if (i === 7) item = Object.assign(item, { situacao: "NAO_ENCONTRADO", mensagem: "Não achei o processo no e-SAJ do TJSP.", arquivo: "" });
+      if (i === 7) item = Object.assign(item, { situacao: "NAO_ENCONTRADO", mensagem: "Não achei o processo no e-SAJ do TJSP.", arquivo: "", causa: "portal", refazer: true });
       emitirItem(item);
       if (item.situacao === "OK") baixados++;
       if (item.situacao === "JA_BAIXADO") jaTinha++;
@@ -632,7 +650,7 @@
       sessao.falas.push(fala);
       emitirTranscricao("fala", fala);
       emitirTranscricao("atraso", { segundos: Math.round((1.2 + aleatorio()) * 10) / 10 });
-      if (i % 4 === 0) emitirTranscricao("salvo", { arquivo: PASTAS.transcricoes + "\\" + sessao.processo + ".docx" });
+      if (i % 4 === 0) emitirTranscricao("salvo", { arquivo: PASTAS.transcricoes + "\\" + nomeDoProcesso(sessao.processo) + ".docx" });
     }, 1700));
   }
 
@@ -713,7 +731,7 @@
       pendencias.unshift({ chave: SIGILO === "autos" ? "sigilo" : "sigilo-arquivos", titulo: n.titulo, mensagem: n.mensagem, acao: "compartilhar", arquivos: n.arquivos.slice() });
     }
     return {
-      nome: "Helestron", versao: "1.0.1", modo: MODO_JANELA, usuario: valores.geral.nome_usuario, pastas: PASTAS, pendencias,
+      nome: "Helestron", versao: "1.0.2", modo: MODO_JANELA, usuario: valores.geral.nome_usuario, pastas: PASTAS, pendencias,
       audiencia: { ativa: !!sessao.id && sessao.estado !== "encerrada", estado: sessao.estado, processo: sessao.id ? sessao.processo : null },
       resumo: {
         processos: 312, transcricoes: 47,
@@ -808,7 +826,9 @@
     "POST /api/dialogo/arquivo": ({ corpo }) => {
       if (SEM_DIALOGO) throw erro("sem_dialogo", "Esta janela não tem o diálogo de arquivos do Windows.");
       const t = (corpo && corpo.titulo) || "";
-      if (/grava/i.test(t)) return { caminho: caminhoArquivo("Audiência 0701234 - 18-09-2026.mp3") };
+      // A mídia de um incidente baixada com os autos: o número (com o
+      // dependente "-01") está na pasta, e não no nome dado pelo portal.
+      if (/grava/i.test(t)) return { caminho: PASTAS.processos + "\\_controle\\midias\\" + cnj(700412, 2024, 8, 2, 1) + "-01\\video_audiencia.mp4" };
       if (/pauta|relat/i.test(t)) return { caminho: caminhoArquivo("Agenda de audiências - outubro.xls") };
       return { caminho: caminhoArquivo("Relação de outubro.xlsx") };
     },
@@ -959,13 +979,14 @@
       conferirMicrofone("dispositivo" in corpo ? corpo.dispositivo : valores.transcricao.dispositivo);
       // O pedido só ACRESCENTA sigilo (C4): o que o programa já sabe vale
       // mesmo com o interruptor desligado, e a resposta diz por quê.
-      const motivo = corpo.sigiloso ? "" : sigiloConhecido(corpo.processo);
-      const pedido = Object.assign({}, corpo, { sigiloso: !!corpo.sigiloso || !!motivo });
+      const processo = processoFormatado(corpo.processo);
+      const motivo = corpo.sigiloso ? "" : sigiloConhecido(processo);
+      const pedido = Object.assign({}, corpo, { processo, sigiloso: !!corpo.sigiloso || !!motivo });
       sessao.documento = null;
       sessao.tipo = corpo.tipo || "";
       clearInterval(sessao.teste);
       iniciarSessao(pedido);
-      const resposta = { sessao: sessao.id, processo: corpo.processo, sigiloso: pedido.sigiloso, sigiloso_forcado: !!motivo };
+      const resposta = { sessao: sessao.id, processo, sigiloso: pedido.sigiloso, sigiloso_forcado: !!motivo };
       if (motivo) resposta.motivo = motivo;
       return resposta;
     },
@@ -993,7 +1014,7 @@
       await pausa(1400);
       pararTimers();
       const pasta = sessao.sigiloso ? PASTAS.sigilosos + "\\Transcricoes" : PASTAS.transcricoes;
-      const documento = pasta + "\\" + sessao.processo + ".docx";
+      const documento = pasta + "\\" + nomeDoProcesso(sessao.processo) + ".docx";
       sessao.estado = "encerrada";
       sessao.documento = documento;
       emitirTranscricao("salvo", { arquivo: documento });
@@ -1020,7 +1041,12 @@
       const campo = (k) => (formulario ? formulario.get(k) : corpo && corpo[k]);
       const revisao = !formulario && corpo && corpo.revisao === true;
       if (revisao && !sessao.ultima) throw Object.assign(erro("sem_audiencia", "Não há audiência encerrada para revisar."), { status: 409 });
-      const processo = revisao ? sessao.ultima.processo : campo("processo");
+      // Uma transcrição de gravação de cada vez (como o servidor).
+      const ocupada = Array.from(tarefas.values()).find((x) => x.tipo === "transcricao_arquivo" && x.estado === "rodando");
+      if (ocupada) throw Object.assign(erro("ocupado", `Este trabalho já está em andamento: ${ocupada.titulo}. Espere ele terminar para transcrever outra gravação.`), { status: 409 });
+      const processo = processoFormatado(revisao ? sessao.ultima.processo : campo("processo"));
+      const arquivo = formulario ? formulario.get("arquivo") : null;
+      const nome = String(campo("nome_original") || (arquivo && arquivo.name) || String((corpo && corpo.caminho) || "").split("\\").pop() || "");
       // A ficha da revisão leva o tipo da audiência (o da tela, ou o da sessão).
       const tipo = String(campo("tipo") || (revisao ? sessao.ultima.tipo : "") || "");
       const pedido = campo("sigiloso");
@@ -1029,13 +1055,20 @@
       const sigiloso = marcado || !!motivo;
       const t = novaTarefa("transcricao_arquivo", revisao ? "Revisar a audiência" : "Transcrever a gravação", 100);
       (async () => {
+        // "… sem som.mp4": o vídeo sem trilha de áudio, com a frase do programa.
+        if (!revisao && /sem[ _-]?(som|audio|áudio)/i.test(nome)) {
+          atualizar(t, { status: `Lendo o áudio de ${nome}…`, progresso: { feitos: 0, percentual: 0 } });
+          await pausa(700);
+          concluir(t, "falhou", { status: "Não deu certo.", erro: `'${nome}' é um vídeo sem trilha de áudio: não há som para transcrever. Confira se a gravação foi feita com o som ligado ou se o sistema de gravação guardou o áudio num arquivo à parte.` });
+          return;
+        }
         for (let p = 0; p <= 100; p += 5) {
           atualizar(t, { status: p < 10 ? "Carregando o modelo medium…" : `${revisao ? "Revisando" : "Transcrevendo"}: ${p}%`, progresso: { feitos: p, percentual: p } });
           await pausa(220);
         }
-        const documento = (sigiloso ? PASTAS.sigilosos + "\\Transcricoes" : PASTAS.transcricoes) + "\\" + processo + ".docx";
+        const documento = (sigiloso ? PASTAS.sigilosos + "\\Transcricoes" : PASTAS.transcricoes) + "\\" + nomeDoProcesso(processo) + ".docx";
         recentes.unshift({ numero: processo, arquivo: documento, quando: isoHora(new Date()), sigiloso });
-        concluir(t, "concluida", { status: "Transcrição pronta.", resultado: { documento, tipo } });
+        concluir(t, "concluida", { status: "Transcrição pronta.", resultado: { documento, processo, sigiloso, tipo } });
       })();
       const resposta = { tarefa: t.id, sigiloso, sigiloso_forcado: !!motivo };
       if (motivo) resposta.motivo = motivo;
@@ -1204,7 +1237,17 @@
         await pausa(1200);
         atualizar(t, { status: "Compactando…" });
         await pausa(900);
-        concluir(t, "concluida", { status: "Pacote pronto (186 MB). Os sigilosos ficaram de fora.", resultado: { pasta: DOCS + "\\Pacotes para IA", arquivo: DOCS + "\\Pacotes para IA\\Acervo para o ChatGPT.zip" } });
+        // Como o servidor (api_compartilhar.concluir_pacote): a pasta e o .zip, a
+        // mensagem com a orientação, os avisos e se o .zip passou do limite.
+        const d = new Date();
+        const dois = (x) => String(x).padStart(2, "0");
+        const nomePacote = `Pacote para o ChatGPT ${d.getFullYear()}-${dois(d.getMonth() + 1)}-${dois(d.getDate())} ${dois(d.getHours())}h${dois(d.getMinutes())}`;
+        const pastaPacote = DOCS + "\\Pacotes para IA\\" + nomePacote;
+        concluir(t, "concluida", { status: "Pacote pronto.", resultado: {
+          pasta: pastaPacote, arquivo: pastaPacote + ".zip",
+          mensagem: nomePacote + ".zip. Arraste o .zip para uma conversa ou um Projeto do ChatGPT.",
+          avisos: [], faltaram: [], grande_demais: false, tamanho_mb: 186,
+        } });
       })();
       return { tarefa: t.id };
     },
@@ -1219,7 +1262,11 @@
           atualizar(t, { status: `Copiando o que mudou (${p}%)…`, progresso: { feitos: p, percentual: p } });
           await pausa(300);
         }
-        concluir(t, "concluida", { status: "Espelho em dia: 14 arquivos novos ou alterados.", resultado: { pasta: corpo.destino } });
+        // Como o servidor (api_compartilhar.concluir_espelho): o resumo do espelho no status.
+        concluir(t, "concluida", { status: "14 copiados, 231 sem mudança.", resultado: {
+          copiados: 14, iguais: 231, resumo: "14 copiados, 231 sem mudança", nao_copiados: [],
+          pasta: (corpo.destino || "") + "\\Helestron - Acervo",
+        } });
       })();
       return { tarefa: t.id };
     },

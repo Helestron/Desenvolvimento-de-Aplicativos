@@ -9,10 +9,18 @@ Daqui em diante, nesta ordem:
 2. as ROTAS CONHECIDAS do pauta.json (por sistema e por tribunal);
 3. a DESCOBERTA PELO MENU: links cujo texto lembra "Pauta de audiências",
    "Agenda de audiências", "Gerenciar audiências"... - nunca "Designar",
-   "Cancelar", "Incluir" (o pauta.json tem a lista do que não se clica).
+   "Cancelar", "Incluir" (o pauta.json tem a lista do que não se clica), nem
+   uma AÇÃO sobre a pauta ("Bloquear pauta", "Fechar pauta do dia",
+   "Publicar pauta", "Gerar pauta", "Marcar audiência"...: _RE_ACAO, fixo
+   no programa - nenhuma edição do pauta.json o desliga).
 
-Aberta a página candidata: se ela fala de audiência e tem campos de data,
-o PERÍODO é preenchido e a pesquisa enviada; todas as tabelas (inclusive
+O robô só LÊ o portal - roda também no monitoramento, sem ninguém olhando.
+Aberta a página candidata: se ela fala de audiência, não é a tela de uma
+ação (o título, os cabeçalhos e a barra de localização não falam em
+bloquear, fechar, publicar...) e tem campos de data, o PERÍODO é preenchido
+e a pesquisa enviada - só por um botão de PESQUISA do mesmo formulário das
+datas (nunca "Bloquear", "Salvar", "Confirmar"; nunca o Enter, que enviaria
+o formulário pelo botão padrão dele, seja qual for); todas as tabelas (inclusive
 dentro de frames) são lidas e reconhecidas pelo cabeçalho; e a PAGINAÇÃO é
 seguida até o fim - o "Próxima" comum, o infraAcaoPaginar do eProc (e o
 seletor de página dele), com limite de 50 páginas e parada quando a
@@ -46,6 +54,24 @@ log = logging.getLogger("pauta.navegacao")
 ESPERA_MUDANCA_S = 20.0        # quanto esperar a página mudar depois de um clique
 INTERVALO_S = 0.3
 _RE_SAIR = re.compile(r"logout|logoff|\bsair\b|acao=sair|sajcas/logout|encerrar.?sessao", re.I)
+# AÇÕES de escrita sobre a pauta ou a audiência (sobre o texto já normalizado:
+# minúsculo, sem acento). Fixas no programa, além do menu.excluir do pauta.json:
+# o robô nunca abre o item de menu, nunca preenche o período na tela e nunca
+# clica no botão que fale assim - "Bloquear pauta" com "Data inicial", "Data
+# final" e "Aplicar" bloquearia a pauta no tribunal.
+_RE_ACAO = re.compile(
+    r"\bbloque|\bdesbloque|\bfechar\b|\bfechamento\b|\bencerrar\b|\bencerramento\b"
+    r"|\bliberar\b|\bliberacao\b|\bpublicar\b|\bdisponibiliz|\bmarcar\b|\breservar\b"
+    r"|\breserva de pauta|\bgerar pauta|\bmontar pauta|\bconfirmar\b|\bsalvar\b"
+    r"|\bgravar\b|\bhomologar\b|\bincluir\b|\bexcluir\b|\bcancelar\b|\bdesignar\b"
+    r"|\bredesignar\b|\bremarcar\b|\bagendar\b|\bcadastrar\b|\balterar\b|\beditar\b"
+    r"|\bregistrar\b|\bassinar\b|\benviar\b|\bremover\b|\bapagar\b|\bvincular\b"
+    r"|\bdesvincular\b|\bredistribuir\b|\bsortear\b")
+# O que um botão de PESQUISA diz (além do periodo.botao do pauta.json, que
+# também aceita "Gerar", "Aplicar", "Atualizar" e "OK" - esses só valem numa
+# tela que não seja de ação e no formulário das datas).
+_RE_BOTAO_PESQUISA = re.compile(
+    r"pesquisar|consultar|filtrar|buscar|listar|exibir|procurar|ver pauta|localizar")
 
 
 class PautaNaoEncontrada(RuntimeError):
@@ -179,7 +205,10 @@ JS_CAMPOS = r"""() => {
   const senha = Array.from(document.querySelectorAll("input[type=password]")).some(visivel);
   const textoPagina = limpar([document.title, ...Array.from(document.querySelectorAll("h1, h2, h3, legend, label, caption, .infraBarraLocalizacao"))
     .map((e) => e.innerText || e.textContent || "")].join(" ")).slice(0, 3000);
-  return {campos, botoes, senha, textoPagina};
+  // o que a tela É (sem os rótulos dos campos: "Marcar todas" num filtro não faz dela uma ação)
+  const identidade = limpar([document.title, ...Array.from(document.querySelectorAll("h1, h2, h3, legend, .infraBarraLocalizacao"))
+    .map((e) => e.innerText || e.textContent || "")].join(" ")).slice(0, 1500);
+  return {campos, botoes, senha, textoPagina, identidade};
 }"""
 
 JS_PAGINACAO = r"""() => {
@@ -475,11 +504,38 @@ class LeitorDePauta:
                 return d1, d2
         return None
 
+    def botao_de_pesquisa(self, dados: dict, campo: dict) -> dict | None:
+        """O botão que envia a pesquisa do período: do MESMO formulário do
+        campo de data (ou, sem formulário, também fora de um), com o texto de
+        pesquisa do pauta.json, e nunca o de uma ação ("Bloquear", "Salvar",
+        "Confirmar"...). Os de pesquisa ("Pesquisar", "Consultar") vêm antes
+        dos genéricos ("Aplicar", "OK"). None se não houver."""
+        re_botao = re.compile(self.regras.periodo["botao"], re.I)
+        form = campo.get("form", -1)
+        form = form if isinstance(form, int) and form >= 0 else -1
+        candidatos = []
+        for b in dados.get("botoes") or []:
+            texto = normalizar_texto(b.get("texto") or b.get("nome") or b.get("id"))
+            if not texto or b.get("form", -1) != form:
+                continue
+            if _RE_ACAO.search(texto) or self.regras.menu_excluir.search(texto):
+                continue
+            if re_botao.search(texto):
+                candidatos.append((0 if _RE_BOTAO_PESQUISA.search(texto) else 1, b))
+        candidatos.sort(key=lambda x: x[0])
+        return candidatos[0][1] if candidatos else None
+
     def preencher_periodo(self, de: date, ate: date) -> bool:
         """Preenche Data inicial/final e envia a pesquisa. True se o portal a aceitou.
 
-        Só numa página que fala de audiência ou pauta: um formulário com
-        campo de data em outra tela (designar, cadastrar) não é enviado.
+        Só numa página que fala de audiência ou pauta e que não é a tela de
+        uma AÇÃO (o título, os cabeçalhos, a legenda e a barra de
+        localização não falam em bloquear, fechar, publicar, designar...:
+        _RE_ACAO): o formulário com campo de data de outra tela não é
+        enviado. E só pelo botão de pesquisa do formulário das datas
+        (botao_de_pesquisa) - sem ele, nada é enviado (nem pelo Enter, que
+        usaria o botão padrão do formulário, qualquer que fosse), e a tela é
+        lida como está.
         ACEITOU = a página mudou depois de "Pesquisar" e os campos não
         mostram outro período. O formulário que não envia (validação do
         portal, "período máximo de 30 dias"), ou o portal que encurta o
@@ -487,31 +543,32 @@ class LeitorDePauta:
         daria como "fora da pauta" tudo o que ela não mostra.
         """
         self.aviso_periodo = ""
-        re_botao = re.compile(self.regras.periodo["botao"], re.I)
         for frame, dados in self.campos():
             texto_da_pagina = normalizar_texto(dados.get("textoPagina"))
             if not self.regras.contexto_audiencia.search(texto_da_pagina):
                 continue
+            identidade = normalizar_texto(dados.get("identidade") or "")
+            if _RE_ACAO.search(identidade):
+                log.info("  a tela “%s” é de uma ação sobre a pauta: o período não é "
+                         "enviado.", (dados.get("identidade") or "")[:120])
+                continue
             inicio, fim = self.classificar_periodo(dados.get("campos") or [])
             if inicio is None or fim is None:
                 continue
+            botao = self.botao_de_pesquisa(dados, inicio)
+            if botao is None:
+                self.aviso_periodo = (
+                    f"O {self.nome} não mostrou um botão de pesquisa junto das datas; o período "
+                    f"de {de:%d/%m/%Y} a {ate:%d/%m/%Y} não foi enviado, e só as datas que "
+                    "vieram na tela foram conferidas.")
+                log.info("  %s", self.aviso_periodo)
+                continue
             if not (self._preencher(frame, inicio, de) and self._preencher(frame, fim, ate)):
                 continue
-            botoes = [b for b in dados.get("botoes") or []
-                      if re_botao.search(normalizar_texto(b.get("texto") or b.get("nome")
-                                                          or b.get("id")))]
-            mesmo_form = [b for b in botoes if b.get("form") == inicio.get("form")
-                          and inicio.get("form", -1) >= 0]
-            botao = (mesmo_form or botoes or [None])[0]
+            self.aviso_periodo = ""
             antes = self.assinatura()
             self._status(f"Pedindo ao {self.nome} a pauta de {de:%d/%m/%Y} a {ate:%d/%m/%Y}…")
-            if botao is not None:
-                _avaliar(frame, JS_CLICAR, ["data-helestron-campo", botao["n"]])
-            else:
-                try:
-                    frame.press(f'[data-helestron-campo="{fim["n"]}"]', "Enter", timeout=5000)
-                except Exception:
-                    pass
+            _avaliar(frame, JS_CLICAR, ["data-helestron-campo", botao["n"]])
             mudou = self.esperar_mudanca(antes)
             self.esperar_carga()
             if not mudou:
@@ -737,7 +794,8 @@ class ExtratorAutomatico:
         for frame, item in self.links():
             texto = normalizar_texto(f"{item.get('texto', '')} {item.get('titulo', '')}")
             href = str(item.get("href") or "")
-            if not texto or self.regras.menu_excluir.search(texto) or _RE_SAIR.search(href):
+            if not texto or self.regras.menu_excluir.search(texto) or _RE_ACAO.search(texto) \
+                    or _RE_SAIR.search(href):
                 continue
             peso = 0
             for padrao, valor in self.regras.menu_procurar:

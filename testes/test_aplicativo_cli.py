@@ -267,5 +267,409 @@ class TestComandos(unittest.TestCase):
         self.assertNotIn("importlib", fonte)
 
 
+class TestComandosParaAutomacao(unittest.TestCase):
+    """--version, caminhos, preparar e preparar-pastas com linha de comando de
+    verdade (1.0.2): o que a skill do Claude chama."""
+
+    def setUp(self):
+        import logging
+
+        self.amb = AmbienteTemporario().iniciar()
+        self.addCleanup(self.amb.parar)
+        antes = list(logging.getLogger().handlers)
+
+        def limpar():
+            for h in list(logging.getLogger().handlers):
+                if h not in antes:
+                    logging.getLogger().removeHandler(h)
+                    h.close()
+        self.addCleanup(limpar)
+        self.acervo = self.amb.dados / "Acervo"
+        self.sigilosos = self.amb.dados / "Sigilosos"
+
+    def rodar(self, *args) -> tuple[int, str, str]:
+        saida, erros = io.StringIO(), io.StringIO()
+        with redirect_stdout(saida), redirect_stderr(erros):
+            codigo = principal.main(list(args))
+        return codigo, saida.getvalue(), erros.getvalue()
+
+    def pdf(self, caminho: Path, texto: str = "autos") -> Path:
+        import pymupdf
+
+        caminho.parent.mkdir(parents=True, exist_ok=True)
+        doc = pymupdf.open()
+        doc.new_page().insert_text((72, 72), texto)
+        doc.save(str(caminho))
+        doc.close()
+        return caminho
+
+    def test_version(self):
+        from helestron import __version__
+
+        for opcao in ("--version", "--versao"):
+            codigo, saida, _ = self.rodar(opcao)
+            self.assertEqual(codigo, 0, opcao)
+            self.assertEqual(saida.strip(), f"Helestron {__version__}")
+
+    def test_caminhos_json_sem_criar_config_e_sem_perfis(self):
+        from helestron.nucleo import caminhos
+
+        (self.amb.local / "config.ini").unlink()
+        codigo, saida, _ = self.rodar("caminhos", "--json")
+        self.assertEqual(codigo, 0)
+        self.assertFalse((self.amb.local / "config.ini").exists(), "caminhos não cria nada")
+        self.assertFalse(caminhos.LOGS.exists())
+        dados = json.loads(saida)
+        for chave in ("versao", "recursos", "python", "config", "logs", "acervo", "processos",
+                      "transcricoes", "sigilosos", "pauta", "separar_sigilosos", "login",
+                      "espera_login_min", "conflito_de_pastas"):
+            self.assertIn(chave, dados)
+        self.assertIn("baixar.json", dados["recursos"])
+        self.assertIn("preparar.pasta", dados["recursos"])
+        self.assertEqual(dados["acervo"], str(self.acervo))
+        self.assertEqual(dados["login"], {"esaj": "senha", "eproc": "senha"})
+        # nada que leve às senhas, aos perfis do navegador ou à sessão guardada
+        self.assertNotIn(str(caminhos.PERFIS), saida)
+        self.assertNotIn("credenciais", saida)
+        self.assertNotIn("perfis", saida.lower())
+        codigo, saida, _ = self.rodar("caminhos")
+        self.assertEqual(codigo, 0)
+        self.assertIn(f"acervo: {self.acervo}", saida)
+
+    def test_caminhos_diz_o_conflito_com_que_o_baixar_recusa_comecar(self):
+        """Achado R15: com o acervo contendo a pasta das senhas e dos perfis,
+        'caminhos' dizia as pastas em ordem, e o 'baixar' saía com 2
+        (pastas_em_conflito)."""
+        self.amb.cfg.definir("geral", "pasta_acervo", str(self.amb.local))   # a das senhas
+        codigo, saida, _ = self.rodar("caminhos", "--json")
+        self.assertEqual(codigo, 0)
+        conflito = json.loads(saida)["conflito_de_pastas"]
+        self.assertTrue(conflito.startswith("O acervo não pode conter a pasta em que o programa "
+                                            "guarda as senhas"), conflito)
+        from helestron.download import cli
+
+        erros = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(erros):
+            codigo = cli.main(["0700001-27.2024.8.02.0001", "--destino",
+                               str(self.amb.raiz / "Lote")], configurar_log=False)
+        self.assertEqual(codigo, 2)
+        self.assertIn(conflito, erros.getvalue(), "a mesma frase com que o baixar recusa")
+        # pastas em ordem: vazio
+        self.amb.cfg.definir("geral", "pasta_acervo", str(self.acervo))
+        self.assertEqual(json.loads(self.rodar("caminhos", "--json")[1])["conflito_de_pastas"],
+                         "")
+
+    def test_caminhos_e_baixar_com_os_sigilosos_no_meu_drive(self):
+        """Achado V11: com os sigilosos em %USERPROFILE%\\Meu Drive (o Google
+        Drive no modo espelho), 'caminhos --json' dava conflito_de_pastas
+        vazio, a skill seguia, e o 'baixar' começava."""
+        perfil = self.amb.raiz / "Users" / "Fulano"
+        (perfil / "Meu Drive").mkdir(parents=True)
+        self.amb.cfg.definir("geral", "pasta_sigilosos", str(perfil / "Meu Drive" / "Sigilosos"))
+        from helestron.download import cli
+
+        with mock.patch.dict(os.environ, {"HOME": str(perfil), "USERPROFILE": str(perfil)}):
+            codigo, saida, _ = self.rodar("caminhos", "--json")
+            self.assertEqual(codigo, 0)
+            conflito = json.loads(saida)["conflito_de_pastas"]
+            self.assertTrue(conflito.startswith("A pasta dos processos em segredo de justiça não "
+                                                "pode ficar dentro do Google Drive"), conflito)
+            erros = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(erros):
+                codigo = cli.main(["0700001-27.2024.8.02.0001", "--destino",
+                                   str(self.amb.raiz / "Lote")], configurar_log=False)
+        self.assertEqual(codigo, 2)
+        self.assertIn(conflito, erros.getvalue(), "a mesma frase com que o baixar recusa")
+        self.assertFalse((self.amb.raiz / "Lote").exists())
+
+    def test_preparar_pasta_nao_grava_texto_de_sigiloso_no_acervo(self):
+        """Achados R8 e R21: o lote fora do acervo com --texto-em dentro dele
+        gravava no acervo o texto do processo sigiloso pela regra única, e o
+        JSON o dava como "sigiloso": false."""
+        from helestron.download import motor
+
+        lote = self.amb.raiz / "Lotes da skill" / "Lote 9"          # fora do acervo
+        publico, sigiloso = "0700001-27.2024.8.02.0001", "0700002-02.2024.8.02.0001"
+        self.pdf(lote / f"{publico}.pdf", "autos públicos")
+        self.pdf(lote / f"{sigiloso}.pdf", "PARTES EM SEGREDO DE JUSTIÇA")
+        # sigiloso pela regra única: a transcrição dele está na pasta dos sigilosos
+        (self.sigilosos / "Transcricoes").mkdir(parents=True)
+        (self.sigilosos / "Transcricoes" / f"{sigiloso}.docx").write_bytes(b"PK")
+        destino = self.acervo / "_ia" / "texto"
+        for texto_em in (str(destino), os.path.relpath(destino, lote)):
+            with self.subTest(texto_em=texto_em):
+                codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--texto-em",
+                                              texto_em, "--json")
+                self.assertEqual(codigo, 0)
+                itens = {Path(i["pdf"]).stem: i for i in json.loads(saida)["itens"]}
+                self.assertEqual(itens[sigiloso]["situacao"], "sigiloso_ignorado")
+                self.assertTrue(itens[sigiloso]["sigiloso"])
+                self.assertEqual(itens[sigiloso]["texto"], "")
+                self.assertIn(itens[publico]["situacao"], ("novo", "em_dia"))
+                self.assertFalse(itens[publico]["sigiloso"])
+                self.assertFalse((destino / f"{sigiloso}.txt").exists())
+                self.assertTrue((destino / f"{publico}.txt").exists())
+        # fora do acervo o texto é gerado, mas o JSON diz que o processo é sigiloso
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--json")
+        itens = {Path(i["pdf"]).stem: i for i in json.loads(saida)["itens"]}
+        self.assertEqual(itens[sigiloso]["situacao"], "novo")
+        self.assertTrue(itens[sigiloso]["sigiloso"])
+        self.assertFalse(itens[publico]["sigiloso"])
+        # --incluir-sigilosos: um relativo com ".." não leva o texto dos
+        # sigilosos do lote para o acervo; fica na pasta deles
+        sig = motor.pasta_sigilosos_do_lote(self.sigilosos, lote, self.acervo / "Processos")
+        outro = "0700003-40.2024.8.02.0001"
+        self.pdf(sig / f"{outro}.pdf", "outro em segredo")
+        fuga = os.path.relpath(destino, sig)
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--texto-em", fuga,
+                                      "--incluir-sigilosos", "--json")
+        self.assertEqual(codigo, 0)
+        item = [i for i in json.loads(saida)["itens"] if Path(i["pdf"]).stem == outro][0]
+        self.assertEqual(Path(item["texto"]), sig / "_texto" / f"{outro}.txt")
+        self.assertFalse((destino / f"{outro}.txt").exists())
+        self.assertEqual(sorted(p.name for p in destino.iterdir()), [f"{publico}.txt"])
+
+    def test_preparar_pasta_le_o_sigilo_do_relatorio_do_lote(self):
+        """Achado V2: o lote baixado com a separação desligada antes do
+        registro do download (ou com ele perdido) tem o sigiloso na pasta e
+        o relatório dizendo sigiloso=sim; o JSON o dava como público."""
+        from helestron.download import motor
+
+        publico, sigiloso = "0700001-27.2024.8.02.0001", "0700002-02.2024.8.02.0001"
+        for lote in (self.amb.raiz / "Lotes da skill" / "Lote 8",       # fora do acervo
+                     self.acervo / "Processos" / "Lote 8"):             # dentro dele
+            with self.subTest(lote=lote):
+                self.pdf(lote / f"{publico}.pdf", "autos públicos")
+                self.pdf(lote / f"{sigiloso}.pdf", "PARTES EM SEGREDO DE JUSTIÇA")
+                motor._gravar_relatorio(lote / "_controle" / "relatorio.csv", [
+                    [1, publico, "TJAL", "esaj", "OK", 1, 1, f"{publico}.pdf", "não",
+                     "", "", "", ""],
+                    [2, sigiloso, "TJAL", "esaj", "OK", 1, 1, f"{sigiloso}.pdf", "sim",
+                     "", "", "", ""]])
+                codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--json")
+                self.assertEqual(codigo, 0)
+                itens = {Path(i["pdf"]).stem: i for i in json.loads(saida)["itens"]}
+                self.assertTrue(itens[sigiloso]["sigiloso"])
+                self.assertFalse(itens[publico]["sigiloso"])
+                if lote.is_relative_to(self.acervo):
+                    self.assertEqual(itens[sigiloso]["situacao"], "sigiloso_ignorado")
+                    self.assertFalse((lote / "_texto" / f"{sigiloso}.txt").exists())
+
+    def test_preparar_rejeita_argumento_e_mostra_ajuda(self):
+        codigo, saida, _ = self.rodar("preparar", "-h")
+        self.assertEqual(codigo, 0)
+        self.assertIn("uso: python -m helestron preparar", saida)
+        self.assertIn("--pasta", saida)
+        self.assertFalse((self.acervo / "CLAUDE.md").exists(), "-h não prepara o acervo")
+        for args in (("preparar", "--xyz"), ("preparar", "--sem-texto", "xyz"),
+                     ("preparar-pastas", "--xyz"), ("caminhos", "--xyz"),
+                     ("preparar", "--incluir-sigilosos")):
+            with self.subTest(args=args):
+                codigo, _, erros = self.rodar(*args)
+                self.assertEqual(codigo, 2)
+                self.assertTrue(erros.strip())
+        self.assertFalse(self.acervo.exists(), "nada foi criado")
+        codigo, saida, _ = self.rodar("preparar-pastas", "-h")
+        self.assertEqual(codigo, 0)
+        self.assertIn("uso: python -m helestron preparar-pastas", saida)
+        self.assertFalse((self.acervo / "Processos").exists())
+
+    def test_preparar_pasta_nao_escreve_claude_md(self):
+        lote = self.amb.raiz / "Lotes da skill" / "Lote 1"
+        num = "0700001-27.2024.8.02.0001"
+        self.pdf(lote / f"{num}.pdf", "Petição inicial")
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--json")
+        self.assertEqual(codigo, 0)
+        dados = json.loads(saida)
+        self.assertEqual(dados["pasta"], str(lote))
+        item = dados["itens"][0]
+        self.assertEqual(item["situacao"], "novo")
+        self.assertEqual(item["texto"], str(lote / "_texto" / f"{num}.txt"))
+        self.assertIn("Petição inicial", Path(item["texto"]).read_text(encoding="utf-8"))
+        self.assertEqual(item["paginas"], 1)
+        self.assertFalse(item["paginacao"]["garantida"])
+        for nome in ("CLAUDE.md", "AGENTS.md", "INDICE.md", "Produtos"):
+            self.assertFalse((self.acervo / nome).exists(), nome)
+            self.assertFalse((lote / nome).exists(), nome)
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--json")
+        self.assertEqual(json.loads(saida)["itens"][0]["situacao"], "em_dia")
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--texto-em",
+                                      str(self.amb.raiz / "textos"))
+        self.assertEqual(codigo, 0)
+        self.assertIn("1 texto pronto", saida)
+        self.assertTrue((self.amb.raiz / "textos" / f"{num}.txt").exists())
+        codigo, _, erros = self.rodar("preparar", "--pasta", str(self.amb.raiz / "não existe"))
+        self.assertEqual(codigo, 2)
+        self.assertIn("não existe", erros)
+
+    def test_preparar_pasta_texto_de_formato_anterior_refeito_e_novo(self):
+        """O texto de formato 1 (o _texto da 1.0.1) é refeito no formato 2 com
+        a mesma data de antes (a do PDF): a situação é "novo", e não "em_dia"."""
+        lote = self.amb.raiz / "Lotes da skill" / "Lote 3"
+        num = "0700001-27.2024.8.02.0001"
+        pdf = self.pdf(lote / f"{num}.pdf", "Petição inicial")
+        txt = lote / "_texto" / f"{num}.txt"
+        txt.parent.mkdir()
+        txt.write_text("=== [fl. 1] ===\ntexto antigo (formato 1)\n", encoding="utf-8")
+        os.utime(txt, (pdf.stat().st_atime, pdf.stat().st_mtime))
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--json")
+        self.assertEqual(codigo, 0)
+        self.assertEqual(json.loads(saida)["itens"][0]["situacao"], "novo")
+        self.assertTrue(txt.read_text(encoding="utf-8").startswith("# helestron-texto 2 |"))
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--json")
+        self.assertEqual(json.loads(saida)["itens"][0]["situacao"], "em_dia")
+
+    def test_preparar_pasta_diz_as_paginas_sem_texto(self):
+        import pymupdf
+
+        from helestron.nucleo import paginacao
+
+        lote = self.amb.raiz / "Lotes da skill" / "Lote 2"
+        num, outro = "0700001-27.2024.8.02.0001", "0700002-02.2024.8.02.0001"
+        lote.mkdir(parents=True)
+        doc = pymupdf.open()
+        for texto in ("Petição inicial", "", "", "Contestação", "fls. 5"):
+            doc.new_page().insert_text((72, 72), texto)
+        paginacao.gravar_no_doc(doc, paginacao.manifesto_esaj(num, 5, {}, tribunal="TJAL"))
+        doc.save(str(lote / f"{num}.pdf"))
+        doc.close()
+        self.pdf(lote / f"{outro}.pdf", "Petição inicial")
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--json")
+        self.assertEqual(codigo, 0)
+        itens = {Path(i["pdf"]).stem: i for i in json.loads(saida)["itens"]}
+        self.assertEqual((itens[num]["paginas_sem_texto"], itens[num]["paginas_sem_texto_pdf"]),
+                         ("2-3, 5", "2-3, 5"))
+        self.assertTrue(itens[num]["paginacao"]["garantida"])
+        self.assertEqual(itens[outro]["paginas_sem_texto"], "")
+        # sem --json, a frase diz o arquivo e as folhas; em dia, a informação continua
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote))
+        self.assertEqual(codigo, 0)
+        self.assertIn(f"{num}.pdf: páginas sem texto extraível (imagem? confira no PDF): 2-3, 5",
+                      saida)
+        self.assertNotIn(f"{outro}.pdf:", saida)
+
+    def test_preparar_pasta_pdf_alterado_nao_tem_paginacao_garantida(self):
+        """Achado V12: o PDF alterado depois do download (página incluída ou
+        apagada num editor que conserva os anexos) tinha o texto
+        "nao_garantida", mas o JSON que a skill lê dizia garantida=true e
+        "página N = folha N": a citação "fl. N" saía errada sem aviso."""
+        import pymupdf
+
+        from helestron.nucleo import paginacao
+
+        lote = self.amb.raiz / "Lotes da skill" / "Lote 4"
+        lote.mkdir(parents=True)
+        esaj, eproc = "0700001-27.2024.8.02.0001", "0700002-02.2024.8.02.0001"
+        doc = pymupdf.open()
+        for folha in range(1, 4):
+            doc.new_page().insert_text((72, 72), f"Peça da folha {folha} dos autos")
+        paginacao.gravar_no_doc(doc, paginacao.manifesto_esaj(esaj, 3, {}, tribunal="TJAL"))
+        doc.new_page(0).insert_text((72, 72), "ANOTAÇÃO DO ASSESSOR")     # incluída depois
+        doc.save(str(lote / f"{esaj}.pdf"))
+        doc.close()
+        doc = pymupdf.open()
+        for i in range(1, 5):
+            doc.new_page().insert_text((72, 72), f"Página {i} do documento")
+        docs = [{"evento": 1, "rotulo": "INIC1", "origem": "pdf", "situacao": "ok",
+                 "inicio": 1, "paginas": 3},
+                {"evento": 5, "rotulo": "CONT1", "origem": "pdf", "situacao": "ok",
+                 "inicio": 4, "paginas": 2}]                  # descreve 5 páginas; o PDF tem 4
+        paginacao.gravar_no_doc(doc, paginacao.manifesto_eproc(eproc, docs, tribunal="TJAL"))
+        doc.save(str(lote / f"{eproc}.pdf"))
+        doc.close()
+        with self.assertLogs("helestron.compartilhar.textos", "WARNING"):
+            codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--json")
+        self.assertEqual(codigo, 0)
+        itens = {Path(i["pdf"]).stem: i for i in json.loads(saida)["itens"]}
+        for num, paginas, frase in ((esaj, 4, "o manifesto de paginação diz 3 folhas, mas o PDF "
+                                               "tem 4 páginas"),
+                                    (eproc, 4, "o manifesto de paginação descreve 5 páginas, "
+                                               "mas o PDF tem 4")):
+            with self.subTest(num):
+                item = itens[num]
+                self.assertEqual(item["paginas"], paginas)
+                self.assertEqual(set(item["paginacao"]), {"garantida", "resumo"})
+                self.assertFalse(item["paginacao"]["garantida"])
+                self.assertTrue(item["paginacao"]["resumo"].startswith("NÃO garantida: " + frase),
+                                item["paginacao"]["resumo"])
+                primeira = Path(item["texto"]).read_text(encoding="utf-8").split("\n", 1)[0]
+                self.assertIn("paginacao=nao_garantida", primeira)   # o mesmo que o texto
+
+    def test_recursos_novos_e_versao_do_pacote(self):
+        import helestron
+
+        codigo, saida, _ = self.rodar("caminhos", "--json")
+        self.assertEqual(codigo, 0)
+        dados = json.loads(saida)
+        self.assertEqual(dados["versao"], helestron.__version__)
+        for recurso in ("folhas.fieis", "texto.v2", "capa.v2", "texto.paginas-sem-texto",
+                        "baixar.codigo-na-janela", "baixar.json", "preparar.pasta"):
+            self.assertIn(recurso, dados["recursos"])
+        self.assertEqual(len(dados["recursos"]), len(set(dados["recursos"])))
+        with mock.patch.object(helestron, "__version__", "9.9.9"):
+            self.assertEqual(json.loads(self.rodar("caminhos", "--json")[1])["versao"], "9.9.9")
+
+    def test_preparar_pasta_no_acervo_pula_sigiloso_e_inclui_os_do_lote(self):
+        lote = self.acervo / "Processos" / "Lote 1"
+        publico, sigiloso = "0700001-27.2024.8.02.0001", "0700002-02.2024.8.02.0001"
+        self.pdf(lote / f"{publico}.pdf")
+        self.pdf(lote / f"{sigiloso}.pdf")           # preso no acervo
+        self.pdf(self.sigilosos / "Lote 1" / f"{sigiloso}.pdf", "autos em segredo")
+        self.pdf(lote / "ruim.pdf").write_bytes(b"%PDF-1.4 quebrado")
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--incluir-sigilosos",
+                                      "--json")
+        self.assertEqual(codigo, 1, "um PDF ilegível")
+        itens = {(Path(i["pdf"]).parent.name, Path(i["pdf"]).stem): i
+                 for i in json.loads(saida)["itens"]}
+        self.assertEqual(itens[("Lote 1", publico)]["situacao"], "novo")
+        no_acervo = [i for i in json.loads(saida)["itens"]
+                     if i["pdf"] == str(lote / f"{sigiloso}.pdf")][0]
+        self.assertEqual(no_acervo["situacao"], "sigiloso_ignorado")
+        self.assertFalse((lote / "_texto" / f"{sigiloso}.txt").exists())
+        do_sigiloso = [i for i in json.loads(saida)["itens"]
+                       if i["pdf"] == str(self.sigilosos / "Lote 1" / f"{sigiloso}.pdf")][0]
+        self.assertEqual(do_sigiloso["situacao"], "novo")
+        self.assertTrue(do_sigiloso["sigiloso"])
+        self.assertEqual(Path(do_sigiloso["texto"]),
+                         self.sigilosos / "Lote 1" / "_texto" / f"{sigiloso}.txt")
+        self.assertEqual(itens[("Lote 1", "ruim")]["situacao"], "falhou")
+
+    def _relatorio(self, **campos):
+        from helestron.compartilhar import preparo
+
+        return preparo.RelatorioPreparo(**campos)
+
+    def test_preparar_mostra_erros_e_avisos_e_sai_3_com_sigiloso_preso(self):
+        from helestron.compartilhar import preparo
+
+        preso = self.acervo / "Processos" / "L" / "0700002-02.2024.8.02.0001.pdf"
+        rel = self._relatorio(processos=1, erros=["ATENÇÃO: autos de processo sigiloso no "
+                                                  "acervo: mova-os"],
+                              avisos=["arquivo levado para a pasta dos sigilosos"],
+                              sigilosos_no_acervo=[preso], motivos={preso: "aberto?"})
+        with mock.patch.object(preparo, "atualizar_contexto", return_value=rel) as chamada:
+            codigo, saida, erros = self.rodar("preparar")
+            self.assertEqual(codigo, 3)
+            self.assertIn("ATENÇÃO: autos de processo sigiloso no acervo: mova-os", erros)
+            self.assertIn("aviso: arquivo levado para a pasta dos sigilosos", saida)
+            self.assertIn("1 processo", saida)
+            self.assertIsNone(chamada.call_args.kwargs["extrair_texto"])
+            codigo, saida, _ = self.rodar("preparar", "--json", "--sem-texto")
+            self.assertEqual(codigo, 3)
+            dados = json.loads(saida)
+            self.assertFalse(dados["pode_compartilhar"])
+            self.assertEqual(dados["sigilosos_no_acervo"], [str(preso)])
+            self.assertEqual(dados["motivos"], {str(preso): "aberto?"})
+            self.assertFalse(chamada.call_args.kwargs["extrair_texto"])
+        rel = self._relatorio(processos=1, erros=["x.pdf: não abre"])
+        with mock.patch.object(preparo, "atualizar_contexto", return_value=rel):
+            codigo, _, erros = self.rodar("preparar")
+        self.assertEqual(codigo, 1)
+        self.assertIn("x.pdf: não abre", erros)
+        with mock.patch.object(preparo, "atualizar_contexto",
+                               return_value=self._relatorio(processos=2)):
+            self.assertEqual(self.rodar("preparar")[0], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

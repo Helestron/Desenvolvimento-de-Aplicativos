@@ -92,6 +92,61 @@ class TestMultipart(unittest.TestCase):
         with self.assertRaises(multipart.EnvioGrandeDemais):
             self.ler(dados, limite=100)
 
+    def test_limite_padrao_e_o_de_quem_chama(self):
+        """O limite é de quem chama (o servidor o define por rota); o padrão
+        continua 500 MB."""
+        self.assertEqual(multipart.LIMITE_PADRAO, 500 * 1024 * 1024)
+        dados = corpo([("arquivo", "a.bin", b"x" * 1000)])
+        envio = self.ler(dados, limite=len(dados))
+        self.assertEqual(envio.arquivo().tamanho, 1000)
+        envio.apagar()
+
+    def test_arquivo_vai_ao_disco_em_blocos_limitados(self):
+        """O arquivo nunca fica inteiro na memória: o leitor pede no máximo um
+        bloco de PEDACO_ARQUIVO de cada vez, e o que chega ao disco é idêntico."""
+        conteudo = bytes(range(256)) * (5 * 4096)                 # 5 MB
+        dados = corpo([("processo", None, b"0700123-83.2024.8.02.0001"),
+                       ("arquivo", "video.mp4", conteudo)])
+        pedidos = []
+
+        class Fluxo(FluxoEmPedacos):
+            def read(self, tamanho=-1):
+                pedidos.append(tamanho)
+                return super().read(tamanho)
+
+        envio = multipart.ler(Fluxo(dados, 1 << 22), len(dados),
+                              "multipart/form-data; boundary=XyZ", self.pasta)
+        self.assertEqual(envio.arquivo().caminho.read_bytes(), conteudo)
+        self.assertLessEqual(max(pedidos), multipart.PEDACO_ARQUIVO)
+        envio.apagar()
+
+    def test_disco_cheio_no_meio_apaga_o_pedaco_gravado(self):
+        import errno
+        from unittest import mock
+
+        abrir = open
+        abertos = []
+
+        class Cheio(io.FileIO):
+            def write(self, b):
+                if self.tell() > 4096:
+                    raise OSError(errno.ENOSPC, "No space left on device")
+                return super().write(b)
+
+        def abrir_cheio(caminho, modo="r", *a, **kw):
+            if "w" in modo:
+                abertos.append(Path(caminho))
+                return Cheio(caminho, "w")
+            return abrir(caminho, modo, *a, **kw)
+
+        dados = corpo([("arquivo", "a.wav", b"x" * (3 << 20))])
+        with mock.patch("helestron.servidor.multipart.open", abrir_cheio, create=True):
+            with self.assertRaises(OSError) as erro:
+                self.ler(dados, 65536)
+        self.assertEqual(erro.exception.errno, errno.ENOSPC)
+        self.assertTrue(abertos)
+        self.assertEqual(list(self.pasta.iterdir()), [])
+
     def test_campo_de_texto_grande_demais(self):
         dados = corpo([("texto", None, b"x" * (multipart.LIMITE_CAMPO + 10))])
         with self.assertRaises(multipart.EnvioGrandeDemais):

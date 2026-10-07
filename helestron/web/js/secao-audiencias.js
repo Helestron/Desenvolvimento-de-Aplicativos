@@ -1,11 +1,21 @@
-/* Helestron — Audiências: transcrição simultânea (especificação 7.2).
+/* Helestron — Audiências: transcrição ao vivo e de gravações (especificação 7.2).
  *
- * Preparação: número do processo (com validação do dígito e sugestões da
- * pauta de hoje), tipo de audiência, segredo de justiça, microfone com
- * medidor de nível e os participantes F1–F8. O botão de gravar grande
- * começa a sessão; durante a audiência: cronômetro, texto ao vivo com tempo
- * e falante, rolagem automática, Pausar/Retomar, botões (e teclas F1–F8) de
- * quem está falando e Encerrar, que entrega o DOCX.
+ * Dois modos no topo, do mesmo tamanho: "Ao vivo" e "Arquivo de áudio ou
+ * vídeo".
+ *
+ * Ao vivo: número do processo (com validação do dígito, o dependente "/01"
+ * e sugestões da pauta de hoje), tipo de audiência, segredo de justiça,
+ * microfone com medidor de nível e os participantes F1–F8. O botão de
+ * gravar grande começa a sessão; durante a audiência: cronômetro, texto ao
+ * vivo com tempo e falante, rolagem automática, Pausar/Retomar, botões (e
+ * teclas F1–F8) de quem está falando e Encerrar, que entrega o DOCX.
+ *
+ * Arquivo: a gravação que já existe (a mídia baixada com os autos ou
+ * qualquer áudio ou vídeo que o Windows reproduz), arrastada para a tela ou
+ * escolhida pelo botão — o diálogo do Windows manda só o caminho; o
+ * seletor do navegador e o arrastar mandam o arquivo, com o andamento do
+ * envio —, o número (tirado do nome do arquivo ou da pasta), o tipo, o
+ * sigilo, Transcrever, o andamento e o documento pronto.
  *
  * A sessão vive no servidor (é única). Sair desta tela não para a gravação:
  * ao voltar, /api/transcricao/estado devolve as falas e o tempo, e a barra
@@ -23,8 +33,40 @@
   // F1–F8: tons de azul, navy e cinza, todos com contraste AA para o nome
   // (sobre o branco e o vidro) e para a letra branca do botão apertado.
   const CORES = ["#0A66E8", "#1B3560", "#1074AC", "#2D48B5", "#3D6390", "#0D526B", "#48597A", "#5F6878"];
-  const TIPOS_GRAVACAO = ["Áudio e vídeo|*.mp3;*.wav;*.m4a;*.ogg;*.flac;*.wma;*.aac;*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.webm", "Todos os arquivos|*.*"];
-  const ACEITAR_GRAVACAO = "audio/*,video/*,.mp3,.wav,.m4a,.ogg,.flac,.wma,.aac,.mp4,.mkv,.avi,.mov,.wmv,.webm";
+  const MODOS = [
+    { valor: "ao_vivo", rotulo: "Ao vivo", icone: "microfone" },
+    { valor: "arquivo", rotulo: "Arquivo de áudio ou vídeo", icone: "video" },
+  ];
+  // Os formatos de áudio e de vídeo que o Windows reproduz: a MESMA lista de
+  // helestron/transcricao/arquivo.py (EXTENSOES), conferida item a item pelo
+  // teste test_transcricao_formatos. Vai no filtro do diálogo do Windows e
+  // no 'accept' do navegador (com audio/* e video/*). Ela só orienta a
+  // escolha: o programa não recusa arquivo pela extensão.
+  const EXTENSOES_MIDIA = [
+    // áudio
+    ".mp3", ".wav", ".wma", ".aac", ".adt", ".adts", ".m4a", ".m4b", ".flac", ".ogg", ".oga",
+    ".opus", ".aif", ".aiff", ".aifc", ".amr", ".awb", ".ac3", ".ec3", ".mka", ".weba",
+    ".caf", ".au", ".snd", ".mp2", ".mpa", ".3ga",
+    // vídeo
+    ".mp4", ".m4v", ".mov", ".qt", ".avi", ".wmv", ".wm", ".asf", ".mkv", ".webm", ".mpg",
+    ".mpeg", ".mpe", ".m1v", ".m2v", ".ts", ".m2t", ".m2ts", ".mts", ".3gp", ".3g2", ".flv",
+    ".f4v", ".vob", ".ogv", ".dvr-ms", ".wtv", ".divx", ".mxf",
+  ];
+  const INICIO_VIDEO = EXTENSOES_MIDIA.indexOf(".mp4");
+  // O diálogo do Windows (pela pywebview) só aceita "*.ext" com letras e
+  // números: o ".dvr-ms" fica de fora do filtro, mas entra por "Todos os arquivos".
+  const TIPOS_GRAVACAO = ["Áudio e vídeo|" + EXTENSOES_MIDIA.map((e) => "*" + e).join(";"), "Todos os arquivos|*.*"];
+  const ACEITAR_GRAVACAO = ["audio/*", "video/*"].concat(EXTENSOES_MIDIA).join(",");
+  // O envio pela página (Edge, navegador, arrastar e soltar): o mesmo limite
+  // da rota no servidor (api_audiencias.LIMITE_ENVIO_GRAVACAO). Pelo diálogo
+  // do Windows não há limite: vai só o caminho.
+  const LIMITE_ENVIO_GRAVACAO = 20 * 1024 * 1024 * 1024;
+  // "0700123-83.2024.8.02.0001/0001": o número e o dependente mais longo.
+  const TAMANHO_NUMERO = 30;
+
+  // O envio da gravação pela página em curso. Sobrevive a sair e voltar à
+  // tela: {promessa, cancelar, fracao, total, nome, ouvintes}.
+  let envioAtual = null;
 
   function lerLocal(chave, padrao) {
     try { return localStorage.getItem("helestron." + chave) || padrao; } catch (_e) { return padrao; }
@@ -47,7 +89,8 @@
    */
   function numeroQuebravel(numero) {
     const texto = String(numero || "");
-    const m = /^(\d{7}-\d{2}\.\d{4}\.)(\d\.\d{2}\.\d{4})$/.exec(texto);
+    // com o dependente ("/01") junto da segunda metade
+    const m = /^(\d{7}-\d{2}\.\d{4}\.)(\d\.\d{2}\.\d{4}(?:[/-]\d{1,4})?)$/.exec(texto);
     return m ? [m[1], el("wbr"), m[2]] : texto;
   }
 
@@ -63,22 +106,170 @@
   }
 
   const MOTIVO_PAUTA = "A pauta de audiências indica que este processo corre em segredo de justiça.";
+  // O incidente ("/01") herda o sigilo do principal (como no servidor, nucleo/sigilo.py).
+  const MOTIVO_PAUTA_PRINCIPAL = "Este processo é incidente de um processo sigiloso: a pauta de audiências indica que o principal corre em segredo de justiça.";
 
   /**
    * A pauta sabe que o processo é sigiloso (o portal disse "segredo de
    * justiça")? Procura o número em qualquer audiência de um ano para trás a
-   * um ano para a frente. Na dúvida (pauta indisponível), "": o servidor
-   * confere de novo ao começar e liga o sigilo se for o caso.
+   * um ano para a frente; o incidente ("/01") também pelo principal. Na
+   * dúvida (pauta indisponível), "": o servidor confere de novo ao começar e
+   * liga o sigilo se for o caso.
    */
   async function sigiloNaPauta(numero) {
     if (!numero) return "";
+    const exato = cnj.formatar(numero);
+    const principal = cnj.principal(numero);
     const hoje = new Date();
     try {
-      const r = await api.pauta.listar({ de: fmt.iso(fmt.somarDias(hoje, -366)), ate: fmt.iso(fmt.somarDias(hoje, 366)), busca: numero });
-      return ((r && r.audiencias) || []).some((a) => a.sigiloso && a.processo === numero) ? MOTIVO_PAUTA : "";
+      const r = await api.pauta.listar({ de: fmt.iso(fmt.somarDias(hoje, -366)), ate: fmt.iso(fmt.somarDias(hoje, 366)), busca: principal });
+      const sigilosas = ((r && r.audiencias) || []).filter((a) => a.sigiloso && a.processo).map((a) => cnj.formatar(a.processo));
+      if (sigilosas.includes(exato)) return MOTIVO_PAUTA;
+      return exato !== principal && sigilosas.includes(principal) ? MOTIVO_PAUTA_PRINCIPAL : "";
     } catch (_e) {
       return "";
     }
+  }
+
+  /** O que dizer do número digitado: {ok, numero (com o dependente "/01"), texto, classe}. */
+  function conferirNumero(valor) {
+    const partes = cnj.separar(valor);
+    const d = partes.digitos;
+    if (!d.length) return { ok: false, numero: "", classe: "", texto: "É ele que dá nome ao documento." };
+    if (d.length < 20) {
+      const faltam = 20 - d.length;
+      return { ok: false, numero: "", classe: "", texto: `Faltam ${faltam} ${faltam === 1 ? "dígito" : "dígitos"}.` };
+    }
+    if (!cnj.valido(d)) return { ok: false, numero: "", classe: "erro", texto: "O dígito verificador não confere. Confira o número." };
+    const trib = cnj.tribunal(d);
+    const dep = partes.dependente ? ` · dependente ${cnj.dependente(partes.dependente)}` : "";
+    return { ok: true, numero: cnj.formatar(valor), classe: "ok", texto: `Número válido${trib ? " · " + trib : ""}${dep}.` };
+  }
+
+  function mostrarConferencia(campo, ajuda, c) {
+    ajuda.classList.remove("erro", "ok");
+    if (c.classe) ajuda.classList.add(c.classe);
+    campo.classList.toggle("invalido", c.classe === "erro");
+    ajuda.textContent = c.texto;
+  }
+
+  /**
+   * A máscara do número (que mantém o dependente digitado, "/01" ou "-01")
+   * sem brigar com o cursor: só reformata quando se digita no fim.
+   */
+  function mascararAoDigitar(campo, depois) {
+    campo.addEventListener("input", () => {
+      if (campo.selectionStart === campo.value.length) campo.value = cnj.mascarar(campo.value);
+      depois();
+    });
+    campo.addEventListener("paste", () => setTimeout(() => { campo.value = cnj.mascarar(campo.value); depois(); }, 0));
+  }
+
+  /**
+   * O interruptor de segredo de justiça que o programa liga sozinho quando a
+   * pauta sabe que o processo é sigiloso (e o servidor confere de novo ao
+   * começar). Nunca o desliga sozinho, a não ser o que ele mesmo ligou para
+   * outro número. 'estado' (o rascunho) guarda {processo, sigiloso,
+   * sigiloAutomatico, motivoSigilo}.
+   */
+  function vigiaDoSigilo(ctx, chave, nota, estado) {
+    let conferido = estado.sigiloso && estado.motivoSigilo ? cnj.formatar(estado.processo || "") : "";
+    let consulta = 0;
+    function ligar(motivo, numero) {
+      chave.checked = true;
+      estado.sigiloso = true;
+      estado.sigiloAutomatico = true;
+      estado.motivoSigilo = motivo;
+      conferido = numero || conferido;
+      nota.textContent = motivo;
+      nota.hidden = false;
+    }
+    function conferir(numero) {
+      if (numero && numero === conferido) return;
+      conferido = numero;
+      const minha = ++consulta;
+      if (estado.sigiloAutomatico) {
+        // O que o programa ligou para o número anterior não vale para este.
+        chave.checked = false;
+        estado.sigiloso = false;
+        estado.sigiloAutomatico = false;
+      }
+      estado.motivoSigilo = "";
+      nota.hidden = true;
+      if (!numero) return;
+      sigiloNaPauta(numero).then((motivo) => {
+        if (motivo && minha === consulta && ctx.vivo) ligar(motivo, numero);
+      });
+    }
+    function aMao(v) {
+      estado.sigiloso = v;
+      estado.sigiloAutomatico = false;
+      if (!v) { estado.motivoSigilo = ""; nota.hidden = true; }
+    }
+    return { ligar, conferir, aMao };
+  }
+
+  function nomeDoCaminho(caminho) {
+    return String(caminho || "").split(/[\\/]/).pop();
+  }
+
+  function pastaDoCaminho(caminho) {
+    const texto = String(caminho || "");
+    const i = Math.max(texto.lastIndexOf("\\"), texto.lastIndexOf("/"));
+    return i > 0 ? texto.slice(0, i) : "";
+  }
+
+  function extensaoDe(nome) {
+    const m = /(\.[\w-]+)$/.exec(String(nome || "").toLowerCase());
+    return m ? m[1] : "";
+  }
+
+  /**
+   * Envia a gravação. Escolhida pelo diálogo do Windows, vai só o caminho
+   * (nada é copiado). O arquivo do navegador (ou arrastado) vai por envio
+   * com o andamento: o fetch não diz quanto já subiu, e o vídeo de uma
+   * audiência tem gigabytes. Devolve {promessa, cancelar, fracao, ouvintes}.
+   */
+  function iniciarEnvio(escolha, campos) {
+    const envio = { nome: escolha.nome, total: escolha.arquivo ? escolha.arquivo.size : 0, fracao: 0, ouvintes: new Set(), cancelar: () => {} };
+    const avisar = (f) => {
+      envio.fracao = f;
+      for (const fn of Array.from(envio.ouvintes)) {
+        try { fn(f); } catch (_e) { /* um ouvinte com defeito não para o envio */ }
+      }
+    };
+    if (!escolha.arquivo || api.demo || typeof XMLHttpRequest === "undefined") {
+      envio.promessa = api.transcricao.gravacao(escolha, campos).then((r) => { avisar(1); return r; });
+      return envio;
+    }
+    const [metodo, caminho] = String(api.rotas.gravacao).split(" ");
+    const fd = new FormData();
+    // Os campos antes do arquivo: chegam ao programa antes dos gigabytes.
+    for (const [k, v] of Object.entries(campos)) {
+      if (v !== undefined && v !== null) fd.append(k, typeof v === "boolean" ? (v ? "true" : "false") : String(v));
+    }
+    fd.append("arquivo", escolha.arquivo, escolha.arquivo.name);
+    const xhr = new XMLHttpRequest();
+    envio.cancelar = () => xhr.abort();
+    envio.promessa = new Promise((resolver, rejeitar) => {
+      xhr.open(metodo, caminho);
+      xhr.setRequestHeader("X-Helestron-Token", api.token());
+      xhr.upload.addEventListener("progress", (ev) => { if (ev.lengthComputable && ev.total) avisar(ev.loaded / ev.total); });
+      xhr.addEventListener("load", () => {
+        let corpo = null;
+        try { corpo = JSON.parse(xhr.responseText); } catch (_e) { corpo = null; }
+        if (corpo && corpo.ok === true) { avisar(1); resolver(corpo.dados); return; }
+        const e = (corpo && corpo.erro) || {};
+        rejeitar(new api.ErroApi(e.codigo || "resposta_invalida",
+          e.mensagem || "O Helestron respondeu de um jeito inesperado. Tente de novo; se continuar, feche e abra o programa.",
+          e.detalhe || "", xhr.status));
+      });
+      xhr.addEventListener("error", () => rejeitar(new api.ErroApi("sem_conexao",
+        "O envio do arquivo foi interrompido antes de terminar. Confira se o Helestron continua aberto e se há espaço no disco, e tente de novo.", "", 0)));
+      xhr.addEventListener("abort", () => rejeitar(new api.ErroApi("envio_cancelado", "Envio cancelado.", "", 0)));
+      xhr.send(fd);
+    });
+    return envio;
   }
 
   /** O microfone guardado (o NOME; "" é o padrão do Windows). */
@@ -100,13 +291,28 @@
     if (!H.loja.audiencia) {
       // tipoDaSessao: o tipo com que ESTA tela começou a sessão (null se ela
       // veio de antes, já em curso: o servidor guarda o dela).
-      H.loja.audiencia = { processo: "", tipo: lerLocal("tipo_audiencia", "Instrução e julgamento"), sigiloso: false, motivoSigilo: "", tipoDaSessao: null, participantes: null, documento: null, falas: [] };
+      // modo: "ao_vivo" | "arquivo"; gravacao: o rascunho do modo arquivo
+      // (a escolha fica guardada ao sair e voltar à tela).
+      H.loja.audiencia = {
+        processo: "", tipo: lerLocal("tipo_audiencia", "Instrução e julgamento"), sigiloso: false, motivoSigilo: "", tipoDaSessao: null, participantes: null, documento: null, falas: [],
+        // enviada/tarefa/pedido: a gravação que esta tela mandou transcrever,
+        // a tarefa dela e a resposta (o sigilo que o programa ligou).
+        modo: null,
+        gravacao: { escolha: null, processo: "", tipo: null, sigiloso: false, sigiloAutomatico: false, motivoSigilo: "", enviada: null, tarefa: null, pedido: null },
+      };
     }
     return H.loja.audiencia;
   }
 
   // ===================================================================== preparo
-  function telaPreparo(ctx, irParaAoVivo) {
+  /**
+   * A tela de antes da audiência, com os dois modos no topo, do mesmo
+   * tamanho: "Ao vivo" (a transcrição simultânea, pelo microfone) e "Arquivo
+   * de áudio ou vídeo" (a gravação que já existe: a mídia baixada com os
+   * autos ou qualquer arquivo que o Windows reproduz). A lateral (gravar,
+   * andamento da gravação, transcrições interrompidas e recentes) é a mesma.
+   */
+  function telaPreparo(ctx, irParaAoVivo, aoMudarModo) {
     const r = rascunho();
     if (!r.participantes) r.participantes = participantesDaConfig();
     const p = ctx.rota.params;
@@ -117,12 +323,16 @@
       r.sigiloso = p.get("sigiloso") === "1";
       r.motivoSigilo = r.sigiloso ? MOTIVO_PAUTA : "";
       r.sigiloAutomatico = r.sigiloso;
+      r.modo = "ao_vivo";
     }
+    if (p.get("modo") === "arquivo" || p.get("modo") === "ao_vivo") r.modo = p.get("modo");
+    if (r.modo !== "arquivo" && r.modo !== "ao_vivo") r.modo = lerLocal("modo_audiencia", "ao_vivo") === "arquivo" ? "arquivo" : "ao_vivo";
+    const g = r.gravacao;
 
     // --- processo
     const campoProcesso = el("input", {
-      classe: "campo numero", id: "processo-audiencia", inputmode: "numeric", autocomplete: "off",
-      placeholder: "0000000-00.0000.0.00.0000", maxlength: "25", spellcheck: "false",
+      classe: "campo numero", id: "processo-audiencia", autocomplete: "off",
+      placeholder: "0000000-00.0000.0.00.0000", maxlength: String(TAMANHO_NUMERO), spellcheck: "false",
     });
     campoProcesso.value = r.processo;
     const ajudaProcesso = el("p", { classe: "ajuda-campo", id: "ajuda-processo", "aria-live": "polite" });
@@ -135,34 +345,13 @@
     let micsProntos = false;
 
     const validar = () => {
-      const d = cnj.digitos(campoProcesso.value);
-      ajudaProcesso.classList.remove("erro", "ok");
-      campoProcesso.classList.remove("invalido");
-      if (!d.length) {
-        ajudaProcesso.textContent = "É ele que dá nome ao documento.";
-      } else if (d.length < 20) {
-        ajudaProcesso.textContent = `Faltam ${20 - d.length} ${20 - d.length === 1 ? "dígito" : "dígitos"}.`;
-      } else if (!cnj.valido(d)) {
-        ajudaProcesso.textContent = "O dígito verificador não confere. Confira o número.";
-        ajudaProcesso.classList.add("erro");
-        campoProcesso.classList.add("invalido");
-      } else {
-        const trib = cnj.tribunal(d);
-        ajudaProcesso.textContent = `Número válido${trib ? " · " + trib : ""}.`;
-        ajudaProcesso.classList.add("ok");
-      }
+      const c = conferirNumero(campoProcesso.value);
+      mostrarConferencia(campoProcesso, ajudaProcesso, c);
       r.processo = campoProcesso.value;
-      const ok = d.length === 20 && cnj.valido(d);
-      botaoGravar.disabled = !(ok && micsProntos);
-      conferirSigilo(ok ? cnj.mascarar(d) : "");
+      botaoGravar.disabled = !(c.ok && micsProntos);
+      vigiaAoVivo.conferir(c.ok ? c.numero : "");
     };
-    campoProcesso.addEventListener("input", () => {
-      // Máscara que não briga com o cursor: só reformata quando se digita no fim.
-      const noFim = campoProcesso.selectionStart === campoProcesso.value.length;
-      if (noFim) campoProcesso.value = cnj.mascarar(campoProcesso.value);
-      validar();
-    });
-    campoProcesso.addEventListener("paste", () => setTimeout(() => { campoProcesso.value = cnj.mascarar(campoProcesso.value); validar(); }, 0));
+    mascararAoDigitar(campoProcesso, () => validar());
 
     // --- tipo
     const campoTipo = el("select", { classe: "campo", id: "tipo-audiencia" }, TIPOS.map((t) => el("option", { value: t, texto: t })));
@@ -173,40 +362,10 @@
     // O Helestron liga o interruptor sozinho quando a pauta sabe que o
     // processo é sigiloso (e o servidor confere de novo ao começar). Nunca o
     // desliga sozinho, a não ser o que ele mesmo ligou para outro número.
-    const sigilo = interruptor({ marcado: r.sigiloso, rotulo: "Segredo de justiça", id: "sigilo-audiencia", aoMudar: (v) => {
-      r.sigiloso = v;
-      r.sigiloAutomatico = false;
-      if (!v) { r.motivoSigilo = ""; notaSigilo.hidden = true; }
-    } });
+    const sigilo = interruptor({ marcado: r.sigiloso, rotulo: "Segredo de justiça", id: "sigilo-audiencia", aoMudar: (v) => vigiaAoVivo.aMao(v) });
     const notaSigilo = el("span", { classe: "linha-sub nota-sigilo", id: "motivo-sigilo", "aria-live": "polite", hidden: !r.motivoSigilo, texto: r.motivoSigilo || "" });
-    let numeroConferido = r.sigiloso && r.motivoSigilo ? cnj.mascarar(r.processo) : "";
-    let consulta = 0;
-    function ligarSigilo(motivo, numero) {
-      sigilo.checked = true;
-      r.sigiloso = true;
-      r.sigiloAutomatico = true;
-      r.motivoSigilo = motivo;
-      numeroConferido = numero || numeroConferido;
-      notaSigilo.textContent = motivo;
-      notaSigilo.hidden = false;
-    }
-    function conferirSigilo(numero) {
-      if (numero && numero === numeroConferido) return;
-      numeroConferido = numero;
-      const minha = ++consulta;
-      if (r.sigiloAutomatico) {
-        // O que o programa ligou para o número anterior não vale para este.
-        sigilo.checked = false;
-        r.sigiloso = false;
-        r.sigiloAutomatico = false;
-      }
-      r.motivoSigilo = "";
-      notaSigilo.hidden = true;
-      if (!numero) return;
-      sigiloNaPauta(numero).then((motivo) => {
-        if (motivo && minha === consulta && ctx.vivo) ligarSigilo(motivo, numero);
-      });
-    }
+    const vigiaAoVivo = vigiaDoSigilo(ctx, sigilo, notaSigilo, r);
+    const ligarSigilo = vigiaAoVivo.ligar;
 
     // --- sugestões da pauta de hoje
     const sugestoes = el("div", { classe: "sugestoes", aria: { label: "Audiências de hoje na pauta" } });
@@ -223,7 +382,7 @@
             campoProcesso.value = cnj.mascarar(a.processo);
             if (TIPOS.includes(a.tipo)) { campoTipo.value = a.tipo; r.tipo = a.tipo; }
             validar();
-            if (a.sigiloso) ligarSigilo(MOTIVO_PAUTA, cnj.mascarar(a.processo));
+            if (a.sigiloso) ligarSigilo(MOTIVO_PAUTA, cnj.formatar(a.processo));
             campoProcesso.focus();
           } },
         }, icone("relogio", { tamanho: 13 }), `${a.hora} · ${a.processo}`)));
@@ -320,8 +479,8 @@
     const botaoGravar = el("button", { type: "button", classe: "botao-gravar", id: "botao-gravar", aria: { label: "Gravar e transcrever a audiência" }, disabled: true });
     const gravar = async () => {
       if (botaoGravar.disabled) return;
-      const d = cnj.digitos(campoProcesso.value);
-      if (!(d.length === 20 && cnj.valido(d))) { campoProcesso.focus(); return; }
+      const c = conferirNumero(campoProcesso.value);
+      if (!c.ok) { campoProcesso.focus(); return; }
       if (testando) await pararTeste();
       const participantesMapa = {};
       r.participantes.forEach((n, i) => { if (n.trim()) participantesMapa["F" + (i + 1)] = n.trim(); });
@@ -329,8 +488,10 @@
       botaoGravar.disabled = true;
       let resposta = null;
       try {
+        // O número vai com o dependente digitado ("/01" ou "-01"): sem ele, a
+        // audiência do incidente virava a do principal.
         resposta = await api.transcricao.iniciar({
-          processo: cnj.mascarar(d), dispositivo: valorDispositivo(), sigiloso: !!sigilo.checked,
+          processo: c.numero, dispositivo: valorDispositivo(), sigiloso: !!sigilo.checked,
           tipo: campoTipo.value, participantes: participantesMapa, falante: primeiro,
         });
       } catch (erro) {
@@ -342,7 +503,7 @@
       r.documento = null;
       r.falas = [];
       r.falante = primeiro;
-      r.processo = cnj.mascarar(d);
+      r.processo = c.numero;
       r.tipo = campoTipo.value;
       r.tipoDaSessao = campoTipo.value;
       r.sigiloso = !!sigilo.checked || !!(resposta && resposta.sigiloso);
@@ -354,14 +515,9 @@
       } else if (!r.sigiloAutomatico) {
         r.motivoSigilo = "";
       }
-      irParaAoVivo({ segundos: 0, estado: "iniciando", texto_estado: "Preparando a gravação…", falas: [], falante: primeiro });
+      irParaAoVivo({ segundos: 0, estado: "iniciando", texto_estado: "Preparando a gravação…", falas: [], falante: primeiro, processo: resposta && resposta.processo });
     };
     botaoGravar.addEventListener("click", gravar);
-    const teclaGravar = (ev) => {
-      if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter" && !document.querySelector(".folha-fundo")) { ev.preventDefault(); gravar(); }
-    };
-    document.addEventListener("keydown", teclaGravar);
-    ctx.aoSair(() => document.removeEventListener("keydown", teclaGravar));
 
     // --- modelo
     const estadoModelo = el("div", { classe: "estado-linha", estilo: { justifyContent: "center" } }, el("span", { classe: "girando" }), "Conferindo o modelo de transcrição…");
@@ -384,7 +540,7 @@
       }
     };
 
-    const formulario = cartao({ classe: "nova-audiencia" },
+    const formulario = cartao({ classe: "nova-audiencia", id: "painel-ao-vivo", aria: { label: "Transcrição ao vivo" } },
       cabecalhoCartao("Nova audiência", "microfone"),
       el("div", { classe: "formulario" },
         el("div", {},
@@ -414,97 +570,304 @@
         el("p", { classe: "gravar-dica", texto: "Ou tecle Ctrl+Enter. O texto aparece poucos segundos depois de cada fala." }),
         estadoModelo));
 
-    // --- lateral: gravação, recuperar, recentes
-    const tarefaArquivo = el("div");
-    const recuperar = el("div");
-    const recentes = el("div", {}, H.ui.esqueleto(3));
+    // ================================================ modo arquivo
+    // A gravação que já existe: escolhida pelo diálogo do Windows (vai só o
+    // caminho; nada é copiado), pelo seletor do navegador ou arrastada para
+    // a tela (vai por envio, até 20 GB). O programa não recusa arquivo pela
+    // extensão: quem decide é a leitura do áudio, e a tarefa diz o motivo
+    // (sem trilha de áudio, arquivo cortado, protegido contra cópia).
+    const campoGravacao = el("input", {
+      classe: "campo numero", id: "processo-gravacao", autocomplete: "off",
+      placeholder: "0000000-00.0000.0.00.0000", maxlength: String(TAMANHO_NUMERO), spellcheck: "false",
+    });
+    campoGravacao.value = g.processo || "";
+    const ajudaGravacao = el("p", { classe: "ajuda-campo", id: "ajuda-processo-gravacao", "aria-live": "polite" });
+    campoGravacao.setAttribute("aria-describedby", "ajuda-processo-gravacao");
+    // O tipo vai para a ficha do documento: escolhido aqui, à vista.
+    const tipoGravacao = el("select", { classe: "campo", id: "tipo-gravacao" }, TIPOS.map((t) => el("option", { value: t, texto: t })));
+    tipoGravacao.value = TIPOS.includes(g.tipo) ? g.tipo : campoTipo.value;
+    tipoGravacao.addEventListener("change", () => { g.tipo = tipoGravacao.value; });
+    const sigGravacao = interruptor({ marcado: !!g.sigiloso, rotulo: "Segredo de justiça", id: "sigilo-gravacao", aoMudar: (v) => vigiaArquivo.aMao(v) });
+    const notaGravacao = el("span", { classe: "linha-sub nota-sigilo", id: "motivo-sigilo-arquivo", "aria-live": "polite", hidden: !g.motivoSigilo, texto: g.motivoSigilo || "" });
+    const vigiaArquivo = vigiaDoSigilo(ctx, sigGravacao, notaGravacao, g);
 
-    const transcreverGravacao = async () => {
-      const escolha = await api.escolherArquivo({ titulo: "Escolha a gravação da audiência", tipos: TIPOS_GRAVACAO, aceitar: ACEITAR_GRAVACAO });
-      if (!escolha) return;
-      const doNome = String(escolha.nome || "").match(/\d{7}-?\d{2}\.?\d{4}\.?\d\.?\d{2}\.?\d{4}/);
-      const campo = el("input", { classe: "campo numero", id: "processo-gravacao", placeholder: "0000000-00.0000.0.00.0000", inputmode: "numeric" });
-      campo.value = doNome ? cnj.mascarar(doNome[0]) : cnj.mascarar(campoProcesso.value);
-      const ajuda = el("p", { classe: "ajuda-campo" });
-      // O tipo vai para a ficha do documento: escolhido aqui, à vista.
-      const tipoGravacao = el("select", { classe: "campo", id: "tipo-gravacao" }, TIPOS.map((t) => el("option", { value: t, texto: t })));
-      tipoGravacao.value = campoTipo.value;
-      const sig = interruptor({ marcado: !!sigilo.checked, rotulo: "Segredo de justiça", id: "sigilo-gravacao", aoMudar: (v) => { sigAutomatico = false; if (!v) nota.hidden = true; } });
-      const nota = el("span", { classe: "nota-sigilo", id: "motivo-sigilo-folha", hidden: true, "aria-live": "polite" });
-      let sigAutomatico = false;
-      let conferido = "";
-      let consultaGravacao = 0;
-      const conferirNaPauta = () => {
-        const d = cnj.digitos(campo.value);
-        const numero = d.length === 20 && cnj.valido(d) ? cnj.mascarar(d) : "";
-        if (numero === conferido) return;
-        conferido = numero;
-        const minha = ++consultaGravacao;
-        if (sigAutomatico) { sig.checked = false; sigAutomatico = false; }
-        nota.hidden = true;
-        if (!numero) return;
-        sigiloNaPauta(numero).then((motivo) => {
-          if (!motivo || minha !== consultaGravacao) return;
-          sig.checked = true;
-          sigAutomatico = true;
-          nota.textContent = motivo;
-          nota.hidden = false;
-        });
-      };
-      campo.addEventListener("input", () => { campo.value = cnj.mascarar(campo.value); ajuda.textContent = ""; campo.classList.remove("invalido"); conferirNaPauta(); });
-      const f = folha.abrir({
-        titulo: "Transcrever a gravação", icone: "ondas",
-        mensagem: `Arquivo: ${escolha.nome}. A transcrição usa o modelo preciso, roda no computador e pode levar alguns minutos; acompanhe na barra lateral.`,
-        conteudo: [
-          el("div", {}, el("label", { classe: "rotulo", for: "processo-gravacao", texto: "Número do processo" }), campo, ajuda),
-          el("div", {}, el("label", { classe: "rotulo", for: "tipo-gravacao", texto: "Tipo de audiência" }), tipoGravacao),
-          el("div", { classe: "grupo-lista", estilo: { boxShadow: "none" } },
-            H.ui.linha({ icone: "cadeado", cor: "navy", titulo: "Segredo de justiça", sub: el("span", {}, el("span", { estilo: { display: "block" }, texto: "O documento vai para a pasta dos sigilosos." }), nota), acessorio: sig })),
-        ],
-        botoes: [
-          { rotulo: "Cancelar" },
-          { rotulo: "Transcrever", tipo: "primario", padrao: true, acao: async () => {
-            const d = cnj.digitos(campo.value);
-            if (!(d.length === 20 && cnj.valido(d))) {
-              ajuda.textContent = "Informe um número de processo válido: ele dá nome ao documento.";
-              ajuda.classList.add("erro");
-              campo.classList.add("invalido");
-              campo.focus();
-              return false;
-            }
-            // Enviado pela página, o arquivo chega ao programa como um
-            // temporário de hoje: o nome e a data da gravação (a da última
-            // modificação, em ISO 8601) vão junto, para a ficha do documento.
-            const extras = escolha.arquivo ? { nome_original: escolha.arquivo.name } : {};
-            if (escolha.arquivo && escolha.arquivo.lastModified) extras.data_arquivo = new Date(escolha.arquivo.lastModified).toISOString();
-            const resposta = await api.transcricao.gravacao(escolha, Object.assign({ processo: cnj.mascarar(d), sigiloso: !!sig.checked, tipo: tipoGravacao.value }, extras));
-            mostrarTarefaArquivo(resposta.tarefa, resposta);
-            return true;
-          } },
-        ],
-      });
-      conferirNaPauta();
-      return f.resultado;
+    const validarGravacao = () => {
+      const c = conferirNumero(campoGravacao.value);
+      mostrarConferencia(campoGravacao, ajudaGravacao, c);
+      g.processo = campoGravacao.value;
+      vigiaArquivo.conferir(c.ok ? c.numero : "");
+      atualizarTranscrever();
+      return c;
     };
+    mascararAoDigitar(campoGravacao, () => validarGravacao());
+
+    // --- a escolha: arrastar e soltar, ou o botão
+    const botaoEscolher = botao({ rotulo: "Escolher arquivo", icone: "documento", tipo: "primario", acao: () => escolherGravacao() });
+    botaoEscolher.id = "escolher-gravacao";
+    botaoEscolher.setAttribute("aria-describedby", "formatos-gravacao");
+    const zonaArquivo = el("div", { classe: "area-soltar area-gravacao", id: "soltar-gravacao" },
+      el("div", { classe: "vazio-icone" }, icone("ondas")),
+      el("p", { classe: "area-soltar-titulo", texto: "Arraste a gravação para cá" }),
+      el("p", { classe: "area-soltar-texto", id: "formatos-gravacao", texto: "MP3, WAV, WMA, M4A, AAC, FLAC, OGG, MP4, WMV, AVI, MKV, MOV, MPG e os demais formatos de áudio e vídeo que o Windows reproduz." }),
+      el("div", { classe: "grupo-botoes" }, botaoEscolher));
+
+    const iconeEscolhido = el("span", { classe: "arquivo-escolhido-icone" });
+    const nomeEscolhido = el("span", { classe: "arquivo-escolhido-nome", id: "nome-gravacao" });
+    const subEscolhido = el("span", { classe: "arquivo-escolhido-sub", id: "tamanho-gravacao" });
+    const avisoEscolhido = el("p", { classe: "ajuda-campo aviso-arquivo", id: "aviso-gravacao", "aria-live": "polite", hidden: true });
+    const botaoTrocar = botao({ rotulo: "Trocar", tipo: "tonal", tamanho: "pequeno", acao: () => escolherGravacao() });
+    botaoTrocar.id = "trocar-gravacao";
+    const botaoTirar = botao({ icone: "x", titulo: "Tirar o arquivo escolhido", tipo: "texto", tamanho: "pequeno", acao: () => definirEscolha(null) });
+    botaoTirar.id = "tirar-gravacao";
+    const caixaEscolhida = el("div", { classe: "arquivo-escolhido", id: "arquivo-escolhido", role: "group", aria: { label: "Arquivo escolhido" }, hidden: true },
+      iconeEscolhido,
+      el("span", { classe: "linha-texto" }, nomeEscolhido, subEscolhido),
+      el("div", { classe: "grupo-botoes" }, botaoTrocar, botaoTirar));
+
+    // Sem o 'acao' do botao(): ele devolveria o estado de antes ao fim do
+    // clique (habilitado), e o Transcrever tem de ficar desligado enquanto a
+    // gravação é transcrita (uma de cada vez).
+    const botaoTranscrever = botao({ rotulo: "Transcrever", icone: "ondas", tipo: "primario", tamanho: "grande" });
+    botaoTranscrever.id = "botao-transcrever";
+    botaoTranscrever.addEventListener("click", () => { transcreverArquivo().catch((e) => folha.erro(e)); });
+    botaoTranscrever.setAttribute("aria-describedby", "dica-transcrever");
+    const dicaTranscrever = el("p", { classe: "ajuda-campo dica-transcrever", id: "dica-transcrever", "aria-live": "polite" });
+
+    // O andamento (envio, transcrição, resultado): no cartão do arquivo ou,
+    // no modo ao vivo, na lateral - o mesmo elemento muda de lugar.
+    const tarefaArquivo = el("div", { id: "andamento-arquivo", "aria-live": "polite" });
+
+    const textoArquivo = el("p", { classe: "ajuda-campo texto-arquivo", texto: "A mídia baixada com os autos ou qualquer gravação de áudio ou vídeo da audiência. O som é lido no próprio computador, com o modelo preciso: nada sai da máquina." });
+    const formularioArquivo = el("div", { classe: "formulario" },
+        textoArquivo,
+        zonaArquivo,
+        caixaEscolhida,
+        avisoEscolhido,
+        el("div", { classe: "linha-campos" },
+          el("div", {}, el("label", { classe: "rotulo", for: "processo-gravacao", texto: "Número do processo" }), campoGravacao, ajudaGravacao),
+          el("div", {}, el("label", { classe: "rotulo", for: "tipo-gravacao", texto: "Tipo de audiência" }), tipoGravacao)),
+        el("label", { classe: "linha-sigilo", for: "sigilo-gravacao" },
+          icone("cadeado"),
+          el("span", { classe: "linha-texto" },
+            el("span", { classe: "linha-titulo", texto: "Segredo de justiça" }),
+            el("span", { classe: "linha-sub", texto: "O documento vai para a pasta dos sigilosos, fora do acervo da IA." }),
+            notaGravacao),
+          sigGravacao),
+        el("div", { classe: "transcrever-acoes" }, botaoTranscrever, dicaTranscrever));
+    const cartaoArquivo = cartao({ classe: "transcrever-arquivo", id: "painel-arquivo", aria: { label: "Transcrição de arquivo de áudio ou vídeo" } },
+      cabecalhoCartao("Transcrever uma gravação", "ondas"), formularioArquivo);
+
+    /** Há envio ou transcrição de gravação em curso (uma de cada vez)? */
+    let iniciando = false;
+    const ocupado = () => {
+      if (iniciando || envioAtual) return true;
+      // a tarefa que esta tela começou e cujo evento ainda não chegou
+      if (g.tarefa && !H.loja.tarefas.get(g.tarefa)) return true;
+      return Array.from(H.loja.tarefas.values()).some((t) => t.tipo === "transcricao_arquivo" && t.estado === "rodando");
+    };
+    const grandeDemais = () => !!(g.escolha && g.escolha.arquivo && g.escolha.arquivo.size > LIMITE_ENVIO_GRAVACAO);
+    /** A gravação escolhida é a que está sendo enviada ou transcrita agora? */
+    const emAndamento = () => !!g.escolha && g.escolha === g.enviada && ocupado();
+
+    function atualizarTranscrever() {
+      const c = conferirNumero(campoGravacao.value);
+      let dica = "A transcrição usa o modelo preciso e roda no próprio computador; um arquivo longo leva alguns minutos. Acompanhe aqui ou na barra lateral.";
+      if (emAndamento()) dica = "Transcrevendo esta gravação: acompanhe o andamento acima ou na barra lateral.";
+      else if (ocupado()) dica = "Espere a transcrição em andamento terminar: uma gravação de cada vez.";
+      else if (!g.escolha) dica = "Escolha a gravação: arraste-a para cá ou use o botão “Escolher arquivo”.";
+      else if (grandeDemais()) dica = `O arquivo passa de ${fmt.bytes(LIMITE_ENVIO_GRAVACAO)}, o limite do envio pela página. Na janela do Helestron, o botão “Escolher arquivo” lê a gravação de onde ela está, sem esse limite.`;
+      else if (!c.ok) dica = "Informe o número do processo: ele dá nome ao documento.";
+      botaoTranscrever.disabled = ocupado() || !g.escolha || grandeDemais() || !c.ok;
+      // A gravação que está sendo transcrita não se troca no meio.
+      botaoTrocar.disabled = emAndamento();
+      botaoTirar.disabled = emAndamento();
+      dicaTranscrever.textContent = dica;
+      dicaTranscrever.classList.toggle("erro", !ocupado() && grandeDemais());
+    }
+
+    /**
+     * Fim da transcrição que esta tela começou: com o documento pronto, a
+     * gravação e o número saem da tela (Transcrever de novo faria outro
+     * documento igual); se não deu certo, ficam, para trocar ou corrigir.
+     */
+    function aoFimDaTarefa(t) {
+      if (!g.tarefa || g.tarefa !== t.id) return;
+      g.tarefa = null;
+      if (t.estado === "concluida") {
+        if (g.escolha && g.escolha === g.enviada) definirEscolha(null, false);
+        campoGravacao.value = "";
+        validarGravacao();
+      }
+      g.enviada = null;
+      atualizarTranscrever();
+    }
+
+    function definirEscolha(escolha, focar = true) {
+      g.escolha = escolha || null;
+      zonaArquivo.hidden = !!escolha;
+      caixaEscolhida.hidden = !escolha;
+      avisoEscolhido.hidden = true;
+      if (!escolha) {
+        atualizarTranscrever();
+        if (focar) botaoEscolher.focus();
+        return;
+      }
+      const nome = escolha.nome || (escolha.arquivo && escolha.arquivo.name) || nomeDoCaminho(escolha.caminho);
+      const ext = extensaoDe(nome);
+      const mime = String((escolha.arquivo && escolha.arquivo.type) || "");
+      const video = /^video\//.test(mime) || EXTENSOES_MIDIA.indexOf(ext) >= INICIO_VIDEO;
+      trocar(iconeEscolhido, blocoIcone(video ? "video" : "ondas", "azul"));
+      nomeEscolhido.textContent = nome;
+      nomeEscolhido.title = escolha.caminho || nome;
+      if (escolha.arquivo) {
+        subEscolhido.textContent = `${fmt.bytes(escolha.arquivo.size)} · enviado ao Helestron ao transcrever`;
+      } else {
+        const pasta = pastaDoCaminho(escolha.caminho);
+        const tamanho = typeof escolha.tamanho === "number" ? fmt.bytes(escolha.tamanho) + " · " : "";
+        subEscolhido.textContent = `${tamanho}lido de onde está, sem cópia${pasta ? " · " + pasta : ""}`;
+      }
+      subEscolhido.title = subEscolhido.textContent;
+      // Extensão fora da lista: avisa, mas não recusa (o programa tenta ler o som).
+      if (!EXTENSOES_MIDIA.includes(ext) && !/^(audio|video)\//.test(mime)) {
+        avisoEscolhido.textContent = "Este arquivo não parece ser de áudio nem de vídeo. O Helestron tenta ler o som dele assim mesmo e avisa se não houver áudio.";
+        avisoEscolhido.hidden = false;
+      }
+      // O número pelo nome do arquivo ou, no caminho, pela pasta (as mídias dos
+      // autos ficam em _controle\midias\<número>\), com o dependente "-NN".
+      // Só na escolha: de volta à tela, fica o que a pessoa deixou no campo.
+      if (focar) {
+        const doArquivo = escolha.caminho ? cnj.doCaminho(escolha.caminho) : cnj.doNome(nome);
+        if (doArquivo) {
+          campoGravacao.value = doArquivo;
+        } else if (!cnj.separar(campoGravacao.value).digitos.length && conferirNumero(campoProcesso.value).ok) {
+          campoGravacao.value = cnj.mascarar(campoProcesso.value);
+        }
+      }
+      const c = validarGravacao();
+      if (focar) (c.ok && !botaoTranscrever.disabled ? botaoTranscrever : campoGravacao).focus();
+    }
+
+    async function escolherGravacao() {
+      const escolha = await api.escolherArquivo({ titulo: "Escolha a gravação da audiência", tipos: TIPOS_GRAVACAO, aceitar: ACEITAR_GRAVACAO });
+      if (escolha && ctx.vivo) definirEscolha(escolha);
+    }
+
+    async function transcreverArquivo() {
+      const escolha = g.escolha;
+      if (!escolha) { botaoEscolher.focus(); return; }
+      const c = conferirNumero(campoGravacao.value);
+      if (!c.ok) {
+        ajudaGravacao.textContent = "Informe um número de processo válido: ele dá nome ao documento.";
+        ajudaGravacao.classList.add("erro");
+        campoGravacao.classList.add("invalido");
+        campoGravacao.focus();
+        return;
+      }
+      if (ocupado() || grandeDemais()) { atualizarTranscrever(); return; }
+      const campos = { processo: c.numero, sigiloso: !!sigGravacao.checked, tipo: tipoGravacao.value };
+      // Enviado pela página, o arquivo chega ao programa como um temporário
+      // de hoje: o nome e a data da gravação (a da última modificação, em ISO
+      // 8601) vão junto, para a ficha do documento.
+      if (escolha.arquivo) {
+        campos.nome_original = escolha.arquivo.name;
+        if (escolha.arquivo.lastModified) campos.data_arquivo = new Date(escolha.arquivo.lastModified).toISOString();
+      }
+      let resposta;
+      g.enviada = escolha;
+      iniciando = true;
+      botaoTranscrever.setAttribute("aria-busy", "true");
+      atualizarTranscrever();
+      try {
+        resposta = await enviar(escolha, campos);
+      } catch (erro) {
+        if (g.enviada === escolha) g.enviada = null;
+        if (erro.codigo === "envio_cancelado") return;
+        folha.erro(erro, "A transcrição não começou");
+        return;
+      } finally {
+        iniciando = false;
+        botaoTranscrever.removeAttribute("aria-busy");
+        atualizarTranscrever();
+      }
+      g.tarefa = resposta.tarefa;
+      g.pedido = resposta;
+      if (!ctx.vivo) return;
+      mostrarTarefaArquivo(resposta.tarefa, resposta);
+      atualizarTranscrever();
+      tarefaArquivo.scrollIntoView({ block: "nearest" });
+    }
+
+    /** O envio da gravação, com o andamento à vista (só no envio pela página). */
+    async function enviar(escolha, campos) {
+      if (!escolha.arquivo) return api.transcricao.gravacao(escolha, campos);
+      const envio = iniciarEnvio(escolha, campos);
+      envioAtual = envio;
+      mostrarEnvio(envio);
+      atualizarTranscrever();
+      tarefaArquivo.scrollIntoView({ block: "nearest" });
+      try {
+        return await envio.promessa;
+      } catch (erro) {
+        if (ctx.vivo) trocar(tarefaArquivo);
+        throw erro;
+      } finally {
+        if (envioAtual === envio) envioAtual = null;
+      }
+    }
+
+    /** O andamento do envio pela página: quanto já chegou ao programa, e Cancelar. */
+    function mostrarEnvio(envio) {
+      const anel = H.ui.anel({ tamanho: 40, espessura: 4 });
+      const status = el("span", { classe: "acao-item-sub", id: "status-envio" });
+      const cancelar = botao({ rotulo: "Cancelar envio", tipo: "texto", tamanho: "pequeno", acao: () => envio.cancelar() });
+      cancelar.id = "cancelar-envio";
+      trocar(tarefaArquivo, cartao({ classe: "tarefa-arquivo", id: "envio-gravacao" },
+        el("div", { classe: "monitor-linha" }, anel,
+          el("div", { classe: "linha-texto" },
+            el("span", { classe: "acao-item-titulo", texto: "Enviando o arquivo ao Helestron" }), status),
+          cancelar)));
+      const ouvir = (fracao) => {
+        const pct = Math.max(0, Math.min(100, Math.floor(fracao * 100)));
+        anel.definir(pct);
+        status.textContent = pct >= 100 ? "Arquivo recebido; conferindo…" : `${pct}% de ${fmt.bytes(envio.total)}`;
+        cancelar.hidden = pct >= 100;
+      };
+      envio.ouvintes.add(ouvir);
+      ctx.aoSair(() => envio.ouvintes.delete(ouvir));
+      ouvir(envio.fracao);
+    }
 
     /** O andamento da gravação enviada; 'pedido' traz o sigilo que o programa ligou. */
     function mostrarTarefaArquivo(id, pedido) {
       const anel = H.ui.anel({ tamanho: 40, espessura: 4 });
       const titulo = el("span", { classe: "acao-item-titulo" });
-      const status = el("span", { classe: "acao-item-sub" });
+      const status = el("span", { classe: "acao-item-sub", id: "status-gravacao" });
       const forcado = pedido && pedido.sigiloso_forcado
         ? el("p", { classe: "ajuda-campo nota-sigilo", id: "motivo-sigilo-gravacao" }, icone("cadeado", { tamanho: 14 }),
           ` ${pedido.motivo || MOTIVO_PAUTA} O documento vai para a pasta dos sigilosos.`) : null;
-      const caixa = cartao({ classe: "tarefa-arquivo" }, el("div", { classe: "monitor-linha" }, anel, el("div", { classe: "linha-texto" }, titulo, status)), forcado);
+      const acoes = el("div", { classe: "grupo-botoes" });
+      const caixa = cartao({ classe: "tarefa-arquivo", id: "tarefa-gravacao" },
+        el("div", { classe: "monitor-linha" }, anel, el("div", { classe: "linha-texto" }, titulo, status)), forcado, acoes);
+      let pronto = false;
       const atualizar = () => {
         const t = H.loja.tarefas.get(id);
         if (!t) return;
-        const p = t.progresso || {};
-        anel.definir(t.estado === "rodando" ? (typeof p.percentual === "number" ? p.percentual : null) : 100, t.estado === "falhou" ? "falhou" : t.estado === "concluida" ? "concluida" : null);
-        titulo.textContent = t.titulo || "Transcrever a gravação";
-        status.textContent = t.estado === "falhou" ? (t.erro || "Não deu certo.") : (t.status || "");
-        if (t.estado === "concluida" && t.resultado && t.resultado.documento && !caixa.querySelector(".botao")) {
-          caixa.querySelector(".monitor-linha").appendChild(botao({ rotulo: "Abrir", tipo: "tonal", tamanho: "pequeno", acao: () => api.abrir("arquivo", t.resultado.documento) }));
+        const prog = t.progresso || {};
+        const doc = t.estado === "concluida" && t.resultado && t.resultado.documento ? String(t.resultado.documento) : "";
+        anel.definir(t.estado === "rodando" ? (typeof prog.percentual === "number" ? prog.percentual : null) : 100, t.estado === "falhou" ? "falhou" : t.estado === "concluida" ? "concluida" : null);
+        titulo.textContent = t.estado === "falhou" ? "A transcrição não deu certo" : t.estado === "concluida" ? "Transcrição pronta" : (t.titulo || "Transcrever a gravação");
+        status.textContent = t.estado === "falhou" ? (t.erro || "Não deu certo.")
+          : t.estado === "parada" ? "Interrompida."
+          : doc ? nomeDoCaminho(doc) + (t.resultado.sigiloso ? " — na pasta dos sigilosos, fora do acervo compartilhado." : "")
+          : (t.status || "");
+        status.title = status.textContent;
+        caixa.classList.toggle("falhou", t.estado === "falhou");
+        if (t.estado !== "rodando") { aoFimDaTarefa(t); atualizarTranscrever(); }
+        if (!pronto && doc) {
+          pronto = true;
+          trocar(acoes,
+            botao({ rotulo: "Abrir documento", icone: "documento", tipo: "tonal", tamanho: "pequeno", acao: () => api.abrir("arquivo", doc) }),
+            botao({ rotulo: "Abrir pasta", icone: "pasta", tipo: "texto", tamanho: "pequeno", acao: () => api.abrir("pasta", pastaDoCaminho(doc)) }));
           carregarRecentes();
         }
       };
@@ -512,6 +875,87 @@
       trocar(tarefaArquivo, caixa);
       atualizar();
     }
+
+    // --- arrastar e soltar: em qualquer lugar da tela, nos dois modos (soltar
+    // uma gravação no modo ao vivo passa para o modo arquivo)
+    let profundidade = 0;
+    const temArquivo = (ev) => ev.dataTransfer && Array.from(ev.dataTransfer.types || []).includes("Files");
+    const acender = (sim) => { zonaArquivo.classList.toggle("sobre", sim); caixaEscolhida.classList.toggle("sobre", sim); };
+    const aoEntrar = (ev) => {
+      if (!temArquivo(ev) || document.querySelector(".folha-fundo")) return;
+      ev.preventDefault();
+      profundidade++;
+      if (r.modo !== "arquivo") mudarModo("arquivo");
+      acender(true);
+    };
+    const aoSairDaTela = () => { profundidade = Math.max(0, profundidade - 1); if (!profundidade) acender(false); };
+    const aoPassar = (ev) => { if (temArquivo(ev)) { ev.preventDefault(); ev.dataTransfer.dropEffect = "copy"; } };
+    const aoSoltar = (ev) => {
+      if (!temArquivo(ev)) return;
+      ev.preventDefault();
+      profundidade = 0;
+      acender(false);
+      if (document.querySelector(".folha-fundo")) return;
+      const itens = Array.from(ev.dataTransfer.items || []);
+      const pasta = itens.some((it) => {
+        try { const e = it.webkitGetAsEntry && it.webkitGetAsEntry(); return !!(e && e.isDirectory); } catch (_e) { return false; }
+      });
+      if (pasta) {
+        aviso({ titulo: "Arraste o arquivo, e não a pasta", mensagem: "Abra a pasta e arraste o arquivo da gravação (áudio ou vídeo).", tipo: "alerta" });
+        return;
+      }
+      const arquivos = Array.from(ev.dataTransfer.files || []);
+      if (!arquivos.length) return;
+      // A gravação que está sendo transcrita não se troca no meio; com outra
+      // rodando, a nova fica escolhida e o Transcrever espera.
+      if (emAndamento()) { aviso({ titulo: "Uma gravação de cada vez", mensagem: "Espere a transcrição em andamento terminar.", tipo: "alerta" }); return; }
+      mudarModo("arquivo");
+      definirEscolha({ arquivo: arquivos[0], nome: arquivos[0].name });
+      if (arquivos.length > 1) aviso({ titulo: "Uma gravação de cada vez", mensagem: `Ficou ${arquivos[0].name}. Transcreva as outras depois desta.`, tipo: "info" });
+    };
+    document.addEventListener("dragenter", aoEntrar);
+    document.addEventListener("dragleave", aoSairDaTela);
+    document.addEventListener("dragover", aoPassar);
+    document.addEventListener("drop", aoSoltar);
+    ctx.aoSair(() => {
+      document.removeEventListener("dragenter", aoEntrar);
+      document.removeEventListener("dragleave", aoSairDaTela);
+      document.removeEventListener("dragover", aoPassar);
+      document.removeEventListener("drop", aoSoltar);
+    });
+
+    // --- os dois modos
+    const seletorModo = H.ui.segmentado({ opcoes: MODOS, valor: r.modo, rotulo: "Como transcrever a audiência", aoMudar: (v) => mudarModo(v, true) });
+    seletorModo.id = "modo-audiencia";
+    seletorModo.classList.add("modos-audiencia");
+    seletorModo.querySelectorAll("[role='radio']").forEach((b) => b.setAttribute("aria-controls", b.dataset.valor === "arquivo" ? "painel-arquivo" : "painel-ao-vivo"));
+
+    function mudarModo(modo, pelaPessoa) {
+      r.modo = modo === "arquivo" ? "arquivo" : "ao_vivo";
+      gravarLocal("modo_audiencia", r.modo);
+      seletorModo.definir(r.modo);
+      const arquivo = r.modo === "arquivo";
+      formulario.hidden = arquivo;
+      areaGravar.hidden = arquivo;
+      cartaoArquivo.hidden = !arquivo;
+      if (arquivo) textoArquivo.after(tarefaArquivo);
+      else areaGravar.after(tarefaArquivo);
+      if (aoMudarModo) aoMudarModo(r.modo);
+      if (pelaPessoa) (arquivo ? (g.escolha ? campoGravacao : botaoEscolher) : campoProcesso).focus({ preventScroll: true });
+    }
+
+    // Ctrl+Enter: Gravar no modo ao vivo; Transcrever no modo arquivo.
+    const teclaAtalho = (ev) => {
+      if (!((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") || document.querySelector(".folha-fundo")) return;
+      ev.preventDefault();
+      if (r.modo === "arquivo") { if (!botaoTranscrever.disabled) botaoTranscrever.click(); } else gravar();
+    };
+    document.addEventListener("keydown", teclaAtalho);
+    ctx.aoSair(() => document.removeEventListener("keydown", teclaAtalho));
+
+    // --- lateral: andamento da gravação, recuperar, recentes
+    const recuperar = el("div");
+    const recentes = el("div", {}, H.ui.esqueleto(3));
 
     const carregarRecuperaveis = async () => {
       let lista = [];
@@ -555,24 +999,40 @@
       trocar(recentes, caixa);
     };
 
-    const lateral = el("div", { classe: "coluna" },
-      areaGravar,
-      cartao({ classe: "mais-opcoes" },
-        el("div", { classe: "acao-lista" },
-          el("button", { type: "button", classe: "acao-item", id: "transcrever-gravacao", on: { click: () => transcreverGravacao().catch((e) => folha.erro(e)) } },
-            blocoIcone("ondas", "ciano"),
-            el("span", { classe: "linha-texto" },
-              el("span", { classe: "acao-item-titulo", texto: "Transcrever uma gravação" }),
-              el("span", { classe: "acao-item-sub", texto: "A mídia baixada do processo ou um arquivo de áudio ou vídeo." }))))),
-      tarefaArquivo, recuperar, recentes);
+    const lateral = el("div", { classe: "coluna" }, areaGravar, recuperar, recentes);
 
-    // Tarefa de gravação já rodando (veio de antes): mostra o andamento.
+    // Gravação já sendo enviada ou transcrita (veio de antes): o andamento;
+    // a que esta tela mandou e terminou com ela fechada: o resultado, uma vez.
     const emCurso = Array.from(H.loja.tarefas.values()).find((t) => t.tipo === "transcricao_arquivo" && t.estado === "rodando");
-    if (emCurso) mostrarTarefaArquivo(emCurso.id);
+    const minha = g.tarefa ? H.loja.tarefas.get(g.tarefa) : null;
+    if (envioAtual) {
+      const envio = envioAtual;
+      mostrarEnvio(envio);
+      envio.promessa.then((resposta) => {
+        if (ctx.vivo) { mostrarTarefaArquivo(resposta.tarefa, resposta); atualizarTranscrever(); }
+      }, () => {
+        if (ctx.vivo) { trocar(tarefaArquivo); atualizarTranscrever(); }
+      });
+    } else if (emCurso) {
+      mostrarTarefaArquivo(emCurso.id, emCurso.id === g.tarefa ? g.pedido : null);
+    } else if (minha) {
+      mostrarTarefaArquivo(minha.id, g.pedido);
+    } else if (g.tarefa) {
+      g.tarefa = null;
+      g.enviada = null;
+    }
 
+    mudarModo(r.modo);
+    if (g.escolha) definirEscolha(g.escolha, false);
+    else validarGravacao();
     validar();
     const pronto = Promise.all([carregarSugestoes(), carregarMicrofones(), carregarModelo(), carregarRecuperaveis(), carregarRecentes()]);
-    return { conteudo: el("div", { classe: "audiencia-grade" }, el("div", { classe: "coluna" }, formulario), lateral), pronto };
+    return {
+      conteudo: el("div", { classe: "audiencias-preparo" },
+        el("div", { classe: "modos-audiencia-barra" }, seletorModo),
+        el("div", { classe: "audiencia-grade" }, el("div", { classe: "coluna" }, formulario, cartaoArquivo), lateral)),
+      pronto,
+    };
   }
 
   // ===================================================================== ao vivo
@@ -812,7 +1272,9 @@
       atrasoChip);
     const topo = cartao({ classe: "ao-vivo-topo", dados: { livreDeAvisos: "1" } },
       selo, cronometro,
-      el("div", { classe: "ao-vivo-info" }, el("span", { classe: "ao-vivo-processo numero", texto: numeroAoVivo, title: numeroAoVivo }), sub),
+      // O número do incidente ("…0001/01") é mais largo: quebra depois do ano,
+      // como nas listas, em vez de ser cortado com reticências.
+      el("div", { classe: "ao-vivo-info" }, el("span", { classe: "ao-vivo-processo numero", title: numeroAoVivo }, numeroQuebravel(numeroAoVivo)), sub),
       medidor,
       el("div", { classe: "grupo-botoes ao-vivo-botoes" }, botaoPausar, botaoEncerrar));
     const texto = cartao({ classe: "texto-ao-vivo" }, rolagem, irAoFim);
@@ -931,7 +1393,12 @@
       };
       ctx.aoSair(() => telaCtx && telaCtx.limpar());
 
-      const preparo = () => mostrar((c) => telaPreparo(c, aoVivo));
+      const subtituloDoModo = (modo) => {
+        cab.subtitulo.textContent = modo === "arquivo"
+          ? "Transcrição de gravações de áudio e vídeo, no próprio computador. Nada sai da máquina."
+          : "Transcrição simultânea, no próprio computador. O áudio não sai da máquina.";
+      };
+      const preparo = () => mostrar((c) => telaPreparo(c, aoVivo, subtituloDoModo));
       const aoVivo = (inicial) => {
         cab.subtitulo.textContent = "Audiência em gravação. F1 a F8 indicam quem está falando.";
         H.loja.gravando = true;

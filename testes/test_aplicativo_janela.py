@@ -427,7 +427,9 @@ class TestJanelas(ServidorDeTeste):
         with mock.patch.dict(sys.modules, {"webview": modulo}), \
                 mock.patch.dict(os.environ, {"HELESTRON_JANELA": "webview"}):
             janela.abrir(self.app, self.app.url)
-        self.assertEqual(resultados["arquivo"], {"caminho": "/tmp/a.xlsx"})
+        # o arquivo escolhido não existe aqui: sem tamanho (a tela confere o
+        # limite do envio pelo tamanho, quando há)
+        self.assertEqual(resultados["arquivo"], {"caminho": "/tmp/a.xlsx", "tamanho": None})
         self.assertEqual(resultados["pasta"], {"caminho": None})
         self.assertEqual(resultados["mostrar"], {"mostrou": True})
         self.assertEqual(resultados["dialogos"][0], (10, "/tmp", ("Planilhas (*.xlsx)",)))

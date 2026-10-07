@@ -329,7 +329,7 @@
   async function escolherArquivo({ titulo, tipos, aceitar }) {
     try {
       const r = await chamar("dialogoArquivo", { corpo: { titulo, tipos } });
-      if (r && r.caminho) return { caminho: r.caminho, nome: nomeDoCaminho(r.caminho) };
+      if (r && r.caminho) return { caminho: r.caminho, nome: nomeDoCaminho(r.caminho), tamanho: r.tamanho };
       return null;
     } catch (erro) {
       if (erro.codigo !== "sem_dialogo") throw erro;

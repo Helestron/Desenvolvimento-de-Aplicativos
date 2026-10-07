@@ -70,15 +70,21 @@ def sigilo_revelado(app, numeros: list[str]) -> None:
     agora: o preparo rápido (api_compartilhar.depois_de_salvar - leva autos e
     transcrições para a pasta dos sigilosos, apaga o texto em _ia/texto, refaz
     o INDICE.md e, com o espelho automático ligado, tira a cópia da nuvem). E o
-    usuário fica sabendo, com o aviso no canto da janela."""
+    usuário fica sabendo, com o aviso no canto da janela. Os pacotes para o
+    ChatGPT já gerados também perdem o que for deles (no preparo rápido; sem
+    nada no acervo, só os pacotes): um pacote antigo pode tê-los mesmo depois
+    de os autos saírem do acervo."""
     from ..pauta.servico import frase_sigilo_revelado, no_acervo
-    from .api_compartilhar import depois_de_salvar, presos
+    from .api_compartilhar import depois_de_salvar, limpar_pacotes_em_segundo_plano, presos
 
     if getattr(app, "fechando", False):
         return
     lista = no_acervo(app.cfg, numeros)
     if not lista:
-        return                     # nada deles no acervo: nada sai, nada a avisar
+        # nada deles no acervo: nada sai dele, nada a avisar - mas o pacote antigo
+        if numeros:
+            limpar_pacotes_em_segundo_plano(app)
+        return
     preso = bool(presos(app))
     depois_de_salvar(app)
     frase = frase_sigilo_revelado(app.cfg, lista, preso_no_acervo=preso)
@@ -319,7 +325,14 @@ def exportar(p: Pedido) -> dict:
     if problema:
         raise ErroApi(409, "pastas_em_conflito", problema)
     destino.mkdir(parents=True, exist_ok=True)
-    arquivo = servico.exportar(de, ate, destino, **filtros)
+    try:
+        arquivo = servico.exportar(de, ate, destino, **filtros)
+    except RuntimeError as erro:
+        if type(erro).__name__ != "ErroPauta":
+            raise
+        # a frase do serviço (sem o texto de nenhuma célula); o erro original já
+        # foi registrado lá, só com o tipo e o lugar
+        raise ErroApi(500, "planilha_falhou", str(erro)) from None
     return {"arquivo": str(arquivo), "pasta": str(destino)}
 
 

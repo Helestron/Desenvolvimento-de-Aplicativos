@@ -326,16 +326,29 @@ def baixar_modelo(nome: str, progresso: Callable[[float, str], None] | None = No
 def transcrever_gravacao(origem: Path, numero, cfg, progresso, cancelado, *,
                          rotulos_manuais=None, destino: Path | None = None, tipo: str = "",
                          participantes: dict | None = None, sigiloso: bool = False,
-                         gravacao: str = "", data: datetime | None = None) -> Path:
+                         gravacao: str = "", data: datetime | None = None,
+                         meta=None) -> Path:
     """Transcreve a gravação (bloqueia). 'gravacao' e 'data': o nome e a data
     do arquivo do usuário, quando 'origem' é só a cópia temporária do envio
-    pela página - senão a ficha diria "envio-3d29….wav" e a data de hoje."""
+    pela página - senão a ficha diria "envio-3d29….wav" e a data de hoje.
+
+    'meta': a ficha da audiência (a MetaAudiencia da sessão ao vivo, na
+    revisão pelo "Revisar"). Sem ela, a revisão perdia o início e o término
+    e punha na Data a da modificação do FLAC (o dia seguinte, numa audiência
+    que passa da meia-noite), ao contrário da revisão automática ao
+    encerrar. Vai uma cópia (o motor completa a ficha no lugar); a ficha de
+    uma sessão ao vivo vira a da revisão, sem a observação da versão ao vivo;
+    'tipo', 'gravacao' e 'data' informados prevalecem, e 'participantes' se
+    somam aos da ficha.
+    """
     try:
         from .transcricao import arquivo
     except ImportError as erro:
         raise _ausente(erro, "transcrição de gravações") from erro
-    meta = None
-    if tipo or participantes or gravacao or data is not None:
+    if meta is not None:
+        meta = _ficha_da_revisao(meta, tipo=tipo, participantes=participantes,
+                                 gravacao=gravacao, data=data)
+    elif tipo or participantes or gravacao or data is not None:
         try:
             from .transcricao.documento import MetaAudiencia
 
@@ -348,6 +361,27 @@ def transcrever_gravacao(origem: Path, numero, cfg, progresso, cancelado, *,
     return arquivo.transcrever_arquivo(origem, numero, cfg, progresso, cancelado,
                                        rotulos_manuais=rotulos_manuais, destino=destino,
                                        sigiloso=sigiloso, **extra)
+
+
+def _ficha_da_revisao(meta, *, tipo: str = "", participantes: dict | None = None,
+                      gravacao: str = "", data: datetime | None = None):
+    """Cópia da ficha recebida, pronta para a transcrição da gravação: a da
+    sessão ao vivo vira a da revisão, como em SessaoAoVivo._refinar."""
+    from dataclasses import replace
+
+    ao_vivo = getattr(meta, "origem", "") == "ao vivo"
+    copia = replace(meta, participantes=dict(getattr(meta, "participantes", None) or {}),
+                    origem="revisão" if ao_vivo else meta.origem,
+                    observacao="" if ao_vivo else meta.observacao)
+    if tipo:
+        copia.tipo = tipo
+    if participantes:   # somados aos da ficha (o mesmo papel: vale o informado agora)
+        copia.participantes.update(participantes)
+    if gravacao:
+        copia.gravacao = gravacao
+    if data is not None:
+        copia.data = data
+    return copia
 
 
 def excecao_cancelado(erro: BaseException) -> bool:
@@ -413,10 +447,16 @@ def numero_no_nome(caminho: Path):
         return arquivo.numero_do_caminho(Path(caminho))
     except (ImportError, AttributeError):
         pass
-    try:
-        return cnj.ler(Path(caminho).stem)
-    except cnj.NumeroInvalido:
-        return None
+    # Sem o módulo da transcrição, a mesma leitura daqui: cnj.ler perderia o
+    # "-NN" do incidente ("...0001-01.docx" viraria o principal), e a
+    # transcrição do incidente seria tratada como a do processo principal.
+    caminho = Path(caminho)
+    for nome in (caminho.name, caminho.parent.name):
+        try:
+            return cnj.ler_nome_arquivo(nome)
+        except cnj.NumeroInvalido:
+            continue
+    return None
 
 
 def _docx_da_pasta(pasta: Path) -> list[Path]:
@@ -532,6 +572,9 @@ def pendencias(cfg) -> list[Pendencia]:
     problema = problema_nas_pastas(cfg.pasta_acervo, cfg.pasta_sigilosos, pasta_pauta(cfg))
     if problema:
         saida.append(Pendencia("pastas", "Pastas em conflito", problema, "ajustes#pastas"))
+    nuvem = _pendencia_da_nuvem(cfg)
+    if nuvem is not None:
+        saida.append(nuvem)
     if faltam:
         inicio = ("Falta o componente do programa: " if len(faltam) == 1
                   else "Faltam os componentes do programa: ")
@@ -547,6 +590,38 @@ def pendencias(cfg) -> list[Pendencia]:
                                "Baixe agora: senão, a primeira audiência começa baixando o "
                                "modelo, e o texto demora a aparecer.", "ajustes#transcricao"))
     return saida
+
+
+def _pendencia_da_nuvem(cfg) -> Pendencia | None:
+    """A pasta da nuvem em conflito (config.ini editado à mão ou de versão
+    anterior, que a tela de Ajustes recusaria): os sigilosos ou a pauta
+    dentro da nuvem (ou a nuvem dentro deles) - o que é de segredo de justiça
+    seria sincronizado com o OneDrive ou o Google Drive -, ou a nuvem dentro
+    do acervo (ou contendo-o). O espelho não roda assim, e só o registro
+    dizia por quê; agora o Início mostra o motivo e onde corrigir."""
+    try:
+        destino = str(cfg.texto("compartilhar", "pasta_nuvem") or "").strip()
+    except Exception:
+        destino = ""
+    if not destino:
+        return None
+    from .nucleo import config as _config
+
+    pauta = pasta_pauta(cfg)
+    frase = _config.conflito_com_a_nuvem(destino, cfg.pasta_sigilosos, pauta)
+    if frase:
+        # Os sigilosos (ou a pauta) dentro da nuvem: muda-se a pasta deles;
+        # a nuvem dentro deles: muda-se a pasta da nuvem.
+        dentro_da_nuvem = (dentro_ou_igual(cfg.pasta_sigilosos, destino)
+                           or dentro_ou_igual(pauta, destino))
+        return Pendencia("nuvem", "Pasta da nuvem em conflito", frase,
+                         "ajustes#pastas" if dentro_da_nuvem else "ajustes#compartilhar")
+    frase = conflito_da_nuvem(destino, cfg.pasta_acervo)
+    if frase:
+        return Pendencia("nuvem", "Pasta da nuvem em conflito",
+                         frase + " Enquanto isso, o acervo não é espelhado na nuvem.",
+                         "ajustes#compartilhar")
+    return None
 
 
 # ===================================================================== pastas
@@ -592,7 +667,7 @@ def pasta_pauta(cfg) -> Path:
     return caminhos.resolver(valor, "Pauta", base_usuario())
 
 
-def problema_nas_pastas(acervo, sigilosos, pauta=None) -> str | None:
+def problema_nas_pastas(acervo, sigilosos, pauta=None, nuvem: bool = True) -> str | None:
     """Por que estas pastas vazariam o que não pode sair, ou None.
 
     O acervo inteiro é lido pela IA (conector, CLAUDE.md, pacote) e copiado
@@ -600,6 +675,10 @@ def problema_nas_pastas(acervo, sigilosos, pauta=None) -> str | None:
     nem a da pauta exportada (a planilha traz as partes dos processos em
     segredo de justiça), e ele não pode conter a pasta do programa nem a
     pasta das senhas e dos perfis do navegador.
+
+    'nuvem': conferir também se os sigilosos ou a pauta estão numa pasta
+    sincronizada com a nuvem (a tela de Ajustes confere só a pasta que está
+    sendo trocada, para a correção de uma não ficar refém da outra).
     """
     # A regra acervo x sigilosos x pauta é do núcleo: uma frase só para a
     # tela, o assistente e a verificação.
@@ -625,7 +704,49 @@ def problema_nas_pastas(acervo, sigilosos, pauta=None) -> str | None:
     if dentro_ou_igual(caminhos.LOCAL, acervo):
         return ("O acervo não pode conter a pasta em que o programa guarda as senhas e os "
                 f"perfis do navegador ({caminhos.LOCAL}). Escolha uma pasta só para o acervo.")
+    return sigilo_na_nuvem(sigilosos, pauta) if nuvem else None
+
+
+def sigilo_na_nuvem(sigilosos=None, pauta=None, ao_escolher: bool = False) -> str | None:
+    """Por que a pasta dos sigilosos (ou a da pauta exportada) não pode ficar
+    onde está, ou None: nada de segredo de justiça na nuvem, e por isso as
+    duas ficam fora de toda pasta sincronizada (OneDrive, Google Drive), não
+    só fora da pasta do espelho (config.conflito_com_a_nuvem). Pelo caminho,
+    sem varrer as unidades: a conferência roda a cada estado da tela.
+
+    'ao_escolher': a frase é a dos Ajustes, que recusam a pasta escolhida:
+    ela não é gravada, e a frase não manda mover o que está na atual (que
+    pode estar fora da nuvem). Sem ele, a pasta é a da configuração, e a
+    frase manda trocá-la e mover o que está nela."""
+    for pasta, rotulo in ((sigilosos, "dos processos em segredo de justiça"),
+                          (pauta, "da pauta exportada")):
+        if pasta is None or not str(pasta).strip():
+            continue
+        servico = _nuvem_pelo_caminho(pasta)
+        if servico:
+            fim = ("Escolha uma pasta fora do OneDrive e do Google Drive." if ao_escolher else
+                   "Em Ajustes › Pastas, escolha uma pasta fora do OneDrive e do Google Drive "
+                   "e mova para ela o que está na pasta atual.")
+            return (f"A pasta {rotulo} não pode ficar dentro do {servico}: tudo o que está ali "
+                    f"sai do computador e fica ao alcance dos conectores da IA. {fim}")
     return None
+
+
+def _nuvem_pelo_caminho(pasta) -> str:
+    """"OneDrive" ou "Google Drive" se o caminho é de pasta sincronizada com a
+    nuvem (a regra de verificar.nuvem_da_pasta sem a detecção das unidades,
+    que reconhece pelo caminho todas as pastas que a detecção procura -
+    inclusive %USERPROFILE%\\Meu Drive, a do Google Drive no modo espelho);
+    "" se não é. Nunca levanta."""
+    try:
+        from .verificar import nuvem_da_pasta
+
+        return nuvem_da_pasta(Path(pasta), detectadas=[])
+    except Exception:  # noqa: BLE001 - na dúvida, a regra do OneDrive
+        try:
+            return "OneDrive" if caminhos.dentro_do_onedrive(Path(pasta)) else ""
+        except Exception:  # noqa: BLE001
+            return ""
 
 
 SUBPASTA_NUVEM = "Helestron - Acervo"      # a de compartilhar.nuvem (sem importá-lo aqui)
@@ -660,15 +781,64 @@ def atualizar_indice(cfg):
     é o que a IA lê primeiro, e sem isto a audiência recém-transcrita não
     aparecia nele (nem no espelho da nuvem). O preparo também tira do acervo
     o processo que o programa já sabe sigiloso (a transcrição sigilosa
-    recém-gravada, a pauta). Devolve o RelatorioPreparo (None se falhou:
-    nunca levanta)."""
+    recém-gravada, a pauta) - e os pacotes para o ChatGPT já gerados perdem o
+    que for dele (retirar_sigilosos_dos_pacotes). Devolve o RelatorioPreparo
+    (None se falhou: nunca levanta), com 'avisos_pacotes': o pacote antigo
+    que não pôde perder o sigiloso (também em 'avisos')."""
+    rel = None
     try:
         from .compartilhar import preparo
 
-        return preparo.atualizar_contexto(cfg, extrair_texto=False)
+        rel = preparo.atualizar_contexto(cfg, extrair_texto=False)
     except Exception as erro:
         log.warning("não consegui atualizar o INDICE.md do acervo: %s", str(erro)[:200])
-        return None
+    # Mesmo se o preparo falhou: o pacote antigo não espera o índice.
+    avisos = retirar_sigilosos_dos_pacotes(cfg)
+    if rel is not None:
+        try:
+            rel.avisos_pacotes = list(avisos)
+            if avisos and isinstance(getattr(rel, "avisos", None), list):
+                rel.avisos += avisos
+        except AttributeError:         # relatório sem atributos livres
+            pass
+    return rel
+
+
+PASTA_PACOTES = "Pacotes para IA"
+
+
+def pasta_pacotes() -> Path:
+    """Onde ficam os pacotes para o ChatGPT (Documentos\\Helestron\\Pacotes
+    para IA): fora do acervo, mas ao alcance de quem os arrasta para a IA."""
+    return base_usuario() / PASTA_PACOTES
+
+
+def retirar_sigilosos_dos_pacotes(cfg, sigilosas=None) -> list[str]:
+    """Tira dos pacotes para o ChatGPT já gerados o que é de processo que o
+    programa hoje sabe sigiloso (a regra única: pasta dos sigilosos e pauta;
+    'sigilosas' já calculadas, se houver).
+
+    Antes, só o "Gerar o pacote" seguinte fazia isso: o processo que virou
+    sigiloso depois - a pauta revelou o segredo de justiça, a transcrição foi
+    salva como sigilosa - continuava nos pacotes antigos, prontos para serem
+    arrastados de novo para o ChatGPT. Devolve os avisos do que não pôde ser
+    tirado (arquivo aberto). Nunca levanta."""
+    try:
+        pasta = pasta_pacotes()
+        if not pasta.is_dir():
+            return []
+        from .compartilhar import chatgpt
+
+        if sigilosas is None:
+            from .nucleo import sigilo
+
+            sigilosas = sigilo.chaves_sigilosas(cfg.pasta_sigilosos, cfg.pasta_acervo)
+        if not sigilosas:
+            return []
+        return [str(a) for a in chatgpt.retirar_sigilosos_dos_pacotes(pasta, sigilosas) or []]
+    except Exception as erro:
+        log.warning("não consegui conferir os pacotes para o ChatGPT: %s", str(erro)[:200])
+        return []
 
 
 # ============================================================ compartilhar

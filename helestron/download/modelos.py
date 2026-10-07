@@ -52,6 +52,20 @@ class PortalIndisponivel(RuntimeError):
     navegador ausente ou que não abre."""
 
 
+class NavegadorOcupado(PortalIndisponivel):
+    """O perfil do navegador do portal já está em uso por outra janela do
+    programa (outro download em andamento). Passa sozinho quando o outro
+    termina: o motor pode esperar (opção "esperar o navegador")."""
+
+
+class CopiaAntigaPresa(NavegadorOcupado):
+    """O navegador do modo certificado não abre porque a cópia do perfil
+    inteiro do Chrome, das versões anteriores, ainda não pôde ser apagada
+    (um arquivo dela preso pelo antivírus, pelo Explorador ou por uma janela
+    do navegador do programa). Não há outro download: costuma passar sozinho,
+    e o motor espera como pelo navegador ocupado, dizendo o motivo real."""
+
+
 class SessaoPerdida(RuntimeError):
     """A sessão no portal caiu no meio do trabalho; entrar de novo resolve."""
 
@@ -105,6 +119,42 @@ ROTULOS = {
 # Situações que pedem providência do usuário (ou nova tentativa).
 FALHAS = {ERRO, NAO_ENCONTRADO, SEM_ACESSO, NAO_SUPORTADO, SIGILOSO_SEM_SENHA}
 
+# A causa de um desfecho que não é OK, legível por máquina (coluna "causa" do
+# relatório e campo do JSON da linha de comando). A situação diz O QUE houve;
+# a causa, POR QUÊ - quem automatiza o programa decide por ela, sem adivinhar
+# pelo texto do detalhe.
+CAUSA_LOGIN = "login"                    # login recusado ou não concluído no prazo
+CAUSA_SESSAO = "sessao"                  # a sessão caiu e não voltou
+CAUSA_PORTAL = "portal"                  # portal fora do ar, sem rede, navegador que não abre
+CAUSA_PORTAL_PAROU = "portal_parou"      # o portal parou de responder no meio do grupo
+CAUSA_NAVEGADOR_OCUPADO = "navegador_ocupado"   # outro download usa o navegador do portal
+CAUSA_FALHA = "falha"                    # falha passageira que esgotou as tentativas
+CAUSA_INESPERADO = "inesperado"          # erro do programa (vai para o registro)
+CAUSA_PDF_ABERTO = "pdf_aberto"          # o PDF do lote está aberto noutro programa
+CAUSA_GRAVACAO = "gravacao"              # não se conseguiu gravar na pasta do lote/sigilosos
+CAUSA_PDF_INVALIDO = "pdf_invalido"      # o portal disse que baixou, mas o PDF não veio
+CAUSA_INTERROMPIDO = "interrompido"      # "Parar", Ctrl+C ou lote encerrado antes
+CAUSA_SIGILO_NO_ACERVO = "sigilo_no_acervo"     # sigiloso com autos presos no acervo
+CAUSAS = {CAUSA_LOGIN, CAUSA_SESSAO, CAUSA_PORTAL, CAUSA_PORTAL_PAROU, CAUSA_NAVEGADOR_OCUPADO,
+          CAUSA_FALHA, CAUSA_INESPERADO, CAUSA_PDF_ABERTO, CAUSA_GRAVACAO, CAUSA_PDF_INVALIDO,
+          CAUSA_INTERROMPIDO, CAUSA_SIGILO_NO_ACERVO}
+
+
+def pede_nova_tentativa(situacao: str, causa: str = "") -> bool:
+    """Uma nova rodada pode mudar o desfecho? (o "refazer" do relatório)
+
+    Sim para o que ficou pendente ou interrompido, para toda falha (ERRO) - a
+    de login também: depois que o usuário entra, o grupo inteiro pode ser
+    refeito - e para o "não encontrado" cujo sistema alternativo nem pôde ser
+    consultado (a causa diz por quê). Não para o que é definitivo: baixado,
+    já na pasta, não encontrado nos dois sistemas, sem acesso, sigiloso sem
+    a senha, tribunal não suportado.
+    """
+    situacao = (situacao or "").strip().upper()
+    if situacao in ("", "PENDENTE", CANCELADO, ERRO):
+        return True
+    return situacao == NAO_ENCONTRADO and bool((causa or "").strip())
+
 MODOS_LOGIN = ("senha", "certificado", "manual")
 
 # Rótulos da interface que as mensagens dos portais citam: têm de ser os
@@ -150,16 +200,36 @@ class ResultadoProcesso:
     paginas: int = 0
     documentos: int = 0
     sigiloso: bool = False
-    incompleto: str = ""          # o que o portal não ofereceu: folhas no e-SAJ ("12-15, 40"),
-                                  # documentos no eProc ("ev. 4 PET1")
+    # O que falta nos autos do PDF. No e-SAJ, TODAS as folhas que têm página
+    # de aviso no lugar ("12-15, 40"), qualquer que seja o motivo: a Pasta
+    # Digital não as ofereceu (ou listou a peça sem numeração), a peça não
+    # veio do portal, o arquivo dela era inválido ou veio com páginas a menos
+    # (os códigos N, S, B, I e C de nucleo/paginacao.MOTIVOS) - e não só as não
+    # oferecidas. No eProc, os documentos que não vieram ("ev. 4 PET1").
+    # Vazio: nada falta (ou ainda sem PDF).
+    incompleto: str = ""
     detalhe: str = ""
     midias: list[str] = field(default_factory=list)
     segundos: float = 0.0
     data_hora: str = ""           # quando o item foi concluído (AAAA-MM-DD HH:MM:SS)
+    causa: str = ""               # por que não deu OK (CAUSAS); vazio quando a situação basta
+    # Cada consulta a um sistema do tribunal, na ordem: {"sistema", "situacao",
+    # "causa"} - ou {"sistema", "consultado": False, "causa", "detalhe"} quando
+    # o sistema (o alternativo, por exemplo) nem pôde ser consultado.
+    consultas: list[dict] = field(default_factory=list)
+    # O essencial do manifesto de paginação gravado no PDF (nucleo/paginacao.py):
+    # {"paginacao", "sistema", "ultima", "ausentes", ...}; vazio = PDF sem
+    # manifesto (versão anterior) ou ainda sem PDF.
+    paginacao: dict = field(default_factory=dict)
 
     @property
     def pendente(self) -> bool:
         return self.situacao in ("", CANCELADO)
+
+    @property
+    def refazer(self) -> bool:
+        """Uma nova rodada pode mudar o desfecho? (pede_nova_tentativa)"""
+        return pede_nova_tentativa(self.situacao, self.causa)
 
     @property
     def concluido(self) -> bool:
@@ -178,6 +248,10 @@ class ResultadoProcesso:
             self.tribunal = outro.tribunal
         if outro.sistema:
             self.sistema = outro.sistema
+        if getattr(outro, "causa", ""):
+            self.causa = outro.causa
+        if getattr(outro, "paginacao", None):
+            self.paginacao = dict(outro.paginacao)
 
     def carimbar(self) -> None:
         self.data_hora = f"{datetime.now():%Y-%m-%d %H:%M:%S}"
@@ -208,6 +282,15 @@ class OpcoesDownload:
     atualizar_ia: bool = True             # ao fim, preparar os arquivos para a IA
     # onde o portal grava o processo antes de o motor saber se é sigiloso
     pasta_provisoria: Path = field(default_factory=lambda: caminhos.TEMP / "baixando")
+    # Baixar de novo o que já está na pasta, mas só se o PDF tiver folhas
+    # (ou documentos) ausentes ou não trouxer o manifesto de paginação.
+    rebaixar_incompletos: bool = False
+    # Com o navegador do portal ocupado por outro download, esperar até
+    # tantos segundos (tentando a cada 30 s) em vez de desistir do grupo.
+    esperar_navegador_s: float = 0.0
+    # Ler as senhas guardadas no cofre (modo "senha"). Desligado, o portal no
+    # modo "senha" abre na tela de entrada para o usuário entrar à mão.
+    usar_cofre: bool = True
 
     def modo_login(self, sistema: str) -> str:
         return _modo_login(self.login.get(sistema, "senha"))
@@ -258,6 +341,10 @@ class ResumoLote:
     # deixam de fora -, mas é avisado.
     sigilosos_avisos: list[str] = field(default_factory=list)
     sigilosos_motivos: dict[str, str] = field(default_factory=dict)   # arquivo -> por que ficou
+    # A pasta de sigilosos deste lote (fora do acervo) e o relatório completo
+    # dela, com os números dos sigilosos (None: o lote não tem pasta de sigilosos).
+    pasta_sigilosos: Path | None = None
+    relatorio_completo: Path | None = None
 
     def _com(self, *situacoes: str) -> list[ResultadoProcesso]:
         return [r for r in self.itens if r.situacao in situacoes]

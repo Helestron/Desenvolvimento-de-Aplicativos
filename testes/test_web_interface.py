@@ -367,6 +367,8 @@ class InterfaceNoNavegador(unittest.TestCase):
                 self.assertTrue(q(f"#area-soltar button:has-text('{rotulo}')").is_visible(), rotulo)
             self.assertGreater(q("#ultimos-lotes .linha").count(), 0)
         elif secao == "audiencias":
+            # os dois modos no topo: ao vivo e arquivo de áudio ou vídeo
+            self.assertEqual(q("#modo-audiencia [role='radio']").count(), 2)
             self.assertTrue(q("#botao-gravar").is_visible())
             self.assertTrue(q("#processo-audiencia").is_visible())
             self.assertEqual(q(".participante").count(), 8)
@@ -956,15 +958,16 @@ class InterfaceNoNavegador(unittest.TestCase):
         self.assertIn("A pauta de audiências indica", pagina.locator("#motivo-sigilo-ao-vivo").inner_text())
         self.capturar(pagina, "ao-vivo-sigilo-da-pauta")
         self.sem_problemas(pagina)
-        # A gravação: o número sigiloso liga o interruptor da folha, e o tipo vai junto.
+        # A gravação (modo arquivo): o número sigiloso liga o interruptor, e o tipo vai junto.
         pagina = self.abrir(secao="audiencias")
-        pagina.click("#transcrever-gravacao")
-        pagina.wait_for_selector(".folha:has-text('Transcrever a gravação')")
+        pagina.click("#modo-audiencia [data-valor='arquivo']")
+        pagina.click("#escolher-gravacao")
+        pagina.wait_for_selector("#arquivo-escolhido:not([hidden])")
         pagina.fill("#processo-gravacao", PROCESSO_SIGILOSO.replace("-", "").replace(".", ""))
         pagina.wait_for_function("() => document.querySelector('#sigilo-gravacao').checked")
         pagina.select_option("#tipo-gravacao", "Conciliação")
         pagina.click("#sigilo-gravacao")            # desligado à mão: o programa liga de novo
-        pagina.click(".folha button:has-text('Transcrever')")
+        pagina.click("#botao-transcrever")
         pagina.wait_for_selector("#motivo-sigilo-gravacao")
         pedido = self.chamadas(pagina, "POST /api/transcricao/gravacao")[0]
         self.assertEqual(pedido["tipo"], "Conciliação")
@@ -984,12 +987,13 @@ class InterfaceNoNavegador(unittest.TestCase):
         quando = datetime(2026, 9, 15, 13, 30, tzinfo=timezone.utc)
         os.utime(audio, (quando.timestamp(), quando.timestamp()))
         pagina = self.abrir(secao="audiencias", extra="&sem_dialogo=1")
+        pagina.click("#modo-audiencia [data-valor='arquivo']")
         with pagina.expect_file_chooser() as escolha:
-            pagina.click("#transcrever-gravacao")
+            pagina.click("#escolher-gravacao")
         escolha.value.set_files(str(audio))
-        pagina.wait_for_selector(".folha:has-text('Transcrever a gravação')")
+        pagina.wait_for_selector("#arquivo-escolhido:not([hidden])")
         pagina.fill("#processo-gravacao", "07002311520248020001")
-        pagina.click(".folha button:has-text('Transcrever')")
+        pagina.click("#botao-transcrever")
         pagina.wait_for_function(
             "() => Helestron.demo.chamadas.some(c => c.rota === 'POST /api/transcricao/gravacao')")
         pedido = pagina.evaluate(

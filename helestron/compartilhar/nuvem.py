@@ -13,6 +13,10 @@ propósito: a cópia de um processo que o programa hoje sabe sigiloso (segredo
 de justiça: autos, transcrição ou gravação na pasta de sigilosos, ou a pauta
 de audiências marcando o sigilo - a regra única de nucleo/sigilo.py) é
 retirada do espelho.
+
+Falha não fica escondida no registro: o resultado (Espelho) traz os arquivos
+que não foram copiados, e a cópia de sigiloso que não pôde sair da nuvem
+encerra o espelho com erro (SigilosoNaNuvem), depois de feito o resto.
 """
 
 from __future__ import annotations
@@ -20,10 +24,11 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import stat
 import string
 from pathlib import Path
 
-from ..nucleo import cnj, sigilo
+from ..nucleo import cnj, config, sigilo
 from .mcp_servidor import _DO_CONFIG, Recorte, chaves_sigilosas, pasta_sigilosos_configurada
 
 log = logging.getLogger("compartilhar.nuvem")
@@ -68,13 +73,117 @@ def detectar() -> dict[str, Path]:
     return achadas
 
 
+class Espelho(tuple):
+    """O resultado do espelho: desempacota como (copiados, iguais), como
+    antes, e traz também as falhas - os arquivos que NÃO foram copiados
+    ('nao_copiados': [(arquivo, motivo)]) e as cópias de processo sigiloso que
+    NÃO puderam sair da nuvem ('sigilosos_restantes': [(arquivo, motivo)])."""
+
+    def __new__(cls, copiados: int, iguais: int, nao_copiados=(), sigilosos_restantes=()):
+        obj = super().__new__(cls, (copiados, iguais))
+        obj.copiados = copiados
+        obj.iguais = iguais
+        obj.nao_copiados = list(nao_copiados)
+        obj.sigilosos_restantes = list(sigilosos_restantes)
+        return obj
+
+    @property
+    def resumo(self) -> str:
+        """"3 copiados, 4 sem mudança, 1 NÃO copiado (X.pdf: motivo)"."""
+        frase = (f"{self.copiados} copiado{'s' if self.copiados != 1 else ''}, "
+                 f"{self.iguais} sem mudança")
+        if self.nao_copiados:
+            k = len(self.nao_copiados)
+            lista = "; ".join(f"{a.name}: {m}" for a, m in self.nao_copiados[:5])
+            if k > 5:
+                lista += f"; e mais {k - 5}"
+            frase += f", {k} NÃO copiado{'s' if k != 1 else ''} ({lista})"
+        return frase
+
+
+class SigilosoNaNuvem(RuntimeError):
+    """Ficou na nuvem cópia de processo em segredo de justiça que o espelho
+    não conseguiu apagar: quem chamou encerra com erro visível, com o
+    arquivo e a pasta a limpar à mão. 'espelho' traz o resto do resultado."""
+
+    def __init__(self, espelho: Espelho, destino: Path):
+        self.espelho = espelho
+        lista = "; ".join(f"{a} ({m})" for a, m in espelho.sigilosos_restantes[:5])
+        k = len(espelho.sigilosos_restantes)
+        if k > 5:
+            lista += f"; e mais {k - 5}"
+        super().__init__(
+            ("Ficou na nuvem cópia de processo em segredo de justiça que não pôde ser apagada: "
+             if k == 1 else
+             f"Ficaram na nuvem {k} cópias de processo em segredo de justiça que não puderam "
+             "ser apagadas: ")
+            + f"{lista}. Apague-a{'s' if k != 1 else ''} à mão, na pasta {destino} (o arquivo "
+              "pode estar aberto, ou o OneDrive/Google Drive o estava sincronizando). O resto do "
+              f"espelho foi feito: {espelho.resumo}.")
+
+
+def _longo(p: Path, sempre: bool = False) -> str:
+    """O caminho como o Windows aceita acima de 260 caracteres ("\\\\?\\"):
+    "OneDrive - <instituição>\\Helestron - Acervo\\Processos\\<lote>\\...parcial"
+    passa disso com facilidade. Fora do Windows, o caminho como está.
+    'sempre': com o prefixo mesmo abaixo do limite - para varrer uma pasta,
+    em que os caminhos montados a partir dela herdam o prefixo e alcançam
+    as cópias de caminho longo."""
+    texto = os.path.abspath(str(p))
+    if os.name != "nt" or texto.startswith("\\\\?\\") or (len(texto) < 240 and not sempre):
+        return texto
+    if texto.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + texto[2:]
+    return "\\\\?\\" + texto
+
+
+def _liberar_e(acao, caminho: str) -> None:
+    """Faz 'acao(caminho)'; se o Windows recusar (arquivo somente leitura),
+    tira o atributo e tenta de novo uma vez."""
+    try:
+        acao(caminho)
+    except PermissionError:
+        try:
+            os.chmod(caminho, stat.S_IWRITE | stat.S_IREAD)
+        except OSError:
+            raise
+        acao(caminho)
+
+
+def _copiar(origem: Path, alvo: Path) -> None:
+    """Cópia atômica (".parcial" e troca) que não leva o atributo somente
+    leitura da origem para a nuvem: com ele, o próximo espelho (e a retirada
+    de um processo que virou sigiloso) não conseguiria trocar nem apagar a
+    cópia. A data de modificação vai junto (é o que _deve_copiar compara)."""
+    st = origem.stat()
+    os.makedirs(_longo(alvo.parent), exist_ok=True)
+    tmp = _longo(alvo.with_name(alvo.name + ".parcial"))
+    destino = _longo(alvo)
+    try:
+        shutil.copyfile(_longo(origem), tmp)
+        os.utime(tmp, (st.st_atime, st.st_mtime))
+        try:
+            os.replace(tmp, destino)
+        except PermissionError:
+            if not os.path.exists(destino):
+                raise
+            os.chmod(destino, stat.S_IWRITE | stat.S_IREAD)
+            os.replace(tmp, destino)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _deve_copiar(origem: Path, destino: Path) -> bool:
     try:
         a = origem.stat()
     except OSError:
         return False
     try:
-        b = destino.stat()
+        b = os.stat(_longo(destino))
     except OSError:
         return True
     # mtime com folga de 2 s: FAT/exFAT e alguns clientes de nuvem arredondam.
@@ -89,14 +198,21 @@ def _chave(nome: str) -> str | None:
 
 
 def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None,
-             sigilosos=_DO_CONFIG, pauta=sigilo.PAUTA_DO_PROGRAMA) -> tuple[int, int]:
+             sigilosos=_DO_CONFIG, pauta=sigilo.PAUTA_DO_PROGRAMA) -> Espelho:
     """Copia o acervo para '<destino_raiz>/Helestron - Acervo'.
 
-    Devolve (copiados, iguais). Não apaga nada no destino, exceto a cópia de
-    processo sigiloso pela regra única - na pasta de sigilosos ('sigilosos';
-    por padrão, a do config.ini) ou marcado na pauta ('pauta'; por padrão, o
-    banco do programa): PDF, texto extraído, transcrição ou minuta com o
-    número dele. O processo sigiloso também não é copiado.
+    Devolve o Espelho, que desempacota como (copiados, iguais) e traz os
+    arquivos que não puderam ser copiados. Não apaga nada no destino, exceto
+    a cópia de processo sigiloso pela regra única - na pasta de sigilosos
+    ('sigilosos'; por padrão, a do config.ini) ou marcado na pauta ('pauta';
+    por padrão, o banco do programa): PDF, texto extraído, transcrição ou
+    minuta com o número dele. O processo sigiloso também não é copiado. Se a
+    cópia de um sigiloso não puder sair da nuvem, o resto do espelho é feito
+    e, no fim, levanta SigilosoNaNuvem: segredo de justiça na nuvem não pode
+    terminar como sucesso. Levanta ValueError, antes de copiar ou apagar
+    qualquer coisa, se a pasta da nuvem estiver dentro do acervo (ou o
+    contiver) ou se a pasta dos sigilosos estiver dentro da subpasta do
+    espelho (ou de uma antiga), for ela ou a contiver.
     """
     origem = Path(origem)
     destino = Path(destino_raiz) / SUBPASTA
@@ -106,6 +222,7 @@ def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None,
         raise ValueError("a pasta da nuvem não pode ficar dentro do acervo, nem conter o acervo")
     if sigilosos is _DO_CONFIG:
         sigilosos = pasta_sigilosos_configurada()
+    _recusar_sigilosos_na_nuvem(Path(destino_raiz), sigilosos)
     # Pasta de sigilosos e pastas do programa postas (por engano) dentro do
     # acervo, e link ou junção para fora dele: ficam de fora
     recorte = Recorte(origem, sigilosos)
@@ -124,10 +241,11 @@ def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None,
         if sigilosas and _chave(p.name) in sigilosas:
             continue
         arquivos.append(p)
-    _retirar_sigilosos(destino, sigilosas)
+    restantes = _retirar_sigilosos(destino, sigilosas)
     for antiga in SUBPASTAS_ANTIGAS:
-        _retirar_sigilosos(Path(destino_raiz) / antiga, sigilosas)
+        restantes += _retirar_sigilosos(Path(destino_raiz) / antiga, sigilosas)
     copiados = iguais = 0
+    nao_copiados: list[tuple[Path, str]] = []
     total = len(arquivos)
     for i, p in enumerate(arquivos, 1):
         if cancelado and cancelado():
@@ -138,20 +256,25 @@ def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None,
             continue
         if progresso:
             progresso(i, total, p.name)
-        alvo.parent.mkdir(parents=True, exist_ok=True)
-        tmp = alvo.with_name(alvo.name + ".parcial")
         try:
-            shutil.copy2(p, tmp)
-            os.replace(tmp, alvo)
+            _copiar(p, alvo)
             copiados += 1
         except OSError as erro:
-            log.warning("não copiei %s para a nuvem: %s", p.name, erro)
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-    log.info("Espelho na nuvem (%s): %d copiado(s), %d sem mudança.", destino, copiados, iguais)
-    return copiados, iguais
+            nao_copiados.append((p, _motivo(erro)))
+            log.error("NÃO copiei %s para a nuvem: %s", p.name, erro)
+    resultado = Espelho(copiados, iguais, nao_copiados, restantes)
+    log.info("Espelho na nuvem (%s): %s.", destino, resultado.resumo)
+    if restantes:
+        raise SigilosoNaNuvem(resultado, destino)
+    return resultado
+
+
+def _motivo(erro: OSError) -> str:
+    if getattr(erro, "winerror", None) == 206 or getattr(erro, "errno", None) == 36:
+        return "caminho longo demais"
+    if isinstance(erro, PermissionError):
+        return "arquivo aberto ou sem permissão"
+    return str(getattr(erro, "strerror", "") or erro)[:120]
 
 
 def _dentro_ou_igual(filho: Path, pai: Path) -> bool:
@@ -166,21 +289,55 @@ def _dentro_ou_igual(filho: Path, pai: Path) -> bool:
     return f == p or f.startswith(p.rstrip(os.sep) + os.sep)
 
 
-def _retirar_sigilosos(destino: Path, sigilosas: set[str]) -> None:
+def _recusar_sigilosos_na_nuvem(destino_raiz: Path, sigilosos) -> None:
+    """Defesa final (a configuração e a API já recusam essa combinação): a
+    pasta dos sigilosos dentro da subpasta do espelho (ou de uma antiga), igual
+    a ela ou contendo-a. A retirada dos sigilosos do espelho apaga, ali dentro,
+    todo arquivo com o número de processo sigiloso - com a pasta dos sigilosos
+    lá dentro, apagaria os próprios autos em segredo de justiça (os originais,
+    não cópias). E o espelho copiaria o acervo para dentro dela."""
+    if sigilosos is None or not str(sigilosos).strip():
+        return
+    for nome in (SUBPASTA, *SUBPASTAS_ANTIGAS):
+        if config.conflito_com_a_nuvem(destino_raiz / nome, sigilosos):
+            raise ValueError("a pasta dos sigilosos não pode ficar dentro da pasta da nuvem, "
+                             "nem contê-la")
+
+
+def _retirar_sigilosos(destino: Path, sigilosas: set[str]) -> list[tuple[Path, str]]:
     """Apaga do espelho as cópias dos processos sigilosos (a regra única).
 
     Elas chegaram lá antes de se saber do sigilo (a separação falhou e foi
     refeita à mão, ou o segredo foi decretado depois e a pauta o mostrou);
-    segredo de justiça não pode continuar na nuvem.
+    segredo de justiça não pode continuar na nuvem. Devolve as cópias que
+    NÃO puderam ser apagadas, com o motivo.
+
+    A varredura usa o mesmo caminho longo ("\\\\?\\") da cópia: sem ele, o
+    Windows sem caminhos longos liberados não enxerga a cópia que passou de
+    260 caracteres (nem as pastas além do limite), e ela ficaria na nuvem
+    sem aviso.
     """
-    if not sigilosas or not destino.is_dir():
-        return
-    for p in destino.rglob("*"):
-        try:
-            if p.is_file() and _chave(p.name) in sigilosas:
-                p.unlink()
+    ficaram: list[tuple[Path, str]] = []
+    base = _longo(destino, sempre=True)
+    if not sigilosas or not os.path.isdir(base):
+        return ficaram
+
+    def nao_li(erro: OSError) -> None:
+        log.warning("Não consegui conferir uma pasta do espelho na nuvem (%s): %s",
+                    getattr(erro, "filename", "") or destino, erro)
+
+    for raiz, _pastas, nomes in os.walk(base, onerror=nao_li):
+        sub = raiz[len(base):].lstrip("\\/")
+        for nome in nomes:
+            if _chave(nome) not in sigilosas:
+                continue
+            p = destino / sub / nome
+            try:
+                _liberar_e(os.unlink, os.path.join(raiz, nome))
                 log.warning("Retirei do espelho na nuvem %s: o processo é sigiloso (segredo "
                             "de justiça).", p.relative_to(destino))
-        except OSError as erro:
-            log.warning("ATENÇÃO: não consegui retirar do espelho na nuvem %s, de processo "
-                        "sigiloso (%s). Apague-o à mão.", p.name, erro)
+            except OSError as erro:
+                ficaram.append((p, _motivo(erro)))
+                log.error("ATENÇÃO: não consegui retirar do espelho na nuvem %s, de processo "
+                          "sigiloso (%s). Apague-o à mão.", p, erro)
+    return ficaram

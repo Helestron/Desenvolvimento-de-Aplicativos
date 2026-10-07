@@ -35,6 +35,75 @@ class TestPastas(unittest.TestCase):
         self.assertIsNone(servicos.problema_nas_pastas(self.base / "Acervo", self.base / "Sigilosos",
                                                        self.base / "Sigilosos" / "Pauta"))
 
+    def test_sigilosos_e_pauta_fora_de_toda_pasta_da_nuvem(self):
+        """Nada de segredo de justiça na nuvem: os sigilosos e a pauta não
+        ficam em pasta nenhuma do OneDrive ou do Google Drive (e não só fora
+        da pasta do espelho)."""
+        onedrive = self.amb.raiz / "OneDrive - TJAL"
+        acervo = self.base / "Acervo"
+        with mock.patch.dict("os.environ", {"OneDrive": str(onedrive)}):
+            frase = servicos.problema_nas_pastas(acervo, onedrive / "Sigilosos")
+            self.assertIn("segredo de justiça", frase)
+            self.assertIn("OneDrive", frase)
+            frase = servicos.problema_nas_pastas(acervo, self.base / "Sigilosos",
+                                                 onedrive / "Pauta")
+            self.assertIn("pauta exportada", frase)
+            # a tela de Ajustes confere a nuvem à parte, só da pasta trocada
+            self.assertIsNone(servicos.problema_nas_pastas(acervo, onedrive / "Sigilosos",
+                                                           nuvem=False))
+            self.assertIsNone(servicos.sigilo_na_nuvem(self.base / "Sigilosos", None))
+        frase = servicos.sigilo_na_nuvem(Path("/home/x/Google Drive/Meu Drive/Sigilosos"))
+        self.assertIn("Google Drive", frase)
+        self.assertIsNone(servicos.problema_nas_pastas(acervo, self.base / "Sigilosos",
+                                                       self.base / "Pauta"))
+
+    def test_google_drive_no_modo_espelho_sem_varrer_as_unidades(self):
+        """Achado V11: %USERPROFILE%\\Meu Drive (o Google Drive para
+        computador no modo espelho) passava pela regra do caminho - e pelos
+        Ajustes, pelo baixar, pelo caminhos --json e pelo Início -, enquanto a
+        verificação dizia que não pode. Reconhecido só pelo caminho: nada de
+        varrer as unidades a cada estado da tela."""
+        perfil = self.amb.raiz / "Users" / "Fulano"
+        perfil.mkdir(parents=True)
+        acervo = self.base / "Acervo"
+        ambiente = {"HOME": str(perfil), "USERPROFILE": str(perfil),
+                    "OneDrive": "", "OneDriveCommercial": "", "OneDriveConsumer": ""}
+        with mock.patch.dict("os.environ", ambiente), \
+                mock.patch("helestron.compartilhar.nuvem.detectar",
+                           side_effect=AssertionError("varreu as unidades")):
+            for nome in ("Meu Drive", "My Drive"):
+                with self.subTest(nome=nome):
+                    frase = servicos.problema_nas_pastas(acervo, perfil / nome / "Sigilosos") or ""
+                    self.assertIn("dos processos em segredo de justiça não pode ficar dentro do "
+                                  "Google Drive", frase)
+                    frase = servicos.problema_nas_pastas(acervo, self.base / "Sigilosos",
+                                                         perfil / nome / "Pauta") or ""
+                    self.assertIn("da pauta exportada não pode ficar dentro do Google Drive",
+                                  frase)
+            self.assertIsNone(servicos.sigilo_na_nuvem(perfil / "Documentos" / "Sigilosos",
+                                                       perfil / "Pauta"))
+
+    def test_frase_da_escolha_nos_ajustes(self):
+        """Achado V13: nos Ajustes, a pasta recusada não é gravada e a atual
+        pode estar fora da nuvem - a frase não manda mover o que está nela.
+        Para a pasta da configuração, manda."""
+        onedrive = self.amb.raiz / "OneDrive - TJAL"
+        with mock.patch.dict("os.environ", {"OneDrive": str(onedrive)}):
+            escolha = servicos.sigilo_na_nuvem(onedrive / "Sigilosos", ao_escolher=True)
+            atual = servicos.sigilo_na_nuvem(onedrive / "Sigilosos")
+            pauta = servicos.sigilo_na_nuvem(None, onedrive / "Pauta", ao_escolher=True)
+        self.assertEqual(escolha, "A pasta dos processos em segredo de justiça não pode ficar "
+                                  "dentro do OneDrive: tudo o que está ali sai do computador e "
+                                  "fica ao alcance dos conectores da IA. Escolha uma pasta fora "
+                                  "do OneDrive e do Google Drive.")
+        self.assertTrue(pauta.startswith("A pasta da pauta exportada não pode ficar"), pauta)
+        for frase in (escolha, pauta):
+            self.assertNotIn("pasta atual", frase)
+            self.assertNotIn("mova", frase)
+        self.assertTrue(atual.endswith("Em Ajustes › Pastas, escolha uma pasta fora do OneDrive "
+                                       "e do Google Drive e mova para ela o que está na pasta "
+                                       "atual."), atual)
+
     def test_conflito_da_nuvem(self):
         acervo = self.base / "Acervo"
         for nuvem in (acervo, acervo / "OneDrive", self.base, self.amb.raiz):
@@ -95,6 +164,161 @@ class TestPastas(unittest.TestCase):
             self.amb.cfg, incluir_sigilosas=True)), ["a.docx", "b.docx"])
 
 
+class TestPendenciaDaNuvem(unittest.TestCase):
+    """A pasta da nuvem em conflito (config.ini editado à mão ou de versão
+    anterior): o espelho não roda, e o Início diz por quê e onde corrigir."""
+
+    def setUp(self):
+        self.amb = AmbienteTemporario().iniciar()
+        self.addCleanup(self.amb.parar)
+        self.cfg = self.amb.cfg
+        self.nuvem = self.amb.raiz / "OneDrive"
+
+    def pendencia(self):
+        with mock.patch.object(servicos, "_pacote_presente", return_value=True), \
+                mock.patch.object(servicos, "modelo_instalado", return_value=True):
+            achadas = [p for p in servicos.pendencias(self.cfg) if p.chave == "nuvem"]
+        self.assertLessEqual(len(achadas), 1)
+        return achadas[0] if achadas else None
+
+    def test_sem_conflito_nada(self):
+        self.assertIsNone(self.pendencia())                    # sem pasta da nuvem
+        self.cfg.definir("compartilhar", "pasta_nuvem", str(self.nuvem))
+        self.assertIsNone(self.pendencia())
+
+    def test_sigilosos_ou_pauta_dentro_da_nuvem(self):
+        from helestron.nucleo import config
+
+        self.cfg.definir("compartilhar", "pasta_nuvem", str(self.nuvem))
+        for secao, chave in (("geral", "pasta_sigilosos"), ("pauta", "pasta")):
+            with self.subTest(chave=chave):
+                self.cfg.definir("geral", "pasta_sigilosos", str(self.amb.dados / "Sigilosos"))
+                self.cfg.definir("pauta", "pasta", str(self.amb.dados / "Pauta"))
+                self.cfg.definir(secao, chave, str(self.nuvem / "Gabinete"))
+                p = self.pendencia()
+                self.assertIsNotNone(p)
+                self.assertEqual((p.titulo, p.acao), ("Pasta da nuvem em conflito",
+                                                      "ajustes#pastas"))
+                self.assertEqual(p.mensagem, config.conflito_com_a_nuvem(
+                    self.nuvem, self.cfg.pasta_sigilosos, servicos.pasta_pauta(self.cfg)))
+
+    def test_nuvem_dentro_dos_sigilosos(self):
+        self.cfg.definir("compartilhar", "pasta_nuvem", str(self.amb.dados / "Sigilosos" / "OD"))
+        p = self.pendencia()
+        self.assertEqual(p.acao, "ajustes#compartilhar")
+        self.assertIn("segredo de justiça", p.mensagem)
+
+    def test_nuvem_dentro_do_acervo(self):
+        self.cfg.definir("compartilhar", "pasta_nuvem", str(self.amb.dados / "Acervo" / "OD"))
+        p = self.pendencia()
+        self.assertEqual(p.acao, "ajustes#compartilhar")
+        self.assertIn("dentro do acervo", p.mensagem)
+        self.assertTrue(p.mensagem.endswith("o acervo não é espelhado na nuvem."), p.mensagem)
+
+
+class TestNumeroNoNome(unittest.TestCase):
+    """Sem o módulo da transcrição, a leitura de reserva perdia o "-NN" do
+    incidente: a transcrição do incidente virava a do processo principal."""
+
+    def test_reserva_le_o_dependente(self):
+        with mock.patch("helestron.transcricao.arquivo.numero_do_caminho",
+                        side_effect=AttributeError):
+            n = servicos.numero_no_nome(Path("Transcricoes") / f"{NUMERO}-01 2026-10-07 10h00.docx")
+            self.assertEqual((n.formatado, n.dependente), (NUMERO + "/01", "01"))
+            n = servicos.numero_no_nome(Path("Lote") / "_controle" / "midias" / f"{NUMERO}-02"
+                                        / "video.mp4")
+            self.assertEqual(n.dependente, "02")
+            self.assertEqual(servicos.numero_no_nome(Path(f"{NUMERO}.docx")).dependente, "")
+            self.assertIsNone(servicos.numero_no_nome(Path("Pasta") / "gravação.wav"))
+
+    def test_igual_ao_da_transcricao(self):
+        from helestron.transcricao import arquivo
+
+        caminho = Path(f"{NUMERO}-01.docx")
+        with mock.patch("helestron.transcricao.arquivo.numero_do_caminho",
+                        side_effect=AttributeError):
+            reserva = servicos.numero_no_nome(caminho)
+        self.assertEqual(reserva, arquivo.numero_do_caminho(caminho))
+
+
+class TestPacotesPerdemOSigiloso(unittest.TestCase):
+    """servicos.retirar_sigilosos_dos_pacotes e servicos.atualizar_indice (o
+    caminho da transcrição e da pauta): os pacotes já gerados perdem o
+    processo que virou sigiloso, sem esperar o próximo "Gerar o pacote"."""
+
+    def setUp(self):
+        import zipfile
+
+        self.amb = AmbienteTemporario().iniciar()
+        self.addCleanup(self.amb.parar)
+        self.cfg = self.amb.cfg
+        self.x = cnj.ler(NUMERO)
+        self.y = cnj.ler("0700124-68.2024.8.02.0001")
+        self.pasta = servicos.pasta_pacotes() / "Pacote para o ChatGPT 2026-10-01 09h00"
+        (self.pasta / "autos").mkdir(parents=True)
+        for n in (self.x, self.y):
+            (self.pasta / "autos" / f"{n.nome_arquivo}.pdf").write_bytes(b"%PDF")
+        (self.pasta / "INDICE.md").write_text(f"- {self.x.formatado}\n- {self.y.formatado}\n",
+                                              encoding="utf-8")
+        with zipfile.ZipFile(self.pasta.with_suffix(".zip"), "w") as z:
+            z.writestr(f"autos/{self.x.nome_arquivo}.pdf", b"%PDF")
+            z.writestr(f"autos/{self.y.nome_arquivo}.pdf", b"%PDF")
+
+    def tornar_sigiloso(self) -> None:
+        pasta = self.amb.dados / "Sigilosos" / "Transcricoes"
+        pasta.mkdir(parents=True)
+        (pasta / f"{self.x.nome_arquivo} 2026-10-07 10h00.docx").write_bytes(b"docx")
+
+    def conferir(self) -> None:
+        import zipfile
+
+        self.assertFalse((self.pasta / "autos" / f"{self.x.nome_arquivo}.pdf").exists())
+        self.assertTrue((self.pasta / "autos" / f"{self.y.nome_arquivo}.pdf").exists())
+        self.assertNotIn(self.x.formatado, (self.pasta / "INDICE.md").read_text(encoding="utf-8"))
+        with zipfile.ZipFile(self.pasta.with_suffix(".zip")) as z:
+            self.assertEqual(z.namelist(), [f"autos/{self.y.nome_arquivo}.pdf"])
+
+    def test_pasta_dos_pacotes(self):
+        self.assertEqual(servicos.pasta_pacotes(), self.amb.dados / "Pacotes para IA")
+        from helestron.servidor import api_compartilhar
+
+        self.assertEqual(api_compartilhar.pasta_pacotes(), servicos.pasta_pacotes())
+
+    def test_retirar(self):
+        self.assertEqual(servicos.retirar_sigilosos_dos_pacotes(self.cfg), [])
+        self.assertTrue((self.pasta / "autos" / f"{self.x.nome_arquivo}.pdf").exists())
+        self.tornar_sigiloso()
+        with self.assertLogs("compartilhar.chatgpt", "WARNING"):
+            self.assertEqual(servicos.retirar_sigilosos_dos_pacotes(self.cfg), [])
+        self.conferir()
+
+    def test_atualizar_indice_tambem_limpa_os_pacotes(self):
+        self.tornar_sigiloso()
+        with self.assertLogs("compartilhar.chatgpt", "WARNING"):
+            rel = servicos.atualizar_indice(self.cfg)
+        self.assertIsNotNone(rel)
+        self.assertEqual(rel.avisos_pacotes, [])
+        self.conferir()
+
+    def test_aviso_do_pacote_que_nao_saiu(self):
+        frase = "Não consegui tirar do pacote antigo o que é de processo em segredo de justiça."
+        with mock.patch("helestron.compartilhar.chatgpt.retirar_sigilosos_dos_pacotes",
+                        return_value=[frase]):
+            self.tornar_sigiloso()
+            rel = servicos.atualizar_indice(self.cfg)
+        self.assertEqual(rel.avisos_pacotes, [frase])
+        self.assertIn(frase, rel.avisos)
+
+    def test_nunca_levanta(self):
+        with mock.patch("helestron.compartilhar.chatgpt.retirar_sigilosos_dos_pacotes",
+                        side_effect=OSError("disco")), \
+                self.assertLogs("servicos", "WARNING"):
+            self.tornar_sigiloso()
+            self.assertEqual(servicos.retirar_sigilosos_dos_pacotes(self.cfg), [])
+        with mock.patch.object(servicos, "pasta_pacotes", return_value=self.amb.raiz / "nada"):
+            self.assertEqual(servicos.retirar_sigilosos_dos_pacotes(object()), [])
+
+
 class TestPontesDoMotor(unittest.TestCase):
     def test_nova_sessao_repassa_o_microfone(self):
         with mock.patch("helestron.transcricao.ao_vivo.SessaoAoVivo") as Sessao:
@@ -133,6 +357,44 @@ class TestPontesDoMotor(unittest.TestCase):
             servicos.transcrever_gravacao(Path("/tmp/a.wav"), cnj.ler(NUMERO), object(), None,
                                           None)
             self.assertNotIn("meta", transcrever.call_args.kwargs)
+
+    def test_revisar_leva_a_ficha_da_audiencia(self):
+        """Achado 38: o "Revisar" da tela criava a ficha só com o tipo e os
+        participantes - sem início, término nem a data da audiência."""
+        from datetime import datetime
+
+        from helestron.transcricao.documento import MetaAudiencia
+
+        sessao = MetaAudiencia(numero=NUMERO, tipo="Instrução", origem="ao vivo",
+                               data=datetime(2026, 9, 15, 23, 30),
+                               inicio=datetime(2026, 9, 15, 23, 30),
+                               fim=datetime(2026, 9, 16, 0, 40),
+                               participantes={"Testemunha": "Beltrano"},
+                               gravacao="_audio\\x.flac", observacao="1 trecho não transcrito.")
+        with mock.patch("helestron.transcricao.arquivo.transcrever_arquivo") as transcrever:
+            servicos.transcrever_gravacao(Path("/tmp/x.flac"), cnj.ler(NUMERO), object(), None,
+                                          None, meta=sessao)
+            meta = transcrever.call_args.kwargs["meta"]
+            self.assertIsNot(meta, sessao)
+            self.assertIsNot(meta.participantes, sessao.participantes)
+            self.assertEqual((meta.data, meta.inicio, meta.fim, meta.gravacao),
+                             (sessao.data, sessao.inicio, sessao.fim, "_audio\\x.flac"))
+            self.assertEqual((meta.origem, meta.observacao, meta.tipo), ("revisão", "", "Instrução"))
+            self.assertEqual(sessao.origem, "ao vivo")       # a da sessão não muda
+            # o que a tela escolheu agora prevalece
+            servicos.transcrever_gravacao(Path("/tmp/x.flac"), cnj.ler(NUMERO), object(), None,
+                                          None, meta=sessao, tipo="Una",
+                                          participantes={"F1": "Juiz(a)"})
+            meta = transcrever.call_args.kwargs["meta"]
+            self.assertEqual(meta.tipo, "Una")
+            self.assertEqual(meta.participantes, {"Testemunha": "Beltrano", "F1": "Juiz(a)"})
+            self.assertEqual(sessao.participantes, {"Testemunha": "Beltrano"})
+            # uma ficha que não é a de sessão ao vivo segue como veio
+            gravada = MetaAudiencia(numero=NUMERO, origem="gravação", observacao="Obs.")
+            servicos.transcrever_gravacao(Path("/tmp/x.flac"), cnj.ler(NUMERO), object(), None,
+                                          None, meta=gravada)
+            meta = transcrever.call_args.kwargs["meta"]
+            self.assertEqual((meta.origem, meta.observacao), ("gravação", "Obs."))
 
     def test_componente_ausente_tem_frase(self):
         erro = servicos._ausente(ImportError("x", name="faster_whisper"), "transcrição")

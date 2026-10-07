@@ -480,8 +480,22 @@ class FiltroDeAlucinacao:
     não haver fala com confiança baixa - o critério do próprio Whisper);
     (b) texto em laço (taxa de compressão alta); (c) confiança baixíssima;
     (d) frases-fantasma conhecidas; (e) eco do texto de contexto; (f) a
-    mesma frase repetida em seguida.
+    mesma frase repetida em seguida pelo modelo.
+
+    A repetição (f) só é laço do modelo dentro da MESMA chamada a ele
+    (`mesmo_trecho`) ou colada no tempo à anterior: frases protocolares que
+    partes diferentes dizem uma depois da outra ("Sem perguntas,
+    Excelência." do Ministério Público e depois da defesa) são fala real e
+    sumiam do termo sem aviso. Na audiência ao vivo, cada trecho é uma
+    chamada nova ao modelo, sem o texto anterior
+    (`condition_on_previous_text=False`): `novo_trecho()` esquece a última
+    frase, e a repetição entre trechos nunca é descartada.
     """
+
+    # Intervalo (s) até o qual uma frase longa idêntica à anterior é laço do
+    # modelo, e não outra pessoa repetindo: o laço emenda um segmento no
+    # outro; a resposta de outra parte vem depois de uma pausa.
+    COLADO_S = 0.3
 
     def __init__(self, contexto: str = "", sem_fala: float = 0.6, logprob: float = -1.0,
                  compressao: float = 2.4, logprob_minimo: float = -2.0):
@@ -491,7 +505,15 @@ class FiltroDeAlucinacao:
         self.logprob_minimo = logprob_minimo
         self._contexto = normalizar(contexto)
         self._anterior = ""
+        self._fim_anterior: float | None = None
         self.descartados = 0
+        self.repeticoes = 0          # quantos dos descartados foram por repetição
+
+    def novo_trecho(self) -> None:
+        """Começa uma chamada nova ao modelo (sem o texto da anterior): a
+        frase do trecho anterior não conta mais como repetição."""
+        self._anterior = ""
+        self._fim_anterior = None
 
     def aceitar(self, seg, mesmo_trecho: bool = False) -> str | None:
         """Texto limpo do segmento, ou None se for alucinação."""
@@ -499,9 +521,18 @@ class FiltroDeAlucinacao:
         motivo = self._motivo(seg, texto, mesmo_trecho)
         if motivo:
             self.descartados += 1
-            log.debug("descartado (%s): %r", motivo, texto[:80])
+            if motivo == "repetição":
+                self.repeticoes += 1
+                # Em INFO, para a conferência: só o instante, nunca o texto
+                # (a fala pode ser de processo em segredo de justiça).
+                log.info("repetição descartada em %.1f s (frase idêntica à anterior, %s).",
+                         _tempo(seg, "start") or 0.0,
+                         "na mesma chamada ao modelo" if mesmo_trecho else "emendada nela")
+            else:
+                log.debug("descartado (%s): %r", motivo, texto[:80])
             return None
         self._anterior = normalizar(texto)
+        self._fim_anterior = _tempo(seg, "end")
         return texto
 
     def _motivo(self, seg, texto: str, mesmo_trecho: bool) -> str:
@@ -521,9 +552,41 @@ class FiltroDeAlucinacao:
             return "confiança baixa"
         if n in FANTASMAS_EXATOS or any(f in n for f in FANTASMAS_CONTIDOS):
             return "frase-fantasma"
-        if self._contexto and len(n) >= 20 and (n in self._contexto
-                                                 or self._contexto.startswith(n[:40])):
+        if self._eco(n, sem_fala, logprob):
             return "eco do contexto"
-        if n == self._anterior and (len(n) >= 15 or mesmo_trecho):
+        if n == self._anterior and (mesmo_trecho or (len(n) >= 15 and self._colado(seg))):
             return "repetição"
         return ""
+
+    def _eco(self, n: str, sem_fala: float, logprob: float) -> bool:
+        """O segmento é o texto de contexto devolvido pelo modelo?
+
+        O eco que o Whisper produz é o COMEÇO do prompt: esse sai sempre. Um
+        pedaço do meio ou do fim só é eco se vier com cara de alucinação
+        (confiança baixa ou probabilidade relevante de não haver fala): o
+        Vocabulário da transcrição costuma ter nomes e frases da audiência
+        ("Pela ordem, Excelência.", "Caixa Econômica Federal.") que, ditos
+        com clareza, são fala real e sumiam do termo.
+        """
+        if not self._contexto or len(n) < 20:
+            return False
+        if self._contexto.startswith(n[:40]):
+            return True
+        suspeito = logprob < self.logprob or sem_fala > self.sem_fala / 2
+        return suspeito and n in self._contexto
+
+    def _colado(self, seg) -> bool:
+        """O segmento emenda no anterior aceito (sem pausa que caiba outra
+        pessoa falando)? Sem os tempos, vale o critério antigo (é laço)."""
+        inicio = _tempo(seg, "start")
+        if inicio is None or self._fim_anterior is None:
+            return True
+        return inicio - self._fim_anterior <= self.COLADO_S
+
+
+def _tempo(seg, nome: str) -> float | None:
+    try:
+        valor = getattr(seg, nome, None)
+        return None if valor is None else float(valor)
+    except (TypeError, ValueError):
+        return None
