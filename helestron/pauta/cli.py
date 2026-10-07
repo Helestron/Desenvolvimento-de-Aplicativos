@@ -238,10 +238,16 @@ def _aplicar_sigilo_revelado(cfg, numeros: list[str]) -> None:
     acervo sai agora (o preparo rápido, como a janela faz), e a saída diz o quê."""
     from .servico import no_acervo, quem_corre
 
+    from .. import servicos
+
     lista = no_acervo(cfg, numeros) if numeros else []
     if not lista:
+        # Fora do acervo, um pacote antigo para o ChatGPT ainda pode trazer o
+        # processo: sai de lá também.
+        if numeros:
+            for aviso in servicos.retirar_sigilosos_dos_pacotes(cfg) or []:
+                print(f"  ATENÇÃO: {aviso}", file=sys.stderr)
         return
-    from .. import servicos
 
     um = len(lista) == 1
     print(f"Segredo de justiça: a pauta indica que {quem_corre(lista)} em segredo de justiça, "
@@ -251,6 +257,8 @@ def _aplicar_sigilo_revelado(cfg, numeros: list[str]) -> None:
         print("  Não consegui preparar o acervo (veja o registro). Antes de compartilhar o "
               "acervo com a IA, use: python -m helestron preparar", file=sys.stderr)
         return
+    for aviso in getattr(rel, "avisos_pacotes", None) or []:
+        print(f"  ATENÇÃO: {aviso}", file=sys.stderr)
     if rel.sigilosos_levados:
         print(f"  {_plural(rel.sigilosos_levados, 'processo levado', 'processos levados')} "
               "para a pasta dos sigilosos; fora do índice e do texto lidos pela IA.")

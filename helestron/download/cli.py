@@ -666,6 +666,18 @@ def _baixar(args, cfg, acomp) -> dict:
 
     if cfg is None:
         cfg = config.carregar()
+    # A mesma recusa da tela (409 pastas_em_conflito): com a pasta dos
+    # sigilosos ou a da pauta dentro do acervo, o sigiloso baixado iria para
+    # o que a IA lê e a nuvem copia.
+    try:
+        from .. import servicos
+        conflito = servicos.problema_nas_pastas(cfg.pasta_acervo, cfg.pasta_sigilosos,
+                                                servicos.pasta_pauta(cfg))
+    except Exception:
+        conflito = None
+    if conflito:
+        print(conflito, file=sys.stderr)
+        return falhou(conflito, "pastas_em_conflito")
     opcoes = OpcoesDownload.de_config(cfg)
     if args.visivel:
         opcoes.mostrar_navegador = True

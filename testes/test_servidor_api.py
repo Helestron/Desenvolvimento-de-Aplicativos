@@ -461,10 +461,20 @@ class TestAbrirEDialogos(ServidorDeTeste):
         self.app.janela = janela
         dados = self.cliente.dados("POST", "/api/dialogo/arquivo", {
             "titulo": "Relação", "tipos": ["Planilhas|*.xlsx;*.xls", "Tudo|*.*", "Ruim|exe"]})
-        self.assertEqual(dados, {"caminho": "C:\\relacao.xlsx"})
+        # o arquivo não existe aqui: sem tamanho (a tela mostra o que vier)
+        self.assertEqual(dados, {"caminho": "C:\\relacao.xlsx", "tamanho": None})
         self.assertEqual(janela.dialogo_arquivo.call_args[0][1],
                          ["Planilhas (*.xlsx;*.xls)", "Tudo (*.*)"])
         self.assertEqual(self.cliente.dados("POST", "/api/dialogo/pasta", {}), {"caminho": None})
+
+    def test_dialogo_devolve_o_tamanho_do_arquivo(self):
+        arquivo = self.amb.raiz / "audiencia.mp4"
+        arquivo.write_bytes(b"x" * 1234)
+        janela = mock.Mock(tem_dialogos=True)
+        janela.dialogo_arquivo.return_value = str(arquivo)
+        self.app.janela = janela
+        dados = self.cliente.dados("POST", "/api/dialogo/arquivo", {"titulo": "Gravação"})
+        self.assertEqual(dados, {"caminho": str(arquivo), "tamanho": 1234})
 
     def test_tipos_pywebview_limpa_a_descricao(self):
         self.assertEqual(api_geral.tipos_pywebview(["Relatórios do e-SAJ|*.xls;*.html"]),

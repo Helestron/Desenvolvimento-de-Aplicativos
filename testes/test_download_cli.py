@@ -469,6 +469,20 @@ class TestCliParaAutomacao(BaseCli):
         self.assertNotIn("detalhe que não vai", conteudo)
         self.assertEqual(logging.getLogger().handlers, handlers, "o handler do --log sai no fim")
 
+    def test_recusa_com_a_pasta_dos_sigilosos_dentro_do_acervo(self):
+        # A mesma regra da tela (409 pastas_em_conflito): baixar assim levaria
+        # o sigiloso para o que a IA lê.
+        self.cfg.definir("geral", "pasta_sigilosos", str(self.tmp / "Acervo" / "Sigilosos"))
+        arq = self.tmp / "saida" / "lote.json"
+        codigo, _, erros = self.rodar_com_erros([A.formatado, "--destino", str(self.tmp / "L"),
+                                                 "--json", str(arq)])
+        self.assertEqual(codigo, 2)
+        self.assertIn("sigilosos não pode ficar dentro", erros)
+        self.assertEqual(self.capturado, {}, "o lote não pode começar")
+        dados = self.ler_json(arq)
+        self.assertTrue(dados["concluido"])
+        self.assertEqual(dados["codigo_saida"], 2)
+
     # -------------------------------------------------------------- texto
     def test_texto_ao_fim_para_lote_e_sigilosos(self):
         destino = self.tmp / "Lote"

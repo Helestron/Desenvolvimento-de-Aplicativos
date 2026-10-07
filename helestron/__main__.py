@@ -86,7 +86,8 @@ RECURSOS = ("versao", "caminhos", "baixar.json", "baixar.eventos", "baixar.log",
             "baixar.rebaixar-incompletos", "baixar.sem-cofre", "baixar.desanexar",
             "relatorio.causa", "relatorio.meta", "paginacao.manifesto", "preparar.pasta",
             "preparar.json", "folhas.fieis", "texto.v2", "capa.v2", "texto.paginas-sem-texto",
-            "baixar.codigo-na-janela")
+            "baixar.codigo-na-janela", "baixar.pastas-em-conflito", "comando.cmd",
+            "registro.hkcu")
 
 SAIDA_SIGILOSO_NO_ACERVO = 3     # "preparar": autos de sigiloso presos no acervo
 
@@ -380,6 +381,10 @@ def _caminhos(opcoes) -> int:
         "versao": _versao(),
         "recursos": list(RECURSOS),
         "python": str(caminhos.python_exe()),
+        # o atalho de linha de comando da pasta do programa (a instalação o
+        # cria; HKCU\Software\Helestron\Python aponta para o mesmo Python)
+        "comando": (str(caminhos.INSTALACAO / "helestron.cmd")
+                    if (caminhos.INSTALACAO / "helestron.cmd").is_file() else ""),
         "instalacao": str(caminhos.INSTALACAO),
         "instalado": bool(caminhos.INSTALADO),
         "config": str(cfg.arquivo),

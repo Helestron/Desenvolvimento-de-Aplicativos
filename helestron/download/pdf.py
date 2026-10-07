@@ -918,7 +918,7 @@ def gravar_alinhado(destino: Path, dados: bytes, faixas: list[tuple[int, int, li
             # não pode ser substituído
             doc.close()
         if trocar:
-            os.replace(tmp2, tmp)
+            _trocar(tmp2, tmp)      # com paciência: antivírus e indexador seguram por um instante
         # PDF aberto no leitor (PermissionError): o anterior fica, e o parcial sai
         _trocar(tmp, destino)
     except BaseException:

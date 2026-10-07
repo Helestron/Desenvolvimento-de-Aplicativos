@@ -2443,9 +2443,14 @@ class _Lote:
                 # Na área provisória (fora do acervo, que ninguém abre), quem
                 # segura o PDF recém-gravado é o antivírus ou o indexador, por
                 # alguns segundos: é passageiro - tenta de novo, com espera.
+                # Sem nome de arquivo (um soquete negado pelo firewall, por
+                # exemplo, WinError 10013), a frase não pode culpar o PDF.
+                tem_arquivo = bool(getattr(erro, "filename", None)
+                                   or getattr(erro, "filename2", None))
                 ultimo = PermissionError(
                     "o PDF recém-baixado ficou preso por outro programa (antivírus ou "
-                    "indexador do Windows) na pasta provisória")
+                    "indexador do Windows) na pasta provisória" if tem_arquivo else
+                    "o Windows negou o acesso (firewall ou antivírus?)")
                 ultimo.__cause__ = erro
                 causa_ultimo = CAUSA_FALHA
                 if tentativa >= tentativas:

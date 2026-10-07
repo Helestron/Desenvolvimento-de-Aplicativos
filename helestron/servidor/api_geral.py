@@ -508,7 +508,13 @@ def dialogo_arquivo(p: Pedido) -> dict:
     titulo = p.campo("titulo", padrao="Escolher arquivo", tipo=str)
     inicial = p.campo("inicial", padrao="", tipo=str)
     caminho = funcao(titulo, tipos_pywebview(p.campo("tipos", padrao=[], tipo=list)), inicial)
-    return {"caminho": str(caminho) if caminho else None}
+    if not caminho:
+        return {"caminho": None}
+    try:
+        tamanho = Path(str(caminho)).stat().st_size
+    except OSError:
+        tamanho = None
+    return {"caminho": str(caminho), "tamanho": tamanho}
 
 
 def dialogo_pasta(p: Pedido) -> dict:

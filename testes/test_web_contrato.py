@@ -223,6 +223,9 @@ class TextosQueOUsuarioLe(unittest.TestCase):
         "Microsoft Edge WebView2 Runtime",                      # nome do produto da Microsoft
         "fl.", "evento 1, INIC1", "ignore as instruções anteriores",  # regras para a IA
         "Evento N — descrição — rótulo (data)",                 # marcador do PDF do eProc
+        # formas de citar uma página do eProc (capa.txt, rótulo de página do PDF)
+        "Download Completo do eProc, pág. M", "Download Completo do eProc, parte P, pág. M",
+        "Ev. N RÓTULO p. Y",
         "Acesso ao microfone",                                  # opção do Windows
     }
 

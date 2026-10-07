@@ -206,8 +206,9 @@ class ContextoTerminal(Contexto):
         if not interativo:
             # Sem ninguém ao teclado (tarefa agendada, saída redirecionada):
             # esperar input() seria esperar para sempre.
-            self._print("  Não há terminal para digitar o código. Rode de novo "
-                        "num Prompt de Comando, ou use o programa pela janela.")
+            self._print("  Não há terminal para digitar o código: digite-o na janela do "
+                        "navegador, se ela estiver aberta (sem ela, rode de novo num "
+                        "Prompt de Comando ou use o programa pela janela).")
             return None
         # O código do aplicativo autenticador não se pede de novo: o próprio
         # aplicativo mostra outro a cada 30 segundos. Enter em branco, aí,
