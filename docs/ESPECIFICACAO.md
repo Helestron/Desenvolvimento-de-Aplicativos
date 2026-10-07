@@ -323,12 +323,12 @@ python -m helestron baixar [NÚMEROS...] [--lista ARQ|URL] [--destino PASTA] [--
 | `--sem-cofre` | não usa o cofre (`OpcoesDownload.usar_cofre = False`) nem pergunta senha: no modo `senha`, o grupo entra como `manual` (`motor._opcoes_do_grupo`), com o navegador visível na tela de entrada |
 | `--rebaixar-incompletos` | baixa de novo o PDF que já está na pasta só se ele tem `incompleto` ou não tem o manifesto de paginação (seção 13) |
 | `--texto` | depois do lote, `textos.garantir_texto` de cada PDF OK ou JA_BAIXADO: fora do acervo, em `<pasta do PDF>/_texto/<nome>.txt` (o do sigiloso fica na própria pasta de sigilosos); dentro do acervo, em `<acervo>/_ia/texto`. Autos de sigiloso presos no acervo não viram texto (`sigiloso_ignorado`). `textos.analisar` dá as páginas sem texto extraível de cada um (`paginas_sem_texto`, impressas e no JSON) |
-| `--retomar` | com a relação, ou só com `--destino`: baixa os números da relação que o relatório da pasta do lote (`motor.ler_relatorio_do_lote`, que lê também o relatório completo da pasta de sigilosos) não tem ou cuja linha `pede_nova_tentativa`, o `SIGILOSO_SEM_SENHA` cuja senha a relação agora traz e as linhas do relatório que pedem nova tentativa. O que fica de fora é impresso e vai para `ignorados_por_retomar`; sem nada a retomar, sai com 0 |
-| `--esperar-navegador MIN` | o `NavegadorOcupado` (outro download usa o perfil do navegador do portal) antes de o grupo começar: tenta de novo a cada `ESPERA_NAVEGADOR_S` (30 s) até o prazo, com o evento `navegador_ocupado`; sem a opção, o grupo termina em ERRO com a causa `navegador_ocupado` |
+| `--retomar` | com a relação, ou só com `--destino`: baixa os números da relação que o relatório da pasta do lote (`motor.ler_relatorio_do_lote`, que lê também o relatório completo da pasta de sigilosos) não tem ou cuja linha `pede_nova_tentativa`, o `SIGILOSO_SEM_SENHA` cuja senha a relação agora traz e as linhas do relatório que pedem nova tentativa. Da linha OK ou JA_BAIXADO, volta o que o motor baixaria de novo (`cli._baixado_que_volta`, com as mesmas regras de `_registro_anterior` e `_baixar_de_novo`): o PDF que já não está na pasta do lote nem na de sigilosos dele; com `--rebaixar-incompletos`, o que tem `incompleto` ou não tem o manifesto; e o do e-SAJ de versão anterior com sinal de numeração deslocada. O que fica de fora é impresso e vai para `ignorados_por_retomar`, com o porquê (o que só `--rebaixar-incompletos` refaria diz isso); sem nada a retomar, sai com 0. Só com `--destino` e sem o relatório de um lote em `_controle` (caminho errado), sai com 2 (`causa_erro` `sem_processos`) |
+| `--esperar-navegador MIN` | o `NavegadorOcupado` (outro download usa o perfil do navegador do portal) antes de o grupo começar: tenta de novo a cada `ESPERA_NAVEGADOR_S` (30 s) até o prazo, com o evento `navegador_ocupado`; sem a opção, o grupo termina em ERRO com a causa `navegador_ocupado`. MIN é finito, de 0 a 1440 (`MAX_ESPERA_NAVEGADOR_MIN`, um dia); fora disso, erro de uso |
 | `--json ARQ` | o acompanhamento em JSON (abaixo) |
 | `--eventos` | cada evento numa linha `HELESTRON-EVENTO {json}` da saída padrão (`contexto.linha_de_evento`) |
-| `--log ARQ` | duplica a saída padrão e a de erro no arquivo (UTF-8, `flush` a cada escrita) e acrescenta ao registro um handler INFO com `FiltroSegredos`, retirado no fim. Com `--json` e sem `--log`, vale `LOGS/execucoes/baixar-<data>-<pid>.log` |
-| `--desanexar` | exige `--json`. Começa o lote num processo à parte, sem console (Windows: `DETACHED_PROCESS \| CREATE_NEW_PROCESS_GROUP \| CREATE_BREAKAWAY_FROM_JOB`, repetido sem o último se o job de quem chamou o recusar; fora do Windows, `start_new_session`), com `--log` (o padrão, se faltar), grava o JSON inicial com o `pid` do filho, imprime `HELESTRON-EXECUCAO {"pid", "json", "log"}` e sai com 0. O desfecho é o `codigo_saida` do JSON |
+| `--log ARQ` | duplica a saída padrão e a de erro no arquivo (UTF-8, `flush` a cada escrita) e acrescenta ao registro um handler INFO com `FiltroSegredos`, retirado no fim. Com `--json` e sem `--log`, vale `LOGS/execucoes/baixar-<data>-<pid>.log`. O arquivo que não pode ser aberto encerra com 2, com o JSON concluído (`causa_erro` `uso`, `log` vazio) |
+| `--desanexar` | exige `--json`. Confere antes se o log pode ser aberto (senão, sai com 2 e conclui o JSON, como acima). Começa o lote num processo à parte, sem console (Windows: `DETACHED_PROCESS \| CREATE_NEW_PROCESS_GROUP \| CREATE_BREAKAWAY_FROM_JOB`, repetido sem o último se o job de quem chamou o recusar; fora do Windows, `start_new_session`), com `--log` (o padrão, se faltar), grava o JSON inicial com o `pid` do filho, imprime `HELESTRON-EXECUCAO {"pid", "json", "log"}` e sai com 0. O desfecho é o `codigo_saida` do JSON. O filho recebe a mesma linha sem `--desanexar`; por isso as opções do `baixar` não aceitam abreviação (`allow_abbrev=False`): um `--desa` faria cada filho se desanexar de novo |
 
 Regras:
 
@@ -357,9 +357,13 @@ Regras:
 * **O preparo do acervo ao fim** não roda quando o destino está fora do
   acervo, salvo se algo saiu do acervo durante o lote.
 * **Códigos de saída:** 0 tudo certo; 1 parte falhou ou ficou pendente (ou
-  Ctrl+C); 2 nada pôde ser feito (uso errado, relação inválida, nenhum
-  número, destino que não pode ser criado, lote em andamento, nenhum
-  processo baixado nem já na pasta).
+  Ctrl+C, também o que o motor engole no meio do lote e marca como
+  `interrompido`: `causa_erro` `interrompido`); 2 nada pôde ser feito (uso
+  errado, relação inválida, nenhum número, destino que não pode ser criado,
+  lote em andamento, nenhum processo baixado nem já na pasta, erro
+  inesperado). O `codigo_saida` do JSON é o código com que o processo sai:
+  o erro inesperado não é relançado (sairia com 1); o rastro vai para o
+  registro e para o `--log`, e quem chamou recebe a frase.
 
 **O JSON (`helestron.baixar/1`).** O formato completo está no docstring de
 `download/acompanhamento.py`; campos novos podem aparecer, e os existentes

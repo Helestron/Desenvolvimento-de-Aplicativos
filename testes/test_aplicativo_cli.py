@@ -383,6 +383,23 @@ class TestComandosParaAutomacao(unittest.TestCase):
         self.assertEqual(codigo, 2)
         self.assertIn("não existe", erros)
 
+    def test_preparar_pasta_texto_de_formato_anterior_refeito_e_novo(self):
+        """O texto de formato 1 (o _texto da 1.0.1) é refeito no formato 2 com
+        a mesma data de antes (a do PDF): a situação é "novo", e não "em_dia"."""
+        lote = self.amb.raiz / "Lotes da skill" / "Lote 3"
+        num = "0700001-27.2024.8.02.0001"
+        pdf = self.pdf(lote / f"{num}.pdf", "Petição inicial")
+        txt = lote / "_texto" / f"{num}.txt"
+        txt.parent.mkdir()
+        txt.write_text("=== [fl. 1] ===\ntexto antigo (formato 1)\n", encoding="utf-8")
+        os.utime(txt, (pdf.stat().st_atime, pdf.stat().st_mtime))
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--json")
+        self.assertEqual(codigo, 0)
+        self.assertEqual(json.loads(saida)["itens"][0]["situacao"], "novo")
+        self.assertTrue(txt.read_text(encoding="utf-8").startswith("# helestron-texto 2 |"))
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--json")
+        self.assertEqual(json.loads(saida)["itens"][0]["situacao"], "em_dia")
+
     def test_preparar_pasta_diz_as_paginas_sem_texto(self):
         import pymupdf
 

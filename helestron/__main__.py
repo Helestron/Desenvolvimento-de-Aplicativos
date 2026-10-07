@@ -508,8 +508,11 @@ def _preparar_pasta(opcoes, cfg) -> int:
             alvo = destino / f"{pdf.stem}.txt"
             try:
                 antes = alvo.stat().st_mtime if alvo.exists() else None
+                # o texto de formato anterior é refeito com a mesma data (a do PDF)
+                versao = textos.versao_do_texto(alvo) if antes is not None else None
                 textos.garantir_texto(pdf, alvo)
-                novo = antes is None or alvo.stat().st_mtime != antes
+                novo = antes is None or alvo.stat().st_mtime != antes \
+                    or versao != textos.VERSAO_TEXTO
                 item.update(texto=str(alvo), situacao="novo" if novo else "em_dia",
                             paginas=textos.contar_paginas(pdf))
                 m = paginacao.ler_do_pdf(pdf)

@@ -22,8 +22,10 @@ lote rodando sozinho (imprime ``HELESTRON-EXECUCAO {"pid", "json", "log"}``
 e sai). O JSON e o log trazem os números reais dos processos sigilosos:
 não podem ficar dentro do acervo compartilhado com a IA.
 
-Códigos de saída: 0 tudo certo; 1 parte falhou ou ficou pendente;
-2 nada pôde ser feito (relação inválida, login recusado, uso errado...).
+Códigos de saída: 0 tudo certo; 1 parte falhou ou ficou pendente (ou o
+lote foi interrompido); 2 nada pôde ser feito (relação inválida, login
+recusado, uso errado, erro inesperado...). Com --json, o ``codigo_saida``
+do JSON é sempre o código com que o processo sai.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ import getpass
 import io
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -56,6 +59,8 @@ DETACHED_PROCESS = 0x00000008
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
+MAX_ESPERA_NAVEGADOR_MIN = 24 * 60   # --esperar-navegador: um dia, no máximo
+
 _RE_SUFIXO = re.compile(r"^\d\.\d{2}\.\d{4}$")
 # NNNNNNN-DD.AAAA (o "número curto" do e-SAJ, sem J.TR.OOOO), com ou sem /NN
 _RE_CURTO = re.compile(r"^\s*(\d{7})-?(\d{2})\.?(\d{4})(\s*/\s*\d{1,4})?\s*$")
@@ -74,14 +79,23 @@ def _minutos(valor: str) -> float:
         n = float(str(valor).replace(",", "."))
     except ValueError:
         raise argparse.ArgumentTypeError(f"'{valor}' não é um número de minutos") from None
+    if not math.isfinite(n):        # "inf" e "nan": o float() os aceita
+        raise argparse.ArgumentTypeError(f"'{valor}' não é um número de minutos")
     if n < 0:
         raise argparse.ArgumentTypeError("o número de minutos não pode ser negativo")
+    if n > MAX_ESPERA_NAVEGADOR_MIN:
+        raise argparse.ArgumentTypeError(
+            f"o número de minutos não pode passar de {MAX_ESPERA_NAVEGADOR_MIN} (um dia)")
     return n
 
 
 def criar_parser() -> ArgumentParser:
+    # Sem abreviação das opções: o lote desanexado tira "--desanexar" da linha
+    # do filho pelo texto, e um "--desa" abreviado faria cada filho se
+    # desanexar de novo, sem fim.
     p = ArgumentParser(
         prog="python -m helestron baixar",
+        allow_abbrev=False,
         description="Baixa os processos de uma relação (Excel, Word, PDF, CSV, TXT ou "
                     "link compartilhado): um PDF por processo, nomeado com o número.")
     p.add_argument("processos", nargs="*", help="números de processo (opcional, além da --lista)")
@@ -106,8 +120,10 @@ def criar_parser() -> ArgumentParser:
                         "comando com segmento, tribunal e foro (ex.: 8.02.0058)")
     p.add_argument("--retomar", action="store_true",
                    help="baixa só o que o relatório da pasta do lote diz que pede nova tentativa "
-                        "(falhou, ficou pendente ou interrompido) e os números que ainda não "
-                        "estão nele")
+                        "(falhou, ficou pendente ou interrompido), os números que ainda não "
+                        "estão nele e o baixado cujo PDF saiu da pasta (com "
+                        "--rebaixar-incompletos, também o que tem folhas ou documentos "
+                        "ausentes)")
     p.add_argument("--texto", action="store_true",
                    help="ao fim, extrai o texto de cada PDF com a marca da folha (em _texto, ao "
                         "lado dos PDFs; dentro do acervo, em _ia\\texto)")
@@ -121,7 +137,7 @@ def criar_parser() -> ArgumentParser:
                         "(UTF-8, fora do acervo); com --json, há um padrão em Logs\\execucoes")
     p.add_argument("--esperar-navegador", metavar="MIN", type=_minutos, default=0.0,
                    help="com o navegador do portal ocupado por outro download, esperar até MIN "
-                        "minutos (tentando a cada 30 s) em vez de desistir")
+                        "minutos (tentando a cada 30 s; no máximo 1440) em vez de desistir")
     p.add_argument("--sem-cofre", action="store_true",
                    help="não usar as senhas guardadas no computador: no modo senha, o navegador "
                         "abre na tela de entrada para você entrar")
@@ -395,11 +411,35 @@ class _RegistroDaExecucao:
                 pass
 
 
+def _registro_inacessivel(caminho: Path, erro: OSError, acomp=None, json_arq=None) -> int:
+    """O arquivo do --log (ou o padrão de --json) não pode ser aberto: sai com
+    2, e o JSON diz por quê. Sem ele concluído, quem acompanha o lote pelo
+    JSON (o desanexado, sobretudo) esperaria para sempre."""
+    print(f"Não consegui abrir o arquivo de registro {caminho} ({erro}). Indique outro "
+          "arquivo com --log, fora do acervo.", file=sys.stderr)
+    if acomp is None and json_arq is not None:
+        from .acompanhamento import Acompanhamento
+        acomp = Acompanhamento(json_arq)
+    if acomp is not None:
+        acomp.definir(log="")
+        acomp.concluir(2, erro=f"não consegui abrir o arquivo de registro {caminho} ({erro})",
+                       causa_erro="uso")
+    return 2
+
+
 # ------------------------------------------------------------- desanexar
 def _desanexar(argv: list[str], args, caminhos) -> int:
     """Começa o lote num processo separado, sem console, e sai na hora."""
     json_arq = Path(args.json).expanduser().resolve()
     log_arq = Path(args.log).expanduser().resolve() if args.log else log_padrao(caminhos)
+    # O filho escreve no log desde o começo: se ele não abre, o filho morreria
+    # sem concluir o JSON. Conferido aqui, quem chamou fica sabendo na hora.
+    try:
+        log_arq.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_arq, "a", encoding="utf-8"):
+            pass
+    except OSError as erro:
+        return _registro_inacessivel(log_arq, erro, json_arq=json_arq)
     filho = [a for a in argv if a != "--desanexar"]
     if not args.log:
         filho += ["--log", str(log_arq)]
@@ -431,13 +471,62 @@ def _desanexar(argv: list[str], args, caminhos) -> int:
 
 
 # ------------------------------------------------------------- retomar
+class _RegrasDoMotor:
+    """O que as regras do motor para o PDF que já está na pasta
+    (motor._Lote._registro_anterior e _baixar_de_novo) leem do lote: a linha
+    do relatório e as opções. Com elas, o --retomar decide como o motor
+    decidiria, sem abrir um lote (nem o navegador)."""
+
+    def __init__(self, linha: dict, opcoes):
+        self._linha = linha
+        self.opcoes = opcoes
+
+    def _linha_anterior(self, _nome: str) -> dict:
+        return self._linha
+
+
+def _baixado_que_volta(n, linha: dict, pastas, opcoes, motor, modelos) -> tuple[bool, str]:
+    """O processo que o relatório dá como baixado (OK ou JA_BAIXADO) volta ao
+    motor no --retomar? Devolve (volta?, por que fica de fora).
+
+    Volta o que o motor baixaria de novo: o PDF que já não está na pasta do
+    lote (nem na de sigilosos dele) e o que o motor manda refazer ao achá-lo
+    lá (_baixar_de_novo) - com --rebaixar-incompletos, o PDF com folhas (ou
+    documentos) ausentes ou sem o manifesto de paginação; sempre, o do e-SAJ
+    de versão anterior com sinal de numeração deslocada."""
+    situacao = (linha.get("situacao") or "").strip()
+    nome = f"{n.nome_arquivo}.pdf"
+    pdf = next((p / nome for p in pastas if motor._pdf_valido(p / nome)), None)
+    if pdf is None:
+        return True, ""
+    regras = _RegrasDoMotor(linha, opcoes)
+    reg = motor._Lote._registro_anterior(regras, n, pdf)
+    if motor._Lote._baixar_de_novo(regras, reg, None):
+        return True, ""
+    rotulo = modelos.rotulo(situacao)
+    # Sem --rebaixar-incompletos: o que só essa opção refaz não é "definitivo"
+    if reg["incompleto"]:
+        o_que = "documentos" if reg["sistema"] == "eproc" else "folhas"
+        return False, (f"{rotulo}, com {o_que} ausentes ({reg['incompleto']}): para baixá-lo "
+                       "de novo, use --rebaixar-incompletos")
+    if not reg["paginacao"]:
+        return False, (f"{rotulo}, sem o manifesto de paginação (PDF de versão anterior): para "
+                       "baixá-lo de novo, use --rebaixar-incompletos")
+    return False, f"{rotulo}: uma nova tentativa não muda o desfecho"
+
+
 def _retomar(numeros, destino: Path, opcoes, cfg, motor, modelos, cnj, senhas=None):
     """O que '--retomar' baixa: os da relação que o relatório da pasta do lote
     não tem ou diz que pedem nova tentativa (e o sigiloso que faltava a senha,
     se a relação agora a traz), e os do relatório que pedem nova tentativa.
-    Devolve (números, ignorados com o porquê)."""
-    linhas = motor.ler_relatorio_do_lote(destino, opcoes.pasta_sigilosos,
-                                         getattr(cfg, "pasta_processos", None))
+    Do que o relatório dá como baixado, volta o que o motor baixaria de novo
+    (_baixado_que_volta): o relatório sozinho não diz se o PDF continua na
+    pasta, nem se tem folhas ausentes. Devolve (números, ignorados com o porquê)."""
+    pasta_processos = getattr(cfg, "pasta_processos", None)
+    linhas = motor.ler_relatorio_do_lote(destino, opcoes.pasta_sigilosos, pasta_processos)
+    pastas = (destino, motor.pasta_sigilosos_do_lote(opcoes.pasta_sigilosos, destino,
+                                                     pasta_processos))
+    baixado = (modelos.OK, modelos.JA_BAIXADO)
     por_chave = {chave: linha for chave, linha in linhas if chave}
     escolhidos, ignorados, vistos = [], [], set()
     for n in numeros:
@@ -446,31 +535,49 @@ def _retomar(numeros, destino: Path, opcoes, cfg, motor, modelos, cnj, senhas=No
         if linha is None or modelos.pede_nova_tentativa(linha.get("situacao"), linha.get("causa")):
             escolhidos.append(n)
             continue
-        if (linha.get("situacao") or "").strip() == modelos.SIGILOSO_SEM_SENHA \
-                and motor.senha_de(n, senhas):
+        situacao = (linha.get("situacao") or "").strip()
+        if situacao == modelos.SIGILOSO_SEM_SENHA and motor.senha_de(n, senhas):
             escolhidos.append(n)             # a senha que faltava veio agora
             continue
-        situacao = (linha.get("situacao") or "").strip()
+        motivo = ""
+        if situacao.upper() in baixado:
+            volta, motivo = _baixado_que_volta(n, linha, pastas, opcoes, motor, modelos)
+            if volta:
+                escolhidos.append(n)
+                continue
         ignorados.append({"numero": n.formatado, "situacao": situacao,
-                          "motivo": f"{modelos.rotulo(situacao)}: uma nova tentativa não muda "
-                                    "o desfecho"})
+                          "motivo": motivo or f"{modelos.rotulo(situacao)}: uma nova tentativa "
+                                             "não muda o desfecho"})
     for chave, linha in linhas:
-        if not modelos.pede_nova_tentativa(linha.get("situacao"), linha.get("causa")):
+        ja_baixado = (linha.get("situacao") or "").strip().upper() in baixado
+        if not ja_baixado and not modelos.pede_nova_tentativa(linha.get("situacao"),
+                                                               linha.get("causa")):
             continue
         if chave is None:
-            ignorados.append({"numero": linha.get("processo", ""),
-                              "situacao": linha.get("situacao", ""),
-                              "motivo": "linha sem o número (sigiloso) e sem o relatório completo "
-                                        "da pasta de sigilosos"})
+            if not ja_baixado:
+                ignorados.append({"numero": linha.get("processo", ""),
+                                  "situacao": linha.get("situacao", ""),
+                                  "motivo": "linha sem o número (sigiloso) e sem o relatório "
+                                            "completo da pasta de sigilosos"})
             continue
         if chave in vistos:
             continue
         vistos.add(chave)
         try:
-            escolhidos.append(cnj.ler(linha.get("processo") or ""))
+            n = cnj.ler(linha.get("processo") or "")
         except cnj.NumeroInvalido:
             continue
+        if ja_baixado and not _baixado_que_volta(n, linha, pastas, opcoes, motor, modelos)[0]:
+            continue
+        escolhidos.append(n)
     return escolhidos, ignorados
+
+
+def _tem_relatorio(destino: Path, opcoes, cfg, motor) -> bool:
+    """A pasta do lote (ou a de sigilosos dele) tem o relatório de um lote?"""
+    pastas = (destino, motor.pasta_sigilosos_do_lote(opcoes.pasta_sigilosos, destino,
+                                                     getattr(cfg, "pasta_processos", None)))
+    return any((p / "_controle" / nome).is_file() for p in pastas for nome in motor.RELATORIOS)
 
 
 # ------------------------------------------------------------- texto
@@ -505,8 +612,13 @@ def _extrair_textos(resumo, cfg, acomp) -> None:
             / f"{pdf.stem}.txt"
         try:
             antes = destino.stat().st_mtime if destino.exists() else None
+            # O texto de formato anterior é refeito com a mesma data de antes
+            # (a do PDF): só a data não diz que ele mudou.
+            versao = textos.versao_do_texto(destino) if antes is not None else None
             textos.garantir_texto(pdf, destino)
-            situacao = "novo" if antes is None or destino.stat().st_mtime != antes else "em_dia"
+            novo = antes is None or destino.stat().st_mtime != antes \
+                or versao != textos.VERSAO_TEXTO
+            situacao = "novo" if novo else "em_dia"
             erro = ""
         except Exception as e:      # PDF corrompido não para o resto
             situacao, erro = "falhou", str(e)[:300]
@@ -533,7 +645,8 @@ def _extrair_textos(resumo, cfg, acomp) -> None:
     if contagem["falhou"]:
         partes.append(f"{contagem['falhou']} com problema")
     if contagem["sigiloso_ignorado"]:
-        partes.append(f"{contagem['sigiloso_ignorado']} sigiloso(s) no acervo sem texto")
+        n = contagem["sigiloso_ignorado"]
+        partes.append(f"{n} sigiloso{'s' if n != 1 else ''} no acervo sem texto")
     print(f"Texto dos autos: {', '.join(partes)}.")
 
 
@@ -579,27 +692,31 @@ def main(argv: list[str] | None = None, *, configurar_log: bool = True) -> int:
 
     if configurar_log:
         registro.preparar_saidas()
-        registro.configurar(console=True)
+        try:
+            registro.configurar(console=True)
+        except OSError as erro:
+            # Sem a pasta Logs (sem permissão, disco cheio), o lote não morre
+            # antes de concluir o JSON: o --log, se abrir, guarda o registro.
+            print(f"Aviso: não consegui abrir o registro do programa ({erro}).",
+                  file=sys.stderr)
 
     caminho_log = None
     if args.log:
         caminho_log = Path(os.path.abspath(Path(args.log).expanduser()))
     elif args.json:
         caminho_log = log_padrao(caminhos)
-    execucao = None
-    if caminho_log is not None:
-        try:
-            execucao = _RegistroDaExecucao(caminho_log)
-        except OSError as erro:
-            print(f"Não consegui abrir o arquivo de registro {caminho_log} ({erro}).",
-                  file=sys.stderr)
-            return 2
-
     acomp = None
     if args.json:
         from .acompanhamento import Acompanhamento
         acomp = Acompanhamento(Path(os.path.abspath(Path(args.json).expanduser())),
                                log=str(caminho_log) if caminho_log else "")
+    execucao = None
+    if caminho_log is not None:
+        try:
+            execucao = _RegistroDaExecucao(caminho_log)
+        except OSError as erro:
+            return _registro_inacessivel(caminho_log, erro, acomp)
+    if acomp is not None:
         acomp.gravar(forcar=True)
 
     saida = {"codigo": 2, "resumo": None, "erro": "", "causa": "inesperado"}
@@ -609,10 +726,16 @@ def main(argv: list[str] | None = None, *, configurar_log: bool = True) -> int:
         print("\nInterrompido.")
         saida = {"codigo": 1, "resumo": None, "erro": "interrompido", "causa": "interrompido"}
     except Exception as erro:
-        # o rastro vai para quem chamou (e para o log); o JSON diz que acabou
-        saida = {"codigo": 2, "resumo": None, "erro": f"erro inesperado: {str(erro)[:300]}",
+        # Erro do programa: o rastro vai para o registro (o do programa e o
+        # --log, ainda aberto aqui), e quem chamou recebe a frase e o código
+        # 2, o mesmo do JSON. Relançar sairia com 1, e o rastro, impresso
+        # depois de o --log fechar, não chegaria a ele.
+        log.exception("erro inesperado no download")
+        texto = str(erro)[:300] or type(erro).__name__
+        print(f"\nErro inesperado: {texto}. O rastro do erro está no registro"
+              + (f" ({caminho_log})." if caminho_log else " do programa."), file=sys.stderr)
+        saida = {"codigo": 2, "resumo": None, "erro": f"erro inesperado: {texto}",
                  "causa": "inesperado"}
-        raise
     finally:
         if acomp is not None:
             acomp.concluir(saida["codigo"], resumo=saida.get("resumo"), erro=saida.get("erro", ""),
@@ -715,6 +838,14 @@ def _baixar(args, cfg, acomp) -> dict:
                       sigilosos_do_lote=str(pasta_sig))
 
     if args.retomar:
+        if not numeros and not _tem_relatorio(destino, opcoes, cfg, motor):
+            # Só com a pasta do lote, o relatório é a relação: sem ele (caminho
+            # errado, pasta que não é de lote), "nada a retomar" seria falso.
+            print(f"\nA pasta {destino} não tem o relatório de um lote "
+                  "(_controle\\relatorio.csv): não há o que retomar. Confira a pasta indicada "
+                  "em --destino.")
+            return falhou(f"a pasta {destino} não tem o relatório de um lote para retomar",
+                          "sem_processos")
         numeros, deixados = _retomar(numeros, destino, opcoes, cfg, motor, modelos, cnj,
                                      leitura.senhas)
         for item in deixados:
@@ -725,7 +856,8 @@ def _baixar(args, cfg, acomp) -> dict:
             print("\nNada a retomar: o relatório do lote não tem processo que peça nova "
                   "tentativa.")
             return {"codigo": 0, "resumo": None, "erro": "", "causa": ""}
-        print(f"Retomando {len(numeros)} processo(s).")
+        print("Retomando 1 processo." if len(numeros) == 1
+              else f"Retomando {len(numeros)} processos.")
 
     vistos, grupos = set(), []
     for n in numeros:
@@ -774,8 +906,13 @@ def _baixar(args, cfg, acomp) -> dict:
     if args.texto:
         _extrair_textos(resumo, cfg, acomp)
 
+    # O Ctrl+C no meio do lote o motor engole (e marca o que faltava como
+    # interrompido): a saída é a mesma do Ctrl+C que chega aqui - 1 e a causa
+    # "interrompido" -, e não a de "nada pôde ser feito".
+    interrompido = any(r.causa == modelos.CAUSA_INTERROMPIDO for r in resumo.itens)
     print("\n" + "=" * 60)
-    print(f"Concluído em {resumo.minutos:.1f} min: {resumo.texto()}")
+    print(f"{'Interrompido após' if interrompido else 'Concluído em'} {resumo.minutos:.1f} min: "
+          f"{resumo.texto()}")
     problemas = [r for r in resumo.itens if r.situacao in FALHAS or r.pendente]
     if problemas:
         print("\nPrecisam de atenção:")
@@ -786,10 +923,13 @@ def _baixar(args, cfg, acomp) -> dict:
 
     if not problemas:
         codigo = 0
-    elif resumo.baixados or resumo.pulados:
+    elif resumo.baixados or resumo.pulados or interrompido:
         codigo = 1
     else:
         codigo = 2
+    if interrompido:
+        return {"codigo": codigo, "resumo": resumo, "erro": "interrompido",
+                "causa": "interrompido"}
     return {"codigo": codigo, "resumo": resumo, "erro": "", "causa": ""}
 
 

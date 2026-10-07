@@ -207,12 +207,12 @@ lote. O desfecho é o `codigo_saida` do JSON, e não o código do comando.
 | `--destino PASTA` | a pasta do lote. Sem ela, `Acervo\Processos\<nome da relação>` |
 | `--login certificado` ou `manual`, `--sem-cofre` | o login do usuário (seção 3) |
 | `--texto` | extrai o texto de cada PDF, no formato 2 (seção 8): em `<pasta do lote>\_texto\` (dentro do acervo, em `_ia\texto\`) |
-| `--esperar-navegador MIN` | se outro download usa o navegador do portal, espera até MIN minutos em vez de desistir |
+| `--esperar-navegador MIN` | se outro download usa o navegador do portal, espera até MIN minutos (no máximo 1440) em vez de desistir |
 | `--json ARQ` | o acompanhamento (seção 5). **Fora do acervo**: dentro dele, o programa recusa (código 2), porque o JSON traz os números dos sigilosos |
-| `--log ARQ` | a saída e o registro detalhado num arquivo. Com `--json` e sem `--log`, vai para `Logs\execucoes\baixar-<data>-<pid>.log` |
+| `--log ARQ` | a saída e o registro detalhado num arquivo. Com `--json` e sem `--log`, vai para `Logs\execucoes\baixar-<data>-<pid>.log`. Se o arquivo não pode ser aberto, o comando sai com 2 (`causa_erro` `uso`), já com o JSON concluído |
 | `--eventos` | cada evento numa linha `HELESTRON-EVENTO {…}` (útil sem `--desanexar`) |
-| `--desanexar` | o lote roda sozinho; exige `--json` |
-| `--retomar` | refaz só o que pede nova tentativa (seção 12) |
+| `--desanexar` | o lote roda sozinho; exige `--json`. Escreva as opções por extenso: o `baixar` não aceita abreviação |
+| `--retomar` | refaz só o que pede nova tentativa (seção 12) e o processo baixado cujo PDF saiu da pasta; com `--rebaixar-incompletos`, também o PDF com folhas (ou documentos) ausentes |
 | `--rebaixar-incompletos` | baixa de novo o PDF com folhas (ou documentos) ausentes ou sem o manifesto de paginação |
 | `--visivel`, `--midias`, `--rebaixar`, `--sem-ia` | mostrar o navegador; baixar as gravações; baixar tudo de novo; não atualizar os arquivos de contexto da IA no fim |
 
@@ -251,8 +251,10 @@ diretamente.
 | Código | Quer dizer |
 |---|---|
 | 0 | tudo certo (ou nada a retomar) |
-| 1 | parte falhou ou ficou pendente (ou o lote foi interrompido) |
-| 2 | nada pôde ser feito: nenhum processo baixado nem já na pasta, ou o lote nem começou (`causa_erro`: `uso`, `relacao_invalida`, `sem_processos`, `destino`, `lote_em_andamento`, `interrompido`, `inesperado`) |
+| 1 | parte falhou ou ficou pendente, ou o lote foi interrompido (`causa_erro` `interrompido`) |
+| 2 | nada pôde ser feito: nenhum processo baixado nem já na pasta, ou o lote nem começou (`causa_erro`: `uso`, `relacao_invalida`, `sem_processos`, `destino`, `lote_em_andamento`, `inesperado`). `--retomar` só com `--destino` numa pasta sem o relatório de um lote (caminho errado) também sai com 2 (`sem_processos`) |
+
+O `codigo_saida` do JSON é sempre o código com que o comando sai.
 
 ### Não faça
 
@@ -374,9 +376,9 @@ que não veio tem, no lugar, uma **página de aviso**, cuja primeira linha é
 **A página de aviso não é prova.** Não tire dela fato nenhum; se a folha
 importar para a minuta, diga que “a fl. N não está disponível no e-SAJ” e
 avise o magistrado. As demais folhas continuam no lugar: nada se desloca.
-Com `B`, `I` ou `C`, rode uma vez `baixar --destino <lote> --rebaixar-incompletos`
-(ele baixa de novo só o que tem folhas ausentes); `N` e `S` não mudam com
-uma nova tentativa.
+Com `B`, `I` ou `C`, rode uma vez `baixar --destino <lote> --retomar --rebaixar-incompletos`
+(ele baixa de novo o que tem folhas ausentes, além do que pede nova
+tentativa); `N` e `S` não mudam com uma nova tentativa.
 
 **eProc: não há folhas.** Cada documento conserva a paginação própria,
 igual à do eProc. Cite **“evento N, RÓTULO, p. Y”** (por exemplo, “evento
@@ -392,7 +394,8 @@ evento e o documento que a página ou o marcador indicarem.
 
 **Paginação não garantida.** Com `paginacao.garantida` igual a `false`
 (PDF baixado por versão anterior à 1.0.2), a página do PDF pode não ser a
-folha. Baixe de novo com `--rebaixar-incompletos` antes de citar; se não
+folha. Baixe de novo com `--retomar --rebaixar-incompletos` (na mesma
+`--destino`) antes de citar; se não
 der, cite a folha carimbada na própria página ou o documento, e avise o
 magistrado.
 
