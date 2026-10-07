@@ -167,8 +167,10 @@ O que acontece:
 
 O código de verificação do e-SAJ, quando pedido, é digitado pelo usuário no
 campo do próprio portal, na janela (sem terminal, o programa deixa a janela
-visível sozinho e avisa: recurso `baixar.codigo-na-janela`). O programa
-nunca lê senha nem código de arquivo, e o agente nunca os digita.
+visível sozinho e avisa: recurso `baixar.codigo-na-janela`). O código do
+aplicativo autenticador do eProc também (a janela do eProc já abre
+visível): antes de esperá-lo, vem `login_aguardando` com `motivo` `codigo`.
+O programa nunca lê senha nem código de arquivo, e o agente nunca os digita.
 
 ## 4. Baixar
 
@@ -488,11 +490,20 @@ consulta ao portal e a leitura do PDF para os dados do processo.
 
 **eProc:** `processo`, `tribunal`, `portal`, `sigiloso`, `capa` (`classe`,
 `competencia`, `autuacao`, `situacao`, `orgao`, `magistrado`, `assunto`,
-`valor`), `partes`, `modo`, `paginacao`, `paginas_pdf`, `como_citar`,
+`valor`), `partes`, `modo`, `paginacao` (`resumo`, `ultima`,
+`documentos_ausentes`), `paginas_pdf`, `como_citar`,
 `eventos` (todos: `evento`, `data`, `hora`, `descricao`, `documentos`),
 `eventos_completos`, `eventos_nao_listados`, `eventos_sem_documento`,
 `documentos` (com `inicio` e `paginas` no PDF) e, no modo completo,
 `partes_do_arquivo`.
+
+**`paginacao`**, nos dois sistemas, é um objeto, e só existe quando o PDF
+tem o manifesto de paginação: `resumo` (a frase, para mostrar) e `ultima`
+(a última página do PDF; no e-SAJ, é a última folha). No e-SAJ vêm também
+`ausentes` (`{código: faixas}`) e `folhas_ausentes` (“12-15, 40”); no eProc,
+`documentos_ausentes` (“ev. 4 PET1”, como o `incompleto` do JSON). Já as
+chaves de `capa` são as de cada sistema: o e-SAJ diz `vara`, `juiz` e
+`distribuicao`; o eProc, `orgao`, `magistrado` e `autuacao`.
 
 Os dados da capa vêm da página do processo no portal: confira no PDF o que
 for decisivo. `eventos_completos: false` quer dizer que a lista de eventos

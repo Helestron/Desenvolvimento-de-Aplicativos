@@ -304,6 +304,33 @@ class TestEProcDeMentira(apoio.PastaTemporaria):
         self.assertIn("código do aplicativo autenticador não foi informado", str(caso.exception))
         self.assertEqual(len(ctx.pedidos_codigo), 1)
 
+    def test_codigo_digitado_na_janela_sem_terminal(self):
+        """Sem terminal (a skill: pedir_codigo devolve None na hora) e com a
+        janela à vista, o código digitado no campo do próprio eProc conclui o
+        login; antes, o login desistia em 0 s."""
+        falso = ae.EProcFalso()
+        portal = None
+
+        class NaJanela(apoio.ContextoGravador):
+            def avisar(self, titulo, mensagem):
+                super().avisar(titulo, mensagem)
+                if titulo.startswith("Digite o código na janela"):
+                    # o que o usuário faz na janela do navegador
+                    campo = portal._visivel("otp_campo", espera_ms=3000)
+                    campo.fill(ae.CODIGO)
+                    campo.press("Enter")
+
+        ctx = NaJanela(codigos=[])
+        with ae.navegador(falso, self.tmp, "eproc-codigo-na-janela") as nav:
+            nav.visivel = True              # o eProc abre sempre com a janela (motor)
+            portal = self.portal(nav, ctx)
+            portal.entrar()
+            self.assertTrue(portal._logado)
+        self.assertEqual(falso.codigos_recebidos, [ae.CODIGO])
+        self.assertEqual(len(ctx.pedidos_codigo), 1)
+        self.assertEqual([t for t, _ in ctx.avisos],
+                         ["Digite o código na janela do eProc do TJRS"])
+
     def test_keycloak_com_codigo(self):
         falso = ae.EProcFalso(estilo="keycloak")
         ctx = apoio.ContextoGravador(codigos=["999999", ae.CODIGO])

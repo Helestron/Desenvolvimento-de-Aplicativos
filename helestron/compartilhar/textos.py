@@ -359,7 +359,40 @@ def _textos_da_lista(valor) -> list[str]:
     return saida
 
 
+def _fim_eproc(m: dict) -> int:
+    """A última página do PDF que o manifesto do eProc descreve (pelos
+    documentos ou, no modo completo, pelas partes do arquivo); 0 se nenhum
+    diz."""
+    fins = []
+    for chave in ("documentos", "partes"):
+        itens = m.get(chave)
+        for x in itens if isinstance(itens, list) else []:
+            if not isinstance(x, dict):
+                continue
+            try:
+                inicio, qtd = int(x.get("inicio") or 0), int(x.get("paginas") or 0)
+            except (TypeError, ValueError):
+                continue
+            if qtd > 0:
+                fins.append(inicio + qtd - 1)
+    return max(fins, default=0)
+
+
 def _plano_eproc(m: dict, n: int, toc) -> _Plano:
+    fim = _fim_eproc(m)
+    if fim and fim != n:
+        # Como no e-SAJ: o manifesto não descreve este arquivo (página apagada
+        # ou incluída depois do download, num editor que conserva os anexos),
+        # e cada marca citaria outra página, sem aviso nenhum.
+        log.warning("manifesto do eProc descreve %d páginas, mas o PDF tem %d", fim, n)
+        plano = _plano_sem_garantia(toc, n, EPROC)
+        plano.linhas.insert(0, f"[{_processo(m)}autos do eProc{_do_tribunal(m)}: o manifesto "
+                               f"de paginação descreve {fim} páginas, mas o PDF tem {n} (o "
+                               "arquivo foi alterado depois do download?): o evento, o "
+                               "documento e a página do eProc de cada página do PDF NÃO são "
+                               "garantidos.]")
+        plano.linhas += _texto_capa(m)
+        return plano
     if str(m.get("modo") or "") == "completo":
         return _plano_eproc_completo(m, n, toc)
     linhas = [f"[{_processo(m)}autos do eProc{_do_tribunal(m)}, documento a documento, na "

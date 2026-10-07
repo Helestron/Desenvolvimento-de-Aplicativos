@@ -260,9 +260,22 @@ def resumo(m: dict | None) -> str:
         if aus:
             texto += f"; folhas com página de aviso: {descrever_folhas(aus)}"
         return texto
-    docs = m.get("documentos") or []
+    if m.get("modo") == "completo":
+        # O arquivo do próprio eProc, intacto: documentos = [], e as partes
+        # dele em "partes" ([{inicio, paginas}]). Sem este ramo, a frase era
+        # "paginação de cada documento igual à do eProc (0 documentos)".
+        partes = m.get("partes")
+        partes = [p for p in partes if isinstance(p, dict)] if isinstance(partes, list) else []
+        if len(partes) > 1:
+            return (f"arquivo completo do eProc (Download Completo), em {len(partes)} partes, "
+                    "sem página acrescentada: cada parte recomeça na página 1")
+        return ("arquivo completo do eProc (Download Completo), sem página acrescentada: "
+                "página M do PDF = página M do arquivo")
+    docs = m.get("documentos")
+    docs = [d for d in docs if isinstance(d, dict)] if isinstance(docs, list) else []
     fora = [d for d in docs if d.get("situacao") != "ok"]
-    texto = f"paginação de cada documento igual à do eProc ({len(docs)} documentos)"
+    texto = (f"paginação de cada documento igual à do eProc ({len(docs)} "
+             f"{'documento' if len(docs) == 1 else 'documentos'})")
     if fora:
-        texto += f"; {len(fora)} não incluído(s) no PDF"
+        texto += f"; {len(fora)} {'não incluído' if len(fora) == 1 else 'não incluídos'} no PDF"
     return texto

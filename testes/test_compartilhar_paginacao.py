@@ -219,6 +219,38 @@ class TestFormato2Eproc(unittest.TestCase):
                       texto)
         self.assertEqual(textos.marcas(texto)[3].pagina, 4)
 
+    def test_manifesto_que_nao_descreve_o_arquivo_nao_garante(self):
+        """PDF alterado depois do download (a 1ª página apagada num editor que
+        conserva os anexos): o manifesto continua no PDF, mas não o descreve.
+        Como no e-SAJ, a paginação deixa de ser garantida; antes, as marcas
+        seguiam o manifesto e cada uma citava outra página, sem aviso."""
+        m = paginacao.manifesto_eproc(EPROC, _docs_eproc(), tribunal="TJRS",
+                                      capa={"classe": "PROCEDIMENTO COMUM CÍVEL"})
+        pdf = _pdf(self.base / "alterado.pdf",
+                   ["pedido de tutela, página 2", "procuração", "DESPACHO: cite-se",
+                    "aviso: PET1 não pôde ser baixado", "manifestação", "aviso: gravação"],
+                   manifesto=m)
+        with self.assertLogs("helestron.compartilhar.textos", "WARNING"):
+            texto = textos.texto_pdf(pdf)
+        self.assertEqual(texto.split("\n", 1)[0],
+                         f"{CAB} | sistema=eproc | paginacao=nao_garantida | paginas=6 | "
+                         "ausentes=")
+        self.assertIn("=== [pág. 1 do PDF] ===\npedido de tutela, página 2", texto)
+        self.assertNotIn("INIC1", texto)
+        self.assertEqual(textos.buscar_citando(texto, "tutela")[0][0], "pág. 1 do PDF")
+        cabeca = textos.preambulo(texto)
+        self.assertIn("o manifesto de paginação descreve 7 páginas, mas o PDF tem 6", cabeca)
+        self.assertIn("NÃO são garantidos", cabeca)
+        self.assertIn("Classe: PROCEDIMENTO COMUM CÍVEL", cabeca)    # a capa continua valendo
+        # o arquivo completo também: o manifesto diz 3 páginas, o PDF tem 2
+        m = paginacao.manifesto_eproc(EPROC, [], modo="completo",
+                                      partes=[{"inicio": 1, "paginas": 3}])
+        with self.assertLogs("helestron.compartilhar.textos", "WARNING"):
+            texto = textos.texto_pdf(_pdf(self.base / "completo.pdf", ["um", "dois"], None, m))
+        self.assertIn("paginacao=nao_garantida", texto.split("\n", 1)[0])
+        self.assertNotIn("arquivo completo do eProc, pág.", texto)
+        self.assertIn("=== [pág. 2 do PDF] ===\ndois", texto)
+
     def test_pdf_antigo_com_avisos(self):
         """eProc da 1.0.1: o aviso de documento que não veio e o de gravação
         são reconhecidos pelo rótulo e pelo evento; um documento de verdade
