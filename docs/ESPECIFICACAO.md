@@ -1930,9 +1930,14 @@ dados ficam com a instalação registrada.
     aviso, como os conflitos de `checar_pastas`, com “Corrija:” e os
     conselhos de conforto depois) e, por último, no próprio `nuvem.espelhar`
     (`_recusar_sigilosos_na_nuvem`, antes de copiar ou apagar qualquer
-    coisa, também para a subpasta antiga). Enquanto as pastas estiverem
-    misturadas, o download, o preparo, as ferramentas e o espelho recusam
-    com 409 `pastas_em_conflito` (seção 6.3). O espelho que não consegue
+    coisa, também para a subpasta antiga). Além disso, a pasta dos
+    sigilosos e a da pauta não ficam em NENHUMA pasta do OneDrive ou do
+    Google Drive (`servicos.sigilo_na_nuvem`, pelo caminho, com a regra de
+    `verificar.nuvem_da_pasta` sem varrer as unidades): `problema_nas_pastas`
+    a inclui (o `baixar` e o `caminhos --json` também), e
+    `esquema.conferir_pastas` a aplica só à pasta que está sendo trocada.
+    Enquanto as pastas estiverem misturadas, o download, o preparo, as
+    ferramentas e o espelho recusam com 409 `pastas_em_conflito` (seção 6.3). O espelho que não consegue
     apagar da nuvem a cópia de um processo sigiloso faz o resto e depois
     levanta `SigilosoNaNuvem`, com o arquivo e a pasta a limpar à mão (antes
     de desistir, tira o atributo somente leitura e tenta de novo); o

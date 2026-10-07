@@ -354,8 +354,9 @@ description: Método de trabalho com o acervo judicial desta pasta — autos em 
   - `(pág. M do PDF)` nunca se cita: é só a posição no arquivo. Páginas
     marcadas `NÃO INCLUÍDO`, `gravação fora do PDF` ou `capa gerada pelo
     Helestron` não são páginas dos autos.
-  - Com `paginacao=nao_garantida` (PDF de versão anterior), a página do PDF
-    pode não ser a folha: cite a folha carimbada na página ou o documento.
+  - Com `paginacao=nao_garantida` (PDF de versão anterior ou alterado depois
+    do download), a página do PDF pode não ser a folha: cite a folha
+    carimbada na página ou o documento.
 - Não invente fato, lei, súmula ou julgado.
 - Estrutura de sentença: relatório, fundamentação (questões processuais,
   prejudiciais, mérito ponto a ponto, com as provas) e dispositivo (com
@@ -679,7 +680,7 @@ _PAGINACAO_SEM_MANIFESTO = {
                       "início (PDF de versão anterior à 1.0.2: baixe de novo para a "
                       "paginação exata)",
     textos.NAO_GARANTIDA: "NÃO garantida: a página do PDF pode não ser a folha (PDF de versão "
-                          "anterior à 1.0.2: baixe de novo)",
+                          "anterior à 1.0.2 ou alterado depois do download: baixe de novo)",
 }
 
 

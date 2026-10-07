@@ -324,7 +324,7 @@ def conferir_pastas(cfg, secao: str, chave: str, valor: str) -> None:
     if alvo in (NUVEM, ("geral", "pasta_acervo")):
         frase = servicos.conflito_da_nuvem(nuvem, acervo)
     if not frase and alvo in PASTAS_DO_SIGILO:
-        frase = servicos.problema_nas_pastas(acervo, sigilosos, pauta)
+        frase = servicos.problema_nas_pastas(acervo, sigilosos, pauta, nuvem=False)
     if not frase and alvo != ("geral", "pasta_acervo"):
         # Os sigilosos e a pauta, nunca na pasta da nuvem (nem contendo-a).
         # Só com a chave que mexe numa delas: a correção de uma pasta não
@@ -332,6 +332,13 @@ def conferir_pastas(cfg, secao: str, chave: str, valor: str) -> None:
         frase = config.conflito_com_a_nuvem(
             nuvem, sigilosos if alvo in (NUVEM, ("geral", "pasta_sigilosos")) else None,
             pauta if alvo in (NUVEM, ("pauta", "pasta")) else None)
+    if not frase and alvo in (("geral", "pasta_sigilosos"), ("pauta", "pasta")):
+        # Os sigilosos e a pauta fora de toda pasta sincronizada com a nuvem
+        # (OneDrive, Google Drive): só a pasta que está sendo trocada, para
+        # dar para corrigir uma de cada vez.
+        frase = servicos.sigilo_na_nuvem(
+            sigilosos if alvo == ("geral", "pasta_sigilosos") else None,
+            pauta if alvo == ("pauta", "pasta") else None)
     if frase:
         raise ErroApi(400, "pastas_em_conflito", frase)
 

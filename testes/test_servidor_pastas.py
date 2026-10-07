@@ -40,6 +40,27 @@ class TestPastaEmBrancoVoltaAoPadrao(ServidorDeTeste):
         self.assertEqual(env["erro"]["codigo"], "pastas_em_conflito")
         return env["erro"]["mensagem"]
 
+    def test_sigilosos_ou_pauta_no_onedrive_recusados_um_de_cada_vez(self):
+        """Os Ajustes recusam os sigilosos ou a pauta em qualquer pasta do
+        OneDrive; com as duas lá (configuração antiga), dá para corrigir uma
+        de cada vez: cada chave confere só a sua pasta."""
+        raiz = self.amb.raiz
+        onedrive = raiz / "OneDrive - TJAL"
+        with mock.patch.dict("os.environ", {"OneDrive": str(onedrive)}):
+            self.assertIn("OneDrive", self.recusa("geral", "pasta_sigilosos",
+                                                  str(onedrive / "Sigilosos")))
+            self.assertIn("pauta exportada", self.recusa("pauta", "pasta", str(onedrive / "Pauta")))
+            # as duas na nuvem, gravadas à mão: a correção de cada uma passa
+            self.cfg.definir("geral", "pasta_sigilosos", str(onedrive / "Sigilosos"))
+            self.cfg.definir("pauta", "pasta", str(onedrive / "Pauta"))
+            self.gravar("pauta", "pasta", str(raiz / "Pauta"))
+            self.gravar("geral", "pasta_sigilosos", str(raiz / "Sig"))
+            self.cfg.recarregar()
+            self.assertEqual(self.cfg.pasta_sigilosos, raiz / "Sig")
+            # o acervo pode ser trocado mesmo com os sigilosos na nuvem
+            self.cfg.definir("geral", "pasta_sigilosos", str(onedrive / "Sigilosos"))
+            self.gravar("geral", "pasta_acervo", str(raiz / "OutroAcervo"))
+
     def test_acervo_em_branco_com_sigilosos_dentro_do_padrao(self):
         dados, raiz = self.amb.dados, self.amb.raiz
         self.gravar("geral", "pasta_acervo", str(raiz / "D_Acervo"))
@@ -88,7 +109,11 @@ class TestPastaEmBrancoVoltaAoPadrao(ServidorDeTeste):
 class TestSigilososEPautaForaDaNuvem(ServidorDeTeste):
     def setUp(self):
         super().setUp()
-        self.nuvem = self.amb.raiz / "OneDrive"
+        # Uma pasta de nuvem que o programa não reconhece pelo caminho (a de
+        # um outro serviço, escolhida em Ajustes): aqui vale a regra da pasta
+        # do espelho. Os sigilosos em qualquer pasta do OneDrive têm teste
+        # próprio (TestPastaEmBrancoVoltaAoPadrao).
+        self.nuvem = self.amb.raiz / "Nuvem"
         self.nuvem.mkdir()
 
     def recusa(self, secao, chave, valor):

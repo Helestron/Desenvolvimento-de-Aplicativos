@@ -100,7 +100,7 @@ navegador nem sessões.
 | `separar_sigilosos` | se o download separa os sigilosos (tem de ser `true`: seção 11) |
 | `login` | `{esaj, eproc}`: o modo de entrada nos Ajustes (`senha`, `certificado` ou `manual`) |
 | `espera_login_min` | quanto tempo o programa espera o usuário concluir o login na janela |
-| `conflito_de_pastas` | vazio, ou a frase do problema: a pasta dos sigilosos (ou a da pauta) dentro do acervo, o acervo dentro dela, ou o acervo contendo a pasta do programa ou a das senhas e perfis (a mesma regra com que o `baixar` recusa começar) |
+| `conflito_de_pastas` | vazio, ou a frase do problema: a pasta dos sigilosos (ou a da pauta) dentro do acervo, o acervo dentro dela, o acervo contendo a pasta do programa ou a das senhas e perfis, ou a pasta dos sigilosos (ou a da pauta) dentro do OneDrive ou do Google Drive (a mesma regra com que o `baixar` recusa começar) |
 | `comando` | o `helestron.cmd` da pasta do programa (ausente fora da instalação ou em instalação anterior à 1.0.2) |
 
 **Antes de qualquer download, confira:**

@@ -667,7 +667,7 @@ def pasta_pauta(cfg) -> Path:
     return caminhos.resolver(valor, "Pauta", base_usuario())
 
 
-def problema_nas_pastas(acervo, sigilosos, pauta=None) -> str | None:
+def problema_nas_pastas(acervo, sigilosos, pauta=None, nuvem: bool = True) -> str | None:
     """Por que estas pastas vazariam o que não pode sair, ou None.
 
     O acervo inteiro é lido pela IA (conector, CLAUDE.md, pacote) e copiado
@@ -675,6 +675,10 @@ def problema_nas_pastas(acervo, sigilosos, pauta=None) -> str | None:
     nem a da pauta exportada (a planilha traz as partes dos processos em
     segredo de justiça), e ele não pode conter a pasta do programa nem a
     pasta das senhas e dos perfis do navegador.
+
+    'nuvem': conferir também se os sigilosos ou a pauta estão numa pasta
+    sincronizada com a nuvem (a tela de Ajustes confere só a pasta que está
+    sendo trocada, para a correção de uma não ficar refém da outra).
     """
     # A regra acervo x sigilosos x pauta é do núcleo: uma frase só para a
     # tela, o assistente e a verificação.
@@ -700,7 +704,41 @@ def problema_nas_pastas(acervo, sigilosos, pauta=None) -> str | None:
     if dentro_ou_igual(caminhos.LOCAL, acervo):
         return ("O acervo não pode conter a pasta em que o programa guarda as senhas e os "
                 f"perfis do navegador ({caminhos.LOCAL}). Escolha uma pasta só para o acervo.")
+    return sigilo_na_nuvem(sigilosos, pauta) if nuvem else None
+
+
+def sigilo_na_nuvem(sigilosos=None, pauta=None) -> str | None:
+    """Por que a pasta dos sigilosos (ou a da pauta exportada) não pode ficar
+    onde está, ou None: nada de segredo de justiça na nuvem, e por isso as
+    duas ficam fora de toda pasta sincronizada (OneDrive, Google Drive), não
+    só fora da pasta do espelho (config.conflito_com_a_nuvem). Pelo caminho,
+    sem varrer as unidades: a conferência roda a cada estado da tela."""
+    for pasta, rotulo in ((sigilosos, "dos processos em segredo de justiça"),
+                          (pauta, "da pauta exportada")):
+        if pasta is None or not str(pasta).strip():
+            continue
+        servico = _nuvem_pelo_caminho(pasta)
+        if servico:
+            return (f"A pasta {rotulo} não pode ficar dentro do {servico}: tudo o que está ali "
+                    "sai do computador e fica ao alcance dos conectores da IA. Em Ajustes › "
+                    "Pastas, escolha uma pasta fora do OneDrive e do Google Drive e mova para "
+                    "ela o que está na pasta atual.")
     return None
+
+
+def _nuvem_pelo_caminho(pasta) -> str:
+    """"OneDrive" ou "Google Drive" se o caminho é de pasta sincronizada com a
+    nuvem (a regra de verificar.nuvem_da_pasta, sem a detecção das unidades);
+    "" se não é. Nunca levanta."""
+    try:
+        from .verificar import nuvem_da_pasta
+
+        return nuvem_da_pasta(Path(pasta), detectadas=[])
+    except Exception:  # noqa: BLE001 - na dúvida, a regra do OneDrive
+        try:
+            return "OneDrive" if caminhos.dentro_do_onedrive(Path(pasta)) else ""
+        except Exception:  # noqa: BLE001
+            return ""
 
 
 SUBPASTA_NUVEM = "Helestron - Acervo"      # a de compartilhar.nuvem (sem importá-lo aqui)

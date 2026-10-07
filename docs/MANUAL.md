@@ -521,8 +521,10 @@ transcrições, da pauta exportada e dos registros do programa.
 > pasta da nuvem escolhida em **Ajustes › Compartilhar** (nem ser ela, nem
 > contê-la). Em branco, cada pasta volta ao padrão, que também é conferido.
 > Elas também não podem ficar em nenhuma outra pasta do OneDrive ou do
-> Google Drive: se ficarem, **Verificar a instalação** diz que isso não pode
-> e o que corrigir (escolha outra pasta e mova para ela o que está na atual).
+> Google Drive: os Ajustes recusam essa escolha e, enquanto uma delas estiver
+> na nuvem (por uma configuração antiga), o download, o preparo do acervo e
+> o compartilhamento não começam; **Verificar a instalação** e o Início dizem
+> o que corrigir (escolha outra pasta e mova para ela o que está na atual).
 
 ### Seu nome e os dados da unidade
 

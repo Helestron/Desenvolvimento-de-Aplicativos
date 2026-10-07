@@ -35,6 +35,28 @@ class TestPastas(unittest.TestCase):
         self.assertIsNone(servicos.problema_nas_pastas(self.base / "Acervo", self.base / "Sigilosos",
                                                        self.base / "Sigilosos" / "Pauta"))
 
+    def test_sigilosos_e_pauta_fora_de_toda_pasta_da_nuvem(self):
+        """Nada de segredo de justiça na nuvem: os sigilosos e a pauta não
+        ficam em pasta nenhuma do OneDrive ou do Google Drive (e não só fora
+        da pasta do espelho)."""
+        onedrive = self.amb.raiz / "OneDrive - TJAL"
+        acervo = self.base / "Acervo"
+        with mock.patch.dict("os.environ", {"OneDrive": str(onedrive)}):
+            frase = servicos.problema_nas_pastas(acervo, onedrive / "Sigilosos")
+            self.assertIn("segredo de justiça", frase)
+            self.assertIn("OneDrive", frase)
+            frase = servicos.problema_nas_pastas(acervo, self.base / "Sigilosos",
+                                                 onedrive / "Pauta")
+            self.assertIn("pauta exportada", frase)
+            # a tela de Ajustes confere a nuvem à parte, só da pasta trocada
+            self.assertIsNone(servicos.problema_nas_pastas(acervo, onedrive / "Sigilosos",
+                                                           nuvem=False))
+            self.assertIsNone(servicos.sigilo_na_nuvem(self.base / "Sigilosos", None))
+        frase = servicos.sigilo_na_nuvem(Path("/home/x/Google Drive/Meu Drive/Sigilosos"))
+        self.assertIn("Google Drive", frase)
+        self.assertIsNone(servicos.problema_nas_pastas(acervo, self.base / "Sigilosos",
+                                                       self.base / "Pauta"))
+
     def test_conflito_da_nuvem(self):
         acervo = self.base / "Acervo"
         for nuvem in (acervo, acervo / "OneDrive", self.base, self.amb.raiz):
