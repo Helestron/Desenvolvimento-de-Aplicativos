@@ -218,7 +218,14 @@ def data_da_gravacao(valor, nome: str = "") -> datetime | None:
 
 def _com_outro_nome(erro: Exception, temporario: str, nome: str) -> Exception:
     """A mesma exceção (o mesmo tipo: a tarefa e o registro a reconhecem por
-    ele), com o nome do temporário trocado pelo do arquivo do usuário."""
+    ele), com o nome do temporário trocado pelo do arquivo do usuário.
+
+    O erro do próprio Windows (com errno: "[Errno 13] Permission denied:
+    '<caminho>'") segue como está: refeito só com a frase, perderia o errno,
+    e a página receberia o caminho, que servidor.aplicacao.traduzir_erro
+    troca pela frase geral."""
+    if isinstance(erro, OSError) and erro.errno is not None:
+        return erro
     texto = str(erro).replace(temporario, nome)
     try:
         return type(erro)(texto)
@@ -353,7 +360,9 @@ def gravacao(p: Pedido) -> dict:
             # O motor só conhece o temporário do envio: a frase ("'envio-3f6e….mp4'
             # é um vídeo sem trilha de áudio") diz o nome do arquivo do usuário.
             if enviado is not None and nome and enviado.name in str(erro):
-                raise _com_outro_nome(erro, enviado.name, nome) from erro
+                novo = _com_outro_nome(erro, enviado.name, nome)
+                if novo is not erro:
+                    raise novo from erro
             raise
         finally:
             if enviado is not None:

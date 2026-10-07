@@ -646,6 +646,23 @@ class TestGravacaoERecuperacao(ServidorDeTeste):
                          {NUMERO: False, "0700124-68.2024.8.02.0001": True})
 
 
+class TestNomeDoArquivoEnviadoNoErro(unittest.TestCase):
+    """O erro da transcrição de um arquivo enviado cita o nome do arquivo do
+    usuário, e não o do temporário; o erro do próprio Windows (com errno)
+    segue intacto, para a página receber a frase geral e não o caminho."""
+
+    def test_frase_do_programa_troca_o_nome_e_erro_do_windows_fica(self):
+        from helestron.servidor import api_audiencias
+
+        frase = ValueError("'envio-3f6e.mp4' é um vídeo sem trilha de áudio")
+        novo = api_audiencias._com_outro_nome(frase, "envio-3f6e.mp4", "Audiência.mp4")
+        self.assertIsInstance(novo, ValueError)
+        self.assertEqual(str(novo), "'Audiência.mp4' é um vídeo sem trilha de áudio")
+        preso = PermissionError(13, "Permission denied", r"C:\Users\x\temp\envio-3f6e.mp4")
+        self.assertIs(api_audiencias._com_outro_nome(preso, "envio-3f6e.mp4", "Audiência.mp4"),
+                      preso)
+
+
 class TestMicrofoneEModelos(ServidorDeTeste):
     def test_microfones(self):
         with mock.patch("helestron.servicos.listar_microfones", return_value=[
