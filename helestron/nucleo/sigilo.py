@@ -4,10 +4,11 @@ O programa sabe que um processo corre em segredo de justiça por três fontes,
 e qualquer uma basta:
 
 1. os AUTOS estão na pasta dos sigilosos (<sigilosos>/<número>.pdf ou
-   <sigilosos>/<lote>/<número>.pdf, como o download grava);
+   <sigilosos>/<lote>/<número>.pdf, como o download grava, ou numa subpasta
+   do lote, como o preparo os leva: o mesmo caminho que tinham no acervo);
 2. há TRANSCRIÇÃO, gravação ou diário de audiência dele em
-   <sigilosos>/Transcricoes (ou em Transcricoes/_audio): a audiência que já
-   foi sigilosa uma vez continua sigilosa;
+   <sigilosos>/Transcricoes (numa subpasta dela, ou numa pasta _audio dela):
+   a audiência que já foi sigilosa uma vez continua sigilosa;
 3. a PAUTA de audiências o marca sigiloso, em qualquer registro (o do
    portal, o do relatório importado, o que já saiu da pauta): o sigilo é do
    processo, não da linha (Armazem.sigilosas, contrato C4).
@@ -23,20 +24,29 @@ processo assim nunca vai para a IA nem para a nuvem, o download o grava na
 pasta dos sigilosos e a transcrição dele vai para <sigilosos>/Transcricoes.
 
 A pauta é lida do banco do programa (LOCAL/pauta.sqlite3) só se ele já
-existir - a consulta nunca o cria -, pela API pública da pauta, e o
-resultado fica guardado enquanto o banco não muda (o servidor MCP consulta
-a regra a cada pedido da IA). Banco ilegível ou ocupado não derruba quem
-pergunta: vale o que se leu da última vez (o sigilo, uma vez apurado,
-fica), e o registro diz que a pauta não pôde ser lida.
+existir e SÓ PARA CONSULTA (o SQLite em "mode=ro": a consulta nunca cria o
+banco, nunca grava nele e nunca o põe de lado, nem estragado - isso é com a
+pauta, ao abrir), e o resultado fica guardado enquanto o banco não muda (o
+servidor MCP consulta a regra a cada pedido da IA). Banco ilegível ou
+ocupado não derruba quem pergunta: vale o que se leu da última vez, e o
+registro diz que a pauta não pôde ser lida.
+
+O sigilo, uma vez apurado, fica: o que a pauta já indicou é guardado também
+FORA do banco, ao lado dele (LOCAL/pauta.sigilo.json: lembrar_da_pauta,
+apuradas_da_pauta), e continua valendo se o banco se perder, estragar ou
+for refeito do zero. Só se acrescenta a esse registro; para desfazer uma
+marcação errada, o manual manda tirar da pasta, com o Helestron fechado, o
+banco e o registro.
 """
 
 from __future__ import annotations
 
-import glob
+import json
 import logging
 import os
 import threading
 import time
+import urllib.parse
 from dataclasses import replace
 from pathlib import Path
 
@@ -46,6 +56,18 @@ log = logging.getLogger("nucleo.sigilo")
 
 SUBPASTA_TRANSCRICOES = "Transcricoes"   # dentro da pasta dos sigilosos
 SUBPASTA_AUDIO = "_audio"                # gravações e diários, dentro de Transcricoes
+
+# Até que profundidade a pasta dos sigilosos é procurada (pastas abaixo dela:
+# <sigilosos>/<lote>/<a>/<b>/<c>/<número>.pdf). O download grava nos dois
+# primeiros níveis; o preparo leva o arquivo para o mesmo caminho que ele
+# tinha no acervo (Processos/Lote 1/Concluídos/X.pdf -> <sigilosos>/Lote
+# 1/Concluídos/X.pdf; Transcricoes/2025/X.docx -> <sigilosos>/Transcricoes/2025/X.docx).
+PROFUNDIDADE_MAX = 4
+# A pasta pode ter sido apontada para algo grande, como os Documentos: abaixo
+# dos dois primeiros níveis (sempre lidos inteiros), no máximo estas pastas.
+MAX_PASTAS = 2000
+# O registro do que a pauta já apurou, ao lado do banco: pauta.sqlite3 -> pauta.sigilo.json
+SUFIXO_APURADO = ".sigilo.json"
 
 # Por que o processo é sigiloso, para a tela, a linha de comando e o relatório
 MOTIVO_PASTA = ("os autos, uma transcrição ou uma gravação dele estão na pasta dos "
@@ -61,8 +83,10 @@ PAUTA_DO_PROGRAMA = object()   # o banco da pauta do programa (caminhos.ARQUIVO_
 VALIDADE_PAUTA_S = 30.0        # releitura forçada, mesmo sem mudança aparente no banco
 
 _trava = threading.Lock()
-# arquivo do banco -> (assinatura do banco, chaves, quando foi lido)
+_trava_apurado = threading.Lock()
+# arquivo do banco -> (assinatura do banco e do registro, chaves, quando foi lido)
 _lidas: dict[str, tuple[tuple, frozenset[str], float]] = {}
+_avisou_pasta_grande: set[str] = set()
 
 
 # ===================================================================== apoio
@@ -121,6 +145,13 @@ def _nome(numero) -> str | None:
         return None
 
 
+def nome_do_processo(numero) -> str | None:
+    """O processo (um Numero, o número como a pauta o mostra, "...0001/01",
+    ou o nome de um arquivo, "...0001-01.pdf") como Numero.nome_arquivo -
+    a forma em que a regra compara. None se não houver número."""
+    return _nome(numero)
+
+
 def _partes_relativas(pasta, raiz) -> tuple[str, ...] | None:
     """As partes de 'pasta' relativas a 'raiz' (minúsculas), se estiver dentro."""
     try:
@@ -130,14 +161,92 @@ def _partes_relativas(pasta, raiz) -> tuple[str, ...] | None:
     return tuple(q.lower() for q in rel.parts)
 
 
-def _candidatos(sigilosos: Path, prefixo: str = "*") -> list[Path]:
-    """Os arquivos que contam na pasta dos sigilosos: os autos (dois níveis,
-    como o programa grava - a pasta pode ter sido apontada para algo grande,
-    como os Documentos) e as transcrições, gravações e diários."""
-    transcricoes = sigilosos / SUBPASTA_TRANSCRICOES
-    return [*sigilosos.glob(f"{prefixo}.pdf"), *sigilosos.glob(f"*/{prefixo}.pdf"),
-            *transcricoes.glob(f"{prefixo}.docx"),
-            *(transcricoes / SUBPASTA_AUDIO).glob(prefixo)]
+def _e_ligacao(entrada: os.DirEntry) -> bool:
+    """Atalho simbólico ou junção do Windows: não se desce por ele (laço, ou
+    uma pasta de fora que não é dos sigilosos)."""
+    try:
+        if entrada.is_symlink():
+            return True
+        juncao = getattr(entrada, "is_junction", None)
+        return bool(juncao and juncao())
+    except OSError:
+        return True
+
+
+def _candidatos(sigilosos: Path, prefixo: str = "",
+                fora: tuple[str, ...] | None = None) -> list[Path]:
+    """Os arquivos que contam na pasta dos sigilosos: os autos (PDF) e, dentro
+    de Transcricoes, as transcrições (DOCX) e o que estiver numa pasta _audio
+    (gravações e diários).
+
+    Em largura, nível a nível, até PROFUNDIDADE_MAX: o preparo leva o arquivo
+    para o mesmo caminho que ele tinha no acervo, e não só para os dois
+    primeiros níveis, onde o download grava. A pasta pode ter sido apontada
+    para algo grande, como os Documentos: os dois primeiros níveis são
+    sempre lidos inteiros e, abaixo deles, no máximo MAX_PASTAS pastas (sem
+    as _controle dos lotes, as escondidas e os atalhos). 'prefixo': só os
+    arquivos cujo nome começa por ele. 'fora': as partes (minúsculas,
+    relativas à pasta) de uma subpasta que não conta (o acervo, se estiver
+    por engano dentro dela). Levanta OSError se a pasta não puder ser lida.
+    """
+    prefixo = (prefixo or "").lower()
+    achados: list[Path] = []
+    transcricoes, audio = SUBPASTA_TRANSCRICOES.lower(), SUBPASTA_AUDIO.lower()
+    # (pasta, partes relativas em minúsculas)
+    nivel: list[tuple[Path, tuple[str, ...]]] = [(Path(sigilosos), ())]
+    lidas_abaixo = 0
+    while nivel:
+        proximo: list[tuple[Path, tuple[str, ...]]] = []
+        for pasta, partes in nivel:
+            profundidade = len(partes)
+            if profundidade >= 2:
+                if lidas_abaixo >= MAX_PASTAS:
+                    chave = str(sigilosos)
+                    if chave not in _avisou_pasta_grande:
+                        _avisou_pasta_grande.add(chave)
+                        log.warning("A pasta dos sigilosos (%s) tem pastas demais; só as "
+                                    "primeiras %d abaixo do segundo nível foram conferidas. "
+                                    "Ela deve guardar só os processos em segredo de justiça.",
+                                    sigilosos, MAX_PASTAS)
+                    nivel = []
+                    break
+                lidas_abaixo += 1
+            try:
+                with os.scandir(pasta) as it:
+                    entradas = list(it)
+            except OSError:
+                if profundidade == 0:
+                    raise
+                continue
+            em_transcricoes = bool(partes) and partes[0] == transcricoes
+            em_audio = em_transcricoes and audio in partes[1:]
+            for e in entradas:
+                nome = e.name
+                minusculo = nome.lower()
+                try:
+                    e_pasta = e.is_dir()
+                except OSError:
+                    continue
+                if e_pasta:
+                    sub = (*partes, minusculo)
+                    if em_audio and minusculo.startswith(prefixo):
+                        achados.append(Path(e.path))   # a pasta de uma gravação em _audio
+                    if profundidade + 1 > PROFUNDIDADE_MAX or (fora and sub == fora):
+                        continue
+                    if profundidade >= 1 and (minusculo == "_controle"
+                                              or minusculo.startswith((".", "$", "~"))
+                                              or _e_ligacao(e)):
+                        continue
+                    proximo.append((Path(e.path), sub))
+                    continue
+                if not minusculo.startswith(prefixo):
+                    continue
+                if minusculo.endswith(".pdf") or em_audio or (
+                        em_transcricoes and minusculo.endswith(".docx")):
+                    achados.append(Path(e.path))
+        else:
+            nivel = proximo
+    return achados
 
 
 # ========================================================== pasta dos sigilosos
@@ -153,7 +262,7 @@ def chaves_na_pasta(sigilosos, raiz=None) -> Sigilosas:
     sigilosos = Path(sigilosos)
     dentro_dela = _partes_relativas(raiz, sigilosos) if raiz is not None else None
     try:
-        candidatos = _candidatos(sigilosos)
+        candidatos = _candidatos(sigilosos, fora=dentro_dela or None)
     except OSError:
         return Sigilosas()
     achados: set[str] = set()
@@ -164,7 +273,7 @@ def chaves_na_pasta(sigilosos, raiz=None) -> Sigilosas:
                 continue
         try:
             # "...0001-01.pdf" é o incidente, não o principal "...0001"
-            achados.add(cnj.ler_nome_arquivo(p.stem).nome_arquivo)
+            achados.add(cnj.ler_nome_arquivo(p.name).nome_arquivo)
         except cnj.NumeroInvalido:
             continue
     return Sigilosas(achados)
@@ -173,7 +282,7 @@ def chaves_na_pasta(sigilosos, raiz=None) -> Sigilosas:
 def na_pasta(sigilosos, numero, herdar: bool = True) -> bool:
     """O processo tem autos, transcrição, gravação ou diário na pasta dos
     sigilosos? O incidente também, se o principal tiver ('herdar'). (A
-    consulta de um número só: procura só o que tem o nome dele.)"""
+    consulta de um número só: só conta o que tem o nome dele.)"""
     nome = _nome(numero)
     if not nome or not sigilosos:
         return False
@@ -181,12 +290,12 @@ def na_pasta(sigilosos, numero, herdar: bool = True) -> bool:
     alvos = {nome, do_principal} - {None}
     prefixo = do_principal or nome      # o nome do incidente começa pelo do principal
     try:
-        candidatos = _candidatos(Path(sigilosos), f"{glob.escape(prefixo)}*")
+        candidatos = _candidatos(Path(sigilosos), prefixo)
     except (OSError, ValueError, TypeError):
         return False
     for p in candidatos:
         try:
-            if cnj.ler_nome_arquivo(p.stem).nome_arquivo in alvos:
+            if cnj.ler_nome_arquivo(p.name).nome_arquivo in alvos:
                 return True
         except cnj.NumeroInvalido:
             continue
@@ -203,11 +312,20 @@ def _arquivo_da_pauta(pauta) -> Path | None:
     return Path(pauta)
 
 
-def _assinatura(arquivo: Path) -> tuple:
+def arquivo_apurado(pauta=PAUTA_DO_PROGRAMA) -> Path | None:
+    """O registro dos processos que a pauta já indicou em segredo de justiça,
+    ao lado do banco (LOCAL/pauta.sqlite3 -> LOCAL/pauta.sigilo.json)."""
+    arquivo = _arquivo_da_pauta(pauta)
+    if arquivo is None:
+        return None
+    return arquivo.with_name(arquivo.stem + SUFIXO_APURADO)
+
+
+def _assinatura(arquivo: Path, sufixos=("", "-wal")) -> tuple:
     """O que muda quando o banco muda: o arquivo e o diário WAL (onde as
     gravações vão parar antes do ponto de verificação)."""
     partes = []
-    for sufixo in ("", "-wal"):
+    for sufixo in sufixos:
         try:
             st = os.stat(f"{arquivo}{sufixo}")
             partes.append((st.st_mtime_ns, st.st_size))
@@ -216,8 +334,10 @@ def _assinatura(arquivo: Path) -> tuple:
     return tuple(partes)
 
 
-def _nome_da_chave(chave: str) -> str | None:
-    """A chave da pauta (os 20 dígitos e o dependente) como Numero.nome_arquivo."""
+def nome_da_chave(chave: str) -> str | None:
+    """A chave da pauta (os 20 dígitos e o dependente: modelos.chave_processo)
+    como Numero.nome_arquivo; None se não for chave."""
+    chave = str(chave or "")
     digitos, dependente = chave[:20], chave[20:]
     if len(digitos) != 20 or not digitos.isdigit():
         return None
@@ -228,47 +348,173 @@ def _nome_da_chave(chave: str) -> str | None:
     return (replace(n, dependente=dependente) if dependente else n).nome_arquivo
 
 
+_nome_da_chave = nome_da_chave        # o nome antigo (compatibilidade)
+
+
+def _uri_so_leitura(arquivo: Path) -> str:
+    """file:...?mode=ro do banco, com o caminho absoluto em %XX (espaço, acento,
+    "#", "?"); "file:///C:/..." no Windows e "file:////servidor/..." na rede."""
+    caminho = os.path.abspath(str(arquivo)).replace("\\", "/")
+    if not caminho.startswith("/"):
+        caminho = "/" + caminho
+    return "file://" + urllib.parse.quote(caminho, safe="/:") + "?mode=ro"
+
+
+def _ler_banco(arquivo: Path) -> frozenset[str]:
+    """Os processos (Numero.nome_arquivo) que o banco da pauta marca sigilosos,
+    em qualquer registro (o mesmo que Armazem.sigilosas). SÓ PARA CONSULTA:
+    nada de esquema, de PRAGMA que grave, de pôr o banco de lado. Banco sem
+    a tabela (recém-criado) não marca nenhum. Levanta sqlite3.Error ou
+    OSError se não puder ler."""
+    import sqlite3
+
+    con = sqlite3.connect(_uri_so_leitura(arquivo), uri=True, timeout=5,
+                          check_same_thread=False)
+    try:
+        con.execute("PRAGMA query_only = ON")
+        try:
+            linhas = con.execute("SELECT DISTINCT processo FROM audiencias "
+                                 "WHERE sigiloso = 1 AND processo != ''").fetchall()
+        except sqlite3.OperationalError as erro:
+            if "no such table" in str(erro).lower():
+                return frozenset()
+            raise
+    finally:
+        con.close()
+    nomes = set()
+    for (processo,) in linhas:
+        try:
+            nomes.add(cnj.ler(str(processo or "")).nome_arquivo)
+        except cnj.NumeroInvalido:
+            continue
+    return frozenset(nomes)
+
+
+def _ler_apuradas(arquivo: Path | None) -> tuple[frozenset[str], bool]:
+    """(processos do registro, se foi lido). Sem o registro: (vazio, True).
+    Registro ilegível (preso pelo antivírus, estragado): (vazio, False) - e
+    ninguém grava por cima dele."""
+    if arquivo is None:
+        return frozenset(), True
+    try:
+        dados = json.loads(arquivo.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return frozenset(), True
+    except (OSError, ValueError) as erro:
+        log.warning("não consegui ler o registro dos processos que a pauta já indicou em segredo "
+                    "de justiça (%s): %s", arquivo.name, str(erro)[:160])
+        return frozenset(), False
+    lista = dados.get("processos") if isinstance(dados, dict) else None
+    if not isinstance(lista, list):
+        log.warning("o registro dos processos que a pauta já indicou em segredo de justiça (%s) "
+                    "não tem a lista 'processos'.", arquivo.name)
+        return frozenset(), False
+    return frozenset(n for n in (_nome(x) for x in lista if isinstance(x, str)) if n), True
+
+
+def apuradas_da_pauta(pauta=PAUTA_DO_PROGRAMA) -> Sigilosas:
+    """Os processos (Numero.nome_arquivo) que a pauta JÁ indicou em segredo de
+    justiça e que ficaram no registro ao lado do banco - mesmo que o banco
+    tenha se perdido ou sido refeito. Nunca levanta."""
+    return Sigilosas(_ler_apuradas(arquivo_apurado(pauta))[0])
+
+
+def lembrar_da_pauta(processos, pauta=PAUTA_DO_PROGRAMA) -> bool:
+    """Acrescenta 'processos' (Numero, número como a pauta mostra ou
+    nome_arquivo) ao registro do que a pauta já apurou. Só acrescenta, nunca
+    tira; gravação atômica (temporário + os.replace). Nunca levanta: False se
+    não gravou (o registro ilegível não é sobrescrito)."""
+    arquivo = arquivo_apurado(pauta)
+    nomes = {n for n in (_nome(p) for p in processos or []) if n}
+    if arquivo is None or not nomes:
+        return False
+    with _trava_apurado:
+        ja, legivel = _ler_apuradas(arquivo)
+        if not legivel:
+            return False
+        if nomes <= ja:
+            return True
+        dados = {"sobre": "Processos que a pauta de audiências do Helestron já indicou em "
+                          "segredo de justiça. O sigilo, uma vez apurado, fica: eles continuam "
+                          "sigilosos mesmo que a pauta seja apagada ou refeita. Para desfazer "
+                          "uma marcação errada, veja no manual do Helestron a seção sobre o "
+                          "processo marcado como sigiloso por engano.",
+                 "processos": sorted(ja | nomes)}
+        temporario = arquivo.with_name(f".{arquivo.name}.{os.getpid()}."
+                                       f"{threading.get_ident()}.tmp")
+        try:
+            temporario.write_text(json.dumps(dados, ensure_ascii=False, indent=1) + "\n",
+                                  encoding="utf-8")
+            os.replace(temporario, arquivo)
+        except OSError as erro:
+            log.warning("não consegui guardar o registro dos processos que a pauta indicou em "
+                        "segredo de justiça (%s): %s", arquivo.name, str(erro)[:160])
+            try:
+                temporario.unlink()
+            except OSError:
+                pass
+            return False
+    return True
+
+
+def lembrar_do_banco(banco, pauta=PAUTA_DO_PROGRAMA) -> int:
+    """Lê (só para consulta) os processos sigilosos de 'banco' - a cópia de um
+    banco da pauta posto de lado por estar estragado, por exemplo - e os
+    acrescenta ao registro de 'pauta'. Quantos leu (0 se não deu). Nunca levanta."""
+    try:
+        nomes = _ler_banco(Path(banco))
+    except Exception as erro:
+        log.info("não consegui ler os processos sigilosos de %s: %s", Path(banco).name,
+                 str(erro)[:160])
+        return 0
+    if nomes:
+        lembrar_da_pauta(nomes, pauta)
+    return len(nomes)
+
+
 def chaves_da_pauta(pauta=PAUTA_DO_PROGRAMA) -> Sigilosas:
-    """Os processos (Numero.nome_arquivo) que a pauta marca sigilosos.
+    """Os processos (Numero.nome_arquivo) que a pauta marca sigilosos: os do
+    banco e os do registro do que ela já apurou (apuradas_da_pauta).
 
     'pauta': o banco (padrão: o do programa); None não consulta a pauta.
-    Nunca levanta e nunca cria o banco.
+    Nunca levanta, nunca cria o banco e nunca grava nele (lê em "mode=ro").
     """
     arquivo = _arquivo_da_pauta(pauta)
     if arquivo is None:
         return Sigilosas()
-    try:
-        if not arquivo.is_file():
-            return Sigilosas()
-    except OSError:
-        return Sigilosas()
+    apurado = arquivo_apurado(pauta)
     chave = str(arquivo)
-    assinatura = _assinatura(arquivo)
+    assinatura = _assinatura(arquivo) + _assinatura(apurado, ("",))
     with _trava:
         guardado = _lidas.get(chave)
     if guardado is not None and guardado[0] == assinatura \
             and time.monotonic() - guardado[2] < VALIDADE_PAUTA_S:
         return Sigilosas(guardado[1])
+    lembradas, _legivel = _ler_apuradas(apurado)
     try:
-        from ..pauta.armazem import Armazem
-
-        armazem = Armazem(arquivo)
-        try:
-            marcadas, _ids = armazem.sigilosas()
-        finally:
-            armazem.fechar()
+        existe = arquivo.is_file()
+    except OSError:
+        existe = False
+    if not existe:
+        # sem o banco (ainda não criado, ou perdido): vale o que ela já apurou
+        return Sigilosas(lembradas | (guardado[1] if guardado else frozenset()))
+    try:
+        do_banco = _ler_banco(arquivo)
     except Exception as erro:              # banco ocupado ou ilegível: vale o já sabido
         log.warning("não consegui ler na pauta quais processos são sigilosos (%s); %s.",
                     str(erro)[:160],
-                    "valem a pasta dos sigilosos e o que a pauta já tinha indicado" if guardado
-                    else "vale só a pasta dos sigilosos")
-        return Sigilosas(guardado[1]) if guardado else Sigilosas()
-    nomes = Sigilosas(n for n in (_nome_da_chave(c) for c in marcadas) if n)
+                    "valem a pasta dos sigilosos e o que a pauta já tinha indicado"
+                    if guardado or lembradas else "vale só a pasta dos sigilosos")
+        return Sigilosas(lembradas | (guardado[1] if guardado else frozenset()))
+    if not do_banco <= lembradas and lembrar_da_pauta(do_banco, pauta):
+        # o registro mudou agora, por nós: a assinatura dele é a de depois
+        assinatura = assinatura[:-1] + _assinatura(apurado, ("",))
+    nomes = frozenset(do_banco | lembradas)
     with _trava:
-        # A assinatura de ANTES da leitura: se o banco mudou no meio, a
-        # próxima consulta o lê de novo.
+        # A assinatura do banco é a de ANTES da leitura: se ele mudou no meio,
+        # a próxima consulta o lê de novo.
         _lidas[chave] = (assinatura, nomes, time.monotonic())
-    return nomes
+    return Sigilosas(nomes)
 
 
 def na_pauta(numero, pauta=PAUTA_DO_PROGRAMA, herdar: bool = True) -> bool:
@@ -282,7 +528,8 @@ def na_pauta(numero, pauta=PAUTA_DO_PROGRAMA, herdar: bool = True) -> bool:
 
 
 def esquecer_pauta() -> None:
-    """Descarta o que se leu da pauta (testes; troca do banco)."""
+    """Descarta o que se leu da pauta (testes; troca do banco). O registro do
+    que ela já apurou (no disco) fica."""
     with _trava:
         _lidas.clear()
 

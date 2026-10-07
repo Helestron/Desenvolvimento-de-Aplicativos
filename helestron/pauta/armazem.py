@@ -17,21 +17,34 @@ Por que assim:
   é marcada como REMOVIDA, não apagada - o histórico continua dizendo o que
   havia, e se ela voltar, volta com o mesmo registro;
 * a audiência cujo horário mudou ganha outro id (a hora faz parte da
-  identidade). Quando, na mesma sincronização, some uma audiência de um
-  processo e aparece outra do MESMO processo (uma só de cada lado), é a
-  mesma audiência remarcada: vira uma "alteração" com hora antes -> depois,
-  e não um par "nova" + "removida";
+  identidade). Quando, na mesma sincronização, some uma audiência AINDA POR
+  ACONTECER de um processo e aparece outra do MESMO processo e do MESMO tipo
+  (uma só de cada lado), é a mesma audiência remarcada: vira uma "alteração"
+  com data/hora antes -> depois, e não um par "nova" + "removida". O
+  registro antigo não é apagado (fica no banco como saído da pauta), e a
+  alteração aparece no histórico das duas datas (alteracoes(de, ate): a
+  planilha da semana antiga diz para quando ela foi). A audiência que já
+  passou (a Conciliação realizada, que sai da lista das designadas) e a de
+  outro tipo (a Instrução marcada na própria audiência) não se confundem
+  com a remarcação: viram "removida" + "nova";
 * campo que veio vazio não apaga o que já se sabia (a captura de uma tela
   com menos colunas não "altera" o local para nada); sigilo, uma vez
-  apurado, fica;
+  apurado, fica - também fora do banco: o processo marcado sigiloso entra
+  no registro ao lado dele (nucleo.sigilo.lembrar_da_pauta,
+  pauta.sigilo.json), que sobrevive ao banco perdido, estragado ou refeito;
 * a audiência que o portal traz e que já estava na pauta por um relatório
   IMPORTADO (mesmo processo, data e hora) não fica em dobro: o registro do
   relatório é absorvido pelo do portal (o que só ele sabia completa o do
   portal, e o sigilo de um vale para o outro). O par é um a um, pelo tipo:
   duas audiências do processo no mesmo horário não se misturam;
-* banco corrompido (disco cheio, cópia pela metade) é posto de lado com
-  outro nome e um novo é criado: a pauta se refaz na próxima sincronização,
-  e o programa não deixa de abrir por causa dela.
+* banco ESTRAGADO (o SQLite diz "file is not a database" ou "database disk
+  image is malformed": cópia pela metade, gravação interrompida) é posto de
+  lado com outro nome e um novo é criado: a pauta se refaz na próxima
+  sincronização, e o programa não deixa de abrir por causa dela. Os
+  processos sigilosos que ainda se possam ler da cópia vão para o registro
+  do sigilo. Erro do AMBIENTE com o banco bom (disco cheio, sem permissão,
+  erro de E/S, banco ocupado ou só de leitura) não é estrago: o erro sobe e
+  o banco fica como está. O banco em si nunca é apagado.
 """
 
 from __future__ import annotations
@@ -51,6 +64,7 @@ log = logging.getLogger("pauta.armazem")
 
 VERSAO_ESQUEMA = 1
 LIMITE_ALTERACOES = 500
+_ESTRAGO = (getattr(sqlite3, "SQLITE_CORRUPT", 11), getattr(sqlite3, "SQLITE_NOTADB", 26))
 
 _ESQUEMA = """
 CREATE TABLE IF NOT EXISTS audiencias (
@@ -129,6 +143,18 @@ def _iso(momento: datetime | None) -> str:
     return momento.replace(microsecond=0).isoformat() if momento else ""
 
 
+def banco_estragado(erro: BaseException) -> bool:
+    """O erro do SQLite diz que o ARQUIVO está estragado (SQLITE_CORRUPT,
+    SQLITE_NOTADB) - e não que o ambiente falhou com um banco bom (disco
+    cheio, sem permissão, erro de E/S, ocupado: OperationalError)?"""
+    if not isinstance(erro, sqlite3.DatabaseError):
+        return False
+    codigo = getattr(erro, "sqlite_errorcode", None)
+    if isinstance(codigo, int):
+        return (codigo & 0xFF) in _ESTRAGO
+    return type(erro) is sqlite3.DatabaseError      # sem o código: a classe diz
+
+
 @dataclass
 class Balanco:
     """O que uma gravação mudou."""
@@ -156,6 +182,7 @@ class Armazem:
         self._trava = threading.RLock()
         self._con: sqlite3.Connection | None = None
         self._abrir()
+        self._lembrar_sigilosas()
 
     # ------------------------------------------------------------- ciclo
     def _conectar(self) -> sqlite3.Connection:
@@ -185,25 +212,72 @@ class Armazem:
                 except sqlite3.Error:
                     pass
                 self._con = None
-            if isinstance(erro, sqlite3.OperationalError) and "locked" in str(erro).lower():
+            if not banco_estragado(erro):
+                # disco cheio, sem permissão, erro de E/S, ocupado: o banco é bom
                 raise
-            marca = f"{datetime.now():%Y%m%d-%H%M%S}"
-            destino = self.arquivo.with_name(
-                f"{self.arquivo.stem}.corrompido-{marca}{self.arquivo.suffix}")
-            log.error("O banco da pauta (%s) está ilegível (%s); guardei-o como %s e comecei "
-                      "um novo - a pauta se refaz na próxima sincronização.",
-                      self.arquivo, erro, destino.name)
+            self._por_de_lado(erro)
+            self._con = self._conectar()
+
+    def _por_de_lado(self, erro: BaseException) -> None:
+        """Guarda o banco estragado (e o diário dele) com outro nome, para um
+        novo ser criado no lugar. O banco nunca é apagado: se não puder sair do
+        lugar (aberto em outro programa), nada muda e o erro sobe. O diário
+        (-wal, -shm) que não puder sair é apagado - o banco novo não pode
+        herdar páginas do velho."""
+        marca = f"{datetime.now():%Y%m%d-%H%M%S}"
+        destino = self.arquivo.with_name(
+            f"{self.arquivo.stem}.corrompido-{marca}{self.arquivo.suffix}")
+        movidos: list[tuple[Path, Path]] = []
+        try:
             for sufixo in ("", "-wal", "-shm"):
                 origem = Path(str(self.arquivo) + sufixo)
-                if origem.exists():
-                    try:
-                        origem.replace(Path(str(destino) + sufixo))
-                    except OSError:
-                        try:
-                            origem.unlink()
-                        except OSError:
-                            pass
-            self._con = self._conectar()
+                if not origem.exists():
+                    continue
+                alvo = Path(str(destino) + sufixo)
+                try:
+                    origem.replace(alvo)
+                    movidos.append((alvo, origem))
+                except OSError:
+                    if not sufixo:
+                        raise
+                    origem.unlink()
+        except OSError as falha:
+            for alvo, origem in reversed(movidos):
+                try:
+                    alvo.replace(origem)
+                except OSError:
+                    pass
+            log.error("O banco da pauta (%s) está ilegível (%s), e não consegui guardá-lo com "
+                      "outro nome (%s): feche o programa que o estiver usando e abra o "
+                      "Helestron de novo.", self.arquivo, erro, falha)
+            raise erro from falha
+        log.error("O banco da pauta (%s) está ilegível (%s); guardei-o como %s e comecei "
+                  "um novo - a pauta se refaz na próxima sincronização.",
+                  self.arquivo, erro, destino.name)
+        try:
+            from ..nucleo import sigilo
+
+            # o sigilo, uma vez apurado, fica: o que ainda se ler da cópia
+            sigilo.lembrar_do_banco(destino, self.arquivo)
+        except Exception as falha:          # pragma: no cover - o registro é proteção extra
+            log.warning("não consegui conferir os processos sigilosos do banco posto de lado: "
+                        "%s", falha)
+
+    def _lembrar_sigilosas(self, processos=None) -> None:
+        """Leva para o registro do sigilo (nucleo.sigilo.lembrar_da_pauta, ao
+        lado do banco) os processos marcados sigilosos: 'processos', ou todos
+        os do banco (na abertura: o banco de uma versão anterior, que não
+        tinha o registro). Nunca levanta."""
+        try:
+            if processos is None:
+                processos = list(self.processos_sigilosos().values())
+            if processos:
+                from ..nucleo import sigilo
+
+                sigilo.lembrar_da_pauta(processos, self.arquivo)
+        except Exception as erro:
+            log.warning("não consegui guardar fora do banco os processos sigilosos da pauta: %s",
+                        erro)
 
     def fechar(self) -> None:
         with self._trava:
@@ -300,9 +374,11 @@ class Armazem:
                     final, campos = self._mesclar(velho, a)
                     self._atualizar(con, final, agora)
                     if removida:
-                        # voltou à pauta depois de ter saído
+                        # voltou à pauta depois de ter saído (a remarcada que volta
+                        # para a data antiga, cujo registro ficou, também se pareia)
                         balanco.novas += 1
-                        self._historico(con, "nova", final, [], agora)
+                        hist_novas[final.id] = self._historico(con, "nova", final, [], agora)
+                        novas_agora.append(final)
                         balanco.alteracoes += 1
                     elif campos:
                         balanco.atualizadas += 1
@@ -321,6 +397,9 @@ class Armazem:
             except BaseException:
                 con.execute("ROLLBACK")
                 raise
+        marcados = [a.processo for a in unicas.values() if a.sigiloso and a.processo]
+        if marcados:
+            self._lembrar_sigilosas(marcados)
         return balanco
 
     def _absorver_importadas(self, con, audiencias, ja_no_banco: set[str] = frozenset()
@@ -404,27 +483,41 @@ class Armazem:
             (fonte, de.isoformat(), ate.isoformat())) if linha["id"] not in recebidos]
         if not faltam:
             return
-        # Mesma audiência remarcada: uma que sumiu e uma que apareceu, do mesmo
-        # processo (e mesmo portal), uma só de cada lado.
+        # Mesma audiência remarcada: uma que sumiu AINDA POR ACONTECER e uma que
+        # apareceu, do mesmo processo, do mesmo portal e do mesmo tipo, uma só
+        # de cada lado. A que já passou foi realizada (ou não), e não remarcada;
+        # a de outro tipo é outra audiência (a Instrução marcada na Conciliação).
+        hoje, agora_hm = agora.date().isoformat(), f"{agora:%H:%M}"
+
+        def ja_passou(linha) -> bool:
+            if linha["data"] != hoje:
+                return linha["data"] < hoje
+            return not linha["hora"] or linha["hora"] <= agora_hm
+
         por_processo_novas: dict[tuple, list[Audiencia]] = {}
         for a in novas_agora:
             if a.processo:
-                por_processo_novas.setdefault((a.sistema, a.tribunal, a.processo), []).append(a)
+                por_processo_novas.setdefault((a.sistema, a.tribunal, a.processo, a.tipo),
+                                              []).append(a)
         por_processo_faltas: dict[tuple, list] = {}
         for linha in faltam:
             if linha["processo"]:
-                chave = (linha["sistema"], linha["tribunal"], linha["processo"])
+                chave = (linha["sistema"], linha["tribunal"], linha["processo"], linha["tipo"])
                 por_processo_faltas.setdefault(chave, []).append(linha)
         pareadas: set[str] = set()
         for chave, linhas in por_processo_faltas.items():
             candidatas = por_processo_novas.get(chave) or []
-            if len(linhas) != 1 or len(candidatas) != 1:
+            if len(linhas) != 1 or len(candidatas) != 1 or ja_passou(linhas[0]):
                 continue
             velho = self._linha_para_audiencia(linhas[0])
             nova = candidatas[0]
             final, campos = self._mesclar(velho, nova)
             self._atualizar(con, final, agora)
-            con.execute("DELETE FROM audiencias WHERE id = ?", (velho.id,))
+            # O registro antigo não é apagado: fica no banco como saído da pauta.
+            # O histórico é um só (a alteração, data antes -> depois), e a planilha
+            # o mostra também na semana da data antiga (alteracoes(de, ate)).
+            con.execute("UPDATE audiencias SET removida = 1, removida_em = ?, atualizada_em = ? "
+                        "WHERE id = ?", (_iso(agora), _iso(agora), velho.id))
             pareadas.add(velho.id)
             if nova.id in (absorvidas or ()):
                 balanco.inalteradas -= 1      # contada como "já estava" (relatório importado)
@@ -527,11 +620,15 @@ class Armazem:
 
     # ----------------------------------------------------------- histórico
     def alteracoes(self, desde: datetime | None = None, de: date | None = None,
-                   ate: date | None = None, limite: int = LIMITE_ALTERACOES) -> list[dict]:
+                   ate: date | None = None, limite: int | None = LIMITE_ALTERACOES) -> list[dict]:
         """O histórico, do mais novo ao mais antigo.
 
         'desde': só o registrado a partir deste momento; 'de'/'ate': só o das
-        audiências marcadas nesse intervalo (a aba Alterações da planilha).
+        audiências marcadas nesse intervalo (a aba Alterações da planilha) -
+        inclusive a audiência REMARCADA de uma data do intervalo para outra
+        fora dele (o histórico guarda a data nova; a antiga está nos campos,
+        "data" antes -> depois). 'limite': no máximo tantos registros (None:
+        todos - a planilha leva o período inteiro).
         """
         sql, args = "SELECT * FROM alteracoes WHERE 1 = 1", []
         if desde is not None:
@@ -539,16 +636,29 @@ class Armazem:
                 desde = desde.astimezone().replace(tzinfo=None)
             sql += " AND quando >= ?"
             args.append(_iso(desde))
+        faixa = []
         if de is not None:
-            sql += " AND data_audiencia >= ?"
+            faixa.append("data_audiencia >= ?")
             args.append(de.isoformat())
         if ate is not None:
-            sql += " AND data_audiencia <= ?"
+            faixa.append("data_audiencia <= ?")
             args.append(ate.isoformat())
-        sql += " ORDER BY quando DESC, id DESC LIMIT ?"
-        args.append(int(limite))
+        if faixa:
+            # a remarcada (campos com a data antiga) é conferida abaixo, em Python
+            sql += f" AND (({' AND '.join(faixa)}) OR campos LIKE '%\"campo\": \"data\"%')"
+        sql += " ORDER BY quando DESC, id DESC"
+        if limite is not None and not faixa:
+            sql += " LIMIT ?"
+            args.append(int(limite))
         with self._trava:
             linhas = self._c().execute(sql, args).fetchall()
+
+        def na_faixa(valor) -> bool:
+            if not isinstance(valor, str) or not valor:
+                return False
+            return (de is None or valor >= de.isoformat()) and \
+                (ate is None or valor <= ate.isoformat())
+
         saida = []
         for x in linhas:
             try:
@@ -559,8 +669,14 @@ class Armazem:
                 campos = json.loads(x["campos"] or "[]")
             except ValueError:
                 campos = []
+            if faixa and not na_faixa(x["data_audiencia"]) and not any(
+                    isinstance(c, dict) and c.get("campo") == "data" and na_faixa(c.get("antes"))
+                    for c in campos if isinstance(campos, list)):
+                continue
             saida.append({"id": x["id"], "quando": x["quando"], "tipo": x["tipo"],
                           "audiencia": audiencia, "campos": campos, "vista": bool(x["vista"])})
+            if limite is not None and len(saida) >= int(limite):
+                break
         return saida
 
     def marcar_vistas(self) -> int:

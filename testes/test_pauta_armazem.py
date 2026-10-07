@@ -6,6 +6,8 @@ import sqlite3
 import threading
 import unittest
 from datetime import date, datetime, timezone
+from pathlib import Path
+from unittest import mock
 
 from helestron.pauta import modelos
 from helestron.pauta.armazem import Armazem
@@ -113,8 +115,12 @@ class TestArmazem(apoio.PastaTemporaria):
         self.assertEqual(alts[0]["campos"], [
             {"campo": "data", "antes": "2026-10-05", "depois": "2026-10-06"},
             {"campo": "hora", "antes": "09:00", "depois": "14:00"}])
+        self.assertEqual(len(self.banco.listar(*PERIODO)), 2, "a remarcada não fica em dobro")
+        # o registro antigo não é apagado: fica como saído da pauta
         lista = self.banco.listar(*PERIODO, incluir_removidas=True)
-        self.assertEqual(len(lista), 2, "o registro antigo foi substituído, não duplicado")
+        self.assertEqual(sorted((a.data, a.hora) for a in lista if a.processo ==
+                                ap.numero("0700101")), [(D1, "09:00"), (D2, "14:00")])
+        self.assertTrue(self.banco.removida(aud("0700101", hora="09:00").id))
         self.assertEqual(alts[0]["audiencia"]["hora"], "14:00")
 
     def test_duas_do_mesmo_processo_nao_se_pareiam(self):
@@ -236,8 +242,12 @@ class TestRelatorioImportadoEPortal(apoio.PastaTemporaria):
         self.importada("0700101", hora="10:00")
         b = self.banco.gravar([aud("0700101", hora="10:00")], "esaj-tjal", PERIODO, agora=T1)
         self.assertEqual((b.novas, b.atualizadas, b.removidas, b.inalteradas), (0, 1, 0, 0))
+        self.assertEqual([(a.sistema, a.hora) for a in self.banco.listar(*PERIODO)],
+                         [("esaj", "10:00")])
+        # o registro antigo (09:00) fica, saído da pauta; o do relatório foi absorvido
         self.assertEqual([(a.sistema, a.hora) for a in
-                          self.banco.listar(*PERIODO, incluir_removidas=True)], [("esaj", "10:00")])
+                          self.banco.listar(*PERIODO, incluir_removidas=True)],
+                         [("esaj", "09:00"), ("esaj", "10:00")])
         self.assertEqual([x["tipo"] for x in self.banco.alteracoes()], ["alterada"])
 
     def test_duas_no_mesmo_horario_cada_uma_absorve_a_sua(self):
@@ -296,6 +306,189 @@ class TestRelatorioImportadoEPortal(apoio.PastaTemporaria):
         self.banco.gravar([aud("0700101")], "esaj-tjal", PERIODO, registrar_novas=False)
         self.banco.gravar([], "esaj-tjal", PERIODO)
         self.assertEqual((self.banco.contar(), self.banco.contar(incluir_removidas=True)), (0, 1))
+
+
+class TestRemarcacao(apoio.PastaTemporaria):
+    """Achado 24: só é remarcação a audiência AINDA POR ACONTECER que some e
+    outra do mesmo processo e do MESMO tipo que aparece; o registro antigo
+    nunca é apagado, e a planilha da semana antiga a mostra."""
+
+    SEMANA_VELHA = (date(2026, 10, 5), date(2026, 10, 9))
+
+    def setUp(self):
+        super().setUp()
+        self.banco = Armazem(self.tmp / "local" / "pauta.sqlite3")
+        self.addCleanup(self.banco.fechar)
+
+    def base(self, agora):
+        self.banco.gravar([aud("0700101", data_=D2, hora="09:00"), aud("0700102")], "esaj-tjal",
+                          PERIODO, registrar_novas=False, agora=agora)
+
+    def test_realizada_e_a_instrucao_marcada_na_audiencia(self):
+        """A Conciliação de 06/10 foi realizada e saiu da lista; nela, o juiz marcou
+        a Instrução para 20/11. Não é a mesma audiência remarcada."""
+        self.base(datetime(2026, 10, 5, 9, 0))
+        depois = datetime(2026, 10, 7, 9, 0)
+        b = self.banco.gravar([aud("0700101", data_=date(2026, 11, 20), hora="14:00",
+                                   tipo="Instrução e julgamento"), aud("0700102")],
+                              "esaj-tjal", PERIODO, agora=depois)
+        self.assertEqual((b.novas, b.atualizadas, b.removidas), (1, 0, 1))
+        velha = aud("0700101", data_=D2, hora="09:00")
+        self.assertTrue(self.banco.removida(velha.id), "o registro antigo fica")
+        semana = self.banco.alteracoes(de=self.SEMANA_VELHA[0], ate=self.SEMANA_VELHA[1])
+        self.assertEqual([(x["tipo"], x["audiencia"]["data"]) for x in semana],
+                         [("removida", "2026-10-06")], "a planilha daquela semana a mostra")
+
+    def test_outro_tipo_no_futuro_nao_e_remarcacao(self):
+        self.base(datetime(2026, 10, 3, 9, 0))
+        b = self.banco.gravar([aud("0700101", data_=date(2026, 10, 20), hora="14:00",
+                                   tipo="Instrução e julgamento"), aud("0700102")],
+                              "esaj-tjal", PERIODO, agora=datetime(2026, 10, 4, 9, 0))
+        self.assertEqual((b.novas, b.atualizadas, b.removidas), (1, 0, 1))
+
+    def test_ja_passou_no_mesmo_dia(self):
+        self.base(datetime(2026, 10, 3, 9, 0))
+        b = self.banco.gravar([aud("0700101", data_=date(2026, 10, 20), hora="09:00"),
+                               aud("0700102")], "esaj-tjal", PERIODO,
+                              agora=datetime(2026, 10, 6, 10, 0))
+        self.assertEqual((b.novas, b.atualizadas, b.removidas), (1, 0, 1))
+
+    def test_remarcada_no_futuro_aparece_nas_duas_semanas(self):
+        self.base(datetime(2026, 10, 3, 9, 0))
+        nova_data = date(2026, 11, 20)
+        b = self.banco.gravar([aud("0700101", data_=nova_data, hora="14:00"), aud("0700102")],
+                              "esaj-tjal", (date(2026, 10, 1), date(2026, 11, 30)),
+                              agora=datetime(2026, 10, 4, 9, 0))
+        self.assertEqual((b.novas, b.atualizadas, b.removidas, b.alteracoes), (0, 1, 0, 1))
+        self.assertTrue(self.banco.removida(aud("0700101", data_=D2, hora="09:00").id),
+                        "o registro antigo não é apagado")
+        for de, ate in (self.SEMANA_VELHA, (nova_data, nova_data)):
+            alts = self.banco.alteracoes(de=de, ate=ate)
+            self.assertEqual([(x["tipo"], x["audiencia"]["data"]) for x in alts],
+                             [("alterada", "2026-11-20")], (de, ate))
+            self.assertIn({"campo": "data", "antes": "2026-10-06", "depois": "2026-11-20"},
+                          alts[0]["campos"])
+        self.assertEqual(self.banco.alteracoes(de=date(2026, 10, 12), ate=date(2026, 10, 16)),
+                         [])
+        # e volta para a data antiga (o registro dela ficou): de novo uma alteração só
+        b = self.banco.gravar([aud("0700101", data_=D2, hora="09:00"), aud("0700102")],
+                              "esaj-tjal", (date(2026, 10, 1), date(2026, 11, 30)),
+                              agora=datetime(2026, 10, 4, 10, 0))
+        self.assertEqual((b.novas, b.atualizadas, b.removidas, b.alteracoes), (0, 1, 0, 1))
+        self.assertEqual([(a.data, a.hora) for a in self.banco.listar(D2, nova_data)
+                          if a.processo == ap.numero("0700101")], [(D2, "09:00")])
+        self.assertEqual([x["tipo"] for x in self.banco.alteracoes()], ["alterada", "alterada"])
+
+    def test_alteracoes_sem_limite_e_com_limite(self):
+        self.banco.gravar([aud("0700101")], "esaj-tjal", None, registrar_novas=False, agora=T0)
+        for i in range(12):
+            self.banco.gravar([aud("0700101", partes=f"Parte {i} x Banco")], "esaj-tjal", None,
+                              agora=T1)
+        self.assertEqual(len(self.banco.alteracoes(de=D1, ate=D1, limite=None)), 12)
+        self.assertEqual(len(self.banco.alteracoes(de=D1, ate=D1, limite=5)), 5)
+        self.assertEqual(len(self.banco.alteracoes(limite=5)), 5)
+
+
+class TestBancoEstragadoOuAmbiente(apoio.PastaTemporaria):
+    """Achado 27: só o banco ESTRAGADO é posto de lado; o erro do ambiente (disco,
+    permissão, E/S) sobe e o banco fica. E o sigilo sobrevive ao estrago."""
+
+    def setUp(self):
+        super().setUp()
+        self.arquivo = self.tmp / "local" / "pauta.sqlite3"
+        banco = Armazem(self.arquivo)
+        banco.gravar([aud("0700101", sigiloso=True)], "esaj-tjal", None, registrar_novas=False)
+        banco.fechar()
+        self.addCleanup(self._fechar_todos)
+        self.abertos = []
+
+    def _fechar_todos(self):
+        for b in self.abertos:
+            b.fechar()
+
+    def test_erro_do_ambiente_sobe_e_o_banco_fica(self):
+        from helestron.pauta import armazem as modulo
+
+        original = Armazem._conectar
+        for mensagem in ("disk I/O error", "unable to open database file",
+                         "database or disk is full", "attempt to write a readonly database"):
+            with self.subTest(mensagem=mensagem):
+                with mock.patch.object(Armazem, "_conectar",
+                                       side_effect=sqlite3.OperationalError(mensagem)):
+                    with self.assertRaises(sqlite3.OperationalError):
+                        Armazem(self.arquivo)
+                self.assertEqual(list(self.arquivo.parent.glob("*corrompido*")), [])
+                banco = Armazem(self.arquivo)
+                self.abertos.append(banco)
+                self.assertEqual(banco.contar(), 1, "a pauta continua lá")
+                self.assertEqual(len(banco.sigilosas()[0]), 1)
+        self.assertIs(Armazem._conectar, original)
+        self.assertTrue(modulo.banco_estragado(sqlite3.DatabaseError("file is not a database")))
+        self.assertFalse(modulo.banco_estragado(sqlite3.OperationalError("disk I/O error")))
+        self.assertFalse(modulo.banco_estragado(OSError("x")))
+
+    def test_estragado_e_posto_de_lado_e_o_sigilo_fica(self):
+        from helestron.nucleo import sigilo
+
+        x = cnj_nome(ap.numero("0700101"))
+        self.assertEqual(sigilo.apuradas_da_pauta(self.arquivo), {x})
+        self.arquivo.write_bytes(b"isto nao e um banco sqlite" * 100)
+        with self.assertLogs("pauta.armazem", "ERROR"):
+            banco = Armazem(self.arquivo)
+        self.abertos.append(banco)
+        self.assertEqual(banco.contar(), 0)
+        self.assertEqual(len(list(self.arquivo.parent.glob("pauta.corrompido-*.sqlite3"))), 1)
+        # a pauta recomeçou do zero, mas o sigilo que ela tinha apurado fica
+        sigilo.esquecer_pauta()
+        self.assertEqual(sigilo.chaves_da_pauta(self.arquivo), {x})
+
+    def test_estragado_le_o_sigilo_da_copia(self):
+        """O banco estragado no meio (não no cabeçalho): o que ainda se lê dele vai
+        para o registro do sigilo antes de a pauta recomeçar."""
+        from helestron.nucleo import sigilo
+
+        sigilo.arquivo_apurado(self.arquivo).unlink()        # como numa versão anterior
+        x = cnj_nome(ap.numero("0700101"))
+        with mock.patch.object(Armazem, "_lembrar_sigilosas"), \
+                mock.patch.object(Armazem, "_conectar",
+                                  side_effect=[sqlite3.DatabaseError("database disk image is "
+                                                                     "malformed"),
+                                               sqlite3.connect(":memory:")]), \
+                self.assertLogs("pauta.armazem", "ERROR"):
+            Armazem(self.arquivo)
+        self.assertEqual(sigilo.apuradas_da_pauta(self.arquivo), {x})
+
+    def test_estragado_preso_por_outro_programa_nao_e_apagado(self):
+        dados = b"isto nao e um banco sqlite" * 100
+        self.arquivo.write_bytes(dados)
+        original = Path.replace
+
+        def preso(origem, destino):
+            if Path(origem) == self.arquivo:
+                raise PermissionError(13, "O arquivo está aberto em outro programa")
+            return original(origem, destino)
+
+        with mock.patch.object(Path, "replace", preso), \
+                self.assertLogs("pauta.armazem", "ERROR") as registro, \
+                self.assertRaises(sqlite3.DatabaseError):
+            Armazem(self.arquivo)
+        self.assertIn("não consegui guardá-lo", "\n".join(registro.output))
+        self.assertEqual(self.arquivo.read_bytes(), dados, "o banco foi apagado")
+
+    def test_gravar_sigiloso_vai_para_o_registro(self):
+        from helestron.nucleo import sigilo
+
+        banco = Armazem(self.arquivo)
+        self.abertos.append(banco)
+        banco.gravar([aud("0700103", sigiloso=True), aud("0700104")], "esaj-tjal", None)
+        self.assertEqual(sigilo.apuradas_da_pauta(self.arquivo),
+                         {cnj_nome(ap.numero(s)) for s in ("0700101", "0700103")})
+
+
+def cnj_nome(numero: str) -> str:
+    from helestron.nucleo import cnj
+
+    return cnj.ler(numero).nome_arquivo
 
 
 if __name__ == "__main__":

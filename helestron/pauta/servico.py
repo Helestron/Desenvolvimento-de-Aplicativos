@@ -22,17 +22,24 @@ O que vale para todas as entradas:
 * uma fonte que falha não derruba as outras (cada uma que falhou vira um
   aviso); só quando todas falham a tarefa termina como "falhou", com o
   motivo de cada uma no erro (sem o aviso por fonte, que só o repetiria);
-* SIGILO é do PROCESSO, não da linha: a audiência é sigilosa se o portal
-  (ou o relatório) disse segredo de justiça em QUALQUER audiência daquele
-  processo, ou se os autos do processo estão na pasta de sigilosos - a
-  mesma regra do compartilhamento e da transcrição. Vale para a lista, o
-  histórico e a planilha, que mascara as partes por padrão (inclusive nas
-  alterações e no texto da busca) e nunca é gravada dentro do acervo;
+* SIGILO é do PROCESSO, não da linha: a audiência é sigilosa pela REGRA
+  ÚNICA (nucleo/sigilo.py), a mesma do compartilhamento, do download e da
+  transcrição - o portal (ou o relatório) disse segredo de justiça em
+  QUALQUER audiência daquele processo, a pauta já o tinha indicado antes
+  (o registro ao lado do banco), ou os autos, uma transcrição ou uma
+  gravação dele estão na pasta dos sigilosos; e o INCIDENTE ("...0001/01")
+  herda o sigilo do principal. Vale para a lista, o Início, o histórico e
+  a planilha, que mascara as partes e as observações por padrão (inclusive
+  nas alterações e no texto da busca) e nunca é gravada dentro do acervo.
+  (processo_sigiloso, o que a transcrição pergunta à pauta, é outra coisa:
+  o número exato, só a pauta - contrato C4);
 * o sigilo que a pauta REVELA (processo que o programa ainda não tratava como
   sigiloso, nem pela pauta nem pela pasta dos sigilosos) vale na hora: a
   sincronização, a captura e a importação o informam em 'sigilosos_novos' e a
   quem pediu (quando_revelar_sigilo: o servidor tira do acervo o que houver
-  dele e avisa o usuário; a linha de comando faz o mesmo por conta própria).
+  dele e avisa o usuário; a linha de comando faz o mesmo por conta própria) -
+  também quando o trabalho é interrompido no meio (Parar, Ctrl+C): o que já
+  foi gravado vale.
 """
 
 from __future__ import annotations
@@ -40,16 +47,18 @@ from __future__ import annotations
 import logging
 import threading
 import time as _time
+import traceback
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-from ..nucleo import caminhos, cnj
+from ..nucleo import caminhos, cnj, sigilo
 from . import exportacao, importacao, modelos
 from . import regras as regras_mod
 from .armazem import Armazem
-from .modelos import JA_PASSOU, SEM_AUDIENCIA, como_dict, normalizar_texto
+from .modelos import (CAMPOS_MASCARADOS, JA_PASSOU, SEM_AUDIENCIA, como_dict,
+                      normalizar_texto)
 from .monitor import (INTERVALO_MAX_H, INTERVALO_MIN_H, Agenda, ConfigMonitoramento,
                       ler_flag)
 from .tabelas import Reconhecedor
@@ -87,6 +96,24 @@ def _frase(erro: BaseException) -> str:
     return texto[:1].upper() + texto[1:]
 
 
+def _nome_arquivo(processo) -> str | None:
+    """O processo como a regra do sigilo o compara (Numero.nome_arquivo: o
+    incidente "...0001/01" é "...0001-01"); None se não houver número."""
+    if not processo:
+        return None
+    try:
+        return cnj.ler(str(processo)).nome_arquivo
+    except cnj.NumeroInvalido:
+        return None
+
+
+def mascarar_sigilosas(audiencias: list[dict]) -> list[dict]:
+    """As audiências (dicts da API), com as partes e as observações dos
+    processos em segredo de justiça trocadas por "(segredo de justiça)"
+    (modelos.mascarar_sigiloso). 'sigiloso' continua dizendo quais são."""
+    return [modelos.mascarar_sigiloso(a) for a in audiencias]
+
+
 # ====================================================== sigilo revelado
 MAX_NUMEROS_NO_AVISO = 3
 
@@ -104,13 +131,24 @@ def no_acervo(cfg, numeros) -> list[str]:
             continue
     if not nomes:
         return []
+    # O incidente ("...0001-01.pdf") herda o sigilo do principal: o arquivo dele
+    # no acervo conta para o principal revelado (nucleo.sigilo.contem).
+    chaves = sigilo.Sigilosas(nomes)
+    achados: set[str] = set()
+
+    def achar(chave: str | None) -> None:
+        if chave and chave in chaves:
+            achados.add(chave if chave in nomes else sigilo.principal(chave))
+
     try:
         from ..compartilhar.mcp_servidor import Acervo
 
         acervo = Acervo(Path(cfg.pasta_acervo), sigilosos=cfg.pasta_sigilosos)
-        achados = {chave for chave in nomes if (acervo.cache / f"{chave}.txt").is_file()}
+        for txt in acervo.cache.glob("*.txt"):
+            achar(sigilo.nome_do_processo(txt.stem))
         for sufixo in (".pdf", ".docx"):
-            achados |= {chave for chave, _p in acervo.numerados(sufixo) if chave in nomes}
+            for chave, _p in acervo.numerados(sufixo):
+                achar(chave)
     except Exception as erro:
         log.warning("não consegui conferir o acervo dos processos sigilosos: %s", erro)
         return list(nomes.values())
@@ -193,7 +231,9 @@ class ServicoPauta:
         self.relogio = relogio or _agora
         self.espera_pagina_s = 20.0
         self.limite_captura_s: float | None = None
-        self._sigilosos: tuple[float, str, set[str]] = (0.0, "", set())
+        # a pasta dos sigilosos e o registro do que a pauta já apurou, lidos a
+        # cada CACHE_SIGILOSOS_S: (quando, onde, Sigilosas)
+        self._fora_do_banco: tuple[float, str, sigilo.Sigilosas] = (0.0, "", sigilo.Sigilosas())
         # A senha digitada sem "Lembrar neste computador" ({portal: (usuário, senha)}):
         # o servidor entrega o dicionário da sessão (o mesmo do download).
         self.credenciais_sessao: dict[str, tuple[str, str]] | None = None
@@ -222,11 +262,18 @@ class ServicoPauta:
     def _hoje(self) -> date:
         return self.relogio().date()
 
-    def _numeros_sigilosos(self) -> set[str]:
-        """As chaves CNJ dos processos sigilosos: os da pasta de sigilosos e os
-        que têm ALGUMA audiência marcada sigilosa no banco (em qualquer
-        registro). Ver _sigilosos_do_banco."""
-        return self._na_pasta_de_sigilosos() | self._sigilosos_do_banco()[0]
+    def _sigilosas(self) -> tuple[sigilo.Sigilosas, set[str]]:
+        """(TODOS os processos sigilosos, ids das audiências marcadas sigilosas).
+
+        Os processos pela regra única (nucleo/sigilo.py), como
+        Numero.nome_arquivo: os que têm ALGUMA audiência marcada sigilosa neste
+        banco (em qualquer registro: _sigilosos_do_banco, do banco já aberto,
+        sem outra conexão), os que a pauta já tinha indicado (o registro ao
+        lado do banco) e os da pasta dos sigilosos (autos, transcrições,
+        gravações e diários). 'nome in': o incidente de um deles também."""
+        do_banco, ids = self._sigilosos_do_banco()
+        nomes = {n for n in (sigilo.nome_da_chave(c) for c in do_banco) if n}
+        return sigilo.Sigilosas(nomes | self._sigilosas_fora_do_banco()), ids
 
     def _sigilosos_do_banco(self) -> tuple[set[str], set[str]]:
         try:
@@ -264,19 +311,22 @@ class ServicoPauta:
         if funcao is not None and pendentes:
             self._entregar_revelados(pendentes)
 
-    def _sigilosos_conhecidos(self) -> set[str] | None:
-        """Antes de gravar: as chaves dos processos que o programa já trata como
-        sigilosos (a pauta e a pasta dos sigilosos). None: o banco não pôde ser
-        lido - aí nada conta como revelado agora (o preparo seguinte, antes de
-        qualquer compartilhamento, aplica a regra do mesmo jeito)."""
+    def _sigilosos_conhecidos(self) -> sigilo.Sigilosas | None:
+        """Antes de gravar: os processos (Numero.nome_arquivo) que o programa já
+        trata como sigilosos, pela regra única (a pauta, o que ela já tinha
+        indicado e a pasta dos sigilosos; o incidente de um deles também).
+        None: o banco não pôde ser lido - aí nada conta como revelado agora (o
+        preparo seguinte, antes de qualquer compartilhamento, aplica a regra
+        do mesmo jeito)."""
         try:
-            conhecidos = set(self.armazem.processos_sigilosos())
+            do_banco = self.armazem.processos_sigilosos()
         except Exception as erro:
             log.warning("não consegui ler na pauta os processos sigilosos: %s", erro)
             return None
-        return conhecidos | self._na_pasta_de_sigilosos()
+        nomes = {n for n in (_nome_arquivo(p) for p in do_banco.values()) if n}
+        return sigilo.Sigilosas(nomes | self._sigilosas_fora_do_banco())
 
-    def _revelados(self, conhecidos: set[str] | None, resultado: dict) -> list[str]:
+    def _revelados(self, conhecidos: sigilo.Sigilosas | None, resultado: dict) -> list[str]:
         """Os processos que a gravação revelou sigilosos (números como a pauta os
         mostra): vão para resultado['sigilosos_novos'] e para quem pediu."""
         if conhecidos is None:
@@ -286,7 +336,8 @@ class ServicoPauta:
         except Exception as erro:
             log.warning("não consegui conferir na pauta os processos sigilosos: %s", erro)
             return []
-        novos = sorted(numero for chave, numero in depois.items() if chave not in conhecidos)
+        novos = sorted(numero for numero in depois.values()
+                       if not sigilo.contem(conhecidos, _nome_arquivo(numero)))
         if not novos:
             return []
         resultado["sigilosos_novos"] = novos
@@ -308,39 +359,37 @@ class ServicoPauta:
         except Exception as erro:          # o aviso nunca derruba a sincronização
             log.warning("não consegui aplicar na hora o sigilo revelado pela pauta: %s", erro)
 
-    def _na_pasta_de_sigilosos(self) -> set[str]:
-        """As chaves CNJ dos processos com autos (ou transcrição) na pasta de sigilosos.
-
-        A regra do motor (transcricao.documento.processo_sigiloso): um PDF com
-        o número em <sigilosos>/ ou <sigilosos>/<lote>/. Lida uma vez a cada
-        poucos segundos, e não uma vez por audiência.
-        """
+    def _sigilosas_fora_do_banco(self) -> sigilo.Sigilosas:
+        """Os processos (Numero.nome_arquivo) sigilosos pela pasta dos sigilosos
+        (sigilo.chaves_na_pasta: autos, transcrições, gravações e diários, como
+        o download grava e como o preparo os leva) e pelo registro do que a
+        pauta já apurou (sigilo.apuradas_da_pauta - vale mesmo que o banco
+        tenha sido refeito). Lidos uma vez a cada poucos segundos, e não uma
+        vez por audiência."""
         try:
             pasta = Path(self.cfg.pasta_sigilosos)
         except Exception:
-            return set()
-        quando, onde, numeros = self._sigilosos
-        if onde == str(pasta) and _time.monotonic() - quando < CACHE_SIGILOSOS_S:
-            return numeros
-        numeros = set()
+            pasta = None
         try:
-            arquivos = [*pasta.glob("*.pdf"), *pasta.glob("*/*.pdf"), *pasta.glob("*/*.docx")]
-        except OSError:
-            arquivos = []
-        for p in arquivos:
-            try:
-                numeros.add(cnj.chave(cnj.ler_nome_arquivo(p.stem)))
-            except cnj.NumeroInvalido:
-                continue
-        self._sigilosos = (_time.monotonic(), str(pasta), numeros)
-        return numeros
+            acervo = Path(self.cfg.pasta_acervo)
+        except Exception:
+            acervo = None
+        onde = f"{pasta}|{acervo}"
+        quando, guardado_onde, nomes = self._fora_do_banco
+        if guardado_onde == onde and _time.monotonic() - quando < CACHE_SIGILOSOS_S:
+            return nomes
+        nomes = sigilo.Sigilosas(sigilo.chaves_na_pasta(pasta, acervo)
+                                 | sigilo.apuradas_da_pauta(self.arquivo_banco))
+        self._fora_do_banco = (_time.monotonic(), onde, nomes)
+        return nomes
 
-    def _dicts(self, audiencias) -> list[dict]:
-        sigilosos = self._numeros_sigilosos()
+    def _dicts(self, audiencias, sigilosas: sigilo.Sigilosas | None = None) -> list[dict]:
+        if sigilosas is None:
+            sigilosas = self._sigilosas()[0]
         saida = []
         for a in audiencias:
             d = como_dict(a)
-            if not d["sigiloso"] and a.processo and modelos.chave_processo(a.processo) in sigilosos:
+            if not d["sigiloso"] and sigilo.contem(sigilosas, _nome_arquivo(a.processo)):
                 d["sigiloso"] = True
             saida.append(d)
         return saida
@@ -348,51 +397,67 @@ class ServicoPauta:
     def _marcar_sigilo(self, alteracoes: list[dict]) -> list[dict]:
         """O retrato guardado em cada alteração é do momento da mudança: o
         processo que ficou sigiloso depois (ou que é sigiloso por outro
-        registro, ou pela pasta) é sigiloso também no histórico."""
-        chaves = self._na_pasta_de_sigilosos()
-        do_banco, ids = self._sigilosos_do_banco()
-        chaves = chaves | do_banco
+        registro, pela pasta, ou porque o principal é) é sigiloso também no
+        histórico."""
+        sigilosas, ids = self._sigilosas()
         for alt in alteracoes:
             a = alt.get("audiencia")
             if not isinstance(a, dict):
                 a = alt["audiencia"] = {}
             if a.get("sigiloso"):
                 continue
-            if (a.get("id") and a["id"] in ids) or (
-                    a.get("processo") and modelos.chave_processo(a["processo"]) in chaves):
+            if (a.get("id") and a["id"] in ids) or sigilo.contem(
+                    sigilosas, _nome_arquivo(a.get("processo"))):
                 a["sigiloso"] = True
         return alteracoes
 
     # ============================================================= consulta
-    def listar(self, de: date, ate: date, sistema="", situacao="", busca="") -> dict:
-        """{audiencias: [dict], resumo: {total, hoje, semana, por_situacao, por_tipo}}."""
-        audiencias = self.armazem.listar(de, ate)
+    def _filtro(self, sistema="", situacao="", busca="", mascarar: bool = False):
+        """O teste dos filtros da lista (sistema, situação, busca), para uma
+        audiência - um dict da API ou do histórico (alteracao["audiencia"]).
+        'mascarar': a busca não olha as partes nem as observações dos processos
+        em segredo de justiça (o dict precisa trazer 'sigiloso' já apurado): o
+        resultado não pode dizer que a parte procurada é de um deles."""
         sistema = (sistema or "").strip().lower().replace("-", "")
         if sistema in ("todos", "*"):
             sistema = ""
-        if sistema:
-            audiencias = [a for a in audiencias if a.sistema == sistema]
         situacao = (situacao or "").strip()
-        if situacao:
-            alvo = modelos.situacao_reconhecida(situacao, self.regras) or situacao
-            audiencias = [a for a in audiencias
-                          if normalizar_texto(a.situacao) == normalizar_texto(alvo)]
+        alvo = normalizar_texto(modelos.situacao_reconhecida(situacao, self.regras) or situacao) \
+            if situacao else ""
         busca = normalizar_texto(busca)
-        if busca:
-            digitos = "".join(ch for ch in busca if ch.isdigit())
-            so_numero = bool(digitos) and len(digitos) >= 4 and not any(
-                ch.isalpha() for ch in busca)
+        digitos = "".join(ch for ch in busca if ch.isdigit())
+        so_numero = bool(digitos) and len(digitos) >= 4 and not any(ch.isalpha() for ch in busca)
 
-            def casa(a) -> bool:
-                if so_numero and digitos in "".join(ch for ch in a.processo if ch.isdigit()):
-                    return True
-                texto = normalizar_texto(" ".join((a.processo, a.partes, a.classe, a.tipo,
-                                                   a.tipo_original, a.local, a.magistrado,
-                                                   a.observacoes, a.tribunal, a.situacao)))
-                return all(p in texto for p in busca.split())
+        def casa(a: dict) -> bool:
+            if sistema and (a.get("sistema") or "") != sistema:
+                return False
+            if alvo and normalizar_texto(a.get("situacao")) != alvo:
+                return False
+            if not busca:
+                return True
+            processo = str(a.get("processo") or "")
+            if so_numero and digitos in "".join(ch for ch in processo if ch.isdigit()):
+                return True
+            campos = ["processo", "partes", "classe", "tipo", "tipo_original", "local",
+                      "magistrado", "observacoes", "tribunal", "situacao"]
+            if mascarar and a.get("sigiloso"):
+                campos = [c for c in campos if c not in CAMPOS_MASCARADOS]
+            texto = normalizar_texto(" ".join(str(a.get(c) or "") for c in campos))
+            return all(p in texto for p in busca.split())
 
-            audiencias = [a for a in audiencias if casa(a)]
-        dicts = self._dicts(audiencias)
+        return casa
+
+    def listar(self, de: date, ate: date, sistema="", situacao="", busca="",
+               mascarar_sigilosos: bool = False) -> dict:
+        """{audiencias: [dict], resumo: {total, hoje, semana, por_situacao, por_tipo}}.
+
+        'mascarar_sigilosos': as partes e as observações dos processos em
+        segredo de justiça saem como "(segredo de justiça)" - e a busca não
+        olha esses campos neles (a linha de comando em JSON, lida pela IA)."""
+        casa = self._filtro(sistema, situacao, busca, mascarar_sigilosos)
+        dicts = [a for a in self._dicts(self.armazem.listar(de, ate)) if casa(a)]
+        if mascarar_sigilosos:
+            dicts = mascarar_sigilosas(dicts)
         return {"audiencias": dicts, "resumo": self.resumo(dicts)}
 
     def resumo(self, audiencias: list[dict]) -> dict:
@@ -454,19 +519,27 @@ class ServicoPauta:
         return bool(self.motivo_presenca(fonte))
 
     def salvar_fonte(self, tribunal, sistema, rotulo, url="") -> dict:
+        """Cria ou atualiza a fonte. ValueError (com a frase) se o sistema não é
+        e-SAJ nem eProc, se o tribunal não está no catálogo ou não usa esse
+        sistema, ou se o endereço não é http(s) - a mesma conferência da API."""
         sistema = (sistema or "").strip().lower()
         if sistema not in ("esaj", "eproc"):
             raise ValueError("Escolha o sistema da fonte: e-SAJ ou eProc.")
         if not (tribunal or "").strip():
             raise ValueError("Informe o tribunal da fonte (ex.: TJAL).")
+        try:
+            t = self._tribunal(str(tribunal).strip().upper(), sistema)
+        except ErroPauta as erro:
+            raise ValueError(str(erro)) from erro
         if url and not str(url).lower().startswith(("https://", "http://")):
             raise ValueError("O endereço da pauta deve começar por https://.")
         rotulo = (rotulo or "").strip() or \
-            f"{str(tribunal).strip().upper()} · {modelos.NOMES_SISTEMA.get(sistema, sistema)}"
-        return self.armazem.salvar_fonte(tribunal, sistema, rotulo, (url or "").strip())
+            f"{t.sigla} · {modelos.NOMES_SISTEMA.get(sistema, sistema)}"
+        return self.armazem.salvar_fonte(t.sigla, sistema, rotulo, (url or "").strip())
 
-    def remover_fonte(self, id_fonte) -> None:
-        self.armazem.remover_fonte(str(id_fonte))
+    def remover_fonte(self, id_fonte) -> bool:
+        """Tira a fonte (as audiências que ela trouxe ficam). False se não existia."""
+        return self.armazem.remover_fonte(str(id_fonte))
 
     def alteracoes(self, desde: datetime | None = None) -> list[dict]:
         return self._marcar_sigilo(self.armazem.alteracoes(desde))
@@ -666,36 +739,43 @@ class ServicoPauta:
                      "periodo": {"de": de.isoformat(), "ate": ate.isoformat()}}
         conhecidos = self._sigilosos_conhecidos()
         sucesso = False
-        for i, fonte in enumerate(escolhidas):
-            if ctx.cancelado():
-                raise Cancelado()
-            rotulo = fonte.get("rotulo") or fonte["id"]
-            try:
-                ctx.progresso(i, len(escolhidas), rotulo)
-            except Exception:
-                pass
-            try:
-                parcial = self._sincronizar_fonte(ctx, fonte, de, ate)
-            except Cancelado:
-                raise
-            except Exception as erro:
+        try:
+            for i, fonte in enumerate(escolhidas):
                 if ctx.cancelado():
-                    raise Cancelado() from erro
-                mensagem = _frase(erro)
-                log.warning("Pauta - %s: %s", rotulo, mensagem,
-                            exc_info=type(erro).__name__ not in (
-                                "LoginFalhou", "PortalIndisponivel", "PautaNaoEncontrada",
-                                "ErroPauta", "SessaoPerdida"))
-                self.armazem.atualizar_fonte(fonte["id"], ultimo_erro=mensagem[:500])
-                resultado["erros"].append({"fonte": fonte["id"], "rotulo": rotulo,
-                                           "mensagem": mensagem})
-                continue
-            sucesso = True
-            resultado["fontes"].append(parcial)
-            for chave in ("novas", "atualizadas", "canceladas", "removidas", "total",
-                          "alteracoes"):
-                resultado[chave] += parcial.get(chave, 0)
-            resultado["avisos"] += parcial.get("avisos", [])
+                    raise Cancelado()
+                rotulo = fonte.get("rotulo") or fonte["id"]
+                try:
+                    ctx.progresso(i, len(escolhidas), rotulo)
+                except Exception:
+                    pass
+                try:
+                    parcial = self._sincronizar_fonte(ctx, fonte, de, ate)
+                except Cancelado:
+                    raise
+                except Exception as erro:
+                    if ctx.cancelado():
+                        raise Cancelado() from erro
+                    mensagem = _frase(erro)
+                    log.warning("Pauta - %s: %s", rotulo, mensagem,
+                                exc_info=type(erro).__name__ not in (
+                                    "LoginFalhou", "PortalIndisponivel", "PautaNaoEncontrada",
+                                    "ErroPauta", "SessaoPerdida"))
+                    self.armazem.atualizar_fonte(fonte["id"], ultimo_erro=mensagem[:500])
+                    resultado["erros"].append({"fonte": fonte["id"], "rotulo": rotulo,
+                                               "mensagem": mensagem})
+                    continue
+                sucesso = True
+                resultado["fontes"].append(parcial)
+                for chave in ("novas", "atualizadas", "canceladas", "removidas", "total",
+                              "alteracoes"):
+                    resultado[chave] += parcial.get(chave, 0)
+                resultado["avisos"] += parcial.get("avisos", [])
+        except BaseException:
+            # Parada no meio (Parar, Ctrl+C): o que as fontes anteriores gravaram
+            # vale, e o sigilo que elas revelaram é tratado agora - na próxima
+            # sincronização o processo já é "conhecido" e não seria mais avisado.
+            self._revelados(conhecidos, resultado)
+            raise
         try:
             ctx.progresso(len(escolhidas), len(escolhidas), "")
         except Exception:
@@ -849,11 +929,15 @@ class ServicoPauta:
         campos = {}
         if resultado.url:
             campos.update(url=resultado.url, modo="capturado")
-        if audiencias:
-            campos.update(ultima_sincronizacao=self.relogio(), ultimo_erro="")
-            self.armazem.definir_meta("ultima_sincronizacao", self.relogio())
-        if campos:
-            self.armazem.atualizar_fonte(id_fonte, **campos)
+        try:
+            if audiencias:
+                campos.update(ultima_sincronizacao=self.relogio(), ultimo_erro="")
+                self.armazem.definir_meta("ultima_sincronizacao", self.relogio())
+            if campos:
+                self.armazem.atualizar_fonte(id_fonte, **campos)
+        except BaseException:
+            self._revelados(conhecidos, {})        # o que já foi gravado vale
+            raise
         dados = balanco.como_dict()
         dados.update({"capturadas": len(audiencias), "telas": resultado.telas,
                       "url": resultado.url, "motivo": resultado.motivo, "fonte": id_fonte})
@@ -910,10 +994,14 @@ class ServicoPauta:
         balanco = self.armazem.gravar(novas_lista, "arquivo", None, registrar_novas=False,
                                       agora=self.relogio())
         atualizadas = balanco.atualizadas
-        for alvo in completar:
-            b = self.armazem.gravar([alvo], alvo.fonte, None, registrar_novas=False,
-                                    agora=self.relogio())
-            atualizadas += b.atualizadas
+        try:
+            for alvo in completar:
+                b = self.armazem.gravar([alvo], alvo.fonte, None, registrar_novas=False,
+                                        agora=self.relogio())
+                atualizadas += b.atualizadas
+        except BaseException:
+            self._revelados(conhecidos, {})        # o que já foi gravado vale
+            raise
         self.armazem.definir_meta("ultima_importacao", self.relogio())
         resultado = {"novas": balanco.novas, "atualizadas": atualizadas,
                      "ignoradas": rec.ignoradas, "avisos": list(rec.avisos),
@@ -943,7 +1031,11 @@ class ServicoPauta:
         """A planilha do período (seção 8.9). Filtros: sistema, situacao, busca,
         incluir_partes_sigilosos (ausente ou None: o padrão [pauta]
         incluir_partes_sigilosos; False explícito MASCARA, mesmo com o
-        Ajuste ligado - a escolha feita na hora vale)."""
+        Ajuste ligado - a escolha feita na hora vale).
+
+        Os filtros valem para as três abas: a aba Alterações traz o histórico
+        inteiro do período (sem o corte da tela) só das audiências que passam
+        nos filtros - a planilha de um processo não leva as partes dos outros."""
         destino = Path(destino_pasta)
         if self._dentro_do_acervo(destino):
             raise ValueError("A planilha da pauta não pode ser gravada dentro do acervo: ela traz "
@@ -957,14 +1049,30 @@ class ServicoPauta:
         escolhidos = {k: str(filtros.get(k) or "").strip() for k in ("sistema", "situacao",
                                                                      "busca")}
         dados = self.listar(de, ate, **escolhidos)
-        sistema = escolhidos["sistema"].lower().replace("-", "")
-        saida_alt = []
-        for alt in self._marcar_sigilo(self.armazem.alteracoes(de=de, ate=ate)):
-            a = alt.get("audiencia") or {}
-            if sistema and sistema not in ("todos", "*") and a.get("sistema") != sistema:
-                continue
-            saida_alt.append(alt)
-        return exportacao.exportar(dados["audiencias"], saida_alt, de, ate, destino,
-                                   incluir_partes_sigilosos=bool(incluir),
-                                   filtros={k: v for k, v in escolhidos.items() if v},
-                                   agora=self.relogio())
+        # o mesmo filtro da aba Pauta, no retrato de cada alteração (a audiência
+        # que saiu da pauta não está mais na lista, mas o histórico dela fica)
+        casa = self._filtro(**escolhidos)
+        saida_alt = [alt for alt in self._marcar_sigilo(
+            self.armazem.alteracoes(de=de, ate=ate, limite=None))
+            if casa(alt.get("audiencia") or {})]
+        try:
+            return exportacao.exportar(dados["audiencias"], saida_alt, de, ate, destino,
+                                       incluir_partes_sigilosos=bool(incluir),
+                                       filtros={k: v for k, v in escolhidos.items() if v},
+                                       agora=self.relogio())
+        except OSError:
+            raise                       # disco cheio, pasta sem permissão: a frase diz o caminho
+        except Exception as erro:
+            # A mensagem do openpyxl pode trazer o texto de uma célula (o nome de
+            # uma parte): ela não vai para o usuário, para a API nem para o
+            # registro - só o tipo do erro e onde ele aconteceu.
+            onde = ""
+            try:
+                quadro = traceback.extract_tb(erro.__traceback__)[-1]
+                onde = f" em {Path(quadro.filename).name}:{quadro.lineno}"
+            except Exception:
+                pass
+            log.error("A planilha da pauta não pôde ser gravada (%s%s).", type(erro).__name__,
+                      onde)
+            raise ErroPauta("Não consegui gerar a planilha da pauta (erro interno: "
+                            f"{type(erro).__name__}). Veja o registro do Helestron.") from None

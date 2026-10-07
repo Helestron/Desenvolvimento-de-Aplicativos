@@ -626,8 +626,9 @@ class TestSigilo(unittest.TestCase):
         self._arquivo(f"Transcricoes/_audio/{diario.nome_arquivo} 2026-09-16 14h00.jsonl")
         self._arquivo(f"Transcricoes/_audio/{gravacao.nome_arquivo} 2026-09-16 15h00.flac")
         self._arquivo(f"Lote 1/{incidente.nome_arquivo}.pdf")
-        # três níveis abaixo não conta: a pasta pode ter sido apontada para os Documentos
-        self._arquivo(f"a/b/{fundo.nome_arquivo}.pdf")
+        # fundo demais não conta: a pasta pode ter sido apontada para os Documentos (o
+        # preparo leva até subpastas do lote: test_sigilo.TestPastaFunda)
+        self._arquivo(f"a/b/c/d/e/{fundo.nome_arquivo}.pdf")
         esperado = {n.nome_arquivo for n in (autos, lote, docx, diario, gravacao, incidente)}
         self.assertEqual(sigilo.chaves_na_pasta(self.sigilosos), esperado)
         for n in (autos, lote, docx, diario, gravacao, incidente):
@@ -671,11 +672,17 @@ class TestSigilo(unittest.TestCase):
         pauta_com_sigiloso(self.pauta, x)
         self.assertTrue(sigilo.na_pauta(x))
         pauta_com_sigiloso(self.pauta, _numero("0700778"))      # o banco mudou
-        with mock.patch("helestron.pauta.armazem.Armazem", side_effect=OSError("ocupado")), \
+        with mock.patch.object(sigilo, "_ler_banco", side_effect=OSError("ocupado")), \
                 self.assertLogs("nucleo.sigilo", "WARNING"):
             self.assertTrue(sigilo.na_pauta(x))
         sigilo.esquecer_pauta()
-        with mock.patch("helestron.pauta.armazem.Armazem", side_effect=OSError("ocupado")), \
+        # o que a pauta já apurou fica também no registro ao lado do banco
+        with mock.patch.object(sigilo, "_ler_banco", side_effect=OSError("ocupado")), \
+                self.assertLogs("nucleo.sigilo", "WARNING"):
+            self.assertTrue(sigilo.na_pauta(x))
+        sigilo.arquivo_apurado().unlink()
+        sigilo.esquecer_pauta()
+        with mock.patch.object(sigilo, "_ler_banco", side_effect=OSError("ocupado")), \
                 self.assertLogs("nucleo.sigilo", "WARNING"):
             self.assertFalse(sigilo.na_pauta(x))                 # nunca levanta
 
