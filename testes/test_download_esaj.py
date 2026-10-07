@@ -1399,9 +1399,38 @@ def pdf_carimbado(folhas, texto="servidor"):
     return dados
 
 
+def pdf_carimbado_com_copias(folhas, copias, texto="servidor"):
+    """Como ``pdf_carimbado``, mas a folha que está em ``copias`` (folha ->
+    carimbo antigo) reproduz uma folha de outro processo do e-SAJ: o
+    carimbo antigo vem dentro da página copiada, e o deste processo, por
+    cima, no fim do conteúdo."""
+    doc = pymupdf.open()
+    for i, f in enumerate(folhas, 1):
+        pagina = doc.new_page()
+        if f in copias:
+            outro = pymupdf.open()
+            antiga = outro.new_page()
+            antiga.insert_text((500, 30), f"fls. {copias[f]}")
+            antiga.insert_text((72, 120), f"{texto} {i}")
+            with pymupdf.open(stream=outro.tobytes()) as copia:
+                pagina.show_pdf_page(pagina.rect, copia, 0)
+            outro.close()
+        else:
+            pagina.insert_text((72, 120), f"{texto} {i}")
+        pagina.insert_text((500, 45), f"fls. {f}")
+    dados = doc.tobytes()
+    doc.close()
+    return dados
+
+
 def primeiras_linhas(caminho):
     with pymupdf.open(caminho) as doc:
         return [(doc[i].get_text().splitlines() or [""])[0] for i in range(len(doc))]
+
+
+def textos_das_paginas(caminho):
+    with pymupdf.open(caminho) as doc:
+        return [" ".join(doc[i].get_text().split()) for i in range(len(doc))]
 
 
 class TestPaginaIgualAFolha(apoio.PastaTemporaria):
@@ -1409,6 +1438,44 @@ class TestPaginaIgualAFolha(apoio.PastaTemporaria):
 
     def destino(self):
         return self.tmp / "Lote" / f"{N.nome_arquivo}.pdf"
+
+    def test_folha_copiada_de_outro_processo_fica_com_o_servidor(self):
+        """Cumprimento de sentença com a sentença do principal anexada: as
+        fls. 3-4 trazem o carimbo antigo antes do deste processo. O PDF do
+        servidor está certo e fica: nada é refeito peça a peça, e nenhuma
+        folha que o servidor entregou vira página de aviso."""
+        servidor = pdf_carimbado_com_copias([1, 2, 3, 4, 5, 8], {3: 45, 4: 46})
+        p = PortalDeDownload(paginas_servidor=servidor, pecas_ok=("101", "104"))
+        r = p.baixar(N, self.destino())
+        self.assertEqual(r.situacao, modelos.OK)
+        self.assertNotIn("peça a peça", r.detalhe)
+        self.assertNotIn("carimbada não confere", r.detalhe)
+        self.assertEqual(p.pecas_pedidas, [])
+        self.assertEqual(r.incompleto, "6-7")
+        textos = textos_das_paginas(self.destino())
+        self.assertIn("servidor 3", textos[2])
+        self.assertIn("servidor 4", textos[3])
+
+    def test_peca_com_paginas_a_menos_segue_o_carimbo(self):
+        """Peça a peça, o laudo (fls. 3-5) vem sem a página da fl. 3: as que
+        vieram ficam nas fls. 4 e 5, e o aviso fica na fl. 3."""
+        class PortalDoLaudo(PortalDeDownload):
+            def baixar_peca(self, parametros):
+                if urllib.parse.parse_qs(parametros)["cdDocumento"][0] == "102":
+                    self.pecas_pedidas.append("102")
+                    return pdf_carimbado([4, 5], "laudo")
+                return super().baixar_peca(parametros)
+
+        arvore = [documento("Inicial", 101, [(1, 2)]), documento("Laudo", 102, [(3, 5)]),
+                  documento("Sentença", 103, [(6, 6)])]
+        p = PortalDoLaudo(arvore=arvore, servidor="falha", pecas_ok=("101", "102", "103"))
+        r = p.baixar(N, self.destino())
+        self.assertEqual(r.paginas, 6)
+        self.assertEqual(r.incompleto, "3")
+        self.assertIn("a página de cada folha é a que traz o carimbo dela (fls. 4-5)", r.detalhe)
+        linhas = primeiras_linhas(self.destino())
+        self.assertEqual(linhas[2:], ["Folha 3 — não disponibilizada pelo e-SAJ", "fls. 4",
+                                      "fls. 5", "peça 103 1"])
 
     def test_pdf_do_servidor_com_paginas_a_menos_vira_peca_a_peca(self):
         r = PortalDeDownload(paginas_servidor=5).baixar(N, self.destino())

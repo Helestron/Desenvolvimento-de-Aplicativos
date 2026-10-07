@@ -42,6 +42,36 @@ def pdf_carimbado(folhas, texto="servidor"):
     return dados
 
 
+def pdf_carimbado_com_copias(folhas, copias, texto="servidor"):
+    """Como ``pdf_carimbado``, mas a folha que está em ``copias`` (folha ->
+    carimbo antigo) reproduz uma folha de outro processo do e-SAJ - a
+    sentença do principal anexada ao cumprimento de sentença: a página
+    copiada traz o carimbo antigo, e o deste processo vem por cima, no fim
+    do conteúdo, como o e-SAJ o desenha."""
+    doc = pymupdf.open()
+    for i, f in enumerate(folhas, 1):
+        pagina = doc.new_page()
+        if f in copias:
+            outro = pymupdf.open()
+            antiga = outro.new_page()
+            antiga.insert_text((500, 30), f"fls. {copias[f]}")
+            antiga.insert_text((72, 120), f"{texto} {i}")
+            with pymupdf.open(stream=outro.tobytes()) as copia:
+                pagina.show_pdf_page(pagina.rect, copia, 0)
+            outro.close()
+        else:
+            pagina.insert_text((72, 120), f"{texto} {i}")
+        pagina.insert_text((500, 45), f"fls. {f}")
+    dados = doc.tobytes()
+    doc.close()
+    return dados
+
+
+def textos_das_paginas(caminho):
+    with pymupdf.open(caminho) as doc:
+        return [" ".join(doc[i].get_text().split()) for i in range(len(doc))]
+
+
 def primeiras_linhas(caminho):
     with pymupdf.open(caminho) as doc:
         return [(doc[i].get_text().splitlines() or [""])[0] for i in range(len(doc))]
@@ -566,6 +596,32 @@ class TestAlinhamento(apoio.PastaTemporaria):
         with abrir(destino) as doc:
             self.assertIn("fls. 8", doc[7].get_text())
 
+    def test_carimbo_antigo_da_copia_de_outro_processo_nao_desalinha(self):
+        """A folha que reproduz uma folha de outro processo do e-SAJ traz o
+        carimbo antigo ("fls. 45") antes do deste processo ("fls. 3"): o PDF
+        certo do servidor fica, e não vira peça a peça."""
+        dados = pdf_carimbado_com_copias([1, 2, 3, 4, 5, 8], {3: 45, 4: 46})
+        with pymupdf.open(stream=dados) as doc:
+            self.assertEqual(pdf.carimbos(doc[2]), [45, 3])
+            self.assertEqual(pdf.carimbo(doc[2]), 3, "o carimbo deste processo é o último")
+            self.assertIsNone(pdf.carimbo(doc.new_page()))
+        destino = self.tmp / "p.pdf"
+        m = pdf.gravar_alinhado(destino, dados, ARVORE_FAIXAS, 8)
+        self.assertEqual(m.ausentes, {6: "N", 7: "N"})
+        self.assertTrue(destino.read_bytes().startswith(dados), "o PDF do servidor ficou")
+        textos = textos_das_paginas(destino)
+        self.assertIn("servidor 3", textos[2])
+        self.assertIn("servidor 4", textos[3])
+
+    def test_copia_de_outro_processo_fora_do_lugar_ainda_desalinha(self):
+        """O carimbo antigo não esconde a página trocada, e o aviso cita o
+        carimbo deste processo."""
+        dados = pdf_carimbado_com_copias([1, 2, 3, 5, 4, 8], {5: 45, 4: 46})
+        with self.assertRaises(pdf.Desalinhado) as caso:
+            pdf.gravar_alinhado(self.tmp / "p.pdf", dados, ARVORE_FAIXAS, 8)
+        self.assertIn("no lugar da fl. 4 veio a página carimbada fls. 5", str(caso.exception))
+        self.assertFalse((self.tmp / "p.pdf").exists())
+
     def test_poucos_carimbos_nao_decidem(self):
         """Só com quase todas as páginas carimbadas o carimbo dá veredito:
         "conforme fls. 4" no meio do texto não é carimbo."""
@@ -659,6 +715,54 @@ class TestAlinhamento(apoio.PastaTemporaria):
         m = pdf.juntar_folhas(itens, 2, self.tmp / "p.pdf")
         self.assertEqual(primeiras_linhas(self.tmp / "p.pdf"), ["fls. 1", "fls. 2"])
         self.assertIn("carimbadas", m.notas[0])
+
+    def test_juntar_folhas_aparando_com_copia_de_outro_processo(self):
+        """Com páginas a mais, vale o carimbo deste processo, não o antigo da
+        folha copiada de outro processo: as fls. 3-4 ficam, sem aviso."""
+        itens = [self.peca([1, 2], 1, 2, pdf_carimbado([1, 2], "inicial")),
+                 self.peca([3, 4], 3, 4, pdf_carimbado_com_copias([3, 4, 5], {3: 45, 4: 46},
+                                                                  "sentença"))]
+        destino = self.tmp / "p.pdf"
+        m = pdf.juntar_folhas(itens, 4, destino)
+        self.assertEqual(m.ausentes, {})
+        self.assertEqual(m.notas, ["fls. 3-4: o arquivo da peça tinha 3 páginas; mantidas só "
+                                   "as carimbadas com essas folhas (2)"])
+        textos = textos_das_paginas(destino)
+        self.assertIn("sentença 1", textos[2])
+        self.assertIn("sentença 2", textos[3])
+
+    def test_juntar_folhas_com_paginas_a_menos_segue_o_carimbo(self):
+        """Faltando a página do começo ou do meio do bloco, as que vieram
+        ficam na folha do carimbo delas, e o aviso vai para a folha que
+        faltou - não para a última, com as outras uma folha antes."""
+        casos = [([4, 5], {3: "C"}, "fls. 4-5"), ([3, 5], {4: "C"}, "fls. 3, 5"),
+                 ([5], {3: "C", 4: "C"}, "fl. 5")]
+        for carimbadas, ausentes, descricao in casos:
+            with self.subTest(carimbadas=carimbadas):
+                itens = [self.peca([1, 2], 1, 2, pdf_carimbado([1, 2], "inicial")),
+                         self.peca([3, 4, 5], 3, 5, pdf_carimbado(carimbadas, "laudo"),
+                                   total_documento=3),
+                         self.peca([6], 6, 6, pdf_carimbado([6], "sentença"))]
+                destino = self.tmp / "p.pdf"
+                m = pdf.juntar_folhas(itens, 6, destino)
+                self.assertEqual(m.ausentes, ausentes)
+                paginas = "1 página" if len(carimbadas) == 1 else f"{len(carimbadas)} páginas"
+                self.assertEqual(m.notas, [f"fls. 3-5: o arquivo da peça tinha {paginas}; a "
+                                           "página de cada folha é a que traz o carimbo dela "
+                                           f"({descricao})"])
+                linhas = primeiras_linhas(destino)
+                self.assertEqual(len(linhas), 6)
+                for f in range(1, 7):
+                    esperado = (f"Folha {f} — não disponibilizada pelo e-SAJ" if f in ausentes
+                                else f"fls. {f}")
+                    self.assertEqual(linhas[f - 1], esperado, f"página {f}")
+
+    def test_juntar_folhas_sem_carimbo_e_com_paginas_a_menos(self):
+        """Sem carimbo não há como saber qual faltou: ficam as primeiras folhas."""
+        itens = [self.peca([1, 2, 3], 1, 3, apoio.pdf_bytes(2, "curta"))]
+        m = pdf.juntar_folhas(itens, 3, self.tmp / "p.pdf")
+        self.assertEqual((m.ausentes, m.notas), ({3: "C"}, []))
+        self.assertEqual(primeiras_linhas(self.tmp / "p.pdf")[:2], ["curta 1", "curta 2"])
 
     def test_juntar_folhas_gravacao_atomica(self):
         destino = self.tmp / "p.pdf"

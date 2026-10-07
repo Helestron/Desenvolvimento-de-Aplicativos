@@ -2161,7 +2161,12 @@ pelo `pypdf`), `ausentes`, `descrever_folhas`, `ler_faixas`, `faixas`,
   servidor vai em ordem de folha.
 * **O PDF do servidor** (`pdf.gravar_alinhado`): só é aceito se confere —
   a contagem de páginas e os carimbos (“fls. N” sozinho na linha, que só
-  valem quando ao menos 90 % das páginas o trazem). Conferido, as páginas
+  valem quando ao menos 90 % das páginas o trazem). A página confere quando
+  a folha esperada está entre os carimbos dela: a que reproduz uma folha de
+  outro processo do e-SAJ (a sentença do principal no cumprimento de
+  sentença, o processo redistribuído) traz o carimbo antigo antes do deste
+  processo, que o e-SAJ desenha por cima, no fim do conteúdo
+  (`pdf.carimbos`; `pdf.carimbo` é o último). Conferido, as páginas
   são mapeadas para as folhas (com `select` na sobreposição) e as páginas
   de aviso inseridas em ordem crescente; com o mapa identidade, o arquivo
   é salvo por `saveIncr`, e os bytes do servidor ficam intactos.
@@ -2175,7 +2180,12 @@ pelo `pypdf`), `ausentes`, `descrever_folhas`, `ler_faixas`, `faixas`,
   o que veio com páginas a menos, `C`. Com páginas a mais: se o `getPDF.do`
   devolveu o documento inteiro, vale a fatia certa (e o arquivo é baixado
   uma vez só, com cache por `cdDocumento`); senão, os carimbos; senão, as
-  n primeiras, com anotação. As páginas de aviso saem de um PDF único
+  n primeiras, com anotação. Com páginas a menos e o arquivo carimbado,
+  cada folha fica com a página que traz o carimbo dela, falte a do começo,
+  a do meio ou a do fim, e o `C` vai para a folha que faltou (com
+  anotação); sem carimbo, as páginas vão para as primeiras folhas, e o
+  `C`, para as do fim. Nos dois casos vale o carimbo deste processo, o
+  último da página. As páginas de aviso saem de um PDF único
   (`paginas_de_aviso`) e são inseridas por trechos (300 avisos em cerca de
   meio segundo). Continuam valendo `MAX_PECAS_SEGUIDAS_FALHANDO` e “todas
   falharam = erro”.

@@ -806,28 +806,41 @@ def paginas_de_aviso(itens: list[tuple[int, str, str]]) -> bytes:
         doc.close()
 
 
-def carimbo(pagina) -> int | None:
-    """A folha carimbada pelo e-SAJ na página; None se não houver."""
+def carimbos(pagina) -> list[int]:
+    """As folhas de todas as linhas "fls. N" da página, na ordem do conteúdo.
+
+    O e-SAJ desenha o carimbo deste processo por cima da página, no fim do
+    conteúdo: ele é o último. A página que reproduz uma folha de outro
+    processo do e-SAJ (a sentença do principal anexada ao cumprimento de
+    sentença, o processo redistribuído) traz antes dele o carimbo antigo."""
     try:
-        m = RE_CARIMBO.search(pagina.get_text("text") or "")
+        return [int(x) for x in RE_CARIMBO.findall(pagina.get_text("text") or "")]
     except Exception:
-        return None
-    return int(m.group(1)) if m else None
+        return []
+
+
+def carimbo(pagina) -> int | None:
+    """A folha carimbada pelo e-SAJ na página (o último carimbo, o deste
+    processo); None se não houver."""
+    lidos = carimbos(pagina)
+    return lidos[-1] if lidos else None
 
 
 def _conferir_carimbos(doc, mapa: dict[int, int]) -> None:
-    """Levanta Desalinhado se as páginas carimbadas trazem outra folha."""
+    """Levanta Desalinhado se as páginas carimbadas trazem outra folha. A
+    página confere quando a folha esperada está entre os carimbos dela: o
+    carimbo antigo da cópia de folha de outro processo não a desalinha."""
     if not mapa:
         return
-    lidos = {f: carimbo(doc[k]) for f, k in mapa.items()}
-    com = [f for f, c in lidos.items() if c is not None]
+    lidos = {f: carimbos(doc[k]) for f, k in mapa.items()}
+    com = [f for f, c in lidos.items() if c]
     if len(com) < MINIMO_CARIMBADAS * len(mapa):
         return
-    errados = sorted(f for f in com if lidos[f] != f)
+    errados = sorted(f for f in com if f not in lidos[f])
     if errados:
         f = errados[0]
         raise Desalinhado(f"a folha carimbada não confere com o índice da Pasta Digital "
-                          f"(no lugar da fl. {f} veio a página carimbada fls. {lidos[f]})")
+                          f"(no lugar da fl. {f} veio a página carimbada fls. {lidos[f][-1]})")
 
 
 def _acabar(doc, sumario, manifesto) -> None:
@@ -928,29 +941,45 @@ def gravar_alinhado(destino: Path, dados: bytes, faixas: list[tuple[int, int, li
 
 
 def _escolher_paginas(fonte, item: PecaDeFolhas, notas: list[str]) -> dict[int, int]:
-    """Folha -> página do arquivo de uma peça, quando ele não tem uma
-    página por folha. Faltando páginas, as folhas do fim ficam sem (e
-    ganham aviso); sobrando, nenhuma página sem folha entra no PDF - ela
-    deslocaria todas as folhas seguintes."""
+    """Folha -> página do arquivo de uma peça (a folha sem página ganha aviso).
+
+    Com uma página por folha, cada uma no seu lugar. Senão, carimbado o
+    arquivo, cada folha fica com a página que traz o carimbo dela - falte a
+    página do começo, do meio ou do fim, ou venha a de outra folha -, e
+    nenhuma página sem folha do bloco entra no PDF: ela deslocaria todas as
+    folhas seguintes. Sem carimbo, faltando páginas, as folhas do fim ficam sem;
+    sobrando, ficam as primeiras (ou a fatia do bloco, quando veio o
+    documento inteiro)."""
     n = item.fim - item.ini + 1
     k = len(fonte)
     folhas = range(item.ini, item.fim + 1)
-    if k <= n:
-        return {f: f - item.ini for f in folhas if f - item.ini < k}
+    if k == n:
+        return {f: f - item.ini for f in folhas}
     if item.total_documento > n and k == item.total_documento and item.deslocamento + n <= k:
         # o getPDF.do devolveu o documento inteiro, não só este bloco: a fatia dele
         log.info("    %s: veio o documento inteiro (%d páginas); uso as do bloco",
                  _fls(folhas), k)
         return {f: item.deslocamento + f - item.ini for f in folhas}
+    # o carimbo deste processo é o último da página: o antigo, da cópia de
+    # folha de outro processo, não decide
     lidos = [carimbo(fonte[i]) for i in range(k)]
     if sum(c is not None for c in lidos) >= MINIMO_CARIMBADAS * k:
         escolha: dict[int, int] = {}
         for i, c in enumerate(lidos):
             if c is not None and item.ini <= c <= item.fim and c not in escolha:
                 escolha[c] = i
-        notas.append(f"{_fls(folhas)}: o arquivo da peça tinha {k} páginas; mantidas "
-                     f"só as carimbadas com essas folhas ({len(escolha)})")
+        if k > n:
+            notas.append(f"{_fls(folhas)}: o arquivo da peça tinha {k} páginas; mantidas "
+                         f"só as carimbadas com essas folhas ({len(escolha)})")
+        else:
+            paginas = "1 página" if k == 1 else f"{k} páginas"
+            notas.append(f"{_fls(folhas)}: o arquivo da peça tinha {paginas}; "
+                         + (f"a página de cada folha é a que traz o carimbo dela "
+                            f"({_fls(escolha)})" if escolha
+                            else "nenhuma traz o carimbo dessas folhas"))
         return escolha
+    if k < n:
+        return {f: f - item.ini for f in folhas if f - item.ini < k}
     notas.append(f"{_fls(folhas)}: o arquivo da peça tinha {k} páginas; "
                  + ("mantida a primeira" if n == 1 else f"mantidas as {n} primeiras"))
     return {f: f - item.ini for f in folhas}
