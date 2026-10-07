@@ -1547,7 +1547,12 @@ def dados_da_capa(numero: Numero, portal: str, tribunal: str, capa: dict, partes
                   eventos: list[Evento], sigiloso: bool, manifesto: dict | None = None,
                   quando: datetime | None = None, eventos_completos: bool = True) -> dict:
     """_controle/<número>_capa.json: o mesmo do capa.txt, legível por máquina
-    (a skill do Claude o lê pelo "capa_json" do --json do baixar)."""
+    (a skill do Claude o lê pelo "capa_json" do --json do baixar).
+
+    "paginacao" é um objeto, como no e-SAJ ({resumo, ultima, ...}), e só
+    existe com o manifesto de paginação: era o texto do resumo (ou ""), e
+    quem lia capa["paginacao"]["resumo"] pelo contrato do e-SAJ quebrava no
+    primeiro processo do eProc."""
     quando = quando or datetime.now()
     m = manifesto or {}
     ordenados = ordenar_eventos(eventos or [])
@@ -1556,6 +1561,14 @@ def dados_da_capa(numero: Numero, portal: str, tribunal: str, capa: dict, partes
         docs = [info_do_documento(d, origem_esperada(d), "") for d in ordenar_documentos(ordenados)]
         for d in docs:
             d.pop("situacao", None)
+    pag = {}
+    if paginacao.valido(m):
+        pag = {"paginacao": {
+            "resumo": paginacao.resumo(m),
+            "ultima": paginas_do_pdf(m),
+            # como a coluna "incompleto": os documentos com página de aviso no lugar
+            "documentos_ausentes": ", ".join(_ev_rotulo(d) for d in docs
+                                             if d.get("situacao") == "ausente")}}
     saida = {
         "formato": FORMATO_CAPA,
         "sistema": "eproc",
@@ -1567,7 +1580,7 @@ def dados_da_capa(numero: Numero, portal: str, tribunal: str, capa: dict, partes
         "capa": {k: capa[k] for k in CAMPOS_MANIFESTO if (capa or {}).get(k)},
         "partes": [str(p) for p in (partes or []) if str(p).strip()],
         "modo": str(m.get("modo") or "documentos"),
-        "paginacao": paginacao.resumo(m) if paginacao.valido(m) else "",
+        **pag,
         "paginas_pdf": paginas_do_pdf(m),
         "como_citar": " ".join(como_citar(m)),
         "eventos_completos": bool(eventos_completos),
@@ -2306,6 +2319,13 @@ class PortalEProc:
             if self._etapa_em_alguma_aba() == "logado":
                 log.info("Código aceito na janela do navegador.")
                 return codigos + 1, ""
+            if self._janela_visivel() and limite > time.monotonic():
+                # Sem quem digite o código aqui (a linha de comando sem
+                # terminal, como a da skill do Claude, ou o diálogo fechado):
+                # com a janela do navegador à vista - a do eProc abre sempre
+                # visível -, o usuário o digita lá, no campo do próprio eProc,
+                # dentro do prazo do login. Como no e-SAJ; antes, desistia na hora.
+                return self._esperar_codigo_na_janela(codigos, limite)
             self.nav.diagnosticar("eproc-codigo-nao-informado")
             raise LoginFalhou(
                 "o código do aplicativo autenticador não foi informado. Clique em "
@@ -2336,6 +2356,33 @@ class PortalEProc:
         log.warning("O eProc não aceitou esse código (errado ou vencido).")
         return codigos + 1, ("O eProc não aceitou o código anterior (errado ou vencido). Espere "
                              "o aplicativo mostrar um código novo e digite-o. ")
+
+    def _esperar_codigo_na_janela(self, codigos: int, limite: float) -> tuple[int, str]:
+        """Espera o usuário digitar o código do autenticador na janela do
+        navegador, até ``limite`` (o fim do prazo do login, em time.monotonic).
+
+        Volta assim que a página sai da tela do código (aceito: logado ou a
+        escolha do perfil; recusado, ela volta à tela do código e quem chama
+        pede de novo, até MAX_CODIGOS): quem chama olha a página de novo."""
+        self._restaurar_janela()
+        self._evento_de_espera("login_aguardando", "codigo", limite)
+        resta = max(1, -int(-(limite - time.monotonic()) // 60))     # minutos, para cima
+        self.ctx.avisar(
+            f"Digite o código na janela do {self.nome}",
+            "Digite o código de 6 dígitos do seu aplicativo autenticador na janela do navegador, "
+            "no campo do próprio eProc, e confirme. Aguardo até "
+            f"{plural(resta, 'minuto', 'minutos')} e sigo sozinho.")
+        while time.monotonic() < limite:
+            self._dormir(2)
+            if self._etapa_em_alguma_aba() != "otp":
+                log.info("Código digitado na janela do navegador.")
+                return codigos + 1, ""
+        minutos = max(1, int(self.opcoes.espera_login_min))
+        self.nav.diagnosticar("eproc-codigo-prazo")
+        raise LoginFalhou(
+            f"o prazo de {plural(minutos, 'minuto', 'minutos')} para concluir o login no "
+            f"{self.nome} acabou sem o código do aplicativo autenticador. Tente de novo (o prazo "
+            f"se ajusta em {CAMPO_PRAZO_LOGIN}).")
 
     def _perfis_na_tela(self) -> list:
         achados = []

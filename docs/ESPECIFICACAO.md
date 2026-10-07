@@ -341,8 +341,13 @@ Regras:
   por e-mail é digitado no campo do próprio portal. Se `pedir_codigo`
   devolve `None` com a janela visível, o portal espera o login nela até o
   fim do prazo (`login_aguardando` com `motivo` `codigo`); sem janela, o
-  `LoginFalhou` orienta a usar `--visivel`. Senha e código nunca são lidos
-  de arquivo.
+  `LoginFalhou` orienta a usar `--visivel`. O eProc, cuja janela abre sempre
+  visível, faz o mesmo com o código do aplicativo autenticador
+  (`eproc._esperar_codigo_na_janela`): espera, até o fim do prazo do login,
+  a página sair da tela do código e volta ao laço do login (logado, perfil
+  ou, com o código recusado, o novo pedido, até `MAX_CODIGOS`); prazo
+  esgotado é `LoginFalhou` com o diagnóstico `eproc-codigo-prazo`. Senha e
+  código nunca são lidos de arquivo.
 * **Um download por pasta de lote.** A trava `_controle/.executando`
   (`motor.TravaDoLote`, `{pid, inicio}`) recusa o segundo download na mesma
   pasta com `LoteEmAndamento` (código 2, `causa_erro` `lote_em_andamento`).
@@ -2114,8 +2119,11 @@ o que já foi baixado. API: `manifesto_esaj`, `manifesto_eproc`,
 pelo `pypdf`), `ausentes`, `descrever_folhas`, `ler_faixas`, `faixas`,
 `valido`, `palavras_chave` e `resumo` (a linha para o relatório, a capa e o
 índice: “página N = folha N (fls. 1 a 245); folhas com página de aviso:
-12-15”, “paginação de cada documento igual à do eProc (31 documentos)” ou
-“paginação não conferida (PDF de versão anterior à 1.0.2)”).
+12-15”, “paginação de cada documento igual à do eProc (31 documentos)”,
+no modo completo “arquivo completo do eProc (Download Completo), sem
+página acrescentada: página M do PDF = página M do arquivo” (com várias
+partes, “…, em 2 partes, sem página acrescentada: cada parte recomeça na
+página 1”) ou “paginação não conferida (PDF de versão anterior à 1.0.2)”).
 
 * **e-SAJ** (`paginacao = "folhas"`): `{formato: 1, programa, sistema:
   "esaj", paginacao, tribunal, processo, ultima, ausentes: {código:
@@ -2269,11 +2277,14 @@ caracteres para manter o processo fora do acervo nas próximas rodadas.
   (“págs. 1–2 do PDF (2 págs.; p. 1–2 no eProc)”; no modo completo, sem
   posição) e “== Eventos (N) ==”, sem limite. O JSON: `formato`,
   `sistema`, `tribunal`, `portal`, `processo`, `extraido_em`, `sigiloso`,
-  `capa`, `partes`, `modo`, `paginacao`, `paginas_pdf`, `como_citar`,
+  `capa`, `partes`, `modo`, `paginacao` (`resumo`, `ultima`,
+  `documentos_ausentes`), `paginas_pdf`, `como_citar`,
   `eventos_completos`, `eventos_nao_listados`, `eventos_sem_documento`,
   `eventos` (todos: `evento`, `data`, `hora`, `descricao`, `documentos`),
   `documentos` (os do manifesto) e, no modo completo,
-  `partes_do_arquivo`. Os seletores `capa_assunto` (`#txtAssunto`) e
+  `partes_do_arquivo`. Nos dois sistemas, `paginacao` é um objeto, só com
+  o manifesto, e `resumo` e `ultima` (a última página do PDF) valem para
+  ambos; as chaves de `capa` são as de cada sistema. Os seletores `capa_assunto` (`#txtAssunto`) e
   `capa_valor` (`#txtValorCausa`) ainda não foram confirmados em portal
   real.
 
@@ -2304,7 +2315,10 @@ do `os.replace`).
     veio, `… — NÃO INCLUÍDO`, e a gravação, `… — gravação fora do PDF` (sem
     o texto da página de aviso, só uma linha com o motivo ou o arquivo);
     modo completo, `=== [arquivo completo do eProc, pág. M] ===` (com várias
-    partes, `parte j, pág. Y` e `(pág. M do PDF)`);
+    partes, `parte j, pág. Y` e `(pág. M do PDF)`). Como no e-SAJ, se a
+    última página que o manifesto descreve (documentos ou partes do arquivo)
+    não é a última do PDF (arquivo alterado depois do download), o texto
+    sai `nao_garantida`, com o aviso e a capa no preâmbulo;
   - sem paginação garantida: `=== [pág. M do PDF] ===`.
   “(pág. M do PDF)” é só a posição no arquivo, para navegar: nunca se cita.
   Abaixo da marca, `[documento: …]` (o marcador do PDF da página).

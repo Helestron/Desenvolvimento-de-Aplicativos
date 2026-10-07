@@ -376,10 +376,12 @@ os mesmos ajustes da tela Processos:
   na pasta (o login recusado, por exemplo), ou o lote nem começou (relação
   ilegível ou sem números, uso errado, pasta do lote que não pode ser
   criada, outro download já usando a mesma pasta de lote).
-- **O código do e-SAJ.** Num terminal, o código enviado por e-mail é pedido
-  ali mesmo. Sem terminal (um script, a skill do Claude), a janela do
-  navegador fica visível, e o código é digitado nela, no campo do próprio
-  portal. A senha e o código nunca são lidos de arquivo.
+- **O código do e-SAJ e o do eProc.** Num terminal, o código enviado por
+  e-mail (e-SAJ) ou o do aplicativo autenticador (eProc) é pedido ali mesmo.
+  Sem terminal (um script, a skill do Claude), a janela do navegador fica
+  visível (a do eProc já abre assim), e o código é digitado nela, no campo
+  do próprio portal, dentro do prazo do login. A senha e o código nunca são
+  lidos de arquivo.
 - **O JSON e o registro trazem os números reais** dos processos sigilosos:
   por isso, o Helestron recusa gravá-los dentro do acervo (sai com o código
   2).

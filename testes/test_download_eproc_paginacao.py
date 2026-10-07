@@ -16,6 +16,7 @@ test_download_eproc_integracao.py.
 from __future__ import annotations
 
 import json
+import time
 import unittest
 from dataclasses import replace
 from datetime import datetime
@@ -24,7 +25,7 @@ from unittest import mock
 import pymupdf
 
 from helestron.compartilhar import textos
-from helestron.download import eproc, modelos
+from helestron.download import eproc, esaj, modelos
 from helestron.download.eproc import Documento, Evento, PortalEProc
 from helestron.nucleo import paginacao, tribunais
 
@@ -186,6 +187,36 @@ class TestCitacaoERotulo(unittest.TestCase):
         self.assertIn("== Mapa de documentos (75) ==", texto)
         self.assertIn("Evento 149 — DOC149 (10/01/2024)", texto)
 
+    def test_capa_json_tem_a_paginacao_como_objeto_nos_dois_sistemas(self):
+        """helestron.capa/2: "paginacao" era objeto no e-SAJ e texto no eProc;
+        quem lia capa["paginacao"]["resumo"] pelo contrato do e-SAJ (a skill,
+        no TJAL em transição) quebrava com TypeError no primeiro do eProc."""
+        n_esaj = apoio.numero("0700123", tr="02")
+        m_esaj = paginacao.manifesto_esaj(n_esaj.formatado, 6, {3: "N"}, tribunal="TJAL")
+        capa_esaj = esaj.dados_da_capa({"capa": {"Classe": "Procedimento Comum"}}, n_esaj,
+                                       "TJAL", False, m_esaj)
+        n = apoio.numero("5001234", tr="21")
+        eventos = [_ev(1, "01/01/2024", "", "INICIAL", [_doc(1, "INIC1")]),
+                   _ev(2, "02/01/2024", "", "PETIÇÃO", [_doc(2, "PET1")])]
+        m = eproc.manifesto_do_processo(n, "eProc do TJRS", "TJRS", {}, [], eventos, False)
+        m["documentos"] = [
+            dict(eproc.info_do_documento(eventos[0].documentos[0], "pdf"), inicio=1, paginas=2),
+            dict(eproc.info_do_documento(eventos[1].documentos[0], "pdf", "ausente"), inicio=3,
+                 paginas=1)]
+        capa_eproc = eproc.dados_da_capa(n, "eProc do TJRS", "TJRS", {}, [], eventos, False, m)
+        for capa, ultima in ((capa_esaj, 6), (capa_eproc, 3)):
+            with self.subTest(sistema=capa["sistema"]):
+                self.assertEqual(capa["formato"], "helestron.capa/2")
+                self.assertIsInstance(capa["paginacao"], dict)
+                self.assertIsInstance(capa["paginacao"]["resumo"], str)
+                self.assertEqual(capa["paginacao"]["ultima"], ultima)
+        self.assertEqual(capa_eproc["paginacao"]["documentos_ausentes"], "ev. 2 PET1")
+        self.assertEqual(capa_eproc["paginas_pdf"], 3)
+        # sem manifesto, nenhum dos dois traz a chave (o eProc gravava "")
+        self.assertNotIn("paginacao", esaj.dados_da_capa({}, n_esaj, "TJAL"))
+        self.assertNotIn("paginacao", eproc.dados_da_capa(n, "eProc do TJRS", "TJRS", {}, [],
+                                                          eventos, False))
+
 
 # ======================================================= montagem por documentos
 class TestMontagemPorDocumentos(_Base):
@@ -345,6 +376,12 @@ class TestMontagemPorDocumentos(_Base):
         self.assertEqual(d["eventos"][0]["documentos"], ["INIC1", "PROC2"])
         self.assertEqual([e["evento"] for e in d["eventos_sem_documento"]], [5])
         self.assertTrue(d["eventos_completos"])
+        # "paginacao" é um objeto, como no e-SAJ (era o texto do resumo)
+        self.assertEqual(d["paginacao"], {
+            "resumo": "paginação de cada documento igual à do eProc (9 documentos); "
+                      "3 não incluídos no PDF",
+            "ultima": 10, "documentos_ausentes": "ev. 4 PET1, ev. 4 CORROMPIDO1"})
+        self.assertEqual(d["paginacao"]["documentos_ausentes"], r.incompleto)
 
     def test_gravacao_salva_vai_no_manifesto_com_o_caminho(self):
         portal = self.portal(baixar_midias=True)
@@ -410,6 +447,14 @@ class TestDownloadCompletoSemNavegador(_Base):
         self.assertIn("a página M do PDF é a página M desse arquivo", capa)
         self.assertIn("Eventos: 3; documentos: 2.", capa)
         self.assertIn("== Mapa de documentos (2) ==", capa)
+        # o resumo da paginação (capa.json, JSON do baixar, INDICE.md) diz o
+        # que o arquivo é; dizia "... igual à do eProc (0 documentos)"
+        d = json.loads((destino.parent / "_controle" / f"{self.n.nome_arquivo}_capa.json")
+                       .read_text(encoding="utf-8"))
+        self.assertEqual(d["paginacao"], {
+            "resumo": "arquivo completo do eProc (Download Completo), sem página acrescentada: "
+                      "página M do PDF = página M do arquivo",
+            "ultima": 5, "documentos_ausentes": ""})
         portal._voltar_ao_processo.assert_not_called()
 
     def test_arquivo_sem_sumario_ganha_um_marcador(self):
@@ -529,6 +574,54 @@ class TestEventosDeLogin(_Base):
                                  (motivo, "eproc", "senha"))
                 self.assertLessEqual(dados["prazo_min"], 2)
                 self.assertTrue(dados["ate"])
+
+    def test_codigo_sem_terminal_espera_na_janela(self):
+        """A linha de comando sem terminal (a skill roda 'baixar --desanexar',
+        stdin = DEVNULL): pedir_codigo devolve None na hora. Com a janela à
+        vista, o eProc espera o código digitado nela, no prazo do login, como o
+        e-SAJ; antes, desistia em 0 s, sem evento nenhum."""
+        ctx = ContextoComEventos(codigos=[])            # ninguém para digitar aqui
+        portal = self.portal(ctx, espera_login_min=3)
+        portal._dormir = lambda s: None
+        portal._restaurar_janela = lambda: None
+        etapas = iter(["otp", "otp", "otp", "logado"])  # o usuário digita na janela
+        portal._etapa_em_alguma_aba = lambda: next(etapas)
+        portal._etapa = lambda pagina=None, apos_envio=False: "logado"
+        antes = datetime.now()
+        portal._login_com_senha("otp")
+        self.assertEqual(len(ctx.pedidos_codigo), 1)
+        self.assertEqual([t for t, _ in ctx.eventos], ["login_aguardando", "login_concluido"])
+        dados = ctx.eventos[0][1]
+        self.assertEqual((dados["motivo"], dados["modo"], dados["sistema"], dados["prazo_min"]),
+                         ("codigo", "senha", "eproc", 3))
+        self.assertGreater((datetime.fromisoformat(dados["ate"]) - antes).total_seconds(), 170)
+        titulo, mensagem = ctx.avisos[-1]
+        self.assertEqual(titulo, "Digite o código na janela do eProc do TJRS")
+        self.assertIn("aplicativo autenticador na janela do navegador", mensagem)
+        self.assertIn("Aguardo até 3 minutos", mensagem)
+        self.assertEqual(portal.nav.diagnosticos, [])
+
+    def test_codigo_na_janela_tem_o_prazo_do_login(self):
+        ctx = ContextoComEventos(codigos=[])
+        portal = self.portal(ctx, espera_login_min=2)
+        portal._dormir = lambda s: time.sleep(0.01)
+        portal._restaurar_janela = lambda: None
+        portal._etapa_em_alguma_aba = lambda: "otp"     # o código nunca é digitado
+        with self.assertRaises(modelos.LoginFalhou) as caso:
+            portal._resolver_codigo(0, "", time.monotonic() + 0.1)
+        self.assertIn("o prazo de 2 minutos para concluir o login no eProc do TJRS acabou sem o "
+                      "código do aplicativo autenticador", str(caso.exception))
+        self.assertEqual([t for t, _ in ctx.eventos], ["login_aguardando"])
+        self.assertEqual(portal.nav.diagnosticos, ["eproc-codigo-prazo"])
+        # com a janela oculta, ninguém pode digitar: desiste na hora, sem evento
+        ctx = ContextoComEventos(codigos=[])
+        portal = self.portal(ctx, nav=_Nav(visivel=False))
+        portal._etapa_em_alguma_aba = lambda: "otp"
+        with self.assertRaises(modelos.LoginFalhou) as caso:
+            portal._resolver_codigo(0, "", time.monotonic() + 300)
+        self.assertIn("código do aplicativo autenticador não foi informado", str(caso.exception))
+        self.assertEqual(ctx.eventos, [])
+        self.assertEqual(portal.nav.diagnosticos, ["eproc-codigo-nao-informado"])
 
     def test_login_sem_espera_nao_publica_nada(self):
         ctx = ContextoComEventos()

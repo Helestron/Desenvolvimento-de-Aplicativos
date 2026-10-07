@@ -682,8 +682,11 @@ def _limpo(texto, limite: int = 2000) -> str:
     return re.sub(r"\s+", " ", str(texto or "")).strip()[:limite]
 
 
-# No capa.json, os campos da capa com chaves de máquina (as do eProc, quando
-# há equivalente); no capa.txt ficam os rótulos da página.
+# No capa.json, os campos da capa com chaves de máquina, tiradas dos rótulos
+# da página do e-SAJ ("Juiz" -> "juiz"): não são as do eProc ("magistrado",
+# "orgao", "autuacao"), e cada sistema documenta as suas. No capa.txt ficam os
+# rótulos da página. O que é igual nos dois é "paginacao" (objeto com
+# "resumo" e "ultima", só com o manifesto).
 CHAVES_CAPA = {"Classe": "classe", "Assunto": "assunto", "Foro": "foro", "Vara": "vara",
                "Juiz": "juiz", "Distribuição": "distribuicao", "Valor da ação": "valor",
                "Situação": "situacao", "Área": "area", "Controle": "controle"}

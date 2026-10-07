@@ -76,6 +76,37 @@ class TestManifesto(unittest.TestCase):
         self.assertEqual(lido["documentos"][0]["rotulo"], "INIC1")
         self.assertEqual(paginacao.ausentes(lido), {})
 
+    def test_resumo_do_eproc_documentos_e_completo(self):
+        """O resumo vai para o INDICE.md, o listar_acervo do MCP, o JSON do
+        baixar e a capa. No Download Completo (documentos = [], o arquivo
+        em "partes"), dizia "paginação de cada documento igual à do eProc (0
+        documentos)" - falso, e contra as marcas do texto dos autos."""
+        n = "5001234-56.2024.8.21.0001"
+        um = paginacao.manifesto_eproc(n, [], modo="completo",
+                                       partes=[{"inicio": 1, "paginas": 40}])
+        self.assertEqual(paginacao.resumo(um),
+                         "arquivo completo do eProc (Download Completo), sem página acrescentada: "
+                         "página M do PDF = página M do arquivo")
+        duas = paginacao.manifesto_eproc(n, [], modo="completo",
+                                         partes=[{"inicio": 1, "paginas": 2},
+                                                 {"inicio": 3, "paginas": 3}])
+        self.assertEqual(paginacao.resumo(duas),
+                         "arquivo completo do eProc (Download Completo), em 2 partes, sem página "
+                         "acrescentada: cada parte recomeça na página 1")
+        for m in (um, duas):
+            self.assertNotIn("documento", paginacao.resumo(m))
+        # documento a documento: o número certo, sem "(s)"
+        ok = {"evento": 1, "rotulo": "INIC1", "situacao": "ok", "inicio": 1, "paginas": 2}
+        fora = {"evento": 2, "rotulo": "PET1", "situacao": "ausente", "inicio": 3, "paginas": 1}
+        self.assertEqual(paginacao.resumo(paginacao.manifesto_eproc(n, [ok])),
+                         "paginação de cada documento igual à do eProc (1 documento)")
+        self.assertEqual(paginacao.resumo(paginacao.manifesto_eproc(n, [ok, fora])),
+                         "paginação de cada documento igual à do eProc (2 documentos); "
+                         "1 não incluído no PDF")
+        self.assertEqual(paginacao.resumo(paginacao.manifesto_eproc(n, [ok, fora, dict(fora)])),
+                         "paginação de cada documento igual à do eProc (3 documentos); "
+                         "2 não incluídos no PDF")
+
     def test_pdf_antigo_ou_invalido(self):
         arq = _pdf(self.tmp / "velho.pdf", 2)
         self.assertIsNone(paginacao.ler_do_pdf(arq))
