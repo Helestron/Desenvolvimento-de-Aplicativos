@@ -289,6 +289,73 @@ class TestGravarEAnexar(apoio.PastaTemporaria):
         self.assertEqual(pdf.contar_paginas(destino), 2)
         self.assertFalse((self.tmp / "p.pdf.parcial").exists())
 
+    def test_troca_espera_cada_vez_mais_antes_de_desistir(self):
+        """O antivírus segura um PDF grande por segundos: a troca insiste com
+        esperas crescentes (0,25, 0,5, 1, 2, 3 s...), por quase 10 s."""
+        esperas = []
+        with mock.patch.object(pdf.time, "sleep", esperas.append), \
+                mock.patch.object(pdf.os, "replace",
+                                  side_effect=PermissionError(13, "Acesso negado")) as troca:
+            with self.assertRaises(PermissionError):
+                pdf._trocar(self.tmp / "a.parcial", self.tmp / "a.pdf")
+        self.assertEqual(troca.call_count, pdf.TENTATIVAS_TROCA)
+        self.assertEqual(esperas, [0.25, 0.5, 1.0, 2.0, 3.0, 3.0])
+        self.assertTrue(8 <= sum(esperas) <= 10, sum(esperas))
+        # a trava curta passa logo, sem esperar o resto
+        esperas.clear()
+        falhas = [PermissionError(13, "Acesso negado")] * 2
+        real = pdf.os.replace
+
+        def replace(origem, destino):
+            if falhas:
+                raise falhas.pop()
+            return real(origem, destino)
+        (self.tmp / "b.parcial").write_bytes(b"x")
+        with mock.patch.object(pdf.time, "sleep", esperas.append), \
+                mock.patch.object(pdf.os, "replace", replace):
+            pdf._trocar(self.tmp / "b.parcial", self.tmp / "b.pdf")
+        self.assertEqual(esperas, [0.25, 0.5])
+        self.assertEqual((self.tmp / "b.pdf").read_bytes(), b"x")
+
+    def test_gravar_insiste_na_troca_do_parcial2(self):
+        """Sem salvamento incremental, o PDF com o manifesto vai para o
+        .parcial2 e troca de lugar com o .parcial: essa troca também insiste."""
+        real = pdf.os.replace
+        falhas = [PermissionError(13, "Acesso negado")] * 2
+
+        def replace(origem, destino):
+            if str(origem).endswith(".parcial2") and falhas:
+                raise falhas.pop()
+            return real(origem, destino)
+        destino = self.tmp / "p.pdf"
+        m = paginacao.manifesto_eproc("5001234-56.2024.8.21.0001", [], modo="completo")
+        with mock.patch.object(pdf, "ESPERA_TROCA_S", 0), \
+                mock.patch.object(pdf.os, "replace", replace), \
+                mock.patch.object(pymupdf.Document, "can_save_incrementally", return_value=False):
+            self.assertEqual(pdf.gravar(destino, apoio.pdf_bytes(2), manifesto=m), 2)
+        self.assertEqual(falhas, [])
+        self.assertEqual(paginacao.ler_do_pdf(destino)["modo"], "completo")
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["p.pdf"])
+
+    def test_gravar_sem_trocar_o_parcial2_vai_como_veio_e_nao_deixa_sobra(self):
+        real = pdf.os.replace
+
+        def replace(origem, destino):
+            if str(origem).endswith(".parcial2"):
+                raise PermissionError(13, "Acesso negado")
+            return real(origem, destino)
+        destino = self.tmp / "p.pdf"
+        m = paginacao.manifesto_eproc("5001234-56.2024.8.21.0001", [], modo="completo")
+        with mock.patch.object(pdf, "ESPERA_TROCA_S", 0), \
+                mock.patch.object(pdf.os, "replace", replace), \
+                mock.patch.object(pymupdf.Document, "can_save_incrementally", return_value=False), \
+                self.assertLogs("download.pdf", "WARNING"):
+            self.assertEqual(pdf.gravar(destino, apoio.pdf_bytes(2), manifesto=m), 2)
+        self.assertEqual(pdf.contar_paginas(destino), 2)       # o PDF como veio
+        self.assertIsNone(paginacao.ler_do_pdf(destino))
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir()), ["p.pdf"],
+                         "nenhum .parcial nem .parcial2 sobra")
+
     def test_pdf_aberto_no_leitor_ainda_avisa(self):
         destino = self.tmp / "p.pdf"
         tentativas = []

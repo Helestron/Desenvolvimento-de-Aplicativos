@@ -333,18 +333,23 @@ def _parcial(destino: Path) -> Path:
     return destino.with_name(destino.name + ".parcial")
 
 
-TENTATIVAS_TROCA = 6
-ESPERA_TROCA_S = 0.4
+TENTATIVAS_TROCA = 7
+# A 1ª espera entre as tentativas; cada uma dobra a anterior, até o máximo:
+# 0,25 + 0,5 + 1 + 2 + 3 + 3 = 9,75 s no total.
+ESPERA_TROCA_S = 0.25
+ESPERA_MAXIMA_TROCA_S = 3.0
 
 
 def _trocar(origem: Path, destino: Path) -> None:
     """os.replace com paciência para o Windows.
 
     O OneDrive (que sincroniza o acervo), o indexador e o antivírus abrem o
-    arquivo recém-gravado por um instante, e a troca falha com "acesso
-    negado" (PermissionError) - que o motor entenderia como "PDF aberto no
-    leitor" e não tentaria de novo. Insiste-se por ~2 s; se for mesmo o
-    leitor de PDF, o erro sobe igual.
+    arquivo recém-gravado por um instante - num PDF de centenas de páginas,
+    o antivírus leva segundos -, e a troca falha com "acesso negado"
+    (PermissionError), que o motor entenderia como "PDF aberto no leitor" e
+    não tentaria de novo. Insiste-se com esperas crescentes (0,25, 0,5, 1, 2
+    e 3 s), por quase 10 s no total: a trava curta passa logo, sem demora; se
+    for mesmo o leitor de PDF, o erro sobe igual.
     """
     for tentativa in range(TENTATIVAS_TROCA):
         try:
@@ -353,7 +358,7 @@ def _trocar(origem: Path, destino: Path) -> None:
         except PermissionError:
             if tentativa == TENTATIVAS_TROCA - 1:
                 raise
-            time.sleep(ESPERA_TROCA_S)
+            time.sleep(min(ESPERA_TROCA_S * 2 ** tentativa, ESPERA_MAXIMA_TROCA_S))
 
 
 def _salvar_atomico(doc, destino: Path) -> None:
@@ -687,11 +692,13 @@ def gravar(destino: Path, dados: bytes, marcadores: list[tuple[str, int]] | None
         finally:
             doc.close()
         if trocar:
-            os.replace(tmp2, tmp)
+            # o .parcial recém-fechado também é aberto pelo antivírus e pelo
+            # indexador por um instante: a troca insiste, como a final
+            _trocar(tmp2, tmp)
     except Exception as erro:
         log.warning("marcadores ou manifesto não aplicados (%s); o PDF vai como veio",
                     str(erro)[:160])
-        _apagar(tmp2)
+        _apagar(tmp2)           # o .parcial2 que sobrou não fica na pasta do lote
         tmp.write_bytes(dados)
         paginas = contar_paginas(tmp) or paginas
     if not paginas:

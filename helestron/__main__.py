@@ -68,11 +68,25 @@ Sem argumentos, abre o programa (servidor + janela)."""
 
 # O que esta versão oferece a quem a automatiza (a skill do Claude consulta
 # em "caminhos --json" e, numa versão sem o recurso, segue pelo caminho antigo).
+# Recurso novo vai no fim; nenhum sai nem muda de sentido.
+#   folhas.fieis      e-SAJ: a página N do PDF é sempre a folha N (aviso no lugar
+#                     da folha que não veio, com o manifesto de paginação)
+#   texto.v2          o texto dos autos no formato 2 ("# helestron-texto 2 | ...",
+#                     marcas [fl. N] no e-SAJ e [evento N, RÓTULO, p. Y] no eProc)
+#   capa.v2           a capa completa (_controle/<n>_capa.txt e _capa.json, que o
+#                     JSON do baixar expõe em "capa_json")
+#   texto.paginas-sem-texto
+#                     "paginas_sem_texto" no JSON do baixar --texto e do preparar
+#                     --pasta (folhas no e-SAJ; citação no eProc)
+#   baixar.codigo-na-janela
+#                     sem terminal, o código do e-mail do e-SAJ é digitado na
+#                     janela do navegador, que fica visível (nunca lido de arquivo)
 RECURSOS = ("versao", "caminhos", "baixar.json", "baixar.eventos", "baixar.log", "baixar.texto",
             "baixar.retomar", "baixar.completar", "baixar.esperar-navegador",
             "baixar.rebaixar-incompletos", "baixar.sem-cofre", "baixar.desanexar",
             "relatorio.causa", "relatorio.meta", "paginacao.manifesto", "preparar.pasta",
-            "preparar.json")
+            "preparar.json", "folhas.fieis", "texto.v2", "capa.v2", "texto.paginas-sem-texto",
+            "baixar.codigo-na-janela")
 
 SAIDA_SIGILOSO_NO_ACERVO = 3     # "preparar": autos de sigiloso presos no acervo
 
@@ -478,7 +492,8 @@ def _preparar_pasta(opcoes, cfg) -> int:
         for pdf in sorted(p for p in origem.glob("*.pdf") if p.is_file()):
             chave = motor.chave_do_nome(pdf.name)
             item = {"pdf": str(pdf), "texto": "", "situacao": "", "erro": "",
-                    "sigiloso": da_pasta_de_sigilosos, "paginas": 0, "paginacao": None}
+                    "sigiloso": da_pasta_de_sigilosos, "paginas": 0, "paginacao": None,
+                    "paginas_sem_texto": "", "paginas_sem_texto_pdf": ""}
             if sigilosas is not None and not da_pasta_de_sigilosos and chave \
                     and sigilo.contem(sigilosas, chave):
                 item.update(situacao="sigiloso_ignorado", sigiloso=True,
@@ -493,10 +508,21 @@ def _preparar_pasta(opcoes, cfg) -> int:
                 item.update(texto=str(alvo), situacao="novo" if novo else "em_dia",
                             paginas=textos.contar_paginas(pdf))
                 m = paginacao.ler_do_pdf(pdf)
-                item["paginacao"] = motor.essencial_da_paginacao(m) or {
-                    "garantida": False, "resumo": paginacao.resumo(None)}
+                essencial = motor.essencial_da_paginacao(m)
+                # "garantida" sempre presente, como no JSON do baixar
+                item["paginacao"] = ({"garantida": True, **essencial} if essencial else
+                                     {"garantida": False, "resumo": paginacao.resumo(None)})
             except Exception as erro:   # PDF corrompido não para o resto
                 item.update(situacao="falhou", erro=str(erro)[:300])
+            else:
+                # As páginas sem texto extraível (imagem digitalizada sem OCR):
+                # quem lê o texto precisa vê-las no PDF. No e-SAJ, em folhas.
+                try:
+                    _texto, info = textos.analisar(alvo)
+                    item.update(paginas_sem_texto=info["paginas_sem_texto"],
+                                paginas_sem_texto_pdf=info["paginas_sem_texto_pdf"])
+                except Exception:       # o texto está pronto; só a análise falhou
+                    pass
             itens.append(item)
     falhas = [i for i in itens if i["situacao"] == "falhou"]
     codigo = 1 if falhas else 0
@@ -514,6 +540,10 @@ def _preparar_pasta(opcoes, cfg) -> int:
     if falhas:
         texto += f", {len(falhas)} com problema"
     print(texto + ".")
+    for i in itens:
+        if i.get("paginas_sem_texto"):
+            print(f"  {Path(i['pdf']).name}: páginas sem texto extraível (imagem? confira no "
+                  f"PDF): {i['paginas_sem_texto']}")
     for i in falhas:
         print(f"  {Path(i['pdf']).name}: {i['erro']}", file=sys.stderr)
     return codigo

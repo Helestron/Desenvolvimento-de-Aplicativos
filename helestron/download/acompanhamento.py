@@ -31,6 +31,9 @@ futuras, os existentes não mudam de sentido)::
       "relatorio_completo": "...\\Sigilosos\\...\\_controle\\relatorio.csv",   # ou ""
       "log": "C:\\...\\baixar-....log",   # --log (ou o padrão de --json), "" sem ele
       "status": "Entrando no e-SAJ do TJAL...",   # a última frase da tela
+      "navegador_visivel": true,          # a janela do navegador fica à vista (--visivel,
+                                          # os Ajustes, ou sem terminal com o e-SAJ por
+                                          # senha: o código do e-mail é digitado nela)
       "progresso": {"feitos": 3, "total": 10,     # processos terminados e o em curso
                     "em_curso": "0700004-..."},
       "aguardando": null,                 # ou o evento que espera o usuário: {"tipo":
@@ -68,9 +71,16 @@ Cada processo::
       "texto_situacao": "novo",           # novo | em_dia | falhou | sigiloso_ignorado |
                                           # nao_pedido
       "texto_erro": "",
+      "paginas_sem_texto": "30-41",       # com --texto: páginas sem texto extraível
+                                          # (imagem sem OCR; confira no PDF). e-SAJ: as
+                                          # folhas; eProc: a citação ("evento 4, PET1,
+                                          # p. 1-2 (págs. 5-6 do PDF)"); "" se nenhuma
+      "paginas_sem_texto_pdf": "30-41",   # as mesmas, como páginas do PDF ("" se nenhuma)
       "paginas": 245,                     # páginas do PDF
       "documentos": 31,
-      "incompleto": "12-15",              # e-SAJ: folhas com página de aviso;
+      "incompleto": "12-15",              # e-SAJ: TODAS as folhas com página de aviso
+                                          # (não oferecidas, peça que não veio, arquivo
+                                          # inválido ou com páginas a menos);
                                           # eProc: documentos que não vieram ("ev. 4 PET1")
       "paginacao": {                      # null se não há PDF
         "garantida": true,                # o PDF traz o manifesto (1.0.2+)
@@ -192,6 +202,8 @@ def processo_json(r: ResultadoProcesso, extra: dict | None = None) -> dict:
         "texto": extra.get("texto", ""),
         "texto_situacao": extra.get("texto_situacao", "nao_pedido"),
         "texto_erro": extra.get("texto_erro", ""),
+        "paginas_sem_texto": extra.get("paginas_sem_texto", ""),
+        "paginas_sem_texto_pdf": extra.get("paginas_sem_texto_pdf", ""),
         "paginas": int(r.paginas or 0),
         "documentos": int(r.documentos or 0),
         "incompleto": r.incompleto or "",
@@ -237,7 +249,7 @@ class Acompanhamento:
             "formato": FORMATO, "versao": _versao(), "pid": os.getpid(), "inicio": _agora(),
             "atualizado_em": "", "concluido": False, "codigo_saida": None, "erro": "",
             "causa_erro": "", "destino": "", "sigilosos_do_lote": "", "relatorio": "",
-            "relatorio_completo": "", "log": "", "status": "",
+            "relatorio_completo": "", "log": "", "status": "", "navegador_visivel": False,
             "progresso": {"feitos": 0, "total": 0, "em_curso": ""},
             "aguardando": None, "ultimo_evento": None,
             "ignorados": [], "ignorados_por_retomar": [], "avisos": [],
@@ -296,11 +308,17 @@ class Acompanhamento:
             del avisos[:-MAX_AVISOS]
         self.gravar(forcar=False)
 
-    def texto(self, r: ResultadoProcesso, caminho, situacao: str, erro: str = "") -> None:
-        """O texto extraído (baixar --texto) do processo 'r'."""
+    def texto(self, r: ResultadoProcesso, caminho, situacao: str, erro: str = "",
+              info: dict | None = None) -> None:
+        """O texto extraído (baixar --texto) do processo 'r'; 'info' é a de
+        textos.analisar (as páginas sem texto extraível)."""
+        info = info or {}
         with self._trava:
-            self._extras[r.numero] = {"texto": str(caminho or ""), "texto_situacao": situacao,
-                                      "texto_erro": str(erro or "")}
+            self._extras[r.numero] = {
+                "texto": str(caminho or ""), "texto_situacao": situacao,
+                "texto_erro": str(erro or ""),
+                "paginas_sem_texto": str(info.get("paginas_sem_texto") or ""),
+                "paginas_sem_texto_pdf": str(info.get("paginas_sem_texto_pdf") or "")}
 
     def concluir(self, codigo_saida: int, resumo=None, erro: str = "",
                  causa_erro: str = "") -> None:

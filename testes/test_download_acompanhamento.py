@@ -136,8 +136,27 @@ class TestAcompanhamento(apoio.PastaTemporaria):
     def test_formato_documentado(self):
         doc = acompanhamento.__doc__
         for campo in ("helestron.baixar/1", '"paginacao"', '"ultima"', '"ausentes"', '"causa"',
-                      '"refazer"', '"capa_json"', '"texto"', '"incompleto"', '"aguardando"'):
+                      '"refazer"', '"capa_json"', '"texto"', '"incompleto"', '"aguardando"',
+                      '"paginas_sem_texto"', '"paginas_sem_texto_pdf"', '"navegador_visivel"'):
             self.assertIn(campo, doc)
+
+    def test_texto_com_as_paginas_sem_texto(self):
+        acomp = acompanhamento.Acompanhamento(None)
+        r = modelos.ResultadoProcesso(1, A.formatado, "TJAL", "esaj", modelos.OK,
+                                      arquivo=str(self.tmp / "a.pdf"))
+        acomp.item(r)
+        p = acomp.dados()["processos"][0]
+        self.assertEqual((p["texto_situacao"], p["paginas_sem_texto"],
+                          p["paginas_sem_texto_pdf"]), ("nao_pedido", "", ""))
+        acomp.texto(r, self.tmp / "_texto" / "a.txt", "novo",
+                    info={"paginas_sem_texto": "3, 7-9", "paginas_sem_texto_pdf": "3, 7-9"})
+        p = acomp.dados()["processos"][0]
+        self.assertEqual((p["texto"], p["paginas_sem_texto"], p["paginas_sem_texto_pdf"]),
+                         (str(self.tmp / "_texto" / "a.txt"), "3, 7-9", "3, 7-9"))
+        acomp.texto(r, "", "falhou", "não abre")            # sem a info: vazio
+        p = acomp.dados()["processos"][0]
+        self.assertEqual((p["texto_erro"], p["paginas_sem_texto"]), ("não abre", ""))
+        self.assertFalse(acomp.dados()["navegador_visivel"])
 
 
 if __name__ == "__main__":
