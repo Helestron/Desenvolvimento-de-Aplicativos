@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -76,7 +77,8 @@ def cmd_transcrever(argv: list[str]) -> int:
     p = _Analisador(prog="python -m helestron transcrever",
                     description="Transcreve uma gravação, ou uma audiência ao vivo.")
     p.add_argument("arquivo", nargs="?", help="gravação a transcrever (ASF, WMV, MP4, MP3, WAV...)")
-    p.add_argument("--processo", help="número do processo (nome do DOCX)")
+    p.add_argument("--processo", help="número do processo (nome do DOCX); o dependente vale "
+                                      "como /01 ou -01")
     p.add_argument("--ao-vivo", action="store_true", help="transcrição simultânea")
     p.add_argument("--wav", help="ao vivo: tocar este arquivo no lugar do microfone (testes/CI)")
     p.add_argument("--tempo-real", action="store_true",
@@ -88,7 +90,9 @@ def cmd_transcrever(argv: list[str]) -> int:
     p.add_argument("--dispositivo", help="ao vivo: nome ou número do microfone")
     p.add_argument("--refinar", action="store_true",
                    help="ao vivo: ao encerrar, revisar com o modelo de revisão")
-    p.add_argument("--destino", help="arquivo: DOCX de saída (padrão: Transcricoes/<processo>.docx)")
+    p.add_argument("--destino", help="arquivo: DOCX de saída, ou a pasta em que gravá-lo com o "
+                                     "número do processo no nome (padrão: "
+                                     "Transcricoes/<processo>.docx)")
     p.add_argument("--falantes", type=int, default=0,
                    help="arquivo: quantas pessoas falam (0 = descobrir sozinho)")
     p.add_argument("--sem-falantes", action="store_true", help="arquivo: não separar as vozes")
@@ -110,7 +114,11 @@ def cmd_transcrever(argv: list[str]) -> int:
     numero = None
     if args.processo:
         try:
-            numero = cnj.ler(args.processo)
+            # Aceita o dependente como "/NN" e como "-NN" (o nome do DOCX e
+            # dos autos do incidente): cnj.ler descartava o "-NN" e a
+            # transcrição do incidente saía como a do principal - no acervo,
+            # mesmo com o incidente em segredo de justiça.
+            numero = cnj.ler_nome_arquivo(args.processo)
         except cnj.NumeroInvalido:
             _imprimir(f"Número de processo inválido: {args.processo}")
             return USO
@@ -177,7 +185,15 @@ def _arquivo(args, numero, cfg) -> int:
     if not origem.exists():
         _imprimir(f"Arquivo não encontrado: {origem}")
         return FALHOU
-    if args.sigiloso and args.destino and _no_acervo(Path(args.destino), cfg):
+    destino = None
+    if args.destino:
+        # Conferido ANTES de transcrever: o destino só era usado depois de
+        # horas de trabalho, e uma pasta no lugar do arquivo derrubava tudo.
+        destino, problema = _resolver_destino(args.destino, numero or _numero_ou_none(origem))
+        if problema:
+            _imprimir(problema)
+            return USO
+    if args.sigiloso and destino is not None and _no_acervo(destino, cfg):
         _imprimir("Processo em segredo de justiça: a transcrição não pode ser gravada no acervo, "
                   "que é compartilhado com a IA e a nuvem. Tire o --destino (ela vai para a "
                   "pasta dos sigilosos) ou escolha uma pasta fora do acervo.")
@@ -185,8 +201,7 @@ def _arquivo(args, numero, cfg) -> int:
     try:
         caminho = arquivo.transcrever_arquivo(
             origem, numero, cfg, progresso=_Progresso(), cancelado=lambda: False,
-            destino=Path(args.destino) if args.destino else None,
-            modelo=args.modelo, separar=False if args.sem_falantes else None,
+            destino=destino, modelo=args.modelo, separar=False if args.sem_falantes else None,
             num_falantes=args.falantes, sigiloso=args.sigiloso)
     except arquivo.ProcessoNaoInformado as erro:
         _imprimir(f"{erro} Use --processo.")
@@ -200,8 +215,56 @@ def _arquivo(args, numero, cfg) -> int:
     except KeyboardInterrupt:
         _imprimir("Interrompido.")
         return INTERROMPIDO
+    except OSError as erro:
+        # Disco cheio, pasta sem permissão, arquivo preso: mensagem, não
+        # rastreamento de pilha (a skill do Claude lê a saída e o código).
+        alvo = f" ({erro.filename})" if getattr(erro, "filename", None) else ""
+        _imprimir(f"Não consegui concluir a transcrição: {erro.strerror or erro}{alvo}. "
+                  "Confira o espaço em disco e a permissão de gravação na pasta.")
+        return FALHOU
+    if destino is not None and Path(caminho) != destino:
+        _imprimir(f"Atenção: não consegui gravar em {destino} (aberto em outro programa ou sem "
+                  "permissão); a transcrição foi gravada em outro lugar.")
     _imprimir(f"Transcrição gravada em: {caminho}")
     return OK
+
+
+def _numero_ou_none(origem: Path):
+    from .arquivo import numero_do_caminho
+
+    try:
+        return numero_do_caminho(origem)
+    except Exception:
+        return None
+
+
+def _resolver_destino(texto: str, numero) -> tuple[Path | None, str]:
+    """(o DOCX de saída, problema). --destino pode ser uma pasta (existente,
+    ou terminada em barra): o DOCX vai para ela com o número do processo no
+    nome, sem sobrescrever outro. Sem a extensão, ganha ".docx" (sem ela, o
+    Windows não abre o documento no Word)."""
+    from ..nucleo import sistema
+
+    separadores = tuple(s for s in (os.sep, os.altsep) if s)
+    pasta_pedida = texto.endswith(separadores) or Path(texto).is_dir()
+    destino = Path(texto)
+    if pasta_pedida:
+        if numero is None:
+            return None, ("--destino é uma pasta, e não encontrei o número do processo no nome "
+                          "da gravação para dar nome ao documento. Use --processo.")
+        if destino.exists() and not destino.is_dir():
+            return None, f"--destino: {destino} não é uma pasta."
+        destino = sistema.destino_livre(destino, numero.nome_arquivo, ".docx")
+    elif destino.suffix.lower() != ".docx":
+        destino = destino.with_name(destino.name + ".docx")
+    # Um "pai" que existe como ARQUIVO (--destino relatorio.txt/ata.docx)
+    # só falharia no fim, depois de transcrever.
+    for pai in destino.parents:
+        if pai.exists():
+            if not pai.is_dir():
+                return None, f"--destino: {pai} é um arquivo, não uma pasta."
+            break
+    return destino, ""
 
 
 def _no_acervo(caminho: Path, cfg) -> bool:

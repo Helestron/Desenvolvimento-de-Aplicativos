@@ -326,16 +326,29 @@ def baixar_modelo(nome: str, progresso: Callable[[float, str], None] | None = No
 def transcrever_gravacao(origem: Path, numero, cfg, progresso, cancelado, *,
                          rotulos_manuais=None, destino: Path | None = None, tipo: str = "",
                          participantes: dict | None = None, sigiloso: bool = False,
-                         gravacao: str = "", data: datetime | None = None) -> Path:
+                         gravacao: str = "", data: datetime | None = None,
+                         meta=None) -> Path:
     """Transcreve a gravação (bloqueia). 'gravacao' e 'data': o nome e a data
     do arquivo do usuário, quando 'origem' é só a cópia temporária do envio
-    pela página - senão a ficha diria "envio-3d29….wav" e a data de hoje."""
+    pela página - senão a ficha diria "envio-3d29….wav" e a data de hoje.
+
+    'meta': a ficha da audiência (a MetaAudiencia da sessão ao vivo, na
+    revisão pelo "Revisar"). Sem ela, a revisão perdia o início e o término
+    e punha na Data a da modificação do FLAC (o dia seguinte, numa audiência
+    que passa da meia-noite), ao contrário da revisão automática ao
+    encerrar. Vai uma cópia (o motor completa a ficha no lugar); a ficha de
+    uma sessão ao vivo vira a da revisão, sem a observação da versão ao vivo;
+    'tipo', 'gravacao' e 'data' informados prevalecem, e 'participantes' se
+    somam aos da ficha.
+    """
     try:
         from .transcricao import arquivo
     except ImportError as erro:
         raise _ausente(erro, "transcrição de gravações") from erro
-    meta = None
-    if tipo or participantes or gravacao or data is not None:
+    if meta is not None:
+        meta = _ficha_da_revisao(meta, tipo=tipo, participantes=participantes,
+                                 gravacao=gravacao, data=data)
+    elif tipo or participantes or gravacao or data is not None:
         try:
             from .transcricao.documento import MetaAudiencia
 
@@ -348,6 +361,27 @@ def transcrever_gravacao(origem: Path, numero, cfg, progresso, cancelado, *,
     return arquivo.transcrever_arquivo(origem, numero, cfg, progresso, cancelado,
                                        rotulos_manuais=rotulos_manuais, destino=destino,
                                        sigiloso=sigiloso, **extra)
+
+
+def _ficha_da_revisao(meta, *, tipo: str = "", participantes: dict | None = None,
+                      gravacao: str = "", data: datetime | None = None):
+    """Cópia da ficha recebida, pronta para a transcrição da gravação: a da
+    sessão ao vivo vira a da revisão, como em SessaoAoVivo._refinar."""
+    from dataclasses import replace
+
+    ao_vivo = getattr(meta, "origem", "") == "ao vivo"
+    copia = replace(meta, participantes=dict(getattr(meta, "participantes", None) or {}),
+                    origem="revisão" if ao_vivo else meta.origem,
+                    observacao="" if ao_vivo else meta.observacao)
+    if tipo:
+        copia.tipo = tipo
+    if participantes:   # somados aos da ficha (o mesmo papel: vale o informado agora)
+        copia.participantes.update(participantes)
+    if gravacao:
+        copia.gravacao = gravacao
+    if data is not None:
+        copia.data = data
+    return copia
 
 
 def excecao_cancelado(erro: BaseException) -> bool:

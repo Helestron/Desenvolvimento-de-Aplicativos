@@ -36,9 +36,11 @@ from pathlib import Path
 from typing import Callable
 
 from ..nucleo import cnj, energia, sistema
+from . import documento as mod_documento
 from . import modelos
 from .documento import (Fala, MetaAudiencia, gerar_docx, magistrado_da_config,
-                        pasta_das_transcricoes, pastas_das_transcricoes, unidade_da_config)
+                        pasta_das_transcricoes, pastas_das_transcricoes, tecla,
+                        unidade_da_config)
 from .segmentador import TAXA, Segmentador, TrechoDeAudio
 
 __all__ = ["SessaoAoVivo", "Fala", "MetaAudiencia", "recuperaveis", "recuperar",
@@ -190,7 +192,11 @@ class SessaoAoVivo:
                  modelo: str | None = None, dispositivo: int | str | None = None,
                  falante: str = "", motor_revisao_fabrica: Callable[[], object] | None = None,
                  diarizador: Callable | None = None, sigiloso: bool = False):
-        self.numero: cnj.Numero = numero if isinstance(numero, cnj.Numero) else cnj.ler(str(numero))
+        # "-NN" é o dependente como o programa o escreve nos nomes de arquivo
+        # (o Windows não aceita "/"): cnj.ler o descartava, e a audiência do
+        # incidente virava a do principal - fora do sigilo do incidente.
+        self.numero: cnj.Numero = (numero if isinstance(numero, cnj.Numero)
+                                   else cnj.ler_nome_arquivo(str(numero)))
         self.cfg = cfg
         self._eventos = eventos
         self._captura_fabrica = captura_fabrica
@@ -206,8 +212,14 @@ class SessaoAoVivo:
         self.sigiloso = bool(sigiloso)
         self.marcar_tempo = cfg.flag("transcricao", "marcar_tempo")
         self.contexto = cfg.texto("transcricao", "contexto")
+        # A tela manda o mapa dos botões ({"F1": "Juiz(a)", ...}); a ficha
+        # lista quem falou, com o nome informado para o papel ({papel: nome}).
+        # Os dois ficam separados: o mapa dos botões não é lista de presença.
+        participantes = {str(k): str(v) for k, v in (participantes or {}).items()}
+        self.botoes = {k: v for k, v in participantes.items() if tecla(k)}
         self.meta = MetaAudiencia(
-            numero=self.numero.formatado, tipo=tipo, participantes=dict(participantes or {}),
+            numero=self.numero.formatado, tipo=tipo,
+            participantes={k: v for k, v in participantes.items() if not tecla(k)},
             unidade=unidade_da_config(cfg), magistrado=magistrado_da_config(cfg),
             modelo=self.modelo, origem="ao vivo")
 
@@ -451,7 +463,7 @@ class SessaoAoVivo:
             self.falante = rotulo
         # Só a posição (F1-F8), nunca o rótulo: é texto livre, e é comum
         # digitar nele o nome de quem depõe - que não vai para os registros.
-        posicao = next((chave for chave, valor in self.meta.participantes.items()
+        posicao = next((chave for chave, valor in self.botoes.items()
                         if valor == rotulo), "") if rotulo else ""
         log.info("falante: %s", posicao or ("rótulo digitado" if rotulo else "(sem rótulo)"))
 
@@ -552,6 +564,10 @@ class SessaoAoVivo:
     def _transcrever(self, motor, filtro, trecho: TrechoDeAudio, falante: str) -> Fala | None:
         segmentos, _info = motor.transcribe(trecho.amostras, initial_prompt=self.contexto or None,
                                             **PARAMETROS_AO_VIVO)
+        # Cada trecho é uma chamada nova, sem o texto do anterior: a mesma
+        # frase no trecho seguinte é fala de novo (a defesa repetindo o "Sem
+        # perguntas, Excelência." do Ministério Público), não laço do modelo.
+        filtro.novo_trecho()
         partes: list[str] = []
         primeiro = ultimo = None
         for i, seg in enumerate(segmentos):
@@ -657,7 +673,14 @@ class SessaoAoVivo:
 
             meta = self._meta_atual(True)
             observacoes = []
-            guardar_audio = self.cfg.flag("transcricao", "salvar_audio")
+            # Fala que não foi transcrita (modelo que não carregou, trecho que
+            # falhou) só existe no áudio - e a tela mandou transcrevê-la depois
+            # pela gravação. Apagá-la porque "Guardar a gravação" está
+            # desligado perderia a audiência (ou parte dela) de vez.
+            pedido = self.cfg.flag("transcricao", "salvar_audio")
+            manter_por_falha = (not pedido and self.caminho_audio is not None
+                                and bool(self._nao_transcritos or self._modelo_falhou))
+            guardar_audio = pedido or manter_por_falha
             if self._nao_transcritos:
                 # O DOCX vai para os autos: registra o fato, sem instruções de
                 # uso do programa (essas ficam na tela, no aviso e no erro).
@@ -686,12 +709,19 @@ class SessaoAoVivo:
             self._emitir("salvo", final)
 
             if refinar:
-                final = self._refinar(final)
+                try:
+                    final = self._refinar(final)
+                except Exception as erro:   # última rede: a audiência tem de terminar
+                    log.exception("a revisão ao encerrar falhou")
+                    self._emitir("aviso", f"A revisão não pôde ser concluída ({erro}). Ficou a "
+                                          "versão ao vivo.")
             if not guardar_audio and self.caminho_audio:
                 try:
                     self.caminho_audio.unlink(missing_ok=True)
                 except OSError:
                     pass
+            if manter_por_falha:
+                self._emitir("aviso", self._aviso_audio_mantido())
             self.estado = "encerrada"
             self._resultado = final
         log.info("audiência do processo %s encerrada: %s (%d fala(s))",
@@ -699,6 +729,19 @@ class SessaoAoVivo:
         self._emitir("estado", "Concluído")
         self._emitir("fim", final)
         return final
+
+    def _aviso_audio_mantido(self) -> str:
+        n = self._nao_transcritos
+        if n == 1:
+            fato = "1 trecho de fala não foi transcrito e só está no áudio"
+        elif n:
+            fato = f"{n} trechos de fala não foram transcritos e só estão no áudio"
+        else:
+            fato = "o modelo de transcrição não carregou"
+        return ("A gravação foi guardada, embora “Guardar a gravação da audiência” esteja "
+                f"desligado nos Ajustes: {fato}. Transcreva-a pela opção "
+                "“Transcrever uma gravação” e, depois, apague-a se quiser: "
+                f"{self.caminho_audio}")
 
     def _fechar_audio(self) -> None:
         with self._trava:
@@ -753,20 +796,94 @@ class SessaoAoVivo:
             log.exception("a revisão falhou")
             self._emitir("aviso", f"A revisão não pôde ser feita ({erro}). Ficou a versão ao vivo.")
             return final
-        # A revisada assume o nome do processo; a ao vivo fica guardada em _audio.
+        return self._trocar_pela_revisada(final, Path(revisado), pasta_audio, base)
+
+    def _trocar_pela_revisada(self, final: Path, revisado: Path, pasta_audio: Path,
+                              base: str) -> Path:
+        """A revisada assume o nome do processo; a ao vivo fica guardada em _audio.
+
+        Nunca levanta: o diário já foi fechado, e uma exceção aqui deixava a
+        audiência sem documento em Transcricoes, sem recuperação e sem o
+        "Revisar". O antivírus e o indexador do Windows abrem por um instante
+        o arquivo recém-gravado (a revisada acabou de ser escrita): a revisada
+        é COPIADA para o lugar (copiar só precisa ler), com novas tentativas,
+        e, se ainda assim não der, a versão ao vivo volta para o lugar.
+        Devolve o documento que ficou valendo (sempre um que existe).
+        """
         guardado = sistema.destino_livre(pasta_audio, f"{base} - ao vivo", ".docx")
         try:
-            os.replace(final, guardado)
+            _mover_com_espera(final, guardado)
         except OSError:
+            # A ao vivo está presa (aberta no Word): a revisada vai ao lado.
             alternativa = sistema.destino_livre(final.parent, f"{final.stem} (revisada)", ".docx")
-            os.replace(revisado, alternativa)
+            try:
+                _copiar_com_espera(revisado, alternativa)
+            except OSError as erro:
+                log.warning("não consegui pôr a revisão ao lado de %s: %s", final.name, erro)
+                self._emitir("aviso", f"{final.name} está aberto em outro programa e a versão "
+                                      f"revisada não pôde ser gravada ao lado dele ({erro}); "
+                                      f"ela ficou em {revisado}.")
+                return final
+            _apagar(revisado)
             self._emitir("aviso", f"{final.name} está aberto em outro programa; a versão "
                                   f"revisada foi gravada como {alternativa.name}.")
+            self.ultimo_docx = alternativa
+            self._emitir("salvo", alternativa)
             return alternativa
-        os.replace(revisado, final)
+        try:
+            _copiar_com_espera(revisado, final)
+        except OSError as erro:
+            log.warning("não consegui pôr a revisão no lugar de %s: %s", final.name, erro)
+            try:
+                _mover_com_espera(guardado, final)
+            except OSError:
+                self._emitir("aviso", f"A versão revisada não pôde substituir {final.name} "
+                                      f"({erro}). Ela ficou em {revisado}, e a versão ao vivo "
+                                      f"em {guardado}.")
+                self.ultimo_docx = guardado
+                return guardado
+            self._emitir("aviso", f"A versão revisada não pôde substituir {final.name} "
+                                  f"({erro}); ficou a versão ao vivo. A revisada está em "
+                                  f"{revisado}.")
+            return final
+        _apagar(revisado)
         self.ultimo_docx = final
         self._emitir("salvo", final)
         return final
+
+
+def _mover_com_espera(origem: Path, destino: Path) -> None:
+    """os.replace com as novas tentativas do documento (a trava passageira
+    do antivírus/indexador); outro erro sobe na hora."""
+    for espera in (*mod_documento.ESPERAS_TRAVA_S, None):
+        try:
+            os.replace(origem, destino)
+            return
+        except PermissionError:
+            if espera is None:
+                raise
+            time.sleep(espera)
+
+
+def _copiar_com_espera(origem: Path, destino: Path) -> None:
+    """Copia (gravação atômica, com novas tentativas): só LÊ a origem, que o
+    antivírus pode estar segurando por ter acabado de ser gravada."""
+    for espera in (*mod_documento.ESPERAS_TRAVA_S, None):
+        try:
+            dados = Path(origem).read_bytes()
+            break
+        except PermissionError:
+            if espera is None:
+                raise
+            time.sleep(espera)
+    mod_documento.gravar_com_espera(destino, dados)
+
+
+def _apagar(caminho: Path) -> None:
+    try:
+        Path(caminho).unlink(missing_ok=True)
+    except OSError as erro:   # sobra em _audio, sem prejuízo
+        log.debug("não consegui apagar %s: %s", Path(caminho).name, erro)
 
 
 # ======================================================== recuperação

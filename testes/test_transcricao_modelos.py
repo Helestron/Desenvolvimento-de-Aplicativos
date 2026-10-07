@@ -233,6 +233,79 @@ class TestFiltroDeAlucinacao(unittest.TestCase):
         # ...mas não dentro do mesmo trecho
         self.assertIsNone(f.aceitar(SegmentoDuble(4, 5, "Sim."), mesmo_trecho=True))
 
+    def test_mesma_frase_depois_de_uma_pausa_e_fala(self):
+        """Achado 31: "Sem perguntas, Excelência." do MP e, 2 s depois, da
+        defesa (a gravação inteira passa por um filtro só)."""
+        f = FiltroDeAlucinacao()
+        frase = "Sem perguntas, Excelência."
+        self.assertEqual(f.aceitar(SegmentoDuble(0.5, 2.5, frase)), frase)
+        self.assertEqual(f.aceitar(SegmentoDuble(4.5, 6.5, frase)), frase)
+        # emendada na anterior é o modelo em laço
+        with self.assertLogs("transcricao.modelos", "INFO") as registro:
+            self.assertIsNone(f.aceitar(SegmentoDuble(6.6, 8.6, frase)))
+        self.assertEqual((f.descartados, f.repeticoes), (1, 1))
+        # o registro diz o instante, nunca o texto (pode ser processo sigiloso)
+        self.assertIn("repetição descartada em 6.6 s", registro.output[0])
+        self.assertNotIn("perguntas", "\n".join(registro.output))
+
+    def test_dentro_da_mesma_chamada_repeticao_e_laco(self):
+        f = FiltroDeAlucinacao()
+        frase = "Sem perguntas, Excelência."
+        self.assertEqual(f.aceitar(SegmentoDuble(0.0, 2.0, frase)), frase)
+        with self.assertLogs("transcricao.modelos", "INFO"):
+            self.assertIsNone(f.aceitar(SegmentoDuble(5.0, 7.0, frase), mesmo_trecho=True))
+
+    def test_novo_trecho_esquece_a_frase_anterior(self):
+        """Ao vivo, cada trecho é uma chamada nova ao modelo (sem o texto do
+        anterior) e os tempos recomeçam do zero: sem novo_trecho(), a mesma
+        frase no trecho seguinte parecia emendada e sumia."""
+        f = FiltroDeAlucinacao()
+        frase = "Nada mais, Excelência, obrigado."
+        self.assertEqual(f.aceitar(SegmentoDuble(0.1, 2.0, frase)), frase)
+        f.novo_trecho()
+        self.assertEqual(f.aceitar(SegmentoDuble(0.1, 2.0, frase)), frase)
+        self.assertEqual(f.descartados, 0)
+
+    def test_sem_os_tempos_vale_o_criterio_antigo(self):
+        f = FiltroDeAlucinacao()
+        longa = types.SimpleNamespace(text="O depoente confirma o que foi dito.")
+        self.assertEqual(f.aceitar(longa), longa.text)
+        with self.assertLogs("transcricao.modelos", "INFO"):
+            self.assertIsNone(f.aceitar(longa))
+
+    def test_vocabulario_com_nomes_nao_apaga_a_fala(self):
+        """Achado 34: o nome da testemunha no Vocabulário da transcrição
+        apagava a resposta à qualificação ("Maria da Silva Santos.")."""
+        contexto = ("Audiência de instrução. Partes: Maria da Silva Santos (autora), Banco "
+                    "Exemplo S.A. (réu). Testemunha: José Pereira Lima. Pela ordem, Excelência.")
+        f = FiltroDeAlucinacao(contexto)
+        for texto in ("Qual o seu nome completo?", "Maria da Silva Santos.",
+                      "Testemunha José Pereira Lima.", "Pela ordem, Excelência."):
+            with self.subTest(texto=texto):
+                self.assertEqual(f.aceitar(SegmentoDuble(0, 1, texto, avg_logprob=-0.15,
+                                                         no_speech_prob=0.01)), texto)
+        # o mesmo texto com cara de alucinação continua sendo eco
+        g = FiltroDeAlucinacao(contexto)
+        self.assertIsNone(g.aceitar(SegmentoDuble(0, 1, "Maria da Silva Santos.",
+                                                  avg_logprob=-1.2)))
+        self.assertIsNone(g.aceitar(SegmentoDuble(0, 1, "Testemunha José Pereira Lima.",
+                                                  no_speech_prob=0.7)))
+        self.assertEqual(g.descartados, 2)
+
+    def test_contexto_padrao_frases_reais_e_eco_do_comeco(self):
+        from helestron.nucleo import config
+
+        padrao = config.PADROES[("transcricao", "contexto")]
+        f = FiltroDeAlucinacao(padrao)
+        for texto in ("Partes e testemunhas.", "Juiz de Direito, o Ministério Público.",
+                      "Petição inicial, contestação."):
+            with self.subTest(texto=texto):
+                self.assertEqual(f.aceitar(SegmentoDuble(0, 1, texto)), texto)
+        # o eco do começo do contexto sai sempre, mesmo com confiança boa
+        self.assertIsNone(f.aceitar(SegmentoDuble(0, 1, "Transcrição de audiência judicial.")))
+        self.assertIsNone(f.aceitar(SegmentoDuble(
+            0, 1, "Transcrição de audiência judicial. Participam o Juiz de Direito.")))
+
     def test_eco_do_contexto(self):
         contexto = ("Transcrição de audiência judicial. Participam o Juiz de Direito, o "
                     "Ministério Público, advogados, partes e testemunhas.")

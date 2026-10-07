@@ -14,6 +14,7 @@ Word não derruba nada: o Word tranca o arquivo, então gravamos ao lado, em
 
 from __future__ import annotations
 
+import errno
 import io
 import logging
 import re
@@ -29,6 +30,7 @@ log = logging.getLogger("transcricao.documento")
 SUBPASTA_TRANSCRICOES = sigilo.SUBPASTA_TRANSCRICOES   # dentro da pasta de sigilosos
 PAUSA_AGRUPAR_S = 3.0
 RE_AUTOMATICO = re.compile(r"^FALANTE \d+$")
+RE_TECLA = re.compile(r"^F\d{1,2}$")   # F1, F2...: as teclas dos botões de falante
 
 AVISO_AUTOMATICO = (
     "Transcrição produzida automaticamente por reconhecimento de fala. Os rótulos "
@@ -268,7 +270,42 @@ def _larguras(tabela, larguras_cm: tuple[float, ...]) -> None:
             celula.width = Cm(largura)
 
 
-def _linhas_da_ficha(meta: MetaAudiencia) -> list[tuple[str, str]]:
+def tecla(chave: str) -> bool:
+    """A chave é uma tecla de atalho (F1, F2...) do mapa de botões da tela?"""
+    return bool(RE_TECLA.match((chave or "").strip()))
+
+
+def participantes_da_ficha(participantes: dict[str, str] | None,
+                           falaram: list[str] | None = None) -> list[str]:
+    """As linhas "Participantes" da ficha: quem de fato falou (os rótulos
+    marcados na audiência, na ordem em que apareceram), com o nome que o
+    usuário informou para o papel, e depois os demais papéis informados
+    ({papel: nome}), mesmo sem fala.
+
+    O mapa dos botões da tela ({"F1": "Juiz(a)", ...}) não é lista de
+    presença: saía na ficha "F1: Juiz(a)", "F2: Promotor(a)"... com os oito
+    papéis padrão, comparecessem ou não. Chave de tecla nunca vai à ficha.
+    """
+    nomes = {papel.strip(): (nome or "").strip()
+             for papel, nome in (participantes or {}).items()
+             if (papel or "").strip() and not tecla(papel)}
+    linhas: list[str] = []
+    vistos: set[str] = set()
+    for papel in falaram or []:
+        papel = (papel or "").strip()
+        if not papel or papel in vistos:
+            continue
+        vistos.add(papel)
+        linhas.append(f"{papel}: {nomes[papel]}" if nomes.get(papel) else papel)
+    for papel, nome in nomes.items():
+        if papel not in vistos:
+            vistos.add(papel)
+            linhas.append(f"{papel}: {nome}" if nome else papel)
+    return linhas
+
+
+def _linhas_da_ficha(meta: MetaAudiencia,
+                     falaram: list[str] | None = None) -> list[tuple[str, str]]:
     traco = "—"
     data = meta.data or meta.inicio
     horario = traco
@@ -276,9 +313,7 @@ def _linhas_da_ficha(meta: MetaAudiencia) -> list[tuple[str, str]]:
         horario = f"{meta.inicio:%H:%M} às {meta.fim:%H:%M}"
     elif meta.inicio:
         horario = f"início às {meta.inicio:%H:%M}"
-    participantes = "\n".join(
-        f"{papel}: {nome}" if nome else papel
-        for papel, nome in (meta.participantes or {}).items() if papel or nome)
+    participantes = "\n".join(participantes_da_ficha(meta.participantes, falaram))
     linhas = [
         ("Processo nº", meta.numero or traco),
         ("Tipo de audiência", meta.tipo or traco),
@@ -312,6 +347,9 @@ def montar_docx(falas: list[Fala], meta: MetaAudiencia, *, marcar_tempo: bool = 
     legenda = list(dict.fromkeys(rotulos))  # ordem de aparição, sem repetir
     if legenda and all(automatico(r) for r in legenda):
         legenda.sort(key=lambda r: int(r.split()[-1]))
+    # Quem falou, pelos rótulos marcados (os automáticos vão para a legenda)
+    falaram = [r for r in dict.fromkeys(f.falante.strip() for f in agrupadas if f.falante)
+               if r and r not in legenda and not automatico(r)]
 
     doc = Document()
     estilo = doc.styles["Normal"]
@@ -352,7 +390,7 @@ def montar_docx(falas: list[Fala], meta: MetaAudiencia, *, marcar_tempo: bool = 
     # --- ficha
     tab = doc.add_table(rows=0, cols=2)
     tab.style = "Table Grid"
-    for rotulo, valor in _linhas_da_ficha(meta):
+    for rotulo, valor in _linhas_da_ficha(meta, falaram):
         celulas = tab.add_row().cells
         p = celulas[0].paragraphs[0]
         rr = p.add_run(rotulo)
@@ -518,7 +556,8 @@ def propriedades_do_documento(doc, titulo: str, *, assunto: str = "", numero: st
 ESPERAS_TRAVA_S = (0.2, 0.5)   # novas tentativas antes de desistir do nome
 
 
-def _gravar(destino: Path, dados: bytes) -> None:
+def gravar_com_espera(destino: Path, dados: bytes) -> None:
+    """Gravação atômica que espera a trava passageira do Windows."""
     # Antivírus corporativo, indexador e sincronizadores abrem o arquivo por
     # um instante logo depois de gravado; a troca (os.replace) falha com
     # PermissionError nesse intervalo. Sem repetir, o salvamento automático
@@ -547,29 +586,43 @@ def _apagar_parcial(destino: Path) -> None:
         pass
 
 
+def _nome_da_copia(destino: Path) -> tuple[str, str]:
+    """(base, extensão) da cópia: sempre .docx - o destino sem a extensão
+    ("Ata", "Ata.2024") gerava uma cópia que o Windows não abre no Word."""
+    if destino.suffix.lower() == ".docx":
+        return f"{destino.stem} (cópia)", destino.suffix
+    return f"{destino.name} (cópia)", ".docx"
+
+
 def gerar_docx(destino: Path, falas: list[Fala], meta: MetaAudiencia, *,
                marcar_tempo: bool = True, legenda_automatica: bool = False) -> Path:
     """Grava o DOCX e devolve o caminho efetivamente gravado.
 
     Se o destino estiver aberto no Word (PermissionError), grava em
     "<nome> (cópia).docx" - sempre a mesma cópia, para o salvamento
-    automático da audiência não espalhar dezenas de arquivos.
+    automático da audiência não espalhar dezenas de arquivos. Destino que é
+    uma PASTA levanta IsADirectoryError na hora (no Windows, a troca sobre a
+    pasta dá PermissionError e virava uma "cópia" ao lado dela, com a
+    mensagem falsa de arquivo aberto).
     """
     destino = Path(destino)
+    if destino.is_dir():
+        raise IsADirectoryError(errno.EISDIR, "o destino da transcrição é uma pasta, não um "
+                                "arquivo .docx", str(destino))
     dados = montar_docx(falas, meta, marcar_tempo=marcar_tempo,
                         legenda_automatica=legenda_automatica)
     try:
-        _gravar(destino, dados)
+        gravar_com_espera(destino, dados)
         return destino
     except PermissionError:
         log.warning("%s está aberto em outro programa; gravando uma cópia ao lado.",
                     destino.name)
-    copia = destino.with_name(f"{destino.stem} (cópia){destino.suffix}")
+    base, extensao = _nome_da_copia(destino)
+    copia = destino.with_name(base + extensao)
     try:
-        _gravar(copia, dados)
+        gravar_com_espera(copia, dados)
         return copia
     except PermissionError:
-        alternativa = sistema.destino_livre(destino.parent, f"{destino.stem} (cópia)",
-                                            destino.suffix)
-        _gravar(alternativa, dados)
+        alternativa = sistema.destino_livre(destino.parent, base, extensao)
+        gravar_com_espera(alternativa, dados)
         return alternativa

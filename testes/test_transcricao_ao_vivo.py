@@ -15,11 +15,12 @@ import time
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
 from helestron.nucleo import caminhos
-from helestron.transcricao import ao_vivo, microfone, modelos
+from helestron.transcricao import ao_vivo, documento, microfone, modelos
 from helestron.transcricao.ao_vivo import SessaoAoVivo, recuperar, recuperaveis
 from helestron.transcricao.segmentador import TrechoDeAudio
 from testes.apoio_transcricao import (NUMERO, TAXA, ModeloDuble, PastaTemporaria, ficha,
@@ -137,7 +138,8 @@ class TestSessaoAoVivo(BaseSessao):
         f = ficha(tabelas)
         self.assertEqual(f["Processo nº"], NUMERO)
         self.assertEqual(f["Tipo de audiência"], "Instrução")
-        self.assertEqual(f["Participantes"], "Testemunha: Beltrano")
+        # quem falou, na ordem, com o nome informado para o papel
+        self.assertEqual(f["Participantes"], "Juiz(a)\nPromotor(a)\nTestemunha: Beltrano")
         self.assertEqual(f["Duração da gravação"], "00:00:16")
         self.assertEqual(f["Magistrado(a)"], "Fulana de Tal (Juíza de Direito)")
         self.assertEqual(f["Forma da transcrição"], "Simultânea (ao vivo, pelo microfone)")
@@ -284,6 +286,48 @@ class TestSessaoAoVivo(BaseSessao):
         self.assertIn("falante: (sem rótulo)", texto)
 
 
+    def test_mesma_frase_dita_por_outra_parte_nao_some(self):
+        """Achado 31: "Sem perguntas, Excelência." do Ministério Público e,
+        depois, da defesa. O filtro de alucinação tratava a segunda como
+        repetição do modelo e a apagava do termo, sem aviso."""
+        audio = montar([("silencio", 0.5), ("fala", 2.0, 300), ("silencio", 2.0),
+                        ("fala", 2.0, 300), ("silencio", 1.5), ("fala", 1.0, 250),
+                        ("silencio", 1.0)])
+        wav = gravar_wav(self.tmp.raiz / "sem_perguntas.wav", audio)
+        s, _, final = self.rodar(wav=wav, falante="Promotor(a)",
+                                 acoes={3.5: ("definir_falante", "Defensor(a)")})
+        self.assertEqual([(f.falante, f.texto) for f in s.falas],
+                         [("Promotor(a)", "Sem perguntas, Excelência."),
+                          ("Defensor(a)", "Sem perguntas, Excelência."),
+                          ("Defensor(a)", "Nada mais.")])
+        paragrafos, _, _ = ler_docx(final)
+        self.assertIn("Defensor(a) [00:00:04] — Sem perguntas, Excelência. Nada mais.", paragrafos)
+
+    def test_mapa_das_teclas_nao_vai_para_a_ficha(self):
+        """Achado 37: a tela manda {"F1": "Juiz(a)", ...}; a ficha listava
+        "F1: Juiz(a)" ... "F8: Outro", os oito papéis, compareçam ou não.
+        Agora lista quem falou."""
+        mapa = {f"F{i + 1}": papel for i, papel in enumerate(
+            ["Juiz(a)", "Promotor(a)", "Defensor(a)", "Advogado(a) do autor",
+             "Advogado(a) do réu", "Testemunha", "Parte", "Outro"])}
+        s, _, final = self.rodar(participantes=mapa)
+        self.assertEqual(s.botoes, mapa)
+        self.assertEqual(s.meta.participantes, {})
+        f = ficha(ler_docx(final)[1])
+        self.assertEqual(f["Participantes"], "Juiz(a)\nPromotor(a)\nTestemunha")
+        self.assertNotIn("F1", f["Participantes"])
+
+    def test_numero_do_incidente_com_hifen(self):
+        """Achado 33: "...0001-01" (o nome do DOCX do incidente) virava o
+        principal."""
+        s, _ = self.sessao(acoes={})
+        self.assertEqual(s.numero.principal, NUMERO)
+        s = SessaoAoVivo(f"{NUMERO}-01", self.cfg, Eventos())
+        self.assertEqual((s.numero.principal, s.numero.dependente), (NUMERO, "01"))
+        self.assertEqual(s.meta.numero, f"{NUMERO}/01")
+        self.assertEqual(SessaoAoVivo(f"{NUMERO}/02", self.cfg, Eventos()).numero.dependente, "02")
+
+
 class TestRevisaoAoEncerrar(BaseSessao):
     def test_refinar_substitui_e_guarda_a_versao_ao_vivo(self):
         revisao = ModeloDuble()
@@ -320,23 +364,157 @@ class TestRevisaoAoEncerrar(BaseSessao):
         self.assertTrue(any("Ficou a versão ao vivo" in a for a in eventos.de("aviso")))
 
 
+    # Achado 35: a troca da versão ao vivo pela revisada, sem proteção
+    def _rodar_revisao(self):
+        revisao = ModeloDuble()
+        with mock.patch.object(documento, "ESPERAS_TRAVA_S", (0.0,)):
+            return self.rodar(refinar=True, motor_revisao_fabrica=lambda: revisao)
+
+    def _forma(self, caminho):
+        return ficha(ler_docx(caminho)[1])["Forma da transcrição"]
+
+    def test_revisada_recem_gravada_presa_pelo_antivirus(self):
+        """os.replace(revisada, final) falhava com PermissionError (o
+        antivírus segura o arquivo recém-gravado) DEPOIS do registro de fim:
+        a audiência ficava sem documento em Transcricoes, sem recuperação."""
+        original = os.replace
+
+        def replace(origem, destino):
+            if str(origem).endswith(" - revisão.docx"):
+                raise PermissionError(32, "O arquivo já está sendo usado por outro processo")
+            return original(origem, destino)
+
+        with mock.patch("os.replace", side_effect=replace):
+            s, eventos, final = self._rodar_revisao()
+        self.assertEqual(final, self.cfg.pasta_transcricoes / f"{NUMERO}.docx")
+        self.assertEqual(self._forma(final), "Revisão da gravação, depois da audiência")
+        self.assertEqual((s.estado, s._resultado), ("encerrada", final))
+        audio = self.cfg.pasta_transcricoes / "_audio"
+        self.assertEqual(len(list(audio.glob("* - ao vivo.docx"))), 1)
+        self.assertEqual(list(audio.glob("* - revisão.docx")), [])
+        self.assertEqual(eventos.de("fim"), [final])
+        self.assertEqual(recuperaveis(self.cfg), [])
+
+    def test_revisada_que_nao_entra_no_lugar_devolve_a_ao_vivo(self):
+        with mock.patch.object(ao_vivo, "_copiar_com_espera",
+                               side_effect=PermissionError(13, "Acesso negado")), \
+                self.assertLogs("transcricao.ao_vivo", "WARNING"):
+            s, eventos, final = self._rodar_revisao()
+        self.assertEqual(final, self.cfg.pasta_transcricoes / f"{NUMERO}.docx")
+        self.assertEqual(self._forma(final), "Simultânea (ao vivo, pelo microfone)")
+        self.assertEqual(s.estado, "encerrada")
+        (revisada,) = (self.cfg.pasta_transcricoes / "_audio").glob("* - revisão.docx")
+        self.assertEqual(self._forma(revisada), "Revisão da gravação, depois da audiência")
+        aviso = eventos.de("aviso")[-1]
+        self.assertIn("ficou a versão ao vivo", aviso)
+        self.assertIn(str(revisada), aviso)
+        self.assertEqual(list((self.cfg.pasta_transcricoes / "_audio").glob("* - ao vivo.docx")),
+                         [])
+
+    def test_sem_conseguir_devolver_a_ao_vivo_aponta_para_ela(self):
+        original = os.replace
+
+        def replace(origem, destino):
+            if str(origem).endswith(" - ao vivo.docx"):
+                raise PermissionError(32, "O arquivo já está sendo usado por outro processo")
+            return original(origem, destino)
+
+        with mock.patch.object(ao_vivo, "_copiar_com_espera",
+                               side_effect=OSError(28, "Não há espaço no disco")), \
+                mock.patch("os.replace", side_effect=replace), \
+                self.assertLogs("transcricao.ao_vivo", "WARNING"):
+            s, eventos, final = self._rodar_revisao()
+        self.assertTrue(final.exists())
+        self.assertTrue(final.name.endswith(" - ao vivo.docx"))
+        self.assertEqual((s.estado, s._resultado), ("encerrada", final))
+        self.assertIn(str(final), eventos.de("aviso")[-1])
+
+    def test_versao_ao_vivo_aberta_no_word_grava_a_revisada_ao_lado(self):
+        final_esperado = self.cfg.pasta_transcricoes / f"{NUMERO}.docx"
+        original = os.replace
+
+        def replace(origem, destino):
+            if Path(origem) == final_esperado:
+                raise PermissionError(32, "O arquivo já está sendo usado por outro processo")
+            return original(origem, destino)
+
+        with mock.patch("os.replace", side_effect=replace):
+            s, eventos, final = self._rodar_revisao()
+        self.assertEqual(final.name, f"{NUMERO} (revisada).docx")
+        self.assertEqual(self._forma(final), "Revisão da gravação, depois da audiência")
+        self.assertEqual(self._forma(final_esperado), "Simultânea (ao vivo, pelo microfone)")
+        self.assertIn("aberto em outro programa", eventos.de("aviso")[-1])
+        self.assertEqual(list((self.cfg.pasta_transcricoes / "_audio").glob("* - revisão.docx")),
+                         [])
+
+    def test_erro_inesperado_na_revisao_nao_impede_o_encerramento(self):
+        with mock.patch.object(SessaoAoVivo, "_trocar_pela_revisada",
+                               side_effect=RuntimeError("inesperado")), \
+                self.assertLogs("transcricao.ao_vivo", "ERROR"):
+            s, eventos, final = self._rodar_revisao()
+        self.assertTrue(final.exists())
+        self.assertEqual((s.estado, s._resultado), ("encerrada", final))
+        self.assertTrue(any("Ficou a versão ao vivo" in a for a in eventos.de("aviso")))
+        self.assertEqual(eventos.de("fim"), [final])
+
+    def test_ficha_da_revisao_sem_o_mapa_das_teclas(self):
+        mapa = {"F1": "Juiz(a)", "F2": "Promotor(a)", "F6": "Testemunha", "F8": "Outro"}
+        _, _, final = self._rodar_revisao_com(participantes=mapa)
+        f = ficha(ler_docx(final)[1])
+        self.assertEqual(f["Forma da transcrição"], "Revisão da gravação, depois da audiência")
+        self.assertEqual(f["Participantes"], "Juiz(a)\nPromotor(a)\nTestemunha")
+
+    def _rodar_revisao_com(self, **kw):
+        revisao = ModeloDuble()
+        return self.rodar(refinar=True, motor_revisao_fabrica=lambda: revisao, **kw)
+
+
 class TestSemGuardarAudio(BaseSessao):
     ajustes = {"salvar_audio": "false"}
 
     def test_flac_apagado_no_fim(self):
-        s, _, final = self.rodar()
+        s, eventos, final = self.rodar()
         self.assertFalse(s.caminho_audio.exists())
         self.assertIn("não guardada", ficha(ler_docx(final)[1])["Gravação"])
+        # tudo transcrito: a opção vale, sem aviso de gravação mantida
+        self.assertFalse(any("Guardar a gravação" in a for a in eventos.de("aviso")))
 
-    def test_trecho_perdido_sem_gravacao_nao_remete_a_ela(self):
-        # Sem o áudio guardado, o documento não pode dizer que o trecho
-        # "consta da gravação".
+    def test_trecho_perdido_mantem_a_gravacao_mesmo_desligada(self):
+        """Achado 32: o aviso diz que o trecho que falhou "estará no áudio",
+        mas o encerramento apagava o FLAC com a opção desligada - e a fala
+        se perdia de vez. Fala não transcrita mantém a gravação."""
         self.modelo.falhar_em = 1
         with self.assertLogs("transcricao.ao_vivo", "ERROR"):
-            _, _, final = self.rodar()
-        obs = ficha(ler_docx(final)[1])["Observação"]
-        self.assertIn("1 trecho de fala não foi transcrito", obs)
-        self.assertNotIn("gravação", obs)
+            s, eventos, final = self.rodar()
+        self.assertTrue(s.caminho_audio.exists())
+        f = ficha(ler_docx(final)[1])
+        self.assertIn("1 trecho de fala não foi transcrito", f["Observação"])
+        self.assertIn("consta da gravação", f["Observação"])
+        self.assertEqual(f["Gravação"], f"_audio\\{s.caminho_audio.name}")
+        aviso = eventos.de("aviso")[-1]
+        self.assertIn("“Guardar a gravação da audiência”", aviso)
+        self.assertIn("“Transcrever uma gravação”", aviso)
+        self.assertIn(str(s.caminho_audio), aviso)
+
+    def test_modelo_que_nao_carrega_mantem_a_gravacao(self):
+        """O erro manda transcrever a gravação depois da audiência: ela não
+        pode ser apagada no encerramento."""
+        def sem_modelo():
+            raise modelos.ErroDoModelo("faster-whisper quebrado (simulado)")
+
+        with self.assertLogs("transcricao.ao_vivo", "ERROR"):
+            s, eventos, final = self.rodar(motor=sem_modelo)
+        self.assertIn("Transcrever uma gravação", eventos.de("erro")[0])
+        self.assertTrue(s.caminho_audio.exists())
+        import soundfile as sf
+
+        self.assertAlmostEqual(sf.info(str(s.caminho_audio)).duration, 16.0, delta=0.01)
+        f = ficha(ler_docx(final)[1])
+        self.assertNotIn("não guardada", f["Gravação"])
+        self.assertIn("4 trechos de fala não foram transcritos", f["Observação"])
+        self.assertIn("consta da gravação", f["Observação"])
+        self.assertTrue(any("4 trechos de fala não foram transcritos e só estão no áudio" in a
+                            for a in eventos.de("aviso")))
 
 
 class TestRecuperacao(BaseSessao):

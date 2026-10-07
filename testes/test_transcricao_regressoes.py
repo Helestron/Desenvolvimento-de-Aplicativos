@@ -35,6 +35,12 @@ from testes.apoio_transcricao import (NUMERO, ModeloDuble, PastaTemporaria, fich
                                      gravar_wav, ler_docx, montar)
 
 
+def cnj_numero(texto: str):
+    from helestron.nucleo import cnj
+
+    return cnj.ler(texto)
+
+
 def _italicos(caminho: Path) -> dict[str, bool]:
     """Texto de cada parágrafo do corpo -> o trecho falado está em itálico?"""
     from docx import Document
@@ -139,6 +145,95 @@ class TestArquivo(unittest.TestCase):
         caminho = transcrever_arquivo(wav, None, self.cfg, separar=False,
                                       motor_fabrica=lambda: self.modelo)
         self.assertEqual(_italicos(caminho), {"[00:00:00] — Bom dia a todos.": False})
+
+    def test_mesma_frase_de_outra_parte_na_gravacao(self):
+        """Achado 31: na gravação (e na revisão), um filtro só serve à
+        gravação inteira; a segunda "Sem perguntas, Excelência." (a defesa,
+        2 s depois do Ministério Público) sumia do termo."""
+        audio = montar([("silencio", 0.5), ("fala", 2.0, 300), ("silencio", 2.0),
+                        ("fala", 2.0, 300), ("silencio", 1.5), ("fala", 1.0, 250),
+                        ("silencio", 1.0)])
+        wav = gravar_wav(self.tmp.raiz / f"{NUMERO}.wav", audio)
+        caminho = transcrever_arquivo(wav, None, self.cfg, separar=False,
+                                      motor_fabrica=lambda: self.modelo)
+        paragrafos, _, _ = ler_docx(caminho)
+        corpo = paragrafos[paragrafos.index("TRANSCRIÇÃO") + 1:]
+        self.assertEqual(corpo[:2], ["[00:00:00] — Sem perguntas, Excelência.",
+                                     "[00:00:04] — Sem perguntas, Excelência."])
+        self.assertEqual(len(corpo), 3)
+        self.assertTrue(corpo[2].endswith("— Nada mais."))
+
+    def test_numero_informado_com_hifen_e_o_do_incidente(self):
+        """Achado 33: "...0001-01" (como o programa escreve o dependente nos
+        nomes) virava o principal."""
+        wav = gravar_wav(self.tmp.raiz / "gravacao.wav", self.audio)
+        caminho = transcrever_arquivo(wav, f"{NUMERO}-01", self.cfg,
+                                      motor_fabrica=lambda: self.modelo)
+        self.assertEqual(caminho.name, f"{NUMERO}-01.docx")
+        self.assertEqual(ficha(ler_docx(caminho)[1])["Processo nº"], f"{NUMERO}/01")
+        # a leitura do nome é a do núcleo: as duas não divergem mais
+        from helestron.nucleo import cnj
+
+        for nome in (f"{NUMERO}-01 2026-09-16 14h00.flac", f"{NUMERO}-inc0003.mp4",
+                     f"{NUMERO}-2026-09-16.wav", f"{NUMERO}/02", "sem número.wav"):
+            with self.subTest(nome=nome):
+                try:
+                    esperado = cnj.ler_nome_arquivo(nome)
+                except cnj.NumeroInvalido:
+                    esperado = None
+                self.assertEqual(arquivo.numero_do_nome(nome), esperado)
+
+    def test_destino_que_falha_grava_na_pasta_das_transcricoes(self):
+        """Achado 36: o destino só é usado depois de horas de trabalho; se a
+        gravação nele falhar, o documento vai para a pasta das transcrições
+        em vez de se perder."""
+        wav = gravar_wav(self.tmp.raiz / f"{NUMERO}.wav", self.audio)
+        pasta = self.tmp.raiz / "Saida"
+        pasta.mkdir()
+        with self.assertLogs("transcricao.arquivo", "WARNING"):
+            caminho = transcrever_arquivo(wav, None, self.cfg, destino=pasta,
+                                          motor_fabrica=lambda: self.modelo)
+        self.assertEqual(caminho, self.cfg.pasta_transcricoes / f"{NUMERO}.docx")
+        self.assertEqual(list(pasta.iterdir()), [])
+        # processo sigiloso: nunca cai no acervo
+        with self.assertLogs("transcricao.arquivo", "WARNING"):
+            caminho = transcrever_arquivo(wav, None, self.cfg, destino=pasta, sigiloso=True,
+                                          motor_fabrica=lambda: self.modelo)
+        self.assertEqual(caminho, self.cfg.pasta_sigilosos / "Transcricoes" / f"{NUMERO}.docx")
+
+    def test_revisar_pela_tela_mantem_a_ficha_da_audiencia(self):
+        """Achado 38: o "Revisar" da tela (servicos.transcrever_gravacao)
+        perdia o início e o término e punha na Data a do FLAC (o dia seguinte,
+        numa audiência que passa da meia-noite)."""
+        from helestron import servicos
+
+        pasta_audio = self.cfg.pasta_transcricoes / "_audio"
+        pasta_audio.mkdir(parents=True)
+        flac = gravar_wav(pasta_audio / f"{NUMERO} 2026-09-15 23h30.wav", self.audio)
+        fim = datetime(2026, 9, 16, 0, 40).timestamp()
+        os.utime(flac, (fim, fim))
+        meta = MetaAudiencia(numero=NUMERO, tipo="Instrução", data=datetime(2026, 9, 15, 23, 30),
+                             inicio=datetime(2026, 9, 15, 23, 30), fim=datetime(2026, 9, 16, 0, 40),
+                             participantes={"Testemunha": "Beltrano"}, origem="ao vivo",
+                             gravacao=f"_audio\\{flac.name}", modelo="small",
+                             observacao="1 trecho de fala não foi transcrito.")
+        manuais = [Fala(0.5, 2.5, "Juiz(a)", "Bom dia a todos.")]
+        with mock.patch.object(arquivo.modelos, "carregar", return_value=self.modelo):
+            caminho = servicos.transcrever_gravacao(
+                flac, cnj_numero(NUMERO), self.cfg, None, None, rotulos_manuais=manuais,
+                meta=meta, participantes={"F1": "Juiz(a)", "F2": "Promotor(a)"})
+        f = ficha(ler_docx(caminho)[1])
+        self.assertEqual(f["Data"], "15/09/2026")
+        self.assertEqual(f["Início e término"], "23:30 às 00:40")
+        self.assertEqual(f["Gravação"], f"_audio\\{flac.name}")
+        self.assertEqual(f["Tipo de audiência"], "Instrução")
+        self.assertEqual(f["Forma da transcrição"], "Revisão da gravação, depois da audiência")
+        # quem falou e o nome informado; nunca o mapa das teclas ("F1: ...")
+        self.assertEqual(f["Participantes"], "Juiz(a)\nTestemunha: Beltrano")
+        self.assertNotIn("Observação", f)                   # a da versão ao vivo não vale
+        # a ficha da sessão não foi alterada (o motor completa uma cópia)
+        self.assertEqual((meta.origem, meta.modelo, meta.observacao),
+                         ("ao vivo", "small", "1 trecho de fala não foi transcrito."))
 
     def test_progresso_nao_volta_quando_o_modelo_precisa_baixar(self):
         wav = gravar_wav(self.tmp.raiz / f"{NUMERO}.wav", self.audio)
