@@ -1,7 +1,9 @@
 """Constrói o instalador do Helestron: dist/Helestron-Setup-<versão>.exe (+ .sha256).
 
-    python construir/construir.py [--sem-modelo | --modelo DIR] [--sem-falantes]
+    python construir/construir.py (--modelo DIR | --sem-modelo) [--sem-falantes]
                                   [--saida dist] [--cache DIR] [--python-tar ARQ]
+    python construir/construir.py --versao     a versão que será construída (o CI
+                                               a compara com a tag da publicação)
 
 Roda no Linux (aqui e no CI) e no Windows. Precisa de:
   * Python 3.12 (os .pyc pré-compilados são do 3.12, o Python que vai no
@@ -9,10 +11,13 @@ Roda no Linux (aqui e no CI) e no Windows. Precisa de:
         pip install installer pillow
   * MinGW-w64 (x86_64-w64-mingw32-gcc, -windres, -objdump) e NSIS (makensis):
         sudo apt-get install mingw-w64 nsis
-  * rede: python-build-standalone (GitHub), PyPI e, para o modelo de
-    transcrição, o Hugging Face - ou "--modelo DIR" com ele já baixado.
-    Tudo o que é baixado fica no --cache (padrão: construir/cache) e é
-    reaproveitado nas construções seguintes.
+  * o modelo de transcrição faster-whisper-small JÁ EM INT8, em "--modelo
+    DIR" (o publicado no Hugging Face é float16, ~484 MB, e o instalador
+    passaria de 500 MiB): COMANDOS_CONVERSAO, abaixo, são os comandos do CI
+    para convertê-lo. Ou "--sem-modelo" (o programa baixa no primeiro uso).
+  * rede: python-build-standalone e os modelos da separação de falantes
+    (GitHub) e PyPI. Tudo o que é baixado fica no --cache (padrão:
+    construir/cache) e é reaproveitado nas construções seguintes.
 
 As oito etapas (docs/ESPECIFICACAO.md, seção 10):
 
@@ -22,21 +27,29 @@ As oito etapas (docs/ESPECIFICACAO.md, seção 10):
      existe em código-fonte e é puro Python (proxy_tools) vira roda aqui.
   3. Instala as rodas na pasta do Python (biblioteca "installer", esquema do
      Windows: Lib\\site-packages, e os dados do msvc-runtime na raiz) e
-     copia o pacote helestron para Lib\\site-packages.
+     copia o pacote helestron INTEIRO para Lib\\site-packages (a pasta toda,
+     sem lista de módulos: um módulo novo entra sem mexer aqui).
   4. Enxuga (*.pdb, Lib\\test, idlelib, tkinter, pip, Scripts, include,
      libs) e pré-compila tudo em .pyc (UNCHECKED_HASH: o Python não confere
      a data do .py a cada abertura - e um .py alterado não muda o programa).
-  5. Modelo de transcrição faster-whisper-small em modelos\\ (de --modelo
-     DIR ou do Hugging Face) e os modelos da separação de falantes (GitHub),
-     se disponíveis. --sem-modelo: o programa baixa no primeiro uso.
-  6. Lançador Helestron.exe (lancador/helestron.c + .rc: ícone, versão e
-     manifesto), compilado com o MinGW e conferido com o objdump.
-  7. manifesto.json: versão, e o SHA-256 e o tamanho de cada arquivo - o
-     programa o confere ao abrir e o instalador, no fim da instalação.
+  5. Modelo de transcrição faster-whisper-small, em int8, em modelos\\ (de
+     --modelo DIR; --sem-modelo: o programa baixa no primeiro uso) e os
+     modelos da separação de falantes (GitHub, SHA-256 conferido). A falha
+     destes interrompe a construção: o manual promete a separação de vozes
+     sem internet. --sem-falantes: um instalador sem eles, de propósito.
+  6. Lançadores: Helestron.exe (lancador/helestron.c + .rc: ícone, versão e
+     manifesto), compilado com o MinGW e conferido com o objdump; e o
+     helestron.cmd, a linha de comando ("python.exe -I -m helestron ..."),
+     para quem chama o programa de fora (a skill do Claude, scripts) sem
+     depender do PATH.
+  7. manifesto.json: versão, os componentes embutidos (modelos) e o SHA-256
+     e o tamanho de cada arquivo - o programa o confere ao abrir e o
+     instalador, no fim da instalação.
   8. A lista do que esta versão instala (arquivos-instalados.txt, que vai
      para a pasta do programa: a próxima atualização e o desinstalador apagam
      só o que está nela), o script NSIS (instalador/helestron.nsi) e o
-     makensis -> dist/Helestron-Setup-<versão>.exe.
+     makensis -> dist/Helestron-Setup-<versão>.exe, que não pode passar de
+     LIMITE_SETUP (500 MiB, o limite para entrega por anexo).
 
 As imagens da marca (ícone, bitmaps do instalador) são as versionadas em
 helestron/recursos, geradas por construir/marca.py; --marca as gera de novo
@@ -87,11 +100,42 @@ VERSAO_PYTHON = (3, 12)
 
 # O modelo da transcrição ao vivo (a pasta tem o nome do repositório: é onde
 # helestron/transcricao/modelos.py o procura, em caminhos.MODELOS_EMBUTIDOS).
-REPO_MODELO = "Systran/faster-whisper-small"
 PASTA_MODELO = "faster-whisper-small"
 PADROES_MODELO = ("config.json", "preprocessor_config.json", "model.bin", "tokenizer.json",
                   "vocabulary.*")
 NECESSARIOS_MODELO = ("model.bin", "config.json", "tokenizer.json")
+# O programa carrega o modelo sempre em int8 (compute_type="int8"): gravado já
+# em int8, o model.bin do whisper-small tem ~250 MB e dá o mesmo resultado. O
+# publicado no Hugging Face (Systran/faster-whisper-small) é float16, ~484 MB,
+# e com ele o instalador passa de LIMITE_SETUP. A faixa é a que o CI confere.
+LIMITES_MODELO = (150_000_000, 350_000_000)
+# Os comandos do CI (.github/workflows/helestron.yml, "Modelo de transcrição")
+# que convertem o whisper-small oficial para int8 com o mesmo CTranslate2 que
+# vai no instalador (4.8.2; o conversor dele pede transformers 4.56 ou mais novo).
+COMANDOS_CONVERSAO = (
+    "python3.12 -m venv conversao",
+    "conversao/bin/python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.7.1",
+    "conversao/bin/python -m pip install ctranslate2==4.8.2 transformers==4.57.6",
+    "conversao/bin/ct2-transformers-converter --model openai/whisper-small "
+    "--output_dir faster-whisper-small --copy_files tokenizer.json preprocessor_config.json "
+    "--quantization int8",
+)
+# O Helestron-Setup vai por anexo (e-mail, sistema do tribunal): 500 MiB no máximo.
+LIMITE_SETUP = 500 * 1024 * 1024
+
+# A linha de comando do programa para quem o chama de fora (a skill do Claude,
+# scripts da TI): o Python desta pasta em modo isolado, sem depender do PATH
+# (que o instalador não altera). Só ASCII: o cmd lê o arquivo na página de
+# código do console. %~dp0 é a pasta do próprio .cmd, com a barra no fim, e o
+# código de saída é o do Python (o último comando do arquivo).
+NOME_COMANDO = "helestron.cmd"
+CONTEUDO_COMANDO = (
+    "@echo off\r\n"
+    "rem Helestron - linha de comando: helestron.cmd baixar --lista X.xlsx ...\r\n"
+    "rem Roda o Python desta pasta em modo isolado (-I), sem depender do PATH.\r\n"
+    "rem Ajuda: helestron.cmd --ajuda\r\n"
+    '"%~dp0python.exe" -I -m helestron %*\r\n'
+)
 
 # Tags de roda aceitas no Windows 64 bits com CPython 3.12, da mais
 # específica para a mais genérica (a ordem do pip): a primeira que houver é
@@ -446,16 +490,31 @@ def instalar_rodas(rodas: list[Path], arvore: Path) -> None:
                     additional_metadata={"INSTALLER": b"helestron-construir\n"})
 
 
-def copiar_pacote(arvore: Path) -> Path:
-    """helestron/ -> Lib/site-packages/helestron (sem __pycache__ nem .pyc)."""
+IGNORAR_NO_PACOTE = ("__pycache__", "*.pyc", "*.pyo", "*.parcial", "*.tmp", ".DS_Store")
+
+
+def modulos_de(pasta: Path) -> set[str]:
+    """Os .py de uma pasta (relativos, com "/"), sem os de __pycache__."""
+    return {p.relative_to(pasta).as_posix() for p in pasta.rglob("*.py")
+            if "__pycache__" not in p.parts}
+
+
+def copiar_pacote(arvore: Path, origem: Path | None = None) -> Path:
+    """helestron/ -> Lib/site-packages/helestron: a pasta INTEIRA (módulos,
+    web, recursos, dados), sem __pycache__ nem .pyc. Não há lista de módulos
+    a manter - o módulo novo (nucleo/paginacao.py, download/acompanhamento.py)
+    entra sozinho -, e a cópia é conferida: módulo que não chegou interrompe
+    a construção (a verificação da instalação acusaria só no Windows)."""
+    origem = Path(origem or PACOTE)
     destino = arvore / "Lib" / "site-packages" / "helestron"
     if destino.exists():
         shutil.rmtree(destino)
-    shutil.copytree(PACOTE, destino,
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "*.parcial",
-                                                  "*.tmp", ".DS_Store"))
+    shutil.copytree(origem, destino, ignore=shutil.ignore_patterns(*IGNORAR_NO_PACOTE))
     if not (destino / "__main__.py").is_file():
         raise ErroConstrucao("o pacote copiado não tem helestron/__main__.py")
+    faltam = sorted(modulos_de(origem) - modulos_de(destino))
+    if faltam:
+        raise ErroConstrucao("módulos do pacote que não foram copiados: " + ", ".join(faltam))
     return destino
 
 
@@ -514,38 +573,33 @@ def arquivos_do_modelo(pasta: Path) -> list[Path]:
                   if p.is_file() and any(fnmatch.fnmatch(p.name, pad) for pad in PADROES_MODELO))
 
 
+def comandos_conversao() -> str:
+    """Os comandos de COMANDOS_CONVERSAO, um por linha, para as mensagens."""
+    return "\n".join(f"        {c}" for c in COMANDOS_CONVERSAO)
+
+
 def conferir_modelo(pasta: Path) -> None:
+    """O faster-whisper-small em int8, completo, na pasta. O tamanho do
+    model.bin distingue o int8 (~250 MB) do float16 publicado no Hugging Face
+    (~484 MB), que estouraria o LIMITE_SETUP, e da cópia interrompida."""
+    if not pasta.is_dir():
+        raise ErroConstrucao(f"a pasta do modelo {pasta} não existe")
     faltam = [n for n in NECESSARIOS_MODELO if not (pasta / n).is_file()]
+    if not any(fnmatch.fnmatch(p.name, "vocabulary.*") for p in pasta.iterdir() if p.is_file()):
+        faltam.append("vocabulary.*")
     if faltam:
         raise ErroConstrucao(f"o modelo em {pasta} está incompleto (faltam: {', '.join(faltam)})")
-    if (pasta / "model.bin").stat().st_size < 1_000_000:
-        raise ErroConstrucao(f"{pasta / 'model.bin'} pequeno demais: cópia interrompida?")
-
-
-def baixar_modelo(cache: Path) -> Path:
-    """O faster-whisper-small do Hugging Face (huggingface_hub se houver;
-    senão, a API pública direto)."""
-    destino = cache / "modelos" / PASTA_MODELO
-    try:
-        conferir_modelo(destino)
-        return destino
-    except ErroConstrucao:
-        pass
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError:
-        snapshot_download = None
-    if snapshot_download is not None:
-        snapshot_download(repo_id=REPO_MODELO, local_dir=str(destino),
-                          allow_patterns=list(PADROES_MODELO))
-    else:
-        dados = ler_json_url(f"https://huggingface.co/api/models/{REPO_MODELO}")
-        for item in dados.get("siblings", []):
-            nome = item.get("rfilename", "")
-            if "/" not in nome and any(fnmatch.fnmatch(nome, p) for p in PADROES_MODELO):
-                baixar(f"https://huggingface.co/{REPO_MODELO}/resolve/main/{nome}", destino / nome)
-    conferir_modelo(destino)
-    return destino
+    tamanho = (pasta / "model.bin").stat().st_size
+    minimo, maximo = LIMITES_MODELO
+    if tamanho > maximo:
+        raise ErroConstrucao(
+            f"{pasta / 'model.bin'} tem {tamanho / 1e6:.0f} MB: parece o modelo em float16 (o "
+            "publicado no Hugging Face, ~484 MB), e o instalador passaria de 500 MiB. Construa "
+            f"com --sem-modelo ou converta-o para int8, como o CI:\n{comandos_conversao()}")
+    if tamanho < minimo:
+        raise ErroConstrucao(
+            f"{pasta / 'model.bin'} tem {tamanho / 1e6:.0f} MB, pouco para o faster-whisper-small "
+            "em int8 (~250 MB): cópia interrompida, ou outro modelo?")
 
 
 def copiar_modelo(origem: Path, arvore: Path) -> Path:
@@ -681,14 +735,36 @@ def conferir_lancador(objdump: str, binario: bytes) -> None:
         raise ErroConstrucao("Helestron.exe com problema: " + "; ".join(problemas))
 
 
+def gravar_comando(arvore: Path) -> Path:
+    """O helestron.cmd na raiz da pasta do programa, ao lado do python.exe
+    (CONTEUDO_COMANDO). Entra no manifesto e na lista do que a instalação
+    põe na pasta como qualquer arquivo: a verificação o confere e a
+    desinstalação o apaga."""
+    destino = arvore / NOME_COMANDO
+    destino.write_bytes(CONTEUDO_COMANDO.encode("ascii"))
+    return destino
+
+
 # ============================================================= etapa 7
 NOME_MANIFESTO = "manifesto.json"
 
 
+def componentes_da_arvore(arvore: Path) -> dict:
+    """O que a construção embutiu, lido da própria árvore (e não das opções):
+    {"modelo_transcricao": "faster-whisper-small" ou "", "falantes": bool}.
+    Com isto no manifesto, a verificação da instalação sabe se a falta de um
+    modelo é defeito ou uma construção sem ele (--sem-modelo, --sem-falantes)."""
+    modelo = arvore / "modelos" / PASTA_MODELO / "model.bin"
+    falantes = arvore / "modelos" / "falantes"
+    return {"modelo_transcricao": PASTA_MODELO if modelo.is_file() else "",
+            "falantes": falantes.is_dir() and any(falantes.rglob("*.onnx"))}
+
+
 def gerar_manifesto(arvore: Path, versao: str) -> dict:
-    """{nome, versao, gerado_em, arquivos: {caminho: {tamanho, sha256}}} de
-    todos os arquivos da pasta do programa (caminhos com "/"), no formato que
-    helestron/aplicativo/integridade.py lê."""
+    """{nome, versao, gerado_em, componentes, arquivos: {caminho: {tamanho,
+    sha256}}} de todos os arquivos da pasta do programa (caminhos com "/"), no
+    formato que helestron/aplicativo/integridade.py lê (as chaves que ele não
+    conhece, como "componentes", ele ignora)."""
     arquivos = {}
     for arq in sorted(arvore.rglob("*")):
         if not arq.is_file():
@@ -699,6 +775,7 @@ def gerar_manifesto(arvore: Path, versao: str) -> dict:
         arquivos[rel] = {"tamanho": arq.stat().st_size, "sha256": sha256_de(arq)}
     manifesto = {"nome": "Helestron", "versao": versao,
                  "gerado_em": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                 "componentes": componentes_da_arvore(arvore),
                  "arquivos": arquivos}
     (arvore / NOME_MANIFESTO).write_text(json.dumps(manifesto, indent=1, ensure_ascii=False) + "\n",
                                          encoding="utf-8")
@@ -779,6 +856,18 @@ def achar_makensis() -> str:
     raise ErroConstrucao("falta o NSIS (makensis); no Ubuntu: sudo apt-get install nsis")
 
 
+def conferir_tamanho_do_setup(exe: Path, limite: int = LIMITE_SETUP) -> None:
+    """O instalador cabe no limite para entrega por anexo? Senão, ele sai de
+    dist (não fica um Setup que o CI reprovaria à espera de ser enviado)."""
+    tamanho = exe.stat().st_size
+    if tamanho > limite:
+        exe.unlink(missing_ok=True)
+        raise ErroConstrucao(
+            f"o instalador ficou com {tamanho / 1024 / 1024:.0f} MiB, acima do limite de "
+            f"{limite / 1024 / 1024:.0f} MiB para entrega por anexo (o modelo de transcrição está "
+            "em int8?)")
+
+
 def rodar_makensis(script: Path) -> None:
     opcao = "/" if os.name == "nt" else "-"
     subprocess.run([achar_makensis(), f"{opcao}V2", f"{opcao}INPUTCHARSET", "UTF8", str(script)],
@@ -810,6 +899,15 @@ def construir(args: argparse.Namespace) -> Path:
     print(f"  obra: {obra}\n  cache: {cache}\n  saída: {saida}")
     if args.modelo and args.sem_modelo:
         raise ErroConstrucao("use --modelo DIR ou --sem-modelo, não os dois")
+    if not args.modelo and not args.sem_modelo:
+        # Antes, sem --modelo, baixava-se o do Hugging Face, em float16: um
+        # instalador acima de 500 MiB e diferente do publicado pelo CI.
+        raise ErroConstrucao(
+            "diga de onde vem o modelo de transcrição: --modelo DIR, com o faster-whisper-small "
+            "já em int8, ou --sem-modelo (o programa o baixa no primeiro uso). O CI converte o "
+            f"modelo assim:\n{comandos_conversao()}")
+    if args.modelo:
+        conferir_modelo(Path(args.modelo))      # antes do trabalho pesado
     if sys.version_info[:2] != VERSAO_PYTHON:
         raise ErroConstrucao(f"rode com Python {VERSAO_PYTHON[0]}.{VERSAO_PYTHON[1]} "
                              f"(este é {platform.python_version()})")
@@ -853,28 +951,32 @@ def construir(args: argparse.Namespace) -> Path:
     if args.sem_modelo:
         info("--sem-modelo: o modelo de transcrição será baixado no primeiro uso")
     else:
-        origem = Path(args.modelo) if args.modelo else baixar_modelo(cache)
-        info(f"faster-whisper-small: {copiar_modelo(origem, arvore)}")
+        info(f"faster-whisper-small: {copiar_modelo(Path(args.modelo), arvore)}")
     if args.sem_falantes:
         info("--sem-falantes: os modelos de voz serão baixados quando o usuário pedir")
     else:
+        # A falha aqui interrompe a construção (antes, virava um AVISO e um
+        # instalador "verde" sem os modelos): o manual promete a separação de
+        # vozes sem internet. Um instalador sem eles só com --sem-falantes.
         try:
             for arq in obter_falantes(cache, arvore):
                 info(f"falantes: {arq.relative_to(arvore)}")
         except ErroConstrucao as erro:
-            remover(arvore / "modelos" / "falantes")
-            info(f"AVISO: separação de falantes sem os modelos ({erro}); o programa os baixa depois")
+            raise ErroConstrucao(f"modelos da separação de falantes: {erro} (para construir sem "
+                                 "eles, de propósito: --sem-falantes)") from None
 
-    etapa(6, "Lançador Helestron.exe (MinGW)")
+    etapa(6, "Lançadores (Helestron.exe e helestron.cmd)")
     exe = compilar_lancador(versao, obra, RECURSOS / "helestron.ico")
     shutil.copy2(exe, arvore / "Helestron.exe")
     shutil.copy2(RECURSOS / "helestron.ico", arvore / "helestron.ico")
     info(f"Helestron.exe: {exe.stat().st_size // 1024} KB, conferido com o objdump")
+    info(f"{gravar_comando(arvore).name}: a linha de comando (python.exe -I -m helestron)")
 
     etapa(7, "Manifesto de integridade (manifesto.json)")
     manifesto = gerar_manifesto(arvore, versao)
     total = tamanho_da_arvore(arvore)
-    info(f"{len(manifesto['arquivos'])} arquivos, {total / 1e6:.0f} MB")
+    info(f"{len(manifesto['arquivos'])} arquivos, {total / 1e6:.0f} MB; embutidos: "
+         f"{json.dumps(manifesto['componentes'], ensure_ascii=False)}")
 
     etapa(8, "Instalador (NSIS)")
     saida.mkdir(parents=True, exist_ok=True)
@@ -888,6 +990,7 @@ def construir(args: argparse.Namespace) -> Path:
     rodar_makensis(script)
     if not exe_final.is_file():
         raise ErroConstrucao("o makensis terminou sem gerar o instalador")
+    conferir_tamanho_do_setup(exe_final)
     soma = sha256_de(exe_final)
     (saida / f"{exe_final.name}.sha256").write_text(f"{soma}  {exe_final.name}\n", encoding="utf-8")
     minutos = (time.monotonic() - inicio) / 60
@@ -921,13 +1024,26 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--obra", metavar="PASTA", default=str(CONSTRUIR / "obra"),
                    help="pasta de trabalho (padrão: construir/obra)")
     p.add_argument("--python-tar", metavar="ARQ", help="o .tar.gz do python-build-standalone já baixado")
-    p.add_argument("--modelo", metavar="PASTA", help="pasta com o faster-whisper-small já baixado")
+    p.add_argument("--modelo", metavar="PASTA",
+                   help="pasta com o faster-whisper-small já em int8 (como o CI o converte)")
     p.add_argument("--sem-modelo", action="store_true",
                    help="instalador sem o modelo de transcrição (baixado no primeiro uso)")
     p.add_argument("--sem-falantes", action="store_true",
-                   help="instalador sem os modelos da separação de falantes")
+                   help="instalador sem os modelos da separação de falantes (sem esta opção, "
+                        "a falha ao obtê-los interrompe a construção)")
     p.add_argument("--marca", action="store_true", help="gera de novo o ícone e as imagens")
+    p.add_argument("--versao", action="store_true",
+                   help="só mostra a versão que será construída (a de helestron/__init__.py) "
+                        "e sai")
     args = p.parse_args(argv)
+    if args.versao:
+        # Só a versão, numa linha: o CI a compara com a tag da publicação.
+        try:
+            print(versao_do_pacote())
+        except ErroConstrucao as erro:
+            print(f"ERRO: {erro}", file=sys.stderr)
+            return 1
+        return 0
     try:
         construir(args)
     except ErroConstrucao as erro:
