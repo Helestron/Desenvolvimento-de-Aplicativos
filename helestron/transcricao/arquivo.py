@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -38,8 +39,24 @@ from .documento import (Fala, MetaAudiencia, gerar_docx, magistrado_da_config,
 log = logging.getLogger("transcricao.arquivo")
 
 TAXA = 16000
-EXTENSOES = (".asf", ".wmv", ".wma", ".mp3", ".mp4", ".m4a", ".wav", ".flac", ".ogg",
-             ".opus", ".aac", ".avi", ".mkv", ".mov", ".webm", ".3gp", ".amr")
+# Os formatos de áudio e de vídeo que o Windows reproduz (Windows Media
+# Player, Filmes e TV, Mídia), numa lista ÚNICA: a do filtro do diálogo do
+# Windows, a do 'accept' do navegador (web/js/secao-audiencias.js,
+# EXTENSOES_MIDIA, que o teste test_transcricao_formatos confere item a item)
+# e a da linha de comando. A lista só orienta a escolha: o servidor não recusa
+# arquivo pela extensão - quem decide é o PyAV abrir o arquivo e achar uma
+# trilha de áudio (decodificar), com a frase certa quando não há trilha, o
+# arquivo está cortado ou é protegido por DRM.
+EXTENSOES = (
+    # áudio
+    ".mp3", ".wav", ".wma", ".aac", ".adt", ".adts", ".m4a", ".m4b", ".flac", ".ogg", ".oga",
+    ".opus", ".aif", ".aiff", ".aifc", ".amr", ".awb", ".ac3", ".ec3", ".mka", ".weba",
+    ".caf", ".au", ".snd", ".mp2", ".mpa", ".3ga",
+    # vídeo
+    ".mp4", ".m4v", ".mov", ".qt", ".avi", ".wmv", ".wm", ".asf", ".mkv", ".webm", ".mpg",
+    ".mpeg", ".mpe", ".m1v", ".m2v", ".ts", ".m2t", ".m2ts", ".mts", ".3gp", ".3g2", ".flv",
+    ".f4v", ".vob", ".ogv", ".dvr-ms", ".wtv", ".divx", ".mxf",
+)
 FILTRO_ARQUIVOS = [("Gravações de áudio e vídeo", " ".join(f"*{e}" for e in EXTENSOES)),
                    ("Todos os arquivos", "*.*")]
 TEMPERATURAS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
@@ -51,6 +68,19 @@ class ProcessoNaoInformado(ValueError):
 
 class AudioIlegivel(RuntimeError):
     """O arquivo não tem áudio que se possa ler."""
+
+
+class SemTrilhaDeAudio(AudioIlegivel):
+    """O arquivo abre, mas não tem trilha de áudio (o vídeo sem som)."""
+
+
+class ArquivoDanificado(AudioIlegivel):
+    """O arquivo não abre como mídia, ou a trilha de áudio não decodifica:
+    cortado (cópia ou download pela metade), corrompido ou não é mídia."""
+
+
+class ProtegidoPorDrm(AudioIlegivel):
+    """O áudio é cifrado (DRM): só o programa que tem a licença o toca."""
 
 
 class SemFala(RuntimeError):
@@ -103,40 +133,209 @@ def _decodificar_soundfile(caminho: Path, taxa: int) -> np.ndarray | None:
     return np.ascontiguousarray(audio, dtype=np.float32)
 
 
+# ----------------------------------------------------------------- DRM
+# O áudio cifrado (DRM) abre no PyAV, mas não decodifica - ou decodifica em
+# ruído, e a transcrição sairia vazia com "Nenhuma fala foi reconhecida". A
+# proteção se reconhece pela estrutura do arquivo, sem a licença:
+#   * ASF/WMA/WMV (Windows Media DRM, PlayReady): os objetos de cifra do
+#     cabeçalho ASF, pelo GUID (16 bytes; não aparecem por acaso);
+#   * MP4/M4A/M4B/MOV/3GP (FairPlay do iTunes, CENC/PlayReady): a descrição
+#     da trilha de áudio (stsd) com o tipo trocado por 'drms' ou 'enca'.
+_GUID_ASF_CABECALHO = uuid.UUID("75B22630-668E-11CF-A6D9-00AA0062CE6C").bytes_le
+_GUIDS_ASF_DRM = (
+    uuid.UUID("2211B3FB-BD23-11D2-B4B7-00A0C955FC6E").bytes_le,   # Content Encryption
+    uuid.UUID("298AE614-2622-4C17-B935-DAE07EE9289C").bytes_le,   # Extended Content Encryption
+    uuid.UUID("43058533-6981-49E6-9B74-AD12CB86D58C").bytes_le,   # Advanced Content Encryption
+    uuid.UUID("9A04F079-9840-4286-AB92-E65BE0885F95").bytes_le,   # Protection System Identifier
+)
+_CAIXAS_INICIAIS_MP4 = {b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide", b"pnot", b"styp"}
+_CAIXAS_ATE_STSD = (b"trak", b"mdia", b"minf", b"stbl")
+_AUDIO_CIFRADO_MP4 = {b"drms", b"enca"}
+_LIMITE_CABECALHO = 64 * 1024 * 1024
+
+
+def _caixas_mp4(dados: bytes, inicio: int, fim: int):
+    """(tipo, início do conteúdo, fim) de cada caixa ISO-BMFF entre inicio e fim."""
+    pos = inicio
+    while pos + 8 <= fim:
+        tamanho = int.from_bytes(dados[pos:pos + 4], "big")
+        tipo = dados[pos + 4:pos + 8]
+        cabeca = 8
+        if tamanho == 1:
+            if pos + 16 > fim:
+                return
+            tamanho = int.from_bytes(dados[pos + 8:pos + 16], "big")
+            cabeca = 16
+        elif tamanho == 0:
+            tamanho = fim - pos
+        if tamanho < cabeca or pos + tamanho > fim:
+            return
+        yield tipo, pos + cabeca, pos + tamanho
+        pos += tamanho
+
+
+def _audio_cifrado_no_moov(moov: bytes) -> bool:
+    for tipo, ini, fim in _caixas_mp4(moov, 0, len(moov)):
+        if tipo != b"trak":
+            continue
+        nivel = [(ini, fim)]
+        for procurado in _CAIXAS_ATE_STSD[1:] + (b"stsd",):
+            proximo = []
+            for a, b in nivel:
+                proximo += [(i, f) for t, i, f in _caixas_mp4(moov, a, b) if t == procurado]
+            nivel = proximo
+        for a, b in nivel:
+            # stsd: versão e sinais (4), quantidade (4) e as descrições (caixas)
+            for entrada, _i, _f in _caixas_mp4(moov, a + 8, b):
+                if entrada in _AUDIO_CIFRADO_MP4:
+                    return True
+    return False
+
+
+def _moov_do_arquivo(f, tamanho_arquivo: int) -> bytes | None:
+    """O conteúdo da caixa 'moov' (no começo ou no fim do arquivo), ou None."""
+    pos = 0
+    for _ in range(10000):
+        if pos + 8 > tamanho_arquivo:
+            return None
+        f.seek(pos)
+        cabeca = f.read(16)
+        if len(cabeca) < 8:
+            return None
+        tamanho = int.from_bytes(cabeca[:4], "big")
+        tipo = cabeca[4:8]
+        inicio = 8
+        if tamanho == 1 and len(cabeca) == 16:
+            tamanho, inicio = int.from_bytes(cabeca[8:16], "big"), 16
+        elif tamanho == 0:
+            tamanho = tamanho_arquivo - pos
+        if tamanho < inicio:
+            return None
+        if pos == 0 and tipo not in _CAIXAS_INICIAIS_MP4:
+            return None
+        if tipo == b"moov":
+            if tamanho > _LIMITE_CABECALHO:
+                return None
+            f.seek(pos + inicio)
+            return f.read(tamanho - inicio)
+        pos += tamanho
+    return None
+
+
+def protecao_drm(caminho: Path | str) -> str:
+    """O nome da proteção, se o áudio do arquivo é cifrado (DRM); senão "".
+
+    Nunca levanta: na dúvida (arquivo curto, estrutura que não se reconhece),
+    "" - quem decide se o arquivo serve é a decodificação.
+    """
+    try:
+        with open(caminho, "rb") as f:
+            f.seek(0, 2)
+            tamanho = f.tell()
+            f.seek(0)
+            inicio = f.read(30)
+            if inicio[:16] == _GUID_ASF_CABECALHO and len(inicio) >= 24:
+                cabecalho = int.from_bytes(inicio[16:24], "little")
+                f.seek(0)
+                dados = f.read(min(max(cabecalho, 30), _LIMITE_CABECALHO))
+                if any(guid in dados for guid in _GUIDS_ASF_DRM):
+                    return "Windows Media DRM"
+                return ""
+            if inicio[4:8] in _CAIXAS_INICIAIS_MP4:
+                moov = _moov_do_arquivo(f, tamanho)
+                if moov and _audio_cifrado_no_moov(moov):
+                    return "FairPlay/CENC"
+    except (OSError, ValueError):
+        return ""
+    return ""
+
+
+def _frase_protegido(nome: str) -> str:
+    return (f"'{nome}' é protegido contra cópia (DRM): o áudio é cifrado e só o programa que "
+            "tem a licença consegue tocá-lo. Peça ao setor ou ao sistema de gravação a "
+            "gravação original, sem proteção (por exemplo, exportada em MP3, WAV ou MP4).")
+
+
+def _frase_danificado(nome: str) -> str:
+    return (f"Não consegui ler '{nome}' como áudio ou vídeo: o arquivo parece cortado "
+            "(copiado ou baixado pela metade), corrompido ou não é de áudio nem de vídeo. "
+            "Confira se ele toca no reprodutor de mídia do Windows; se tocar só até um "
+            "ponto, copie ou baixe a gravação de novo.")
+
+
+def _frase_sem_trilha(nome: str, tem_video: bool) -> str:
+    if tem_video:
+        return (f"'{nome}' é um vídeo sem trilha de áudio: não há som para transcrever. "
+                "Confira se a gravação foi feita com o som ligado ou se o sistema de "
+                "gravação guardou o áudio num arquivo à parte.")
+    return (f"'{nome}' não tem trilha de áudio: não há som para transcrever. Confira se é "
+            "mesmo a gravação da audiência e se o arquivo foi copiado por inteiro.")
+
+
+def _abrir_av(av, caminho: Path):
+    try:
+        try:
+            return av.open(str(caminho), metadata_errors="ignore")
+        except TypeError:  # PyAV 17+ não tem mais esse argumento
+            return av.open(str(caminho))
+    except FileNotFoundError:
+        raise
+    except PermissionError as erro:
+        raise AudioIlegivel(f"Não consegui abrir '{caminho.name}': o arquivo está em uso por "
+                            "outro programa ou sem permissão de leitura.") from erro
+    except Exception as erro:
+        # O texto do FFmpeg traz o caminho inteiro (que pode dizer o processo
+        # e as partes): fica só no registro de depuração, e a frase diz o que
+        # fazer.
+        log.debug("o PyAV não abriu %s: %s", caminho.name, type(erro).__name__)
+        if protecao_drm(caminho):
+            raise ProtegidoPorDrm(_frase_protegido(caminho.name)) from erro
+        raise ArquivoDanificado(_frase_danificado(caminho.name)) from erro
+
+
 def _decodificar_av(caminho: Path, taxa: int) -> np.ndarray:
     try:
         import av
     except ImportError as erro:
         raise AudioIlegivel("O decodificador de áudio (PyAV) não está instalado. "
                             f"{sistema.REINSTALAR}") from erro
-    try:
-        try:
-            recipiente = av.open(str(caminho), metadata_errors="ignore")
-        except TypeError:  # PyAV 17+ não tem mais esse argumento
-            recipiente = av.open(str(caminho))
-    except Exception as erro:
-        raise AudioIlegivel(f"'{caminho.name}' não pôde ser aberto como áudio ou vídeo: {erro}") from erro
+    if protecao_drm(caminho):
+        raise ProtegidoPorDrm(_frase_protegido(caminho.name))
+    recipiente = _abrir_av(av, caminho)
     partes: list[np.ndarray] = []
     with recipiente:
         if not recipiente.streams.audio:
-            raise AudioIlegivel(f"'{caminho.name}' não tem trilha de áudio. Confira se o "
-                                "arquivo foi baixado por inteiro.")
-        fluxo = recipiente.streams.audio[0]
+            raise SemTrilhaDeAudio(_frase_sem_trilha(caminho.name,
+                                                     bool(recipiente.streams.video)))
+        # Com mais de uma trilha (dublagem, comentário), a principal - a que
+        # o próprio FFmpeg escolheria para tocar.
+        try:
+            fluxo = recipiente.streams.best("audio") or recipiente.streams.audio[0]
+        except Exception:
+            fluxo = recipiente.streams.audio[0]
         reamostrador = av.AudioResampler(format="s16", layout="mono", rate=taxa)
         falhas = 0
-        for pacote in recipiente.demux(fluxo):
-            try:
-                quadros = pacote.decode()
-            except Exception:
-                # pedaço corrompido (gravação cortada, rede): pula e segue
-                falhas += 1
-                continue
-            for quadro in quadros:
+        try:
+            pacotes = recipiente.demux(fluxo)
+            for pacote in pacotes:
                 try:
-                    for saida in reamostrador.resample(quadro):
-                        partes.append(saida.to_ndarray().reshape(-1).copy())
+                    quadros = pacote.decode()
                 except Exception:
+                    # pedaço corrompido (gravação cortada, rede): pula e segue
                     falhas += 1
+                    continue
+                for quadro in quadros:
+                    try:
+                        for saida in reamostrador.resample(quadro):
+                            partes.append(saida.to_ndarray().reshape(-1).copy())
+                    except Exception:
+                        falhas += 1
+        except (av.error.InvalidDataError, av.error.EOFError, OSError) as erro:
+            # O arquivo acaba no meio de um pacote (cópia pela metade): fica o
+            # que veio antes; sem nada, a frase do arquivo danificado.
+            log.warning("%s: a leitura parou antes do fim (%s).", caminho.name,
+                        type(erro).__name__)
+            falhas += 1
         try:
             for saida in reamostrador.resample(None):
                 partes.append(saida.to_ndarray().reshape(-1).copy())
@@ -145,7 +344,10 @@ def _decodificar_av(caminho: Path, taxa: int) -> np.ndarray:
         if falhas:
             log.warning("%s: %d pedaço(s) de áudio ilegível(is) foram pulados.", caminho.name, falhas)
     if not partes:
-        raise AudioIlegivel(f"'{caminho.name}' não tem áudio legível.")
+        if falhas:
+            raise ArquivoDanificado(_frase_danificado(caminho.name))
+        raise SemTrilhaDeAudio(f"'{caminho.name}' tem trilha de áudio, mas ela está vazia: "
+                               "não há som para transcrever.")
     audio = np.concatenate(partes).astype(np.float32)
     del partes
     audio *= np.float32(1.0 / 32768.0)   # no lugar: 3 h são ~700 MB a menos no pico

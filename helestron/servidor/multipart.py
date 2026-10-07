@@ -1,10 +1,15 @@
 """Leitura de envio de arquivo (multipart/form-data), sem o módulo cgi.
 
 O cgi saiu da biblioteca padrão no Python 3.13, e o email.parser leria o
-corpo inteiro na memória - uma gravação de audiência tem centenas de MB.
-Este leitor anda pelo corpo em pedaços de 64 KB: cada arquivo vai direto
-para o disco (em LOCAL\\temp\\envios, com nome aleatório) e os campos de
-texto ficam na memória, com limite.
+corpo inteiro na memória - uma gravação de audiência tem centenas de MB, e
+o vídeo dela, gigabytes. Este leitor anda pelo corpo em pedaços (64 KB; 1 MB
+dentro de um arquivo): cada arquivo vai direto para o disco (em
+LOCAL\\temp\\envios, com nome aleatório), sem nunca estar inteiro na memória,
+e os campos de texto ficam na memória, com limite.
+
+O tamanho máximo do corpo é de quem chama ('limite'): o servidor o define
+por rota (rede.Roteador.adicionar) - LIMITE_PADRAO para a relação e a
+pauta, bem mais para a gravação de audiência.
 
 Quem recebe o Envio apaga os arquivos ao terminar (Envio.apagar(), ou o
 'with'): a relação de processos pode trazer as senhas dos sigilosos, e a
@@ -28,6 +33,10 @@ from pathlib import Path
 log = logging.getLogger("servidor.multipart")
 
 PEDACO = 64 * 1024
+# Dentro de um arquivo, blocos maiores: 20 GB em blocos de 64 KB são 320 mil
+# voltas do laço em Python; em 1 MB, 20 mil (a memória continua pequena).
+PEDACO_ARQUIVO = 1024 * 1024
+LIMITE_PADRAO = 500 * 1024 * 1024
 LIMITE_CABECALHOS = 16 * 1024
 LIMITE_CAMPO = 1024 * 1024
 LIMITE_PARTES = 50
@@ -163,11 +172,12 @@ class _Leitor:
 
 
 def ler(fluxo, tamanho: int, content_type: str, pasta: Path,
-        limite: int = 500 * 1024 * 1024) -> Envio:
+        limite: int = LIMITE_PADRAO) -> Envio:
     """Lê o multipart inteiro de 'fluxo' (exatamente 'tamanho' bytes).
 
-    Arquivos vão para 'pasta'; em qualquer erro, o que já foi gravado é
-    apagado antes de a exceção subir.
+    Arquivos vão para 'pasta', em blocos; em qualquer erro (inclusive o
+    disco cheio no meio), o que já foi gravado é apagado antes de a exceção
+    subir.
     """
     if tamanho > limite:
         raise EnvioGrandeDemais(f"o envio tem {tamanho} bytes; o limite é {limite}")
@@ -248,7 +258,8 @@ def _analisar(leitor: _Leitor, marca: bytes, delimitador: bytes, pasta: Path,
                                      tipo=cabecalhos.get("content-type", ""))
             envio.arquivos[nome_campo] = enviado
             with open(destino, "wb") as saida:
-                buf = _copiar_ate(leitor, buf, delimitador, saida.write, enviado)
+                buf = _copiar_ate(leitor, buf, delimitador, saida.write, enviado,
+                                  PEDACO_ARQUIVO)
         else:
             pedacos: list[bytes] = []
             contador = ArquivoEnviado(nome_campo, "", Path())
@@ -267,12 +278,15 @@ def _novo_destino(pasta: Path, nome: str) -> Path:
     return pasta / f"envio-{secrets.token_hex(8)}{extensao_segura(nome)}"
 
 
-def _copiar_ate(leitor: _Leitor, buf: bytes, delimitador: bytes, escrever, conta) -> bytes:
+def _copiar_ate(leitor: _Leitor, buf: bytes, delimitador: bytes, escrever, conta,
+                pedaco_max: int = PEDACO) -> bytes:
     """Entrega o conteúdo da parte até o delimitador; devolve o que sobra
     depois dele (que começa logo após a marca: "--" ou CRLF).
 
     Guarda sempre os últimos len(delimitador)-1 bytes no buffer: o
-    delimitador pode chegar partido entre dois pedaços.
+    delimitador pode chegar partido entre dois pedaços. Lê no máximo
+    'pedaco_max' bytes por vez: a memória usada não depende do tamanho do
+    arquivo.
     """
     reserva = len(delimitador) - 1
     while True:
@@ -287,7 +301,7 @@ def _copiar_ate(leitor: _Leitor, buf: bytes, delimitador: bytes, escrever, conta
             conta.tamanho += corte
             escrever(buf[:corte])
             buf = buf[corte:]
-        pedaco = leitor.ler()
+        pedaco = leitor.ler(pedaco_max)
         if not pedaco:
             raise EnvioInvalido("o envio terminou sem o separador final")
         buf += pedaco

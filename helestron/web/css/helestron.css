@@ -2666,9 +2666,10 @@ button.item-simples:hover {
   font-size: 15px;
   color: var(--texto);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* quebra só no <wbr> depois do ano (o número com o dependente "/01" é
+     mais largo); nunca cortado com reticências */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* O tipo, o selo de sigilo e o atraso quebram linha dentro da coluna do
@@ -3893,9 +3894,169 @@ mark {
   text-decoration: underline;
 }
 
-/* cartão de uma ação só (Audiências › Transcrever uma gravação) */
-.cartao.mais-opcoes {
-  padding: 12px 16px;
+/* ------------------------------- Audiências: os dois modos e o arquivo */
+.modos-audiencia-barra {
+  display: flex;
+  margin-bottom: 16px;
+}
+
+/* "Ao vivo" e "Arquivo de áudio ou vídeo": o mesmo peso, lado a lado */
+.segmentado.modos-audiencia {
+  display: flex;
+  width: 100%;
+  max-width: 620px;
+  padding: 3px;
+  border-radius: 13px;
+}
+
+.segmentado.modos-audiencia .segmentado-polegar {
+  top: 3px;
+  bottom: 3px;
+  border-radius: 10px;
+}
+
+.segmentado.modos-audiencia button {
+  flex: 1 1 0;
+  min-width: 0;
+  height: auto;
+  min-height: 40px;
+  padding: 6px 14px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 14.5px;
+  white-space: normal;
+  line-height: 1.2;
+}
+
+.segmentado.modos-audiencia button .icone {
+  flex: none;
+  color: var(--texto-2);
+}
+
+.segmentado.modos-audiencia button[aria-checked="true"] {
+  color: var(--navy-900);
+}
+
+.segmentado.modos-audiencia button[aria-checked="true"] .icone {
+  color: var(--azul);
+}
+
+.transcrever-arquivo .texto-arquivo {
+  margin: -4px 2px 0;
+  line-height: 1.45;
+}
+
+.area-soltar.area-gravacao {
+  padding: 28px 20px 24px;
+}
+
+.arquivo-escolhido {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(232, 241, 255, 0.6);
+  border: 1px solid rgba(10, 102, 232, 0.18);
+  transition: border-color 160ms, background 160ms;
+}
+
+.arquivo-escolhido.sobre {
+  border-color: var(--azul);
+  background: rgba(232, 241, 255, 0.95);
+}
+
+.arquivo-escolhido .linha-texto {
+  flex: 1;
+  min-width: 0;
+}
+
+.arquivo-escolhido .grupo-botoes {
+  flex: none;
+}
+
+.arquivo-escolhido-nome {
+  display: block;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--navy-900);
+  overflow-wrap: anywhere;
+}
+
+.arquivo-escolhido-sub {
+  display: block;
+  font-size: 12.5px;
+  color: var(--texto-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ajuda-campo.aviso-arquivo {
+  margin-top: -8px;
+  color: var(--ambar-texto);
+}
+
+.transcrever-acoes {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.transcrever-acoes .ajuda-campo {
+  flex: 1 1 240px;
+  margin: 0;
+}
+
+#andamento-arquivo:empty {
+  display: none;
+}
+
+.tarefa-arquivo .grupo-botoes {
+  margin-top: 10px;
+  padding-left: 52px;
+}
+
+.tarefa-arquivo .grupo-botoes:empty {
+  display: none;
+}
+
+.tarefa-arquivo .acao-item-sub {
+  overflow-wrap: anywhere;
+}
+
+.tarefa-arquivo.falhou .acao-item-sub {
+  color: var(--vermelho-texto);
+}
+
+.transcrever-arquivo .tarefa-arquivo {
+  box-shadow: none;
+  background: rgba(241, 245, 251, 0.9);
+  border: 1px solid rgba(27, 53, 96, 0.1);
+}
+
+/* telas estreitas: uma coluna, e os modos um embaixo do outro se preciso */
+@media (max-width: 760px) {
+  .audiencia-grade {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .segmentado.modos-audiencia button {
+    font-size: 13.5px;
+    padding: 6px 8px;
+  }
+
+  .arquivo-escolhido {
+    flex-wrap: wrap;
+  }
+
+  .tarefa-arquivo .grupo-botoes {
+    padding-left: 0;
+  }
 }
 
 /* ============================================================ foco visível

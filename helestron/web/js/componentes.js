@@ -155,6 +155,15 @@
     horaFalada: (h) => (h ? String(h).replace(":", "h") : ""),
     plural: (n, um, varios) => `${fmtNumero.format(n || 0)} ${n === 1 ? um : varios}`,
     mb: (n) => (n >= 1024 ? (n / 1024).toLocaleString(LOCALE, { maximumFractionDigits: 1 }) + " GB" : Math.round(n) + " MB"),
+    /** Bytes → "850 KB", "12,4 MB", "1,2 GB" (como o Windows, em potências de 1024). */
+    bytes(n) {
+      let v = Math.max(0, Number(n) || 0);
+      const unidades = ["bytes", "KB", "MB", "GB", "TB"];
+      let i = 0;
+      while (v >= 1024 && i < unidades.length - 1) { v /= 1024; i++; }
+      if (!i) return `${Math.round(v)} ${v === 1 ? "byte" : "bytes"}`;
+      return v.toLocaleString(LOCALE, { maximumFractionDigits: v < 100 ? 1 : 0 }) + " " + unidades[i];
+    },
     maiuscula,
     lerData,
     iso,
@@ -186,22 +195,92 @@
     "4.01": "TRF1", "4.02": "TRF2", "4.03": "TRF3", "4.04": "TRF4", "4.05": "TRF5", "4.06": "TRF6",
   };
 
+  // O dependente (incidente) depois dos 20 dígitos: "/01" (como nos autos) ou
+  // "-01" (como nos nomes de arquivo: o Windows não aceita "/"), colado ao
+  // número, com até 4 dígitos ("/0003" do e-SAJ). Nunca seguido de letra,
+  // ordinal ou grau: "... - 1ª Vara" é texto, não o incidente 01 (a mesma
+  // regra de nucleo/cnj.py, ler_nome_arquivo).
+  const DEPENDENTE_DIGITADO = /^([/-])(?:inc)?(\d{0,4})(?![\dA-Za-zÀ-ÿªº°])/i;
+  const DEPENDENTE_COM_ESPACO = /^\s*(\/)\s*(\d{2,4})(?![\dA-Za-zÀ-ÿªº°])/;
+  // O número num nome de arquivo ou pasta, com o dependente "-NN" ou "/NN"
+  // (o separador aceita hífen, ponto, espaço e os travessões do Word).
+  const SEP_CNJ = "[-.\\s\\u2010-\\u2015]?";
+  const NUMERO_NO_NOME = new RegExp("(?:^|\\D)(\\d{7})" + SEP_CNJ + "(\\d{2})" + SEP_CNJ + "(\\d{4})" + SEP_CNJ +
+    "(\\d)" + SEP_CNJ + "(\\d{2})" + SEP_CNJ + "(\\d{4})" +
+    "(?:\\/(\\d{1,4})(?![\\dA-Za-zÀ-ÿªº°])|-(?:inc)?0*(\\d{1,4})(?=$|[\\s._()[\\]]))?(?!\\d)", "i");
+
   const cnj = {
     digitos: (s) => String(s || "").replace(/\D/g, ""),
-    /** Dígitos → "0700123-83.2024.8.02.0001" (aceita incompleto, para a máscara). */
+    /**
+     * Separa os 20 dígitos do número do dependente digitado depois deles:
+     * {digitos, separador ("/", "-" ou ""), dependente (os dígitos, como
+     * vieram: "", "0", "01", "0003")}. Dígitos a mais sem separador são
+     * descartados, como antes.
+     */
+    separar(s) {
+      const texto = String(s || "");
+      let n = 0;
+      let i = 0;
+      while (i < texto.length && n < 20) {
+        if (texto[i] >= "0" && texto[i] <= "9") n++;
+        i++;
+      }
+      const digitos = cnj.digitos(texto.slice(0, i));
+      if (n < 20) return { digitos, separador: "", dependente: "" };
+      const resto = texto.slice(i);
+      const m = DEPENDENTE_DIGITADO.exec(resto) || DEPENDENTE_COM_ESPACO.exec(resto);
+      return { digitos, separador: m ? m[1] : "", dependente: m ? m[2] : "" };
+    },
+    /**
+     * Dígitos → "0700123-83.2024.8.02.0001" (aceita incompleto, para a
+     * máscara), mantendo o dependente digitado: "…0001/01" ou "…0001-01"
+     * (e o separador sozinho, enquanto se digita).
+     */
     mascarar(s) {
-      const d = cnj.digitos(s).slice(0, 20);
+      const p = cnj.separar(s);
+      const d = p.digitos.slice(0, 20);
       const partes = [[0, 7], [7, 9], [9, 13], [13, 14], [14, 16], [16, 20]];
       const sep = ["", "-", ".", ".", ".", "."];
       let r = "";
       partes.forEach(([a, b], i) => {
         if (d.length > a) r += sep[i] + d.slice(a, b);
       });
-      return r;
+      return p.separador ? r + p.separador + p.dependente : r;
     },
-    /** O dígito verificador confere? */
+    /** "1", "001", "0003" → "01", "01", "03" (como o programa guarda o dependente). */
+    dependente(dep) {
+      const d = String(dep || "").replace(/\D/g, "");
+      return d ? (d.replace(/^0+/, "") || "0").padStart(2, "0") : "";
+    },
+    /** O número sem o dependente: "0700123-83.2024.8.02.0001". */
+    principal(s) {
+      return cnj.mascarar(cnj.separar(s).digitos);
+    },
+    /** O número como nos autos, com o dependente "/NN": "0700123-83.2024.8.02.0001/01". */
+    formatar(s) {
+      const p = cnj.separar(s);
+      const dep = cnj.dependente(p.dependente);
+      return cnj.mascarar(p.digitos) + (dep ? "/" + dep : "");
+    },
+    /**
+     * O número de um nome de arquivo ou pasta, com o dependente que o
+     * programa escreve no nome ("…0001-01 2026-09-16 14h00.flac"): o número
+     * formatado ("…0001/01") ou "".
+     */
+    doNome(nome) {
+      const m = NUMERO_NO_NOME.exec(String(nome || ""));
+      if (!m) return "";
+      const dep = cnj.dependente(m[7] || m[8] || "");
+      return cnj.mascarar(m.slice(1, 7).join("")) + (dep ? "/" + dep : "");
+    },
+    /** O número pelo nome do arquivo ou, senão, pela pasta (_controle\midias\<número>\). */
+    doCaminho(caminho) {
+      const partes = String(caminho || "").split(/[\\/]/).filter(Boolean);
+      return cnj.doNome(partes[partes.length - 1]) || (partes.length > 1 ? cnj.doNome(partes[partes.length - 2]) : "");
+    },
+    /** O dígito verificador confere? (O dependente, se houver, não conta.) */
     valido(s) {
-      const d = cnj.digitos(s);
+      const d = cnj.separar(s).digitos;
       if (d.length !== 20) return false;
       const n = d.slice(0, 7), dv = d.slice(7, 9), resto = d.slice(9);
       try {
@@ -349,16 +428,19 @@
     return i;
   }
 
-  /** Controle segmentado com o "polegar" deslizando sob a opção marcada. */
+  /**
+   * Controle segmentado com o "polegar" deslizando sob a opção marcada.
+   * Cada opção: {valor, rotulo, icone?} (o ícone vai antes do rótulo).
+   */
   function segmentado({ opcoes, valor, aoMudar, rotulo }) {
     const polegar = el("span", { classe: "segmentado-polegar", "aria-hidden": "true" });
     const grupo = el("div", { classe: "segmentado", role: "radiogroup", aria: { label: rotulo } }, polegar);
     const botoes = opcoes.map((op) => {
       const b = el("button", {
-        type: "button", role: "radio", texto: op.rotulo,
+        type: "button", role: "radio", texto: op.icone ? null : op.rotulo,
         aria: { checked: String(op.valor === valor) }, tabindex: op.valor === valor ? "0" : "-1",
         dados: { valor: op.valor },
-      });
+      }, op.icone ? [icone(op.icone, { tamanho: 17 }), el("span", { texto: op.rotulo })] : null);
       b.addEventListener("click", () => escolher(op.valor, true));
       b.addEventListener("keydown", (ev) => {
         const i = opcoes.findIndex((o) => o.valor === grupo.valor);
