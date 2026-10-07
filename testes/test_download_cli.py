@@ -510,6 +510,84 @@ class TestCliParaAutomacao(BaseCli):
                     "--destino", str(destino), "--texto", "--json", str(arq)])
         self.assertEqual(self.ler_json(arq)["processos"][0]["texto_situacao"], "em_dia")
 
+    def test_texto_diz_as_paginas_sem_texto_no_json(self):
+        """--texto: as folhas sem texto extraível (digitalizadas sem OCR) vão
+        para "paginas_sem_texto", para a skill vê-las no PDF."""
+        import pymupdf
+
+        from helestron.nucleo import paginacao
+
+        destino = self.tmp / "Lote"
+        arq = self.tmp / "lote.json"
+
+        def construir(numeros, destino):
+            pdf = destino / f"{numeros[0].nome_arquivo}.pdf"
+            pdf.parent.mkdir(parents=True, exist_ok=True)
+            doc = pymupdf.open()
+            for texto in ("Petição inicial", "", "fls. 3", "Contestação"):
+                doc.new_page().insert_text((72, 72), texto)
+            paginacao.gravar_no_doc(doc, paginacao.manifesto_esaj(numeros[0].formatado, 4, {},
+                                                                  tribunal="TJAL"))
+            doc.save(str(pdf))
+            doc.close()
+            outro = destino / f"{numeros[1].nome_arquivo}.pdf"
+            outro.write_bytes(apoio.pdf_bytes(2, texto="autos"))
+            return [modelos.ResultadoProcesso(1, numeros[0].formatado, "TJAL", "esaj",
+                                              modelos.OK, arquivo=str(pdf), paginas=4),
+                    modelos.ResultadoProcesso(2, numeros[1].formatado, "TJAL", "esaj",
+                                              modelos.OK, arquivo=str(outro), paginas=2)]
+        self.construir = construir
+        codigo, texto = self.rodar([A.formatado, B.formatado, "--destino", str(destino),
+                                    "--texto", "--json", str(arq)])
+        self.assertEqual(codigo, 0)
+        com, sem = self.ler_json(arq)["processos"]
+        self.assertEqual((com["paginas_sem_texto"], com["paginas_sem_texto_pdf"]), ("2-3", "2-3"))
+        self.assertEqual((sem["paginas_sem_texto"], sem["paginas_sem_texto_pdf"]), ("", ""))
+        self.assertIn(f"{A.nome_arquivo}.pdf: páginas sem texto extraível (imagem? confira no "
+                      "PDF): 2-3", texto)
+        self.assertIn("1 com página sem texto extraível", texto)
+        # em dia (sem extrair de novo), a informação continua
+        self.rodar([A.formatado, B.formatado, "--destino", str(destino), "--texto",
+                    "--json", str(arq)])
+        com = self.ler_json(arq)["processos"][0]
+        self.assertEqual((com["texto_situacao"], com["paginas_sem_texto"]), ("em_dia", "2-3"))
+        # sem --texto, os campos existem e ficam vazios
+        self.rodar([A.formatado, B.formatado, "--destino", str(destino), "--json", str(arq)])
+        com = self.ler_json(arq)["processos"][0]
+        self.assertEqual((com["texto_situacao"], com["paginas_sem_texto"]), ("nao_pedido", ""))
+
+    # ------------------------------------------- código do e-SAJ sem terminal
+    def test_sem_terminal_e_esaj_por_senha_a_janela_fica_visivel(self):
+        """A skill do Claude chama sem terminal: o código que o e-SAJ manda por
+        e-mail é digitado na janela do navegador, que precisa estar à vista."""
+        arq = self.tmp / "lote.json"
+        codigo, texto = self.rodar([A.formatado, "--login", "senha", "--json", str(arq)])
+        self.assertEqual(codigo, 0)
+        self.assertTrue(self.capturado["opcoes"].mostrar_navegador)
+        self.assertIn("Código do e-SAJ na janela do navegador", texto)
+        self.assertIn("digite-o nessa janela", texto)
+        dados = self.ler_json(arq)
+        self.assertTrue(dados["navegador_visivel"])
+        self.assertIn("Código do e-SAJ na janela do navegador",
+                      [a["titulo"] for a in dados["avisos"]])
+        # nenhuma opção de ler senha ou código de arquivo
+        ajuda = cli.criar_parser().format_help().lower()
+        for palavra in ("--senha", "--codigo", "--código", "arquivo de senha"):
+            self.assertNotIn(palavra, ajuda)
+
+    def test_janela_escondida_quando_ha_terminal_ou_nao_ha_codigo_por_email(self):
+        tjrs = apoio.numero("0700006", tr="21")            # eProc: o código não é por e-mail
+        casos = (("com terminal", [A.formatado, "--login", "senha"], True),
+                 ("certificado", [A.formatado, "--login", "certificado"], False),
+                 ("só eProc", [tjrs.formatado, "--login", "senha"], False))
+        for nome, argv, interativo in casos:
+            with self.subTest(caso=nome), \
+                    mock.patch.object(cli, "_interativo", return_value=interativo):
+                codigo, texto = self.rodar(argv)
+                self.assertEqual(codigo, 0)
+                self.assertFalse(self.capturado["opcoes"].mostrar_navegador)
+                self.assertNotIn("Código do e-SAJ na janela", texto)
+
     # --------------------------------------------------- completar e retomar
     def test_completar_e_ignorados(self):
         curto = A.formatado[:15]                      # NNNNNNN-DD.AAAA

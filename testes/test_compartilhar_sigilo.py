@@ -157,6 +157,9 @@ class TestBloqueioSoDosAutos(BaseSigilo):
         with mock.patch.object(motor, "_mover", preso), self.assertLogs("compartilhar", "ERROR"):
             rel = self.preparar()
             self.assertEqual(sorted(rel.sigilosos_no_acervo), sorted([autos, self.concluido]))
+            # o resumo (o que a linha de comando imprime) diz a trava à parte
+            self.assertTrue(rel.resumo.endswith(
+                "2 autos de processo sigiloso presos no acervo; não compartilhe"), rel.resumo)
             app = mock.Mock(cfg=self.cfg, sigilosos_presos=[], sigilosos_avisos=[],
                             sigilosos_motivos={})
             api.registrar_presos(app, rel.sigilosos_no_acervo, rel.motivos)
@@ -213,9 +216,29 @@ class TestBloqueioSoDosAutos(BaseSigilo):
         with mock.patch.object(motor, "_mover", sem_pasta), self.assertLogs("compartilhar"):
             rel = self.preparar()
         self.assertIn(autos, rel.sigilosos_no_acervo)
+        self.assertIn("presos no acervo; não compartilhe", rel.resumo)
         frase = preparo.frase_sigilosos_no_acervo([autos], self.cfg, rel.motivos)
         self.assertIn("a pasta dos sigilosos não está acessível", frase)
         self.assertNotIn("aberto em outro programa", frase)
+
+
+class TestResumoDoPreparo(unittest.TestCase):
+    def test_autos_presos_tem_parte_propria_no_resumo(self):
+        rel = preparo.RelatorioPreparo(processos=3, transcricoes=1)
+        self.assertEqual(rel.resumo, "3 processos, 1 transcrição")
+        self.assertNotIn("não compartilhe", rel.resumo)
+        rel.sigilosos_no_acervo = [Path("Processos", "Lote 1", f"{X}.pdf")]
+        rel.erros = ["frase dos autos presos"]
+        self.assertEqual(rel.resumo, "3 processos, 1 transcrição, 1 arquivo com problema, "
+                                     "autos de 1 processo sigiloso presos no acervo; não "
+                                     "compartilhe")
+        rel.sigilosos_no_acervo.append(Path("Processos", "Lote 2", f"{X}.pdf"))
+        self.assertTrue(rel.resumo.endswith(
+            ", 2 autos de processo sigiloso presos no acervo; não compartilhe"), rel.resumo)
+        # o resto que ficou (a minuta aberta) continua só avisado, sem a trava
+        so_aviso = preparo.RelatorioPreparo(sigilosos_avisos=[Path("Minutas", "x.docx")])
+        self.assertIn("1 arquivo de processo sigiloso ficou no acervo", so_aviso.resumo)
+        self.assertNotIn("não compartilhe", so_aviso.resumo)
 
 
 class TestIncidenteDoSigiloso(BaseSigilo):

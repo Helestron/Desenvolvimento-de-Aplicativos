@@ -383,6 +383,49 @@ class TestComandosParaAutomacao(unittest.TestCase):
         self.assertEqual(codigo, 2)
         self.assertIn("não existe", erros)
 
+    def test_preparar_pasta_diz_as_paginas_sem_texto(self):
+        import pymupdf
+
+        from helestron.nucleo import paginacao
+
+        lote = self.amb.raiz / "Lotes da skill" / "Lote 2"
+        num, outro = "0700001-27.2024.8.02.0001", "0700002-02.2024.8.02.0001"
+        lote.mkdir(parents=True)
+        doc = pymupdf.open()
+        for texto in ("Petição inicial", "", "", "Contestação", "fls. 5"):
+            doc.new_page().insert_text((72, 72), texto)
+        paginacao.gravar_no_doc(doc, paginacao.manifesto_esaj(num, 5, {}, tribunal="TJAL"))
+        doc.save(str(lote / f"{num}.pdf"))
+        doc.close()
+        self.pdf(lote / f"{outro}.pdf", "Petição inicial")
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--json")
+        self.assertEqual(codigo, 0)
+        itens = {Path(i["pdf"]).stem: i for i in json.loads(saida)["itens"]}
+        self.assertEqual((itens[num]["paginas_sem_texto"], itens[num]["paginas_sem_texto_pdf"]),
+                         ("2-3, 5", "2-3, 5"))
+        self.assertTrue(itens[num]["paginacao"]["garantida"])
+        self.assertEqual(itens[outro]["paginas_sem_texto"], "")
+        # sem --json, a frase diz o arquivo e as folhas; em dia, a informação continua
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote))
+        self.assertEqual(codigo, 0)
+        self.assertIn(f"{num}.pdf: páginas sem texto extraível (imagem? confira no PDF): 2-3, 5",
+                      saida)
+        self.assertNotIn(f"{outro}.pdf:", saida)
+
+    def test_recursos_novos_e_versao_do_pacote(self):
+        import helestron
+
+        codigo, saida, _ = self.rodar("caminhos", "--json")
+        self.assertEqual(codigo, 0)
+        dados = json.loads(saida)
+        self.assertEqual(dados["versao"], helestron.__version__)
+        for recurso in ("folhas.fieis", "texto.v2", "capa.v2", "texto.paginas-sem-texto",
+                        "baixar.codigo-na-janela", "baixar.json", "preparar.pasta"):
+            self.assertIn(recurso, dados["recursos"])
+        self.assertEqual(len(dados["recursos"]), len(set(dados["recursos"])))
+        with mock.patch.object(helestron, "__version__", "9.9.9"):
+            self.assertEqual(json.loads(self.rodar("caminhos", "--json")[1])["versao"], "9.9.9")
+
     def test_preparar_pasta_no_acervo_pula_sigiloso_e_inclui_os_do_lote(self):
         lote = self.acervo / "Processos" / "Lote 1"
         publico, sigiloso = "0700001-27.2024.8.02.0001", "0700002-02.2024.8.02.0001"

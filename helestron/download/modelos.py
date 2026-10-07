@@ -192,8 +192,14 @@ class ResultadoProcesso:
     paginas: int = 0
     documentos: int = 0
     sigiloso: bool = False
-    incompleto: str = ""          # o que o portal não ofereceu: folhas no e-SAJ ("12-15, 40"),
-                                  # documentos no eProc ("ev. 4 PET1")
+    # O que falta nos autos do PDF. No e-SAJ, TODAS as folhas que têm página
+    # de aviso no lugar ("12-15, 40"), qualquer que seja o motivo: a Pasta
+    # Digital não as ofereceu (ou listou a peça sem numeração), a peça não
+    # veio do portal, o arquivo dela era inválido ou veio com páginas a menos
+    # (os códigos N, S, B, I e C de nucleo/paginacao.MOTIVOS) - e não só as não
+    # oferecidas. No eProc, os documentos que não vieram ("ev. 4 PET1").
+    # Vazio: nada falta (ou ainda sem PDF).
+    incompleto: str = ""
     detalhe: str = ""
     midias: list[str] = field(default_factory=list)
     segundos: float = 0.0

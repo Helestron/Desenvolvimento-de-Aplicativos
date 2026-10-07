@@ -423,6 +423,38 @@ class TestSigilo(BaseAcervo):
         self.assertEqual(list(nuvem_dir.rglob(f"{SIGILOSO}*")), [])
         self.assertTrue((antiga / f"{NUM}.pdf").exists())     # o resto não é apagado
 
+    def test_sigilosos_dentro_da_pasta_do_espelho_sao_recusados_sem_apagar(self):
+        """A retirada dos sigilosos do espelho apaga, dentro da subpasta do
+        espelho, todo arquivo com o número de processo sigiloso. Com a pasta
+        dos sigilosos lá dentro (configuração errada que escapou da tela),
+        apagaria os próprios autos em segredo de justiça: o espelho recusa
+        antes de copiar ou apagar qualquer coisa."""
+        nuvem_dir = Path(self.dir.name) / "Nuvem"
+        casos = {
+            "dentro do espelho": nuvem_dir / nuvem.SUBPASTA / "Sigilosos",
+            "dentro do espelho antigo": nuvem_dir / nuvem.SUBPASTAS_ANTIGAS[0] / "Sigilosos",
+            "igual ao espelho": nuvem_dir / nuvem.SUBPASTA,
+            "contendo o espelho": nuvem_dir,
+        }
+        for caso, pasta in casos.items():
+            with self.subTest(caso=caso):
+                original = _pdf(pasta / "Lote 1" / f"{SIGILOSO}.pdf",
+                                ["DEPOIMENTO DA VÍTIMA - SEGREDO"])
+                antes = sorted(p for p in nuvem_dir.rglob("*") if p.is_file())
+                with self.assertRaises(ValueError) as erro:
+                    nuvem.espelhar(self.raiz, nuvem_dir, sigilosos=pasta, pauta=None)
+                self.assertIn("a pasta dos sigilosos não pode ficar dentro da pasta da nuvem",
+                              str(erro.exception))
+                self.assertTrue(original.exists(), "os autos sigilosos originais foram apagados")
+                # nada copiado nem apagado
+                self.assertEqual(sorted(p for p in nuvem_dir.rglob("*") if p.is_file()), antes)
+                self.assertFalse(list(nuvem_dir.rglob(f"{NUM}*")))
+                original.unlink()
+        # com a pasta dos sigilosos fora da nuvem, o espelho segue normalmente
+        _pdf(self.sigilosos / "Lote 1" / f"{SIGILOSO}.pdf", ["SEGREDO"])
+        nuvem.espelhar(self.raiz, nuvem_dir, sigilosos=self.sigilosos, pauta=None)
+        self.assertTrue((self.sigilosos / "Lote 1" / f"{SIGILOSO}.pdf").exists())
+
     def test_copia_esquecida_no_acervo_nao_e_servida(self):
         # Copiou para a pasta de sigilosos, mas não conseguiu apagar do acervo.
         _pdf(self.raiz / "Processos" / "Lote 1" / f"{SIGILOSO}.pdf", ["SEGREDO"])

@@ -28,7 +28,7 @@ import stat
 import string
 from pathlib import Path
 
-from ..nucleo import cnj, sigilo
+from ..nucleo import cnj, config, sigilo
 from .mcp_servidor import _DO_CONFIG, Recorte, chaves_sigilosas, pasta_sigilosos_configurada
 
 log = logging.getLogger("compartilhar.nuvem")
@@ -210,7 +210,10 @@ def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None,
     minuta com o número dele. O processo sigiloso também não é copiado. Se a
     cópia de um sigiloso não puder sair da nuvem, o resto do espelho é feito
     e, no fim, levanta SigilosoNaNuvem: segredo de justiça na nuvem não pode
-    terminar como sucesso.
+    terminar como sucesso. Levanta ValueError, antes de copiar ou apagar
+    qualquer coisa, se a pasta da nuvem estiver dentro do acervo (ou o
+    contiver) ou se a pasta dos sigilosos estiver dentro da subpasta do
+    espelho (ou de uma antiga), for ela ou a contiver.
     """
     origem = Path(origem)
     destino = Path(destino_raiz) / SUBPASTA
@@ -220,6 +223,7 @@ def espelhar(origem: Path, destino_raiz: Path, progresso=None, cancelado=None,
         raise ValueError("a pasta da nuvem não pode ficar dentro do acervo, nem conter o acervo")
     if sigilosos is _DO_CONFIG:
         sigilosos = pasta_sigilosos_configurada()
+    _recusar_sigilosos_na_nuvem(Path(destino_raiz), sigilosos)
     # Pasta de sigilosos e pastas do programa postas (por engano) dentro do
     # acervo, e link ou junção para fora dele: ficam de fora
     recorte = Recorte(origem, sigilosos)
@@ -284,6 +288,21 @@ def _dentro_ou_igual(filho: Path, pai: Path) -> bool:
 
     f, p = normal(filho), normal(pai)
     return f == p or f.startswith(p.rstrip(os.sep) + os.sep)
+
+
+def _recusar_sigilosos_na_nuvem(destino_raiz: Path, sigilosos) -> None:
+    """Defesa final (a configuração e a API já recusam essa combinação): a
+    pasta dos sigilosos dentro da subpasta do espelho (ou de uma antiga), igual
+    a ela ou contendo-a. A retirada dos sigilosos do espelho apaga, ali dentro,
+    todo arquivo com o número de processo sigiloso - com a pasta dos sigilosos
+    lá dentro, apagaria os próprios autos em segredo de justiça (os originais,
+    não cópias). E o espelho copiaria o acervo para dentro dela."""
+    if sigilosos is None or not str(sigilosos).strip():
+        return
+    for nome in (SUBPASTA, *SUBPASTAS_ANTIGAS):
+        if config.conflito_com_a_nuvem(destino_raiz / nome, sigilosos):
+            raise ValueError("a pasta dos sigilosos não pode ficar dentro da pasta da nuvem, "
+                             "nem contê-la")
 
 
 def _retirar_sigilosos(destino: Path, sigilosas: set[str]) -> list[tuple[Path, str]]:

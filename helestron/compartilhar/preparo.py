@@ -93,6 +93,15 @@ class RelatorioPreparo:
         if self.erros:
             partes.append(_plural(len(self.erros), "arquivo com problema",
                                   "arquivos com problema"))
+        if self.sigilosos_no_acervo:
+            # Por último e à parte: é a trava (nada do acervo se compartilha
+            # até esses autos saírem), e quem lê só o resumo - a linha de
+            # comando, uma skill - precisa vê-la sem procurar nos erros.
+            # "autos" não tem singular: um arquivo só é "autos de 1 processo".
+            n = len(self.sigilosos_no_acervo)
+            partes.append(("autos de 1 processo sigiloso presos no acervo" if n == 1 else
+                           f"{n} autos de processo sigiloso presos no acervo")
+                          + "; não compartilhe")
         return ", ".join(partes)
 
 

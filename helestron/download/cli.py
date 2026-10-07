@@ -7,7 +7,10 @@
         --json PASTA\\_helestron.json --log PASTA\\_helestron.log
 
 Usa o mesmo motor da janela; o código de verificação do e-SAJ é pedido no
-próprio terminal. Ctrl+C para o lote sem perder o processo em curso.
+próprio terminal. Sem terminal (quem chama não tem teclado: a skill do
+Claude, um script), a janela do navegador fica visível e o código é digitado
+nela, no campo do próprio portal; senha e código nunca são lidos de arquivo.
+Ctrl+C para o lote sem perder o processo em curso.
 
 Para quem automatiza (a skill do Claude, um script): ``--json`` grava o
 andamento e o resultado num JSON (formato em download/acompanhamento.py),
@@ -151,6 +154,19 @@ def _interativo() -> bool:
         return bool(sys.stdin) and sys.stdin.isatty()
     except (AttributeError, ValueError):
         return False
+
+
+def _esaj_por_senha(grupos, opcoes) -> bool:
+    """Algum tribunal do lote entra no e-SAJ por usuário e senha (o modo que
+    pede o código de verificação por e-mail)? Conta também o e-SAJ que é o
+    sistema alternativo de um tribunal em transição (TJAL, TJSP)."""
+    if opcoes.modo_login("esaj") != "senha":
+        return False
+    for t in grupos:
+        alternativo = getattr(t, "alternativo", None)
+        if t.sistema == "esaj" or getattr(alternativo, "sistema", "") == "esaj":
+            return True
+    return False
 
 
 def _ler_argumentos(processos: list[str], sufixo: str | None, listas, leitura) -> list[dict]:
@@ -471,6 +487,7 @@ def _extrair_textos(resumo, cfg, acomp) -> None:
     except Exception:
         acervo = None
     contagem = {"novo": 0, "em_dia": 0, "falhou": 0, "sigiloso_ignorado": 0}
+    com_imagem = 0          # PDFs com página sem texto extraível
     for r in resumo.itens:
         if r.situacao not in (OK, JA_BAIXADO) or not r.arquivo:
             continue
@@ -494,11 +511,25 @@ def _extrair_textos(resumo, cfg, acomp) -> None:
         except Exception as e:      # PDF corrompido não para o resto
             situacao, erro = "falhou", str(e)[:300]
             print(f"  texto de {pdf.name}: não consegui extrair ({erro})")
+        info = {}
+        if situacao != "falhou":
+            # As páginas sem texto extraível (imagem digitalizada sem OCR): quem
+            # lê o texto precisa vê-las no PDF. No e-SAJ, em folhas.
+            try:
+                _texto, info = textos.analisar(destino)
+            except Exception as e:  # o texto está pronto; só a análise falhou
+                log.debug("análise do texto de %s: %s", pdf.name, e)
+            if info.get("paginas_sem_texto"):
+                com_imagem += 1
+                print(f"  {pdf.name}: páginas sem texto extraível (imagem? confira no PDF): "
+                      f"{info['paginas_sem_texto']}")
         contagem[situacao] += 1
         if acomp is not None:
-            acomp.texto(r, destino if situacao != "falhou" else "", situacao, erro)
+            acomp.texto(r, destino if situacao != "falhou" else "", situacao, erro, info=info)
     feitos = contagem["novo"] + contagem["em_dia"]
     partes = [f"{feitos} pronto{'s' if feitos != 1 else ''}"]
+    if com_imagem:
+        partes.append(f"{com_imagem} com página sem texto extraível")
     if contagem["falhou"]:
         partes.append(f"{contagem['falhou']} com problema")
     if contagem["sigiloso_ignorado"]:
@@ -697,6 +728,21 @@ def _baixar(args, cfg, acomp) -> dict:
         cofre = _CofreComMemoria(cofre_real, _pedir_credenciais(grupos, opcoes, cofre_real))
 
     ctx = ContextoTerminal(eventos=args.eventos, acompanhamento=acomp)
+    if not opcoes.mostrar_navegador and not _interativo() and _esaj_por_senha(grupos, opcoes):
+        # Sem terminal (a skill do Claude, um script, a tarefa agendada), o
+        # código que o e-SAJ manda por e-mail não tem onde ser digitado aqui -
+        # e o programa nunca lê senha nem código de arquivo. Com a janela do
+        # navegador à vista, o usuário o digita no campo do próprio portal, e o
+        # e-SAJ espera por ele (até espera_login_minutos); escondida, o login
+        # falharia sem que ninguém pudesse fazer nada.
+        opcoes.mostrar_navegador = True
+        ctx.avisar("Código do e-SAJ na janela do navegador",
+                   "Não há terminal para digitar o código de verificação do e-SAJ: a janela do "
+                   "navegador vai ficar visível. Se o e-SAJ pedir o código enviado por e-mail, "
+                   "digite-o nessa janela, no campo do código, e clique em Enviar (prazo de "
+                   f"{opcoes.espera_login_min} min).")
+    if acomp is not None:
+        acomp.definir(navegador_visivel=bool(opcoes.mostrar_navegador))
     print("\nComeçando. Ctrl+C para parar (o que já foi baixado fica).\n")
     try:
         resumo = motor.executar(numeros, destino, opcoes, ctx, senhas=leitura.senhas,

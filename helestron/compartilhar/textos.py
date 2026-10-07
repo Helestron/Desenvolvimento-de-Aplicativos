@@ -33,9 +33,16 @@ Formato 2 do texto (o único que este módulo grava):
     arquivo, para navegar: nunca se cita.
 
   Abaixo da marca vem ``[documento: ...]`` (o marcador do PDF a que a página
-  pertence). Linha do conteúdo da página que imite uma marca ou uma dessas
-  linhas recebe um "· " na frente: um documento das partes não consegue
-  forjar uma folha.
+  pertence). Página dos autos sem texto que se extraia (imagem digitalizada
+  sem OCR; no e-SAJ, só com o carimbo da Pasta Digital e o número da folha)
+  tem, antes do conteúdo, uma linha que começa por
+  ``[página sem texto extraível``: é preciso ver a página no PDF. Linha do
+  conteúdo da página que imite uma marca ou uma dessas linhas recebe um "· "
+  na frente: um documento das partes não consegue forjar uma folha.
+
+``analisar`` devolve o texto e o que dele se sabe (sistema, paginação,
+páginas de aviso e as páginas sem texto, citadas como os autos as citam),
+para quem automatiza: a linha de comando o põe no JSON ("paginas_sem_texto").
 
 PDF sem manifesto é de versão anterior (1.0.1 ou antes): do e-SAJ, vale
 "fl. N" só se TODOS os marcadores "(fls. A-B)" começarem na página A e o PDF
@@ -75,6 +82,12 @@ MARCA_COM_PAGINA = "=== [{citacao}] (pág. {m} do PDF) ==="
 MARCA_DOCUMENTO = "[documento: {titulo}]"
 MARCA_AUSENTE = "[folha não disponível no e-SAJ: {motivo}]"
 SEM_TEXTO = "[página sem texto extraível — pode ser imagem digitalizada; confira no PDF]"
+SEM_TEXTO_CARIMBO = ("[página sem texto extraível além do carimbo do e-SAJ — pode ser imagem "
+                     "digitalizada; confira no PDF]")
+SEM_TEXTO_ILEGIVEL = "[página sem texto extraível — a página não pôde ser lida; confira no PDF]"
+# O começo comum das três linhas acima: é por ele que analisar() as acha
+PREFIXO_SEM_TEXTO = "[página sem texto extraível"
+ILEGIVEL = "[página ilegível]"         # o que a leitura devolve da página corrompida
 CITACAO_CAPA = "capa gerada pelo Helestron — não é página dos autos"
 NAO_INCLUIDO = "NÃO INCLUÍDO"
 GRAVACAO = "gravação fora do PDF"
@@ -105,6 +118,21 @@ _RE_FOLHAS_NO_TITULO = re.compile(r"\(fls?\. (\d+)(?:-(\d+))?\)")
 _RE_TITULO_EVENTO = re.compile(r"^Evento (\d+)(?: — (.*))?$")
 _RE_DATA_FINAL = re.compile(r"\s*\(\d{2}/\d{2}/\d{4}\)$")
 _RE_PARTE_COMPLETO = re.compile(r"— parte (\d+)\s*$")
+# O carimbo que o e-SAJ põe em toda folha da Pasta Digital ("Este documento é
+# cópia do original, assinado digitalmente por ... Para conferir o original,
+# acesse o site ..., informe o processo ... e código ...") e o número da folha
+# numa linha só ("fls. 12"): são texto até na folha digitalizada sem OCR, que
+# por isso parecia ter texto - e a IA não sabia que precisava ver a imagem.
+_RE_CARIMBO_ESAJ = re.compile(
+    r"(?:Este documento [ée] c[óo]pia do original|Para conferir o original)"
+    r".{0,700}?c[óo]digo\s+[\w-]+\.?", re.I | re.S)
+_RE_FOLHA_SOZINHA = re.compile(r"^\s*fls?\.\s*\d{1,7}\s*$", re.I)
+# Menos que isto de letras e algarismos além do carimbo: a página não tem texto
+MIN_CARACTERES_TEXTO = 12
+_RE_SEM_TEXTO = re.compile(r"^" + re.escape(PREFIXO_SEM_TEXTO), re.M)
+# "evento 4, PET1, p. 2", "arquivo completo do eProc, pág. 3", "pág. 5 do PDF"
+_RE_CITACAO_NUMERADA = re.compile(r"^(?P<base>.*?)(?P<p>\bp\.|\bpág\.) (?P<n>\d+)"
+                                  r"(?P<fim> do PDF)?$")
 
 MAX_LINHAS_LISTA = 40          # partes, eventos sem documento... no cabeçalho
 
@@ -277,13 +305,16 @@ def _texto_capa(m: dict) -> list[str]:
                "assunto": "Assunto", "assuntos": "Assuntos", "valor": "Valor da causa",
                "autuacao": "Autuação", "situacao": "Situação", "competencia": "Competência"}
     itens = [f"{rotulos.get(str(k), str(k).replace('_', ' ').capitalize())}: {_limpo(v, 200)}"
-             for k, v in capa.items() if _limpo(v)]
-    partes = [x for x in (m.get("partes") or []) if isinstance(x, str) and x.strip()]
-    if not partes and isinstance(capa.get("partes"), list):
-        partes = [x for x in capa["partes"] if isinstance(x, str) and x.strip()]
-    itens = [x for x in itens if not x.startswith("Partes:")]
+             for k, v in capa.items()
+             if str(k) != "partes" and isinstance(v, (str, int, float)) and _limpo(v)]
+    # As partes do processo: na raiz do manifesto ("partes", lista de textos;
+    # no modo "completo" essa chave é a das partes do arquivo, dicionários) e
+    # na capa ("capa": {"partes": [...]}) - as duas, sem repetir.
+    partes = list(dict.fromkeys(
+        t for t in (_limpo(x, 160) for x in _textos_da_lista(m.get("partes"))
+                    + _textos_da_lista(capa.get("partes"))) if t))
     if partes:
-        nomes = [_limpo(x, 160) for x in partes[:MAX_LINHAS_LISTA]]
+        nomes = partes[:MAX_LINHAS_LISTA]
         if len(partes) > MAX_LINHAS_LISTA:
             nomes.append(f"e mais {len(partes) - MAX_LINHAS_LISTA}")
         itens.append("Partes: " + "; ".join(nomes))
@@ -304,6 +335,28 @@ def _texto_capa(m: dict) -> list[str]:
     if nao_listados:
         linhas.append(f"[Eventos que o portal não listou: {nao_listados} (confira no eProc).]")
     return linhas
+
+
+def _textos_da_lista(valor) -> list[str]:
+    """Os textos de uma lista do manifesto (um texto solto vale como lista de
+    um); item que é dicionário ("polo", "nome"...) vira os valores, juntos.
+    O dicionário de uma parte do arquivo completo ("inicio", "paginas") não
+    é parte do processo e fica de fora."""
+    if isinstance(valor, str):
+        valor = [valor]
+    if not isinstance(valor, (list, tuple)):
+        return []
+    saida = []
+    for x in valor:
+        if isinstance(x, str):
+            texto = x
+        elif isinstance(x, dict) and not ({"inicio", "paginas"} & set(x)):
+            texto = ": ".join(str(v) for v in x.values() if isinstance(v, str) and v.strip())
+        else:
+            continue
+        if texto.strip():
+            saida.append(texto)
+    return saida
 
 
 def _plano_eproc(m: dict, n: int, toc) -> _Plano:
@@ -567,6 +620,24 @@ def _neutralizar(texto: str) -> str:
                      for linha in texto.split("\n"))
 
 
+def _aviso_sem_texto(corpo: str) -> str | None:
+    """A linha "[página sem texto extraível …]" que a página pede, ou None se
+    ela tem texto. No e-SAJ, o carimbo da Pasta Digital e o número da folha
+    não contam como texto: a folha digitalizada sem OCR só tem isso."""
+    if not corpo:
+        return SEM_TEXTO
+    if corpo == ILEGIVEL:
+        return SEM_TEXTO_ILEGIVEL
+    linhas = corpo.split("\n")
+    sobra = [linha for linha in linhas if not _RE_FOLHA_SOZINHA.match(linha)]
+    resto, carimbos = _RE_CARIMBO_ESAJ.subn(" ", " ".join(" ".join(sobra).split()))
+    if len(sobra) == len(linhas) and not carimbos:
+        return None             # sem carimbo: o texto que houver é da página
+    if sum(1 for c in resto if c.isalnum()) < MIN_CARACTERES_TEXTO:
+        return SEM_TEXTO_CARIMBO
+    return None
+
+
 def _montar(plano: _Plano, textos_paginas: list[str]) -> str:
     n = len(plano.paginas)
     saida = [_cabeca(plano.sistema, plano.paginacao, n, plano.ausentes)]
@@ -576,7 +647,11 @@ def _montar(plano: _Plano, textos_paginas: list[str]) -> str:
         saida += p.linhas
         if p.corpo:
             corpo = (textos_paginas[i] if i < len(textos_paginas) else "").strip()
-            saida.append(_neutralizar(corpo) if corpo else SEM_TEXTO)
+            aviso = _aviso_sem_texto(corpo)
+            if aviso:
+                saida.append(aviso)
+            if corpo and corpo != ILEGIVEL:
+                saida.append(_neutralizar(corpo))
     return "\n".join(saida) + "\n"
 
 
@@ -596,7 +671,7 @@ def _ler_com_pymupdf(caminho: Path):
             try:
                 textos_paginas.append(pagina.get_text("text", flags=flags) or "")
             except Exception:  # página corrompida não derruba o resto
-                textos_paginas.append("[página ilegível]")
+                textos_paginas.append(ILEGIVEL)
         return doc.page_count, toc, manifesto, textos_paginas
 
 
@@ -609,7 +684,7 @@ def _ler_com_pypdf(caminho: Path):  # pragma: no cover - só sem o PyMuPDF
         try:
             textos_paginas.append(pagina.extract_text() or "")
         except Exception:
-            textos_paginas.append("[página ilegível]")
+            textos_paginas.append(ILEGIVEL)
     return len(textos_paginas), [], paginacao.ler_do_pdf(caminho), textos_paginas
 
 
@@ -644,12 +719,100 @@ def texto_docx(caminho: Path) -> str:
 
 
 def texto_de(caminho: Path) -> str:
+    caminho = Path(caminho)
     sufixo = caminho.suffix.lower()
     if sufixo == ".pdf":
         return texto_pdf(caminho)
     if sufixo == ".docx":
         return texto_docx(caminho)
     return caminho.read_text(encoding="utf-8", errors="replace")
+
+
+def analisar(caminho: Path) -> tuple[str, dict]:
+    """O texto de 'caminho' e o que se sabe dele, para quem automatiza.
+
+    'caminho' é o PDF dos autos (o texto é extraído agora, no formato 2), o
+    texto já extraído (.txt, lido como está) ou um .docx. A 'info' é a de
+    info_do_texto: sistema, paginação, páginas, páginas de aviso e as páginas
+    sem texto extraível - no e-SAJ, em folhas ("3, 7-9"); no eProc, pela
+    citação ("evento 4, PET1, p. 1-2 (págs. 5-6 do PDF)").
+    """
+    texto = texto_de(Path(caminho))
+    return texto, info_do_texto(texto)
+
+
+def info_do_texto(texto: str) -> dict:
+    """O que o texto (formato 2) diz de si: {"versao", "sistema",
+    "paginacao", "paginas", "ausentes", "paginas_sem_texto",
+    "paginas_sem_texto_pdf", "total_sem_texto"}.
+
+    "paginas_sem_texto" cita as páginas sem texto extraível (imagem
+    digitalizada sem OCR, só o carimbo do e-SAJ, página ilegível) como os
+    autos as citam: no e-SAJ, as folhas em faixas ("3, 7-9", que são também
+    as páginas do PDF); no eProc, por documento ("evento 4, PET1, p. 1-2
+    (págs. 5-6 do PDF)"); sem paginação garantida, a posição no PDF ("págs.
+    3-4 do PDF"). "paginas_sem_texto_pdf" traz sempre as páginas do PDF, em
+    faixas. Vazios se não houver nenhuma. Texto sem o cabeçalho do formato 2
+    (um .docx, o formato 1) dá sistema e paginação vazios."""
+    cab = cabecalho(texto)
+    lista = marcas(texto)
+    inicios = [m.inicio for m in lista]
+    vazias: list[Marca] = []
+    for achado in _RE_SEM_TEXTO.finditer(texto):
+        i = bisect.bisect_right(inicios, achado.start()) - 1
+        if i >= 0 and (not vazias or vazias[-1] is not lista[i]):
+            vazias.append(lista[i])
+    pdf = sorted({m.pagina for m in vazias})
+    pag = cab.get("paginacao", "")
+    em_folhas = pag == FOLHAS or (not cab and bool(lista)
+                                  and all(m.citacao.startswith("fl. ") for m in lista))
+    if not vazias:
+        citacao = ""
+    elif em_folhas:
+        citacao = paginacao.descrever_folhas(pdf)
+    elif pag == DOCUMENTO:
+        citacao = _citar_paginas(vazias)
+    else:
+        citacao = (f"{'pág.' if len(pdf) == 1 else 'págs.'} "
+                   f"{paginacao.descrever_folhas(pdf)} do PDF")
+    return {"versao": cab.get("versao", 0), "sistema": cab.get("sistema", ""),
+            "paginacao": pag, "paginas": cab.get("paginas") or len(lista),
+            "ausentes": cab.get("ausentes", ""), "paginas_sem_texto": citacao,
+            "paginas_sem_texto_pdf": paginacao.descrever_folhas(pdf),
+            "total_sem_texto": len(pdf)}
+
+
+def _citar_paginas(lista: list[Marca]) -> str:
+    """As citações de páginas do eProc, com as seguidas do mesmo documento
+    juntas: "evento 4, PET1, p. 1-3 (págs. 5-7 do PDF); evento 3, DESPADEC1
+    (pág. 4 do PDF)"."""
+    grupos: list[dict] = []
+    for m in lista:
+        achado = _RE_CITACAO_NUMERADA.match(m.citacao)
+        if achado:
+            chave = (achado.group("base"), achado.group("p"), achado.group("fim") or "")
+            n = int(achado.group("n"))
+        else:
+            chave, n = (m.citacao, None, ""), None
+        g = grupos[-1] if grupos else None
+        if g and g["chave"] == chave and g["pdf_fim"] + 1 == m.pagina \
+                and (n is None or g["n_fim"] + 1 == n):
+            g["n_fim"], g["pdf_fim"] = n, m.pagina
+            continue
+        grupos.append({"chave": chave, "citacao": m.citacao, "explicita": m.explicita,
+                       "n_ini": n, "n_fim": n, "pdf_ini": m.pagina, "pdf_fim": m.pagina})
+    saida = []
+    for g in grupos:
+        base, p, fim = g["chave"]
+        if p is None or g["n_ini"] == g["n_fim"]:
+            t = g["citacao"]
+        else:
+            t = f"{base}{'págs.' if p == 'pág.' else p} {g['n_ini']}-{g['n_fim']}{fim}"
+        if g["explicita"] and not t.startswith("pág"):
+            t += (f" (pág. {g['pdf_ini']} do PDF)" if g["pdf_ini"] == g["pdf_fim"]
+                  else f" (págs. {g['pdf_ini']}-{g['pdf_fim']} do PDF)")
+        saida.append(t)
+    return "; ".join(saida)
 
 
 # ------------------------------------------------------------- gravação

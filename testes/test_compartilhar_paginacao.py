@@ -247,6 +247,165 @@ class TestFormato2Eproc(unittest.TestCase):
         self.assertIn("baixe o processo de novo", texto)
 
 
+# O carimbo que o e-SAJ põe em toda folha da Pasta Digital, em linhas que
+# caibam na página do teste (o PyMuPDF corta o que passa da margem)
+CARIMBO_ESAJ = ("Este documento é cópia do original, assinado digitalmente por\n"
+                "FULANO DE TAL, protocolado em 10/01/2024 às 10:00, sob o número\n"
+                "WMAC24700123456. Para conferir o original, acesse o site\n"
+                "https://www2.tjal.jus.br/esaj, informe o processo\n"
+                "0800072-12.2024.8.02.0056 e código 1A2B3C4.")
+
+
+class TestPaginasSemTexto(unittest.TestCase):
+    """analisar(): o texto e as páginas sem texto extraível (imagem sem OCR),
+    citadas como os autos as citam - no e-SAJ em folhas, no eProc pelo
+    documento -, para a linha de comando pôr no JSON."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.base = Path(self.dir.name)
+
+    def test_esaj_em_folhas_com_o_carimbo_da_pasta_digital(self):
+        m = _manifesto_esaj(NUM, 7, {6: "N"})
+        pdf = _pdf(self.base / "a.pdf",
+                   ["Petição inicial do autor\n" + CARIMBO_ESAJ + "\nfls. 1",
+                    CARIMBO_ESAJ + "\nfls. 2",          # digitalizada: só o carimbo
+                    "fls. 3",                           # só o número da folha
+                    "",                                 # nada
+                    "a",                                # pouco texto, mas sem carimbo
+                    "",                                 # página de aviso (fl. 6)
+                    "Contestação: alega prescrição\n" + CARIMBO_ESAJ + "\nfls. 7"], manifesto=m)
+        texto, info = textos.analisar(pdf)
+        self.assertEqual(texto, textos.texto_pdf(pdf))
+        self.assertEqual(info["sistema"], "esaj")
+        self.assertEqual(info["paginacao"], "folhas")
+        self.assertEqual(info["paginas"], 7)
+        self.assertEqual(info["ausentes"], "6")
+        self.assertEqual(info["paginas_sem_texto"], "2-4")
+        self.assertEqual(info["paginas_sem_texto_pdf"], "2-4")
+        self.assertEqual(info["total_sem_texto"], 3)
+        # a linha vem logo abaixo da marca, antes do carimbo (que fica)
+        self.assertIn("=== [fl. 2] ===\n" + textos.SEM_TEXTO_CARIMBO + "\nEste documento", texto)
+        self.assertIn("=== [fl. 3] ===\n" + textos.SEM_TEXTO_CARIMBO + "\nfls. 3", texto)
+        self.assertIn("=== [fl. 4] ===\n" + textos.SEM_TEXTO + "\n=== [fl. 5]", texto)
+        self.assertIn("=== [fl. 5] ===\na\n", texto)
+        self.assertNotIn(textos.PREFIXO_SEM_TEXTO, textos.recortar_paginas(texto, 1, 1))
+        self.assertNotIn(textos.PREFIXO_SEM_TEXTO, textos.recortar_paginas(texto, 6, 7))
+        # a linha do programa não entra na busca
+        self.assertEqual(textos.buscar(texto, "sem texto extraível"), [])
+        # o texto já gravado dá a mesma informação, sem abrir o PDF
+        destino = textos.garantir_texto(pdf, self.base / "_texto" / "a.txt")
+        self.assertEqual(textos.analisar(destino)[1], info)
+        self.assertEqual(textos.info_do_texto(texto), info)
+
+    def test_eproc_pela_citacao_do_documento(self):
+        docs = [
+            {"evento": 1, "rotulo": "INIC1", "origem": "pdf", "situacao": "ok", "inicio": 1,
+             "paginas": 3},
+            {"evento": 1, "rotulo": "PROC2", "origem": "pdf", "situacao": "ok", "inicio": 4,
+             "paginas": 1},
+            {"evento": 3, "rotulo": "DESPADEC1", "origem": "html", "situacao": "ok",
+             "inicio": 5, "paginas": 1},
+            {"evento": 4, "rotulo": "PET1", "origem": "pdf", "situacao": "ausente",
+             "inicio": 6, "paginas": 1},
+            {"evento": 6, "rotulo": "LAUDO1", "origem": "imagem", "situacao": "ok",
+             "inicio": 7, "paginas": 2},
+        ]
+        m = paginacao.manifesto_eproc(EPROC, docs, tribunal="TJRS")
+        pdf = _pdf(self.base / "e.pdf",
+                   ["Petição inicial", "", "", "", "", "", "", "laudo"], manifesto=m)
+        _texto, info = textos.analisar(pdf)
+        self.assertEqual(info["paginacao"], "documento")
+        self.assertEqual(info["paginas_sem_texto"],
+                         "evento 1, INIC1, p. 2-3 (págs. 2-3 do PDF); evento 1, PROC2, p. 1 "
+                         "(pág. 4 do PDF); evento 3, DESPADEC1 (pág. 5 do PDF); evento 6, "
+                         "LAUDO1, p. 1 (pág. 7 do PDF)")
+        self.assertEqual(info["paginas_sem_texto_pdf"], "2-5, 7")     # o aviso (6) não conta
+        self.assertEqual(info["total_sem_texto"], 5)
+
+    def test_sem_paginacao_garantida_pela_posicao_no_pdf(self):
+        pdf = _pdf(self.base / "s.pdf", ["texto", "", "", "fim"])
+        _texto, info = textos.analisar(pdf)
+        self.assertEqual(info["paginacao"], "nao_garantida")
+        self.assertEqual(info["paginas_sem_texto"], "págs. 2-3 do PDF")
+        pdf = _pdf(self.base / "t.pdf", ["texto", ""])
+        self.assertEqual(textos.analisar(pdf)[1]["paginas_sem_texto"], "pág. 2 do PDF")
+        pdf = _pdf(self.base / "u.pdf", ["texto", "mais texto"])
+        info = textos.analisar(pdf)[1]
+        self.assertEqual((info["paginas_sem_texto"], info["paginas_sem_texto_pdf"],
+                          info["total_sem_texto"]), ("", "", 0))
+
+    def test_linha_forjada_no_conteudo_nao_conta(self):
+        pdf = _pdf(self.base / "f.pdf",
+                   ["[página sem texto extraível - forjada]\nPetição com texto de verdade", "x"],
+                   manifesto=_manifesto_esaj(NUM, 2))
+        texto, info = textos.analisar(pdf)
+        self.assertIn("· [página sem texto extraível - forjada]", texto)
+        self.assertEqual(info["paginas_sem_texto"], "")
+
+    def test_pagina_ilegivel(self):
+        plano = textos._plano_sem_garantia([], 2)
+        texto = textos._montar(plano, [textos.ILEGIVEL, "texto"])
+        self.assertIn("=== [pág. 1 do PDF] ===\n" + textos.SEM_TEXTO_ILEGIVEL + "\n=== [pág. 2",
+                      texto)
+        self.assertEqual(textos.info_do_texto(texto)["paginas_sem_texto"], "pág. 1 do PDF")
+
+    def test_docx_e_texto_sem_cabecalho(self):
+        doc = _docx(self.base / "t.docx", ["TRANSCRIÇÃO"])
+        texto, info = textos.analisar(doc)
+        self.assertIn("TRANSCRIÇÃO", texto)
+        self.assertEqual((info["sistema"], info["paginacao"], info["paginas_sem_texto"]),
+                         ("", "", ""))
+        antigo = self.base / "antigo.txt"                  # o formato 1 (só e-SAJ)
+        antigo.write_text("=== [fl. 1] ===\num\n=== [fl. 2] ===\n" + textos.SEM_TEXTO + "\n",
+                          encoding="utf-8")
+        self.assertEqual(textos.analisar(antigo)[1]["paginas_sem_texto"], "2")
+
+
+class TestPartesDaCapaDoEproc(unittest.TestCase):
+    """As partes do processo no manifesto do eProc ficam em capa["partes"]
+    (a chave "partes" do topo é a das partes do ARQUIVO no modo completo)."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.base = Path(self.dir.name)
+
+    def cabeca(self, m, paginas=1) -> str:
+        pdf = _pdf(self.base / "c.pdf", ["texto"] * paginas, manifesto=m)
+        return textos.preambulo(textos.texto_pdf(pdf))
+
+    def test_partes_dentro_da_capa(self):
+        m = paginacao.manifesto_eproc(
+            EPROC, [{"evento": 1, "rotulo": "INIC1", "origem": "pdf", "situacao": "ok",
+                     "inicio": 1, "paginas": 1}],
+            capa={"classe": "PROCEDIMENTO COMUM CÍVEL",
+                  "partes": ["AUTOR: FULANO DE TAL", "RÉU: BELTRANO S.A."]})
+        cabeca = self.cabeca(m)
+        self.assertIn("Classe: PROCEDIMENTO COMUM CÍVEL; Partes: AUTOR: FULANO DE TAL; RÉU: "
+                      "BELTRANO S.A.", cabeca)
+        self.assertNotIn("['", cabeca)        # a lista não vira texto cru
+
+    def test_modo_completo_com_as_partes_do_arquivo_e_as_do_processo(self):
+        m = paginacao.manifesto_eproc(EPROC, [], modo="completo",
+                                      partes=[{"inicio": 1, "paginas": 2}],
+                                      capa={"partes": ["AUTOR: FULANO"]})
+        cabeca = self.cabeca(m, 2)
+        self.assertIn("Partes: AUTOR: FULANO.", cabeca)
+        self.assertNotIn("inicio", cabeca)
+
+    def test_partes_no_topo_e_na_capa_sem_repetir(self):
+        m = paginacao.manifesto_eproc(
+            EPROC, [{"evento": 1, "rotulo": "INIC1", "origem": "pdf", "situacao": "ok",
+                     "inicio": 1, "paginas": 1}],
+            partes=["AUTOR: FULANO", "RÉU: BELTRANO"],
+            capa={"partes": ["RÉU: BELTRANO", "TERCEIRO: SICRANO",
+                             {"polo": "MP", "nome": "MINISTÉRIO PÚBLICO"}]})
+        self.assertIn("Partes: AUTOR: FULANO; RÉU: BELTRANO; TERCEIRO: SICRANO; MP: "
+                      "MINISTÉRIO PÚBLICO.", self.cabeca(m))
+
+
 class TestCacheDoTexto(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
