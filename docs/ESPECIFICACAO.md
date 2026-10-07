@@ -1969,9 +1969,14 @@ dados ficam com a instalação registrada.
     coisa, também para a subpasta antiga). Além disso, a pasta dos
     sigilosos e a da pauta não ficam em NENHUMA pasta do OneDrive ou do
     Google Drive (`servicos.sigilo_na_nuvem`, pelo caminho, com a regra de
-    `verificar.nuvem_da_pasta` sem varrer as unidades): `problema_nas_pastas`
-    a inclui (o `baixar` e o `caminhos --json` também), e
-    `esquema.conferir_pastas` a aplica só à pasta que está sendo trocada.
+    `verificar.nuvem_da_pasta` sem varrer as unidades; o caminho cobre tudo
+    o que `nuvem.detectar` procura, inclusive `%USERPROFILE%\Meu Drive` ou
+    `My Drive`, a do Google Drive no modo espelho, e por isso a verificação
+    e a regra dizem o mesmo): `problema_nas_pastas` a inclui (o `baixar` e o
+    `caminhos --json` também), e `esquema.conferir_pastas` a aplica só à
+    pasta que está sendo trocada, com a frase da escolha (`ao_escolher`: a
+    pasta recusada não é gravada, e a frase não manda mover o que está na
+    atual).
     Enquanto as pastas estiverem misturadas, o download, o preparo, as
     ferramentas e o espelho recusam com 409 `pastas_em_conflito` (seção 6.3). O espelho que não consegue
     apagar da nuvem a cópia de um processo sigiloso faz o resto e depois

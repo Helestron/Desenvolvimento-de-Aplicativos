@@ -335,10 +335,12 @@ def conferir_pastas(cfg, secao: str, chave: str, valor: str) -> None:
     if not frase and alvo in (("geral", "pasta_sigilosos"), ("pauta", "pasta")):
         # Os sigilosos e a pauta fora de toda pasta sincronizada com a nuvem
         # (OneDrive, Google Drive): só a pasta que está sendo trocada, para
-        # dar para corrigir uma de cada vez.
+        # dar para corrigir uma de cada vez. A frase é a da escolha: a pasta
+        # recusada não é gravada, e a atual fica como está (se ela também
+        # estiver na nuvem, o Início e a verificação mandam mover).
         frase = servicos.sigilo_na_nuvem(
             sigilosos if alvo == ("geral", "pasta_sigilosos") else None,
-            pauta if alvo == ("pauta", "pasta") else None)
+            pauta if alvo == ("pauta", "pasta") else None, ao_escolher=True)
     if frase:
         raise ErroApi(400, "pastas_em_conflito", frase)
 

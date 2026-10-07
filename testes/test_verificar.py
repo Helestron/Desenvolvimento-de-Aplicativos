@@ -15,6 +15,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -723,6 +724,66 @@ class TestSigilososForaDaNuvem(unittest.TestCase):
         self.assertEqual(item.situacao, AVISO)
         self.assertIn("A pasta da nuvem não pode ficar dentro da pasta dos processos",
                       item.detalhe)
+
+
+class TestGoogleDriveNoPerfil(unittest.TestCase):
+    """Achado V11: o Google Drive para computador no modo espelho fica em
+    %USERPROFILE%\\Meu Drive (ou My Drive). A verificação, que detecta as
+    pastas da nuvem, dizia que os sigilosos ali "não podem"; a regra pelo
+    caminho (Ajustes, baixar, caminhos --json, Início), que não varre as
+    unidades, aceitava. As duas têm de dizer o mesmo."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.pasta = Path(self.tmp.name)
+        self.perfil = self.pasta / "Users" / "Fulano"
+        self.perfil.mkdir(parents=True)
+        self.cfg = cfg_temporaria(self.pasta / "dados")
+        ambiente = mock.patch.dict(os.environ, dict(
+            _SEM_ONEDRIVE, HOME=str(self.perfil), USERPROFILE=str(self.perfil)))
+        ambiente.start()
+        self.addCleanup(ambiente.stop)
+
+    def test_meu_drive_no_perfil_pelo_caminho(self):
+        from helestron import servicos
+
+        for nome in ("Meu Drive", "My Drive", "my drive (2)"):
+            sig = self.perfil / nome / "Sigilosos"           # ainda não existe
+            with self.subTest(nome=nome):
+                self.assertEqual(verificar.nuvem_da_pasta(sig, []), "Google Drive")
+                frase = servicos.problema_nas_pastas(self.cfg.pasta_acervo, sig) or ""
+                self.assertIn("não pode ficar dentro do Google Drive", frase)
+                self.cfg.definir("geral", "pasta_sigilosos", str(sig))
+                with mock.patch("helestron.compartilhar.nuvem.detectar", return_value={}):
+                    item = verificar.checar_local(self.cfg)
+                self.assertEqual((item.situacao, item.obrigatorio), (AVISO, True))
+                self.assertIn("está dentro do Google Drive, e isso não pode", item.detalhe)
+        # as outras pastas do perfil continuam fora da nuvem
+        for pasta in (self.perfil / "Documentos" / "Helestron" / "Sigilosos", self.perfil):
+            with self.subTest(pasta=pasta):
+                self.assertEqual(verificar.nuvem_da_pasta(pasta, []), "")
+
+    def test_regra_do_caminho_cobre_o_que_a_deteccao_acha(self):
+        """Cada pasta do Google Drive que compartilhar.nuvem.detectar procura
+        no perfil é reconhecida também sem a detecção."""
+        from helestron import servicos
+        from helestron.compartilhar import nuvem
+
+        for nome in (("Google Drive", "Meu Drive"), ("Google Drive", "My Drive"),
+                     ("Google Drive",), ("Meu Drive",), ("My Drive",)):
+            raiz = self.perfil.joinpath(*nome)
+            with self.subTest(pasta=raiz):
+                raiz.mkdir(parents=True)
+                try:
+                    achada = nuvem.detectar().get("Google Drive")
+                    self.assertIsNotNone(achada)
+                    self.assertEqual(verificar.nuvem_da_pasta(achada / "Sig"), "Google Drive")
+                    self.assertEqual(verificar.nuvem_da_pasta(achada / "Sig", []), "Google Drive")
+                    self.assertIn("Google Drive", servicos.sigilo_na_nuvem(None, achada / "Pauta")
+                                  or "")
+                finally:
+                    shutil.rmtree(self.perfil / nome[0])
 
 
 class TestCatalogoETribunaisLocais(unittest.TestCase):

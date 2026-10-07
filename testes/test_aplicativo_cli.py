@@ -359,6 +359,29 @@ class TestComandosParaAutomacao(unittest.TestCase):
         self.assertEqual(json.loads(self.rodar("caminhos", "--json")[1])["conflito_de_pastas"],
                          "")
 
+    def test_caminhos_e_baixar_com_os_sigilosos_no_meu_drive(self):
+        """Achado V11: com os sigilosos em %USERPROFILE%\\Meu Drive (o Google
+        Drive no modo espelho), 'caminhos --json' dava conflito_de_pastas
+        vazio, a skill seguia, e o 'baixar' começava."""
+        perfil = self.amb.raiz / "Users" / "Fulano"
+        (perfil / "Meu Drive").mkdir(parents=True)
+        self.amb.cfg.definir("geral", "pasta_sigilosos", str(perfil / "Meu Drive" / "Sigilosos"))
+        from helestron.download import cli
+
+        with mock.patch.dict(os.environ, {"HOME": str(perfil), "USERPROFILE": str(perfil)}):
+            codigo, saida, _ = self.rodar("caminhos", "--json")
+            self.assertEqual(codigo, 0)
+            conflito = json.loads(saida)["conflito_de_pastas"]
+            self.assertTrue(conflito.startswith("A pasta dos processos em segredo de justiça não "
+                                                "pode ficar dentro do Google Drive"), conflito)
+            erros = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(erros):
+                codigo = cli.main(["0700001-27.2024.8.02.0001", "--destino",
+                                   str(self.amb.raiz / "Lote")], configurar_log=False)
+        self.assertEqual(codigo, 2)
+        self.assertIn(conflito, erros.getvalue(), "a mesma frase com que o baixar recusa")
+        self.assertFalse((self.amb.raiz / "Lote").exists())
+
     def test_preparar_pasta_nao_grava_texto_de_sigiloso_no_acervo(self):
         """Achados R8 e R21: o lote fora do acervo com --texto-em dentro dele
         gravava no acervo o texto do processo sigiloso pela regra única, e o
