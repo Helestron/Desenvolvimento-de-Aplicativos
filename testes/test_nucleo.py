@@ -103,6 +103,24 @@ class TestCaminhos(unittest.TestCase):
                           "USERPROFILE": str(casa)})
         self.assertEqual(c["BASE_USUARIO"], str(casa / "Helestron"))
 
+    def test_documentos_no_google_drive_muda_a_base(self):
+        # Documentos dentro do Google Drive (modo espelho, %USERPROFILE%\Meu
+        # Drive): a pasta padrão dos sigilosos e da pauta não pode ficar na
+        # nuvem - a base vai para o perfil, como com o OneDrive.
+        casa = self.base / "casa"
+        sem_onedrive = {"OneDrive": "", "OneDriveCommercial": "", "OneDriveConsumer": ""}
+        with mock.patch.dict(os.environ, dict(sem_onedrive, HOME=str(casa), USERPROFILE=str(casa),
+                                              HELESTRON_DADOS="")):
+            for documentos in (casa / "Meu Drive" / "Documentos", casa / "My Drive (2)" / "Docs",
+                               casa / "Google Drive" / "Documentos"):
+                with self.subTest(documentos=documentos), \
+                        mock.patch.object(caminhos, "pasta_documentos", return_value=documentos):
+                    self.assertTrue(caminhos.no_google_drive(documentos))
+                    self.assertEqual(caminhos._base_usuario(), casa / "Helestron")
+            with mock.patch.object(caminhos, "pasta_documentos", return_value=casa / "Documents"):
+                self.assertFalse(caminhos.no_google_drive(casa / "Documents"))
+                self.assertEqual(caminhos._base_usuario(), casa / "Documents" / "Helestron")
+
     def test_instalado_pelo_manifesto(self):
         programa = self.base / "Programs" / "Helestron"
         programa.mkdir(parents=True)

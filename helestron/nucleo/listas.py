@@ -291,9 +291,10 @@ def _cabecalho(linhas: list[tuple]) -> tuple[int | None, int | None, frozenset[i
     O relatório exportado costuma trazer um título antes do cabeçalho
     ("Relação de processos", numa célula só, mesclada sobre as outras, ou
     em duas, com a data de emissão ao lado), e o título também tem
-    "processo" no texto: o cabeçalho é a ÚLTIMA linha com mais de uma célula
+    "processo" no texto: o cabeçalho sai das linhas com mais de uma célula
     preenchida, e sem número de processo dentro, antes da primeira linha de
-    dados. Sem nenhuma linha assim, vale a primeira com o rótulo, como antes.
+    dados - a mais larga (no empate, a de baixo), completada pelas outras.
+    Sem nenhuma linha assim, vale a primeira com o rótulo, como antes.
     """
     primeira = melhor = None
     for linha in linhas[:10]:
@@ -323,10 +324,24 @@ def _cabecalho(linhas: list[tuple]) -> tuple[int | None, int | None, frozenset[i
             continue
         achado = (num, senha, frozenset(outras))
         if preenchidas > 1 and not com_numero:
-            melhor = achado
+            # Duas linhas de rótulo antes dos dados (o cabeçalho em duas
+            # linhas, com "Processo de origem" mesclado sobre "Número |
+            # Comarca"; ou a linha do grupo de um relatório agrupado): vale
+            # a mais larga (no empate, a de baixo, que deixa de fora o
+            # título de duas células), e a outra completa a senha e as
+            # colunas de outro processo.
+            novo = (*achado, preenchidas)
+            if melhor is not None:
+                a, b = (novo, melhor) if preenchidas >= melhor[3] else (melhor, novo)
+                todas = a[2] | b[2]
+                novo = (a[0] if a[0] not in todas else b[0],
+                        a[1] if a[1] is not None else b[1], todas, a[3])
+            melhor = novo
         if primeira is None:
             primeira = achado
-    return melhor or primeira or (None, None, frozenset())
+    if melhor is not None:
+        return melhor[:3]
+    return primeira or (None, None, frozenset())
 
 
 def _escolher_coluna(linhas: list[tuple]) -> tuple[int | None, int | None]:
@@ -908,7 +923,12 @@ def ler_texto_em(col: _Coletor, bruto: str, csv_provavel: bool = False) -> None:
                 dialeto = csv.excel_tab
             # Com as quebras de linha do próprio texto: a célula de várias
             # linhas continua uma célula só, e os números nela não se colam.
-            linhas = [tuple(l) for l in csv.reader(bruto.splitlines(keepends=True), dialeto)]
+            # No recuo para o dialeto do Excel, em modo estrito: a aspa aberta e
+            # não fechada (texto digitado ou copiado do navegador, que o Excel
+            # nunca grava) engoliria as linhas de baixo numa célula só; com o
+            # erro, a leitura volta a ser linha a linha.
+            linhas = [tuple(l) for l in csv.reader(bruto.splitlines(keepends=True), dialeto,
+                                                   strict=dialeto is csv.excel_tab)]
             if dialeto is csv.excel_tab:
                 # Só é tabela se a maioria das linhas tiver colunas: a
                 # tabulação solta numa lista digitada não muda a leitura dela.

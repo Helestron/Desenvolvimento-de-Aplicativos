@@ -130,8 +130,11 @@ Dados do usuário (nunca apagados pela desinstalação sem perguntar, salvo
 | Pauta exportada (Excel) — **fora do acervo** (traz partes de processos sigilosos) | `Documentos\Helestron\Pauta\` |
 
 Se a pasta Documentos estiver dentro do OneDrive (redirecionamento de pastas
-conhecidas), a base passa a ser `%USERPROFILE%\Helestron\` — a sincronização
-trava arquivo em uso (lição do Assessor SAJ). Tudo configurável em Ajustes.
+conhecidas) ou do Google Drive (`caminhos.no_google_drive`: a unidade virtual
+ou o modo espelho, `%USERPROFILE%\Meu Drive`), a base passa a ser
+`%USERPROFILE%\Helestron\` — a sincronização trava arquivo em uso (lição do
+Assessor SAJ), e os sigilosos e a pauta não podem ficar numa pasta
+sincronizada. Tudo configurável em Ajustes.
 
 ### 3.3 A janela (`helestron/aplicativo/janela.py`)
 
@@ -238,7 +241,7 @@ LOCAL       = env HELESTRON_LOCAL  ou  %LOCALAPPDATA%\Helestron  (fora do Window
 ARQUIVO_CONFIG = LOCAL / "config.ini";  LOGS = LOCAL / "Logs";  PERFIS = LOCAL / "perfis"
 ARQUIVO_SENHAS = LOCAL / "credenciais.json";  TEMP = LOCAL / "temp";  MODELOS = LOCAL / "modelos"
 ARQUIVO_PAUTA  = LOCAL / "pauta.sqlite3";  ARQUIVO_INSTANCIA = LOCAL / "instancia.json"
-BASE_USUARIO   = env HELESTRON_DADOS  ou  Documentos\Helestron  (ou %USERPROFILE%\Helestron se Documentos estiver no OneDrive)
+BASE_USUARIO   = env HELESTRON_DADOS  ou  Documentos\Helestron  (ou %USERPROFILE%\Helestron se Documentos estiver no OneDrive ou no Google Drive)
 python_exe(janela=False) -> INSTALACAO/python.exe | pythonw.exe | sys.executable
 ```
 
@@ -1888,8 +1891,9 @@ dados ficam com a instalação registrada.
     (`sigilo.sigilosos_dos_relatorios`: `relatorio.csv` e
     `relatorio (atualizado).csv` de cada `<lote>/_controle`, em largura até
     `PROFUNDIDADE_LOTES` = 3 níveis abaixo do acervo, sem `_ia`, `_audio`,
-    pastas ocultas e atalhos; os dois primeiros níveis inteiros e, abaixo
-    deles, no máximo `MAX_PASTAS`, com `Processos` primeiro; cada relatório
+    pastas ocultas e atalhos; os dois primeiros níveis e as pastas dos lotes
+    de `Processos` inteiros e, abaixo deles, no máximo `MAX_PASTAS`, com
+    `Processos` primeiro; cada relatório
     relido só quando muda a data ou o tamanho; “sim” na coluna `sigiloso`,
     UTF-8 com BOM ou, salvo pelo Excel, cp1252; a linha mascarada não
     conta). É o que cobre o lote baixado com a separação desligada antes do

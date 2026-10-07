@@ -421,6 +421,18 @@ class TestRelatorioDoLote(Base):
         self.assertEqual(set(sigilo.sigilosos_dos_relatorios(self.acervo)),
                          {perto.nome_arquivo, longe.nome_arquivo})
 
+    def test_lotes_de_processos_nao_contam_para_o_limite(self):
+        """Mais lotes em Processos do que MAX_PASTAS: todos são lidos (o
+        limite, pela ordem do nome, deixaria de fora os mais recentes)."""
+        numeros = [_numero(f"07009{i:02d}") for i in range(6)]
+        for i, n in enumerate(numeros):
+            _relatorio(self.acervo / "Processos" / f"Lote 2024-10-0{i + 1} 10h00" / "_controle",
+                       [(n.formatado, "sim")])
+        sigilo._avisou_pasta_grande.clear()
+        with mock.patch.object(sigilo, "MAX_PASTAS", 2):
+            achados = sigilo.sigilosos_dos_relatorios(self.acervo)
+        self.assertTrue({n.nome_arquivo for n in numeros} <= set(achados))
+
     def test_relatorio_relido_so_quando_muda(self):
         x, y = _numero("0700961"), _numero("0700962")
         arquivo = _relatorio(self.lote / "_controle", [(x.formatado, "sim")])

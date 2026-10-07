@@ -623,8 +623,8 @@ def _pastas_de_controle(raiz: Path) -> list[Path]:
     """As pastas _controle dos lotes dentro de 'raiz' (o acervo): em largura,
     até PROFUNDIDADE_LOTES, sem descer pelo cache da IA, pelas pastas das
     gravações, pelas escondidas e pelos atalhos. Os dois primeiros níveis
-    são sempre lidos inteiros; abaixo deles, no máximo MAX_PASTAS pastas
-    (a pasta de Processos primeiro). Só pastas: o relatório é procurado
+    e as pastas dos lotes de Processos são sempre lidos inteiros; abaixo
+    deles, no máximo MAX_PASTAS pastas (as de Processos primeiro). Só pastas: o relatório é procurado
     pelo nome, sem listar a _controle (que tem a capa de cada processo)."""
     achadas: list[Path] = []
     nivel: list[tuple[Path, tuple[str, ...]]] = [(Path(raiz), ())]
@@ -632,7 +632,11 @@ def _pastas_de_controle(raiz: Path) -> list[Path]:
     while nivel:
         proximo: list[tuple[Path, tuple[str, ...]]] = []
         for pasta, partes in nivel:
-            if len(partes) >= 2:
+            # As pastas dos lotes do download (Processos/<lote>) não contam
+            # para o limite: cada uma é justamente o que se procura, e o
+            # limite as cortaria pela ordem do nome (no Windows, a dos lotes
+            # mais recentes, "Lote AAAA-MM-DD HHhMM", ficaria de fora).
+            if len(partes) >= 2 and not (len(partes) == 2 and partes[0] == "processos"):
                 if lidas_abaixo >= MAX_PASTAS:
                     chave = str(raiz)
                     if chave not in _avisou_pasta_grande:

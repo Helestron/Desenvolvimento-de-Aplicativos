@@ -444,6 +444,46 @@ class TestColunaDoNumero(_ComPasta):
         self.assertEqual(self.numeros(arq), [N1])
 
 
+class TestCabecalhoEmDuasLinhas(_ComPasta):
+    """Verificação final do V5: duas linhas de rótulo antes dos dados (o
+    cabeçalho em duas linhas, com mescla; a linha do grupo de um relatório
+    agrupado) - vale a mais larga, completada pela outra. A de baixo sozinha
+    punha no lote os processos de origem e perdia a senha."""
+
+    def _salvar(self, linhas, mesclas=()):
+        livro = openpyxl.Workbook()
+        for valores in linhas:
+            livro.active.append(list(valores))
+        for faixa in mesclas:
+            livro.active.merge_cells(faixa)
+        arq = self.tmp / "relacao.xlsx"
+        livro.save(arq)
+        return listas.ler_arquivo(arq)
+
+    def test_cartas_precatorias_com_o_processo_de_origem_mesclado(self):
+        leitura = self._salvar([["Nº do processo", "Processo de origem", None, "Senha"],
+                                [None, "Número", "Comarca", None],
+                                [N1, ORIGEM1, "Arapiraca", "k7Q2"],
+                                [N2, ORIGEM2, "Penedo", "z9X1"]],
+                               ("A1:A2", "B1:C1", "D1:D2"))
+        self.assertEqual([n.formatado for n in leitura.processos], [N1, N2])
+        self.assertEqual(leitura.senhas, {N1: "k7Q2", N2: "z9X1"})
+
+    def test_linha_do_grupo_abaixo_do_cabecalho(self):
+        leitura = self._salvar([["Processo", "Processo de origem", "Senha"],
+                                ["Vara: 1ª Vara Cível", "Total de processos: 2"],
+                                [N1, ORIGEM1, "k7Q2"], [N2, ORIGEM2, "z9X1"]])
+        self.assertEqual([n.formatado for n in leitura.processos], [N1, N2])
+        self.assertEqual(leitura.senhas, {N1: "k7Q2", N2: "z9X1"})
+
+    def test_senha_so_na_linha_de_cima(self):
+        leitura = self._salvar([["Processo", None, "Senha"], ["Número", "Classe", None],
+                                [N1, "Execução Fiscal", "k7Q2"], [N2, "Monitória", "z9X1"]],
+                               ("A1:B1", "C1:C2"))
+        self.assertEqual([n.formatado for n in leitura.processos], [N1, N2])
+        self.assertEqual(leitura.senhas, {N1: "k7Q2", N2: "z9X1"})
+
+
 class TestXlsQueETabelaHtml(_ComPasta):
     """Achado V6: o ".xls" que os sistemas exportam (uma tabela HTML) era
     lido como texto corrido - entravam os processos de origem, e a coluna
@@ -527,6 +567,15 @@ class TestTextoUnicodeDoExcel(_ComPasta):
     # Achado V8: a célula de várias linhas (Alt+Enter), que o Excel grava
     # entre aspas, fazia o Sniffer desistir, e a leitura linha a linha
     # voltava a fazer da coluna vizinha ("Estado") a senha.
+    def test_aspa_aberta_no_texto_colado_nao_engole_as_linhas_de_baixo(self):
+        # Verificação final do V8: no texto que não vem do Excel (linhas de
+        # tamanhos diferentes, o Sniffer desiste), a aspa sem fechar não
+        # junta as linhas seguintes numa célula só.
+        leitura = listas.ler_texto(f"Processo\tPartes\tSituação\n"
+                                   f"{N1}\t\"Espólio de Fulano x Banco\tAtivo\n"
+                                   f"{N2}\tMaria x Estado\n")
+        self.assertEqual([n.formatado for n in leitura.processos], [N1, N2])
+
     def test_celula_de_varias_linhas_nao_faz_da_vizinha_a_senha(self):
         conteudo = (f"Processo\tPartes\r\n{N1}\t\"Autor: João\nRéu: Maria\"\r\n"
                     f"{N2}\tEstado\r\n{ORIGEM1}\t\"Autor: Ana\nRéu: Banco\"\r\n")

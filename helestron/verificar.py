@@ -1005,15 +1005,6 @@ def _caminhos_longos() -> bool:
         return False
 
 
-# Pastas do Google Drive para computador logo abaixo da letra da unidade
-# virtual (G:\Meu Drive, G:\Drives compartilhados).
-_RAIZES_GOOGLE_DRIVE = ("meu drive", "my drive", "drives compartilhados", "shared drives")
-# A pasta do Google Drive para computador no modo espelho, logo abaixo da
-# pasta do perfil (%USERPROFILE%\Meu Drive), também com um complemento entre
-# parênteses ("My Drive (2)"): na dúvida, é nuvem.
-_DRIVE_NO_PERFIL = ("meu drive", "my drive")
-
-
 def _nuvens_detectadas() -> list[tuple[str, Path]]:
     """[(rótulo, pasta)] das pastas do OneDrive e do Google Drive deste
     computador (compartilhar.nuvem.detectar). Nunca levanta."""
@@ -1039,37 +1030,9 @@ def nuvem_da_pasta(pasta, detectadas: list[tuple[str, Path]] | None = None) -> s
     for rotulo, raiz in (detectadas if detectadas is not None else _nuvens_detectadas()):
         if _contem(raiz, Path(pasta)):
             return "Google Drive" if "google" in rotulo.lower() else "OneDrive"
-    try:
-        real = Path(pasta).resolve()
-    except (OSError, RuntimeError, ValueError):
-        real = Path(pasta)
-    partes = [p.lower() for p in real.parts]
-    if "google drive" in partes or "googledrive" in partes:
-        return "Google Drive"
-    if NO_WINDOWS and len(partes) > 1 and partes[1] in _RAIZES_GOOGLE_DRIVE:
-        return "Google Drive"
-    if _no_drive_do_perfil(real):
-        return "Google Drive"
-    return ""
-
-
-def _no_drive_do_perfil(real: Path) -> bool:
-    """A pasta fica em %USERPROFILE%\\Meu Drive (ou My Drive), a do Google
-    Drive para computador no modo espelho? Só pelo caminho: a pasta não
-    precisa existir (a escolha nos Ajustes ainda não a criou)."""
-    try:
-        casa = Path.home()
-        try:
-            casa = casa.resolve()
-        except (OSError, RuntimeError, ValueError):
-            pass
-        resto = real.relative_to(casa).parts
-    except (KeyError, RuntimeError, ValueError):   # sem perfil, ou fora dele
-        return False
-    if not resto:
-        return False
-    primeira = resto[0].casefold()
-    return any(primeira == nome or primeira.startswith(nome + " (") for nome in _DRIVE_NO_PERFIL)
+    # A regra do caminho é a do núcleo, a mesma que tira a pasta padrão da
+    # nuvem (caminhos._base_usuario).
+    return "Google Drive" if caminhos.no_google_drive(pasta) else ""
 
 
 def checar_local(cfg) -> Item:
