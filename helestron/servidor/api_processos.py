@@ -103,12 +103,25 @@ def leitura_para_json(app, leitura, nome_lote: str = "") -> dict:
 
 
 def _ler_arquivo(caminho: Path):
+    """A relação lida. O erro do próprio Windows (arquivo preso pelo
+    antivírus, sumido) traz o caminho: ele segue como veio, com o errno, e
+    traduzir_erro dá à página a frase geral, deixando o caminho só no
+    registro - também quando o leitor o embrulhou na frase dele ("não
+    consegui abrir o arquivo: [Errno 13] Permission denied: 'C:\\...'")."""
     from ..nucleo import listas
 
-    return listas.ler_arquivo(caminho)
+    try:
+        return listas.ler_arquivo(caminho)
+    except listas.ListaInvalida as erro:
+        causa = erro.__cause__
+        if isinstance(causa, OSError) and causa.errno is not None:
+            raise causa from None
+        raise
 
 
 def relacao_arquivo(p: Pedido) -> dict:
+    from ..nucleo import listas
+
     app = p.app
     if p.tipo_corpo == "multipart/form-data":
         with p.envio(app.pasta_envios()) as envio:
@@ -117,10 +130,12 @@ def relacao_arquivo(p: Pedido) -> dict:
                 raise erro_400("Envie o arquivo da relação no campo “arquivo”.", "campo_ausente")
             try:
                 leitura = _ler_arquivo(arquivo.caminho)
-            except Exception as erro:
-                # O leitor só conhece o temporário do envio: a frase ("o arquivo
-                # envio-3f6e….xlsx parece danificado") diz o nome do arquivo do
-                # usuário.
+            except listas.ListaInvalida as erro:
+                # O leitor só conhece o temporário do envio: a frase escrita
+                # por ele ("o arquivo envio-3f6e….xlsx parece danificado") diz
+                # o nome do arquivo do usuário. Só ela: refeito, o OSError do
+                # Windows perderia o errno, e a frase crua, em inglês e com o
+                # caminho, iria para a tela.
                 if arquivo.caminho.name in str(erro):
                     raise _com_outro_nome(erro, arquivo.caminho.name, arquivo.nome) from erro
                 raise
@@ -161,7 +176,7 @@ def relacao_link(p: Pedido) -> dict:
         raise erro_400("Cole o link completo (começando por https://).", "valor_invalido")
     arquivo = listas.baixar_link(url, Path(caminhos.TEMP) / "listas")
     try:
-        leitura = listas.ler_arquivo(arquivo)
+        leitura = _ler_arquivo(arquivo)
     finally:
         # A relação pode trazer as senhas dos sigilosos: lida, não fica no disco.
         try:

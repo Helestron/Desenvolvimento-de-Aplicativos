@@ -31,7 +31,11 @@ E o que foi corrigido em relação à base (todos com teste):
   * várias colunas de número: se uma delas se chama "processo" (e não
     "processo de origem", "principal"...), só ela é lida - mesmo que só
     traga números corrompidos (item 4); vazia, a linha inteira é lida, menos
-    as colunas de outro processo;
+    as colunas de outro processo, que só entram se nada mais na tabela
+    trouxer número; o cabeçalho é o último rótulo antes dos dados (o título
+    do relatório, em uma célula ou em duas, não passa por ele);
+  * o '.xls' que é tabela HTML (item 1) é lido tabela por tabela, com as
+    mesmas regras de coluna (e a da senha) da planilha;
   * abas ocultas da planilha são ignoradas (no .ods também, e na leitura
     direta do XML do .xlsx); os bytes crus da planilha, que as trazem, não
     são lidos como texto;
@@ -285,12 +289,13 @@ def _cabecalho(linhas: list[tuple]) -> tuple[int | None, int | None, frozenset[i
     origem", "Principal"...).
 
     O relatório exportado costuma trazer um título antes do cabeçalho
-    ("Relação de processos", numa célula só, mesclada sobre as outras), e o
-    título também tem "processo" no texto: a linha com mais de uma célula
-    preenchida, e sem número de processo dentro, passa na frente dele. Sem
-    nenhuma linha assim, vale a primeira com o rótulo, como antes.
+    ("Relação de processos", numa célula só, mesclada sobre as outras, ou
+    em duas, com a data de emissão ao lado), e o título também tem
+    "processo" no texto: o cabeçalho é a ÚLTIMA linha com mais de uma célula
+    preenchida, e sem número de processo dentro, antes da primeira linha de
+    dados. Sem nenhuma linha assim, vale a primeira com o rótulo, como antes.
     """
-    primeira = None
+    primeira = melhor = None
     for linha in linhas[:10]:
         num = senha = None
         outras: set[int] = set()
@@ -312,14 +317,16 @@ def _cabecalho(linhas: list[tuple]) -> tuple[int | None, int | None, frozenset[i
                 num = i
             elif senha is None and _COLUNA_SENHA.search(rotulo):
                 senha = i
+        if com_numero and melhor is not None:
+            break                   # chegaram os dados: vale o último rótulo
         if num is None:
             continue
         achado = (num, senha, frozenset(outras))
         if preenchidas > 1 and not com_numero:
-            return achado
+            melhor = achado
         if primeira is None:
             primeira = achado
-    return primeira or (None, None, frozenset())
+    return melhor or primeira or (None, None, frozenset())
 
 
 def _escolher_coluna(linhas: list[tuple]) -> tuple[int | None, int | None]:
@@ -329,30 +336,43 @@ def _escolher_coluna(linhas: list[tuple]) -> tuple[int | None, int | None]:
 
 def _ler_linhas(col: _Coletor, linhas: list[tuple], aviso_aba: str) -> None:
     coluna, coluna_senha, outras = _cabecalho(linhas)
+    # Num coletor desta tabela: o número que outra aba já trouxe conta como
+    # achado aqui também (no de fora, repetido, ele não seria contado).
+    lido = _Coletor()
+
+    def achou() -> bool:
+        return bool(lido.leitura.processos or lido.leitura.corrompidos)
+
     if coluna is not None:
-        antes = len(col.leitura.processos)
-        corrompidos = len(col.leitura.corrompidos)
         for linha in linhas:
             valor = linha[coluna] if coluna < len(linha) else None
             senha = ""
             if coluna_senha is not None and coluna_senha < len(linha):
                 senha = _texto_da_celula(linha[coluna_senha]).strip()
-            n_antes = len(col.leitura.processos)
-            col.celula(valor)
-            if senha and len(col.leitura.processos) > n_antes:
-                col.leitura.senhas[col.leitura.processos[-1].formatado] = senha
-        # A coluna do número trouxe número - mesmo que só os corrompidos pelo
-        # Excel (item 4): as outras colunas não são lidas. Varrer a linha
-        # inteira poria no lote o "Processo de origem" (outro processo) no
-        # lugar dos números que a relação pede.
-        if len(col.leitura.processos) > antes or len(col.leitura.corrompidos) > corrompidos:
-            return
-    # Sem coluna reconhecida (ou ela veio vazia): varre a linha inteira -
-    # menos as colunas que o cabeçalho diz serem de outro processo.
-    for linha in linhas:
-        for i, valor in enumerate(linha):
-            if i not in outras:
-                col.celula(valor)
+            n_antes = len(lido.leitura.processos)
+            lido.celula(valor)
+            if senha and len(lido.leitura.processos) > n_antes:
+                lido.leitura.senhas[lido.leitura.processos[-1].formatado] = senha
+    # A coluna do número trouxe número - mesmo que só os corrompidos pelo
+    # Excel (item 4): as outras colunas não são lidas. Varrer a linha inteira
+    # poria no lote o "Processo de origem" (outro processo) no lugar dos
+    # números que a relação pede.
+    if not achou():
+        # Sem coluna reconhecida (ou ela veio vazia): varre a linha inteira -
+        # menos as colunas que o cabeçalho diz serem de outro processo...
+        for linha in linhas:
+            for i, valor in enumerate(linha):
+                if i not in outras:
+                    lido.celula(valor)
+    if not achou() and outras:
+        # ...que só são lidas se nada mais na tabela trouxe número: a relação
+        # cujos números estão todos na coluna "Processo principal" é lida
+        # como sem a coluna "Nº" ao lado.
+        for linha in linhas:
+            for i in sorted(outras):
+                if i < len(linha):
+                    lido.celula(linha[i])
+    col.absorver(lido)
 
 
 def _de_xlsx(caminho: Path, col: _Coletor) -> None:
@@ -820,11 +840,47 @@ def _de_pdf(caminho: Path, col: _Coletor) -> None:
         col.linha_livre(linha)
 
 
+_RE_TABELA_HTML = re.compile(r"(?i)<(/?)table\b[^>]*>")
+
+
+def _trechos_html(bruto: str):
+    """O HTML na ordem do documento: ('texto', trecho fora de tabela) ou
+    ('tabela', trecho com uma tabela inteira, e as que estão dentro dela)."""
+    nivel, inicio = 0, 0
+    for m in _RE_TABELA_HTML.finditer(bruto):
+        if not m.group(1):                          # <table>
+            if nivel == 0:
+                yield "texto", bruto[inicio:m.start()]
+                inicio = m.start()
+            nivel += 1
+        elif nivel:                                 # </table>
+            nivel -= 1
+            if nivel == 0:
+                yield "tabela", bruto[inicio:m.end()]
+                inicio = m.end()
+    yield ("tabela" if nivel else "texto"), bruto[inicio:]
+
+
 def _de_html(caminho: Path, col: _Coletor) -> None:
-    bruto = _decodificar(caminho.read_bytes())
-    linhas = re.split(r"(?i)</tr>|<br\s*/?>|</p>", bruto)
-    for linha in linhas:
-        col.texto(_sem_marcacao(linha))
+    """O '.xls' que os sistemas exportam (item 1) é uma tabela HTML: lida
+    como a planilha, coluna por coluna (a do número, a da senha, sem as de
+    outro processo). O texto fora das tabelas é lido linha a linha, como
+    antes; tudo na ordem do documento, como no Word."""
+    from ..pauta.tabelas import tabelas_do_html
+
+    # Sem os comentários, que o leitor de tabelas ignora: o "<table>" dentro
+    # deles (o e-mail salvo do Outlook os tem) não desencontra os trechos.
+    bruto = re.sub(r"(?s)<!--.*?-->", " ", _decodificar(caminho.read_bytes()))
+    for tipo, trecho in _trechos_html(bruto):
+        if tipo == "tabela":
+            # A tabela de dentro (moldura de layout) vem à parte, e o texto
+            # dela não se repete na célula da tabela de fora.
+            for tabela in tabelas_do_html(trecho, caminho.name):
+                _ler_linhas(col, [tuple(c.texto for c in linha) for linha in tabela.linhas],
+                            "tabela")
+            continue
+        for linha in re.split(r"(?i)</tr>|<br\s*/?>|</p>", trecho):
+            col.texto(_sem_marcacao(linha))
 
 
 def _de_texto(caminho: Path, col: _Coletor) -> None:
@@ -840,8 +896,25 @@ def _de_texto(caminho: Path, col: _Coletor) -> None:
 def ler_texto_em(col: _Coletor, bruto: str, csv_provavel: bool = False) -> None:
     if csv_provavel or (";" in bruto[:2000] and "\n" in bruto):
         try:
-            dialeto = csv.Sniffer().sniff(bruto[:4000], delimiters=";,\t|")
-            linhas = [tuple(l) for l in csv.reader(bruto.splitlines(), dialeto)]
+            try:
+                dialeto = csv.Sniffer().sniff(bruto[:4000], delimiters=";,\t|")
+            except csv.Error:
+                # A célula de várias linhas (Alt+Enter), que o Excel grava
+                # entre aspas, desencontra a contagem de tabulações por linha,
+                # e o Sniffer desiste: o texto com tabulação é lido como o
+                # Excel o grava ("Texto Unicode", cópia de células).
+                if "\t" not in bruto[:4000]:
+                    raise
+                dialeto = csv.excel_tab
+            # Com as quebras de linha do próprio texto: a célula de várias
+            # linhas continua uma célula só, e os números nela não se colam.
+            linhas = [tuple(l) for l in csv.reader(bruto.splitlines(keepends=True), dialeto)]
+            if dialeto is csv.excel_tab:
+                # Só é tabela se a maioria das linhas tiver colunas: a
+                # tabulação solta numa lista digitada não muda a leitura dela.
+                cheias = [l for l in linhas if any(c.strip() for c in l)]
+                if 2 * sum(len(l) > 1 for l in cheias) < len(cheias):
+                    raise csv.Error("tabulação solta")
             # Sem cabeçalho, "número ; senha" digitado linha a linha vai para a
             # leitura por linha, a que sabe associar a senha ao número. Tabela
             # colada do Excel (tabulação) não: sem o cabeçalho "Senha", a
