@@ -496,7 +496,11 @@ class TestCliParaAutomacao(BaseCli):
         for p, txt in zip(procs, esperados):
             self.assertEqual(p["texto"], str(txt))
             self.assertEqual(p["texto_situacao"], "novo")
-            self.assertIn("=== [fl. 1] ===", txt.read_text(encoding="utf-8"))
+            conteudo = txt.read_text(encoding="utf-8")
+            # texto no formato 2; o PDF falso do teste não tem o manifesto de
+            # paginação, e então a marca é a posição no PDF, nunca "fl."
+            self.assertTrue(conteudo.startswith("# helestron-texto 2 |"), conteudo[:80])
+            self.assertIn("=== [pág. 1 do PDF] ===", conteudo)
         self.assertIn(f"autos de {A.formatado}", esperados[0].read_text(encoding="utf-8"))
         self.assertEqual(procs[3]["texto_situacao"], "sigiloso_ignorado")
         self.assertEqual(procs[3]["texto"], "")
