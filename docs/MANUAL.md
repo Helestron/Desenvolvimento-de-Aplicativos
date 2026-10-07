@@ -587,9 +587,12 @@ Em **Ajustes › Unidade**:
    declara um tamanho menor que o real ou traz, em outra coluna, valores
    fora do padrão do Excel (valor com vírgula decimal, data gravada como
    texto). Quando há uma coluna “Processo” (ou “Número”, “Autos”), só ela é
-   lida: a de outro processo (“Processo de origem”, “Principal”) fica de
-   fora, mesmo que a coluna “Processo” só traga números que o Excel
-   corrompeu. Duas exceções têm mensagem própria:
+   lida, também no “.xls” exportado pelos sistemas (que por dentro é uma
+   página da web) e mesmo com um título de relatório acima do cabeçalho: a
+   de outro processo (“Processo de origem”, “Principal”) fica de fora,
+   mesmo que a coluna “Processo” só traga números que o Excel corrompeu, e
+   só é lida quando nenhuma outra coluna traz número de processo. Duas
+   exceções têm mensagem própria:
    a pasta de trabalho binária do Excel (`.xlsb`), que o Helestron não lê
    (no Excel, use **Salvar como › Pasta de Trabalho do Excel (.xlsx)**, ou
    CSV, e escolha de novo), e a planilha protegida por **senha de

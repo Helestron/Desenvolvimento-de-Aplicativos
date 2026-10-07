@@ -390,6 +390,41 @@ class TestRelacao(ServidorDeTeste):
         envios = Path(self.app.pasta_envios())
         self.assertEqual(list(envios.glob("*")) if envios.exists() else [], [])
 
+    def test_arquivo_enviado_preso_nao_mostra_o_caminho(self):
+        # Achado V9: a troca do nome do temporário refazia também o erro do
+        # Windows, sem o errno, e a página recebia "[Errno 13] Permission
+        # denied: '...\\envios\\Sigilosos - Fulano.txt'", em inglês e com o
+        # caminho. Preso entre o reconhecimento e a leitura (o leitor relança
+        # o OSError) ou já na abertura (o leitor o embrulha na frase dele): a
+        # frase geral, e o caminho só no registro.
+        from helestron.nucleo import listas
+
+        def preso(caminho, *args, **kwargs):
+            raise PermissionError(13, "Permission denied", str(caminho))
+
+        ler = Path.read_bytes
+
+        def leitura_presa(caminho):
+            if caminho.name.startswith("envio-"):
+                preso(caminho)
+            return ler(caminho)
+
+        for nome, trava in (
+                ("leitura", mock.patch.object(Path, "read_bytes", leitura_presa)),
+                ("abertura", mock.patch.object(listas, "open", preso, create=True))):
+            with self.subTest(nome):
+                with trava, self.assertLogs("servidor", "WARNING") as registro:
+                    status, env = self.cliente.enviar("/api/relacao/arquivo",
+                                                      "Sigilosos - Fulano.txt", TJAL.encode())
+                self.assertEqual((status, env["erro"]["codigo"]), (409, "arquivo_preso"), env)
+                mensagem = env["erro"]["mensagem"]
+                self.assertIn("aberto em outro programa", mensagem)
+                for vazado in ("Errno", "Permission", "envios", "Fulano", "envio-"):
+                    self.assertNotIn(vazado, mensagem)
+                self.assertIn("envio-", "\n".join(registro.output))
+        envios = Path(self.app.pasta_envios())
+        self.assertEqual(list(envios.glob("*")) if envios.exists() else [], [])
+
     def test_envio_de_planilha_com_valor_fora_do_padrao(self):
         # Achado R25: a vírgula decimal noutra coluna era 400 'valor_invalido',
         # com a frase do openpyxl em inglês.

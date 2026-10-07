@@ -7,7 +7,13 @@ decimal, texto sem o tipo, data não ISO) não derruba a leitura; a aba oculta
 não entra no lote pela porta dos fundos (o XML cru, os bytes crus); a coluna
 "Processo" com o CNJ corrompido não faz ler a de "Processo de origem"; o
 título do relatório não passa por cabeçalho; o .txt "Texto Unicode" não
-inventa senha; o .ods com células repetidas não desloca as colunas."""
+inventa senha; o .ods com células repetidas não desloca as colunas.
+
+E, da segunda verificação: o título de duas células também não passa por
+cabeçalho; o ".xls" que é tabela HTML respeita as colunas e a senha; a
+relação só com a coluna "Processo principal" é lida também com a coluna
+"Nº" ao lado; a célula de várias linhas do "Texto Unicode" não devolve a
+senha inventada."""
 
 import re
 import tempfile
@@ -385,6 +391,119 @@ class TestColunaDoNumero(_ComPasta):
         arq = self._salvar(["Processos conclusos"], ["Processo"], [N1], [N2])
         self.assertEqual(self.numeros(arq), [N1, N2])
 
+    # Achado V5: o título em duas células (o do relatório e a data de
+    # emissão) passava por cabeçalho - a primeira linha com mais de uma
+    # célula e sem número -, e as colunas dele valiam no lugar das do
+    # cabeçalho de verdade.
+    TITULO = ["Relação de processos - 1ª Vara Cível", "Emitido em 07/10/2026"]
+
+    def test_titulo_de_duas_celulas_nao_le_o_processo_de_origem(self):
+        arq = self._salvar(self.TITULO, ["Nº", "Processo", "Processo de origem", "Classe"],
+                           [1, COMO_NUMERO1, ORIGEM1, "Cumprimento de sentença"],
+                           [2, COMO_NUMERO2, ORIGEM2, "Cumprimento de sentença"])
+        self.recusada_pelos_corrompidos(arq)
+
+    def test_titulo_de_duas_celulas_nao_escolhe_a_coluna(self):
+        arq = self._salvar(self.TITULO, [],
+                           ["Processo de origem", "Processo", "Classe", "Senha"],
+                           [ORIGEM1, N1, "Cumprimento de sentença", "k7Q2"],
+                           [ORIGEM2, N2, "Cumprimento de sentença", ""])
+        leitura = listas.ler_arquivo(arq)
+        self.assertEqual([n.formatado for n in leitura.processos], [N1, N2])
+        self.assertEqual(leitura.senhas, {N1: "k7Q2"})
+
+    def test_cabecalho_em_duas_linhas_continua_valendo(self):
+        # A linha de baixo sem rótulo de número não toma o lugar do cabeçalho.
+        arq = self._salvar(["Processo", "Partes", "", "Senha"], ["", "Autor", "Réu", ""],
+                           [N1, "Ana", "Banco", "k7Q2"])
+        leitura = listas.ler_arquivo(arq)
+        self.assertEqual([n.formatado for n in leitura.processos], [N1])
+        self.assertEqual(leitura.senhas, {N1: "k7Q2"})
+
+    # Achado V7: com a coluna de ordem "Nº", a relação cujos números estão só
+    # na coluna "Processo principal" era recusada ("não achei nenhum número"),
+    # e sem ela era lida.
+    def test_so_a_coluna_de_processo_principal_com_a_coluna_de_ordem(self):
+        for cabecalho in (["Nº", "Processo principal", "Partes"],
+                          ["Nº", "Referência", "Partes"]):
+            with self.subTest(cabecalho=cabecalho):
+                arq = self._salvar(cabecalho, [1, N1, "João x Banco"], [2, N2, "Maria x Estado"])
+                self.assertEqual(self.numeros(arq), [N1, N2])
+
+    def test_numero_repetido_de_outra_aba_nao_faz_ler_a_de_origem(self):
+        # Na segunda aba, o número da coluna "Processo" já veio da primeira:
+        # ele conta como achado, e a coluna de origem continua de fora.
+        livro = openpyxl.Workbook()
+        livro.active.append(["Processo"])
+        livro.active.append([N1])
+        outra = livro.create_sheet("Cumprimentos")
+        for valores in (["Nº", "Processo", "Processo de origem"], [1, N1, ORIGEM1]):
+            outra.append(valores)
+        arq = self.tmp / "duas-abas.xlsx"
+        livro.save(arq)
+        self.assertEqual(self.numeros(arq), [N1])
+
+
+class TestXlsQueETabelaHtml(_ComPasta):
+    """Achado V6: o ".xls" que os sistemas exportam (uma tabela HTML) era
+    lido como texto corrido - entravam os processos de origem, e a coluna
+    "Senha" se perdia. Com a mesma relação, o .xlsx dava o lote certo."""
+
+    LINHAS = [["Processo", "Processo de origem", "Classe", "Senha"],
+              [N1, ORIGEM1, "Cumprimento de sentença", "k7Q2"],
+              [N2, ORIGEM2, "Cumprimento de sentença", "z9X1"]]
+
+    def _html(self, nome, corpo, codificacao="utf-8"):
+        arq = self.tmp / nome
+        arq.write_bytes(f'<html><head><meta charset="{codificacao}"></head><body>{corpo}'
+                        "</body></html>".encode(codificacao))
+        return arq
+
+    @staticmethod
+    def _tabela(linhas, abre="<table border=1>"):
+        return abre + "".join("<tr>" + "".join(f"<td>{c}</td>" for c in l) + "</tr>"
+                              for l in linhas) + "</table>"
+
+    def test_colunas_e_senha_como_na_planilha(self):
+        livro = openpyxl.Workbook()
+        for valores in self.LINHAS:
+            livro.active.append(valores)
+        livro.save(self.tmp / "relacao.xlsx")
+        planilha = listas.ler_arquivo(self.tmp / "relacao.xlsx")
+        html = listas.ler_arquivo(self._html("exportado.xls", self._tabela(self.LINHAS)))
+        self.assertEqual(html.formato, "tabela em HTML")
+        self.assertEqual([n.formatado for n in html.processos], [N1, N2])
+        self.assertEqual(html.senhas, {N1: "k7Q2", N2: "z9X1"})
+        self.assertEqual((html.processos, html.senhas), (planilha.processos, planilha.senhas))
+
+    def test_titulo_mesclado_e_coluna_de_ordem(self):
+        # O título com colspan e a data de emissão ao lado, a coluna "Nº" e
+        # a de origem: só a coluna "Processo".
+        corpo = self._tabela([["Nº", "Processo", "Processo de origem"],
+                              [1, N1, ORIGEM1], [2, N2, ORIGEM2]],
+                             abre="<table><tr><th colspan=2>Relação de processos - 1ª Vara"
+                                  "</th><th>Emitido em 07/10/2026</th></tr>")
+        self.assertEqual(self.numeros(self._html("relatorio.xls", corpo, "windows-1252")),
+                         [N1, N2])
+
+    def test_tabela_dentro_da_moldura_da_pagina(self):
+        # A página salva do portal: a relação numa tabela dentro de outra, de
+        # layout. O texto da de dentro não se repete na célula da de fora.
+        corpo = ("<table><tr><td>Consulta de processos</td><td>"
+                 + self._tabela(self.LINHAS) + "</td></tr></table>")
+        leitura = listas.ler_arquivo(self._html("pagina.htm", corpo))
+        self.assertEqual([n.formatado for n in leitura.processos], [N1, N2])
+        self.assertEqual(leitura.senhas, {N1: "k7Q2", N2: "z9X1"})
+
+    def test_texto_fora_da_tabela_continua_lido_na_ordem(self):
+        corpo = (f"<p>Urgente: {ORIGEM2}</p><!--[if mso]><table><tr><td><![endif]-->"
+                 + self._tabela(self.LINHAS[:2]) + f"<p>Depois:<br>{N2}</p>")
+        self.assertEqual(self.numeros(self._html("email.htm", corpo)), [ORIGEM2, N1, N2])
+
+    def test_html_sem_tabela_continua_lido(self):
+        corpo = f"<p>{N1}</p>{N2}<br/>{ORIGEM1}"
+        self.assertEqual(self.numeros(self._html("lista.html", corpo)), [N1, N2, ORIGEM1])
+
 
 class TestTextoUnicodeDoExcel(_ComPasta):
     """Achado R28: o "Salvar como > Texto Unicode" do Excel (.txt, UTF-16,
@@ -404,6 +523,37 @@ class TestTextoUnicodeDoExcel(_ComPasta):
     def test_coluna_senha_continua_valendo(self):
         leitura = self._txt(f"Processo\tSenha\r\n{N1}\tk7Q2\r\n")
         self.assertEqual(leitura.senhas, {N1: "k7Q2"})
+
+    # Achado V8: a célula de várias linhas (Alt+Enter), que o Excel grava
+    # entre aspas, fazia o Sniffer desistir, e a leitura linha a linha
+    # voltava a fazer da coluna vizinha ("Estado") a senha.
+    def test_celula_de_varias_linhas_nao_faz_da_vizinha_a_senha(self):
+        conteudo = (f"Processo\tPartes\r\n{N1}\t\"Autor: João\nRéu: Maria\"\r\n"
+                    f"{N2}\tEstado\r\n{ORIGEM1}\t\"Autor: Ana\nRéu: Banco\"\r\n")
+        leitura = self._txt(conteudo)
+        self.assertEqual([n.formatado for n in leitura.processos], [N1, N2, ORIGEM1])
+        self.assertEqual(leitura.senhas, {})
+        self.assertEqual(listas.ler_texto(conteudo).senhas, {})
+
+    def test_dois_numeros_na_mesma_celula_de_varias_linhas(self):
+        # Lidas pelas quebras do próprio texto, as linhas da célula não se
+        # colam: "...0058" + "0700002..." não seria número nenhum.
+        leitura = self._txt(f"Processo\tPartes\r\n\"{N1}\n{N2}\"\t\"Autor: Ana\nRéu: Banco\"\r\n"
+                            f"{ORIGEM1}\tEstado\r\n")
+        self.assertEqual([n.formatado for n in leitura.processos], [N1, N2, ORIGEM1])
+        self.assertEqual(leitura.senhas, {})
+
+    def test_senha_ao_lado_da_celula_de_varias_linhas(self):
+        leitura = self._txt(f"Processo\tPartes\tSenha\r\n{N1}\t\"Autor: João\nRéu: Maria\"\tk7Q2"
+                            f"\r\n{N2}\tEstado\tz9X1\r\n")
+        self.assertEqual(leitura.senhas, {N1: "k7Q2", N2: "z9X1"})
+
+    def test_tabulacao_solta_nao_muda_a_lista_digitada(self):
+        # "número: senha" linha a linha, com uma tabulação perdida no fim:
+        # não é tabela, e as senhas continuam associadas.
+        leitura = listas.ler_texto(f"{N1}: abc123\n{N2}: def456\n{ORIGEM1}\t\n")
+        self.assertEqual([n.formatado for n in leitura.processos], [N1, N2, ORIGEM1])
+        self.assertEqual(leitura.senhas, {N1: "abc123", N2: "def456"})
 
 
 _NS_ODS = ('xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
