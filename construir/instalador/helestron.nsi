@@ -784,9 +784,18 @@ Section "Helestron (programa)" SecPrograma
   ${ElseIf} $0 == "ajustada"
     DetailPrint "A pasta escolhida ($PastaEscolhida) já tem outros arquivos: o Helestron vai para $INSTDIR."
   ${EndIf}
+  ; atualização é a pasta FINAL já ter o Helestron: também a "ajustada" do
+  ; /D=<pasta> repetido na versão seguinte (o Helestron já na subpasta)
   StrCpy $EraDoHelestron 0
   ${If} $0 == "atualizacao"
     StrCpy $EraDoHelestron 1
+  ${ElseIf} $0 == "ajustada"
+    Push $INSTDIR
+    Call EhDoHelestron
+    Pop $1
+    ${If} $1 == 1
+      StrCpy $EraDoHelestron 1
+    ${EndIf}
   ${EndIf}
 
   ; ...e dá para gravar nela?

@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import shutil
 import urllib.parse
 import zipfile
-from datetime import datetime
+from datetime import date, datetime, time as _hora
 from pathlib import Path
 
 from ..nucleo import cnj, sigilo, sistema
@@ -136,7 +137,40 @@ def _toml_texto(valor: str) -> str:
     return json.dumps(valor, ensure_ascii=False)
 
 
-def bloco_toml(pasta_acervo: Path) -> str:
+_CHAVE_NUA = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _toml_chave(chave: str) -> str:
+    return chave if _CHAVE_NUA.match(chave) else json.dumps(chave, ensure_ascii=False)
+
+
+def _toml_valor(valor) -> str:
+    """Um valor lido pelo tomllib, de volta em TOML (tabelas como inline)."""
+    if isinstance(valor, bool):
+        return "true" if valor else "false"
+    if isinstance(valor, float) and not math.isfinite(valor):
+        return "nan" if math.isnan(valor) else ("inf" if valor > 0 else "-inf")
+    if isinstance(valor, (int, float)):
+        return repr(valor)
+    if isinstance(valor, str):
+        return _toml_texto(valor)
+    if isinstance(valor, (list, tuple)):
+        return "[" + ", ".join(_toml_valor(v) for v in valor) + "]"
+    if isinstance(valor, dict):
+        if not valor:
+            return "{}"
+        return "{ " + ", ".join(f"{_toml_chave(str(k))} = {_toml_valor(v)}"
+                                for k, v in valor.items()) + " }"
+    if isinstance(valor, (date, _hora)):         # datetime é date
+        return valor.isoformat()
+    raise ValueError(f"valor TOML não suportado: {type(valor).__name__}")
+
+
+def bloco_toml(pasta_acervo: Path, manter: dict | None = None) -> str:
+    """O bloco do conector no config.toml. 'manter': o bloco que já estava
+    lá, cujas outras chaves ficam (o reapontamento da instalação que mudou
+    de pasta só troca o comando: o 'enabled = false' de quem desligou o
+    conector, os prazos e as permissões das ferramentas continuam)."""
     e = entrada_mcp(pasta_acervo)
     args = ", ".join(_toml_texto(a) for a in e["args"])
     linhas = [f"[mcp_servers.{NOME_MCP}]",
@@ -145,7 +179,9 @@ def bloco_toml(pasta_acervo: Path) -> str:
     if e.get("env"):
         env = ", ".join(f"{k} = {_toml_texto(v)}" for k, v in e["env"].items())
         linhas.append(f"env = {{ {env} }}")
-    linhas.append("enabled = true")
+    outras = {str(k): v for k, v in (manter or {}).items() if k not in e}
+    linhas.append(f"enabled = {_toml_valor(outras.pop('enabled', True))}")
+    linhas += [f"{_toml_chave(k)} = {_toml_valor(v)}" for k, v in outras.items()]
     return "\n".join(linhas) + "\n"
 
 
@@ -166,11 +202,13 @@ def _sem_bloco(texto: str, nomes: tuple[str, ...] = (NOME_MCP, *NOMES_ANTIGOS)) 
     return "\n".join(saida)
 
 
-def registrar_mcp_codex(pasta_acervo: Path, arquivo: Path | None = None) -> Path:
+def registrar_mcp_codex(pasta_acervo: Path, arquivo: Path | None = None,
+                        manter: dict | None = None) -> Path:
     """Registra o conector do acervo para o ChatGPT Work e o Codex.
 
     Preserva o resto do config.toml, guarda cópia do anterior e confere que
-    o resultado é TOML válido antes de trocar o arquivo.
+    o resultado é TOML válido antes de trocar o arquivo. 'manter': o bloco
+    atual do conector, cujas outras chaves ficam (bloco_toml).
     """
     import tomllib
 
@@ -186,7 +224,7 @@ def registrar_mcp_codex(pasta_acervo: Path, arquivo: Path | None = None) -> Path
             raise ValueError(f"o arquivo {arquivo} tem TOML inválido ({erro}); corrija-o "
                              "ou apague-o e tente de novo") from erro
     base = _sem_bloco(atual)
-    novo = (base + "\n\n" if base.strip() else "") + bloco_toml(pasta_acervo)
+    novo = (base + "\n\n" if base.strip() else "") + bloco_toml(pasta_acervo, manter)
     tomllib.loads(novo)          # nunca gravar um arquivo que o app não leria
     if novo == atual:
         return arquivo

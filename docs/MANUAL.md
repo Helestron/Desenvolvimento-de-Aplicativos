@@ -250,7 +250,8 @@ Helestron-Setup-1.0.2.exe /S /D=D:\Programas\Helestron
 - `/D=` escolhe a pasta. Tem de ser o **último** argumento e vai **sem
   aspas**, mesmo que o caminho tenha espaços. Se a pasta já tiver outros
   arquivos (do usuário ou de outro programa), o Helestron vai, sem
-  perguntar, para `<pasta>\Helestron`; se essa subpasta também tiver outros
+  perguntar, para `<pasta>\Helestron` (o mesmo `/D=` na versão seguinte
+  atualiza essa subpasta); se essa subpasta também tiver outros
   arquivos, nada é copiado, e o instalador sai com o código 3. Se o
   Helestron já estiver instalado em outra pasta, ele é fechado e removido de
   lá, sem perguntar, como numa atualização (com uma audiência sendo
@@ -480,7 +481,9 @@ sistema:
   senhas, cookies, histórico ou outras extensões) e, se ela não estiver no
   Chrome, a janela explica como instalá-la pela Chrome Web Store. A cópia
   do perfil inteiro do Chrome feita pelas versões anteriores é apagada
-  sozinha;
+  sozinha (se um arquivo dela estiver preso, pelo antivírus ou pelo
+  Explorador, o navegador do Helestron não abre sobre ela, e a mensagem diz
+  o que fazer);
 - **Como entrar no eProc**: **Usuário e senha** ou **Entrar manualmente**;
 - **Esperar o login até (minutos)**: quanto tempo o Helestron espera você
   concluir a entrada (código por e-mail, certificado);

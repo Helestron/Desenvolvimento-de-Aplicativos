@@ -512,6 +512,49 @@ class TestRestosDaVersaoAnterior(unittest.TestCase):
             # de novo: já aponta para esta instalação, nada a fazer
             self.assertEqual(migracao.reapontar_conectores(forcar=True), [])
 
+    def test_reapontar_mantem_o_conector_desligado_e_as_outras_chaves(self):
+        """O bloco do Codex era reescrito inteiro, com 'enabled = true': o
+        conector que o usuário desligou (para o ChatGPT não ler o acervo)
+        voltava ligado depois da instalação, sem aviso."""
+        from helestron.compartilhar import migracao
+
+        acervo = str(self.base / "Acervo")
+        self.json.write_text("{}", encoding="utf-8")
+        self.toml.write_text('model = "x"\n\n[mcp_servers.helestron]\n'
+                             "command = 'C:/Velha/Helestron/python.exe'\n"
+                             f"args = ['-I', '-m', 'helestron', 'mcp', '--pasta', '{acervo}']\n"
+                             "enabled = false\n"
+                             "startup_timeout_sec = 30\n"
+                             "tool_timeout_sec = 120.5\n"
+                             "disabled_tools = ['buscar', \"ler 'pagina'\"]\n"
+                             '"chave com espaço" = 1\n\n'
+                             "[mcp_servers.helestron.env]\nHTTPS_PROXY = 'http://proxy:8080'\n\n"
+                             "[mcp_servers.helestron.tools.ler_pagina]\napproval = 'approve'\n\n"
+                             '[mcp_servers.outro]\ncommand = "y"\n', encoding="utf-8")
+        with mock.patch.object(claude, "arquivos_config_desktop", return_value=[self.json]), \
+                mock.patch.object(chatgpt, "arquivo_config_codex", return_value=self.toml), \
+                mock.patch.object(caminhos, "INSTALADO", True):
+            feito = migracao.reapontar_conectores()
+            self.assertEqual(len(feito), 1, feito)
+            esperada = claude.entrada_mcp(Path(acervo))
+            codex = tomllib.loads(self.toml.read_text(encoding="utf-8"))
+            bloco = codex["mcp_servers"]["helestron"]
+            self.assertEqual(bloco.pop("command"), esperada["command"])
+            self.assertEqual(bloco.pop("args"), esperada["args"])
+            self.assertEqual(bloco, {"enabled": False, "startup_timeout_sec": 30,
+                                     "tool_timeout_sec": 120.5,
+                                     "disabled_tools": ["buscar", "ler 'pagina'"],
+                                     "chave com espaço": 1,
+                                     "env": {"HTTPS_PROXY": "http://proxy:8080"},
+                                     "tools": {"ler_pagina": {"approval": "approve"}}})
+            self.assertEqual(codex["mcp_servers"]["outro"], {"command": "y"})
+            self.assertEqual(codex["model"], "x")
+            self.assertEqual(migracao.reapontar_conectores(), [])
+            # o "Conectar" da tela é o usuário pedindo: liga
+            chatgpt.registrar_mcp_codex(Path(acervo), self.toml)
+            codex = tomllib.loads(self.toml.read_text(encoding="utf-8"))
+            self.assertIs(codex["mcp_servers"]["helestron"]["enabled"], True)
+
     def test_arquivo_invalido_nao_e_tocado(self):
         self.json.write_text("{ isto não é json", encoding="utf-8")
         self.toml.write_text("[mcp_servers.assessor_integrado\ncommand = ", encoding="utf-8")

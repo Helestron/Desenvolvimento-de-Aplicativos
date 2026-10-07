@@ -565,6 +565,31 @@ class TestChecagens(unittest.TestCase):
             self.assertEqual(verificar.checar_modelo(self.cfg).situacao, AVISO)
             self.assertEqual(verificar.checar_falantes().situacao, AVISO)
 
+    def test_falantes_embutidos_diz_o_que_sumiu(self):
+        """Com os modelos de voz no lugar e a biblioteca sherpa-onnx retirada
+        (a DLL em quarentena), o Diagnóstico dizia que os MODELOS sumiram,
+        apontando o arquivo errado ao usuário e ao suporte."""
+        from helestron.transcricao import falantes
+
+        casos = (((False, True), "O componente da separação de vozes (sherpa-onnx) veio com o "
+                                 "programa", "pode tê-lo retirado"),
+                 ((True, False), "Os modelos de voz vieram com o programa", "pode tê-los retirado"),
+                 ((False, False), "O componente da separação de vozes (sherpa-onnx) e os modelos "
+                                  "de voz vieram", "pode tê-los retirado"))
+        for (biblioteca, modelos), comeco, retirado in casos:
+            with self.subTest(biblioteca=biblioteca, modelos=modelos), \
+                    mock.patch.object(falantes, "biblioteca_presente", return_value=biblioteca), \
+                    mock.patch.object(falantes, "modelos_presentes", return_value=modelos), \
+                    mock.patch.object(verificar, "_componentes_embutidos",
+                                      return_value={"falantes": True}):
+                item = verificar.checar_falantes()
+                self.assertEqual((item.situacao, item.codigo), (FALHA, "falantes"))
+                self.assertTrue(item.detalhe.startswith(comeco), item.detalhe)
+                self.assertIn(retirado, item.detalhe)
+                self.assertIn("Helestron-Setup", item.acao)
+                if modelos:
+                    self.assertNotIn("modelos de voz", item.detalhe)
+
     def test_regras_da_pauta(self):
         self.assertEqual(verificar.checar_regras_pauta().situacao, OK)
         from helestron.pauta import regras

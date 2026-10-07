@@ -112,7 +112,9 @@ def reapontar_conectores(forcar: bool = False) -> list[str]:
             pasta = _pasta_do_acervo(atual.get("args"))
             if pasta is not None and not _mesmo_comando(
                     atual.get("command"), chatgpt.entrada_mcp(pasta)["command"]):
-                chatgpt.registrar_mcp_codex(pasta, arquivo)
+                # só o comando muda: o conector desligado (enabled = false)
+                # continua desligado, e as outras chaves do bloco ficam
+                chatgpt.registrar_mcp_codex(pasta, arquivo, manter=atual)
                 feito.append("Conector do ChatGPT/Codex reapontado para esta instalação "
                              f"({arquivo}); o arquivo anterior foi guardado ao lado.")
     except Exception as erro:  # noqa: BLE001

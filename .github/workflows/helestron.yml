@@ -796,7 +796,8 @@ jobs:
   publicar:
     name: Publicar a versão (tags v*)
     # Por tag (git push da tag vX.Y.Z) ou pelo disparo manual "publicar" no
-    # main, que cria a tag da versao do programa no proprio GitHub.
+    # main, que cria a tag da versao do programa no proprio GitHub (e recusa
+    # publicar se ela ja existe em outro commit).
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publicar && github.ref == 'refs/heads/main')
     needs: [testes, windows]
     runs-on: ubuntu-latest
@@ -834,6 +835,26 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$TAG" ]; then
             echo "A tag $GITHUB_REF_NAME nao e a versao do instalador ($TAG)."
             exit 1
+          fi
+          # No disparo manual, a tag nasce neste commit. Se ela ja existe (foi
+          # empurrada antes e o run dela reprovou), o gh ignora o --target e
+          # pendura o instalador deste commit na tag de outro codigo.
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            if REF=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha' 2>erro-tag.txt); then
+              set -- $REF
+              NA_TAG="$2"
+              if [ "$1" = "tag" ]; then
+                NA_TAG=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$2" --jq '.object.sha')
+              fi
+              if [ "$NA_TAG" != "$GITHUB_SHA" ]; then
+                echo "A tag $TAG ja existe em outro commit ($NA_TAG): publique pela propria tag ou mude a versao do programa."
+                exit 1
+              fi
+            elif ! grep -q "HTTP 404" erro-tag.txt; then
+              echo "Nao consegui conferir se a tag $TAG ja existe:"
+              cat erro-tag.txt
+              exit 1
+            fi
           fi
           echo "Versao: $TAG (commit $GITHUB_SHA)"
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Helestron $TAG" --notes "$NOTAS"

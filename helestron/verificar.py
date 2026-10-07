@@ -1221,14 +1221,34 @@ def _falantes_situacao() -> tuple[bool, str]:
         return False, "incompleta (faltam os modelos de voz)" if presente else "indisponível"
 
 
+def _falantes_faltam() -> tuple[bool, bool]:
+    """(falta a biblioteca sherpa-onnx, faltam os modelos de voz)."""
+    try:
+        from .transcricao import falantes
+
+        return not falantes.biblioteca_presente(), not falantes.modelos_presentes()
+    except Exception:
+        return not _presente("sherpa_onnx"), True
+
+
 def checar_falantes(completo: bool = False) -> Item:
     nome = "Separação de falantes (opcional)"
     disponivel, situacao = _falantes_situacao()
     if not disponivel and _componentes_embutidos().get("falantes") is True:
-        return Item(nome, FALHA,
-                    "Os modelos de voz vieram com o programa, mas não estão mais na pasta do "
-                    "programa (o antivírus pode tê-los retirado): a revisão final não separa as "
-                    "vozes sozinha.", obrigatorio=False, codigo="falantes", acao=REINSTALAR)
+        # o que sumiu: a biblioteca (a DLL em quarentena), os modelos, ou os dois
+        sem_biblioteca, sem_modelos = _falantes_faltam()
+        if sem_biblioteca and not sem_modelos:
+            o_que = ("O componente da separação de vozes (sherpa-onnx) veio com o programa, mas "
+                     "não está mais na pasta do programa (o antivírus pode tê-lo retirado)")
+        elif sem_biblioteca:
+            o_que = ("O componente da separação de vozes (sherpa-onnx) e os modelos de voz "
+                     "vieram com o programa, mas não estão mais na pasta do programa (o "
+                     "antivírus pode tê-los retirado)")
+        else:
+            o_que = ("Os modelos de voz vieram com o programa, mas não estão mais na pasta do "
+                     "programa (o antivírus pode tê-los retirado)")
+        return Item(nome, FALHA, f"{o_que}: a revisão final não separa as vozes sozinha.",
+                    obrigatorio=False, codigo="falantes", acao=REINSTALAR)
     if not disponivel:
         if _presente("sherpa_onnx"):
             # A biblioteca veio; faltam só os modelos de voz (construção sem eles).
