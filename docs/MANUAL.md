@@ -364,18 +364,20 @@ os mesmos ajustes da tela Processos:
 | `--rebaixar-incompletos` | baixa de novo só o que tem folhas (ou documentos) ausentes, ou o PDF de versão anterior, sem o manifesto de paginação |
 | `--midias` | baixa também as gravações de audiência |
 | `--texto` | ao fim, extrai o texto de cada PDF, com a marca de cada página (em `_texto`, ao lado dos PDFs; dentro do acervo, em `_ia\texto`) |
-| `--retomar` | refaz só o que o relatório da pasta do lote diz que pede nova tentativa (falhou, ficou pendente ou foi interrompido) e os números que ainda não estão nele; com `--destino`, dispensa a relação |
-| `--esperar-navegador MIN` | se outro download estiver usando o navegador do portal, espera até MIN minutos (tentando a cada 30 segundos), em vez de desistir |
+| `--retomar` | refaz só o que o relatório da pasta do lote diz que pede nova tentativa (falhou, ficou pendente ou foi interrompido), os números que ainda não estão nele e o processo baixado cujo PDF já não está na pasta; com `--rebaixar-incompletos`, também o que tem folhas (ou documentos) ausentes. Com `--destino`, dispensa a relação; se a pasta não tiver o relatório de um lote, sai com o código 2 |
+| `--esperar-navegador MIN` | se outro download estiver usando o navegador do portal, espera até MIN minutos (tentando a cada 30 segundos; no máximo 1440, um dia), em vez de desistir |
 | `--json ARQ` | grava o andamento e o resultado num arquivo JSON, para programas |
 | `--eventos` | imprime cada acontecimento (o login que espera você, o fim…) numa linha `HELESTRON-EVENTO {…}` |
 | `--log ARQ` | guarda num arquivo tudo o que sai na tela e o registro detalhado (com `--json` e sem `--log`, o registro vai para `%LOCALAPPDATA%\Helestron\Logs\execucoes`) |
 | `--desanexar` | deixa o lote rodando sozinho, sem janela de console, e devolve o controle na hora (exige `--json`) |
 
 - **Códigos de saída do `baixar`:** 0, tudo certo; 1, parte falhou ou ficou
-  pendente; 2, nada pôde ser feito: nenhum processo foi baixado nem estava
-  na pasta (o login recusado, por exemplo), ou o lote nem começou (relação
-  ilegível ou sem números, uso errado, pasta do lote que não pode ser
-  criada, outro download já usando a mesma pasta de lote).
+  pendente, ou o lote foi interrompido (Ctrl+C); 2, nada pôde ser feito:
+  nenhum processo foi baixado nem estava na pasta (o login recusado, por
+  exemplo), ou o lote nem começou (relação ilegível ou sem números, uso
+  errado, arquivo do `--log` que não pode ser aberto, pasta do lote que não
+  pode ser criada, outro download já usando a mesma pasta de lote, erro
+  inesperado).
 - **O código do e-SAJ.** Num terminal, o código enviado por e-mail é pedido
   ali mesmo. Sem terminal (um script, a skill do Claude), a janela do
   navegador fica visível, e o código é digitado nela, no campo do próprio

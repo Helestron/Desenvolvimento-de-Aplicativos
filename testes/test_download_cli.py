@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -317,6 +318,27 @@ class TestCliParaAutomacao(BaseCli):
     def ler_json(self, arq):
         return json.loads(Path(arq).read_text(encoding="utf-8"))
 
+    def pdf_na_pasta(self, pasta, n, ausentes=None) -> Path:
+        """O PDF de 'n' já na pasta. Com 'ausentes' ({folha: código}), traz o
+        manifesto de paginação do e-SAJ (1.0.2); sem, é como o de versão
+        anterior, sem manifesto."""
+        pdf = Path(pasta) / f"{n.nome_arquivo}.pdf"
+        pdf.parent.mkdir(parents=True, exist_ok=True)
+        if ausentes is None:
+            pdf.write_bytes(apoio.pdf_bytes(2))
+            return pdf
+        import pymupdf
+
+        from helestron.nucleo import paginacao
+        doc = pymupdf.open()
+        for folha in range(1, 7):
+            doc.new_page().insert_text((72, 72), f"fls. {folha}")
+        paginacao.gravar_no_doc(doc, paginacao.manifesto_esaj(n.formatado, 6, ausentes,
+                                                              tribunal="TJAL"))
+        doc.save(str(pdf))
+        doc.close()
+        return pdf
+
     def construir_com_pdfs(self, numeros, destino):
         """A no lote (fora do acervo), B sigiloso na pasta de sigilosos."""
         itens = []
@@ -469,6 +491,115 @@ class TestCliParaAutomacao(BaseCli):
         self.assertNotIn("detalhe que não vai", conteudo)
         self.assertEqual(logging.getLogger().handlers, handlers, "o handler do --log sai no fim")
 
+    def test_log_que_nao_abre_conclui_o_json_com_codigo_2(self):
+        """Com --json, quem chamou sempre recebe o JSON concluído - também
+        quando o --log não pode ser aberto. Desanexado, o filho morreria antes
+        de concluí-lo, e quem acompanha esperaria para sempre: quem desanexa
+        confere o log antes."""
+        bloqueio = self.tmp / "um arquivo"
+        bloqueio.write_text("não é pasta", encoding="utf-8")
+        log_ruim = bloqueio / "x.log"
+        arq = self.tmp / "lote.json"
+        codigo, _, erros = self.rodar_com_erros([A.formatado, "--json", str(arq),
+                                                 "--log", str(log_ruim)])
+        self.assertEqual(codigo, 2)
+        self.assertIn("Não consegui abrir o arquivo de registro", erros)
+        self.assertEqual(self.capturado, {})
+        dados = self.ler_json(arq)
+        self.assertEqual((dados["concluido"], dados["codigo_saida"], dados["causa_erro"],
+                          dados["log"]), (True, 2, "uso", ""))
+        self.assertIn("arquivo de registro", dados["erro"])
+        arq.unlink()
+        popen = mock.Mock(return_value=mock.Mock(pid=4242))
+        with mock.patch.object(cli.subprocess, "Popen", popen):
+            codigo, texto, erros = self.rodar_com_erros([A.formatado, "--json", str(arq),
+                                                         "--log", str(log_ruim), "--desanexar"])
+        self.assertEqual(codigo, 2)
+        popen.assert_not_called()
+        self.assertNotIn("HELESTRON-EXECUCAO", texto)
+        self.assertIn("Não consegui abrir o arquivo de registro", erros)
+        dados = self.ler_json(arq)
+        self.assertEqual((dados["concluido"], dados["codigo_saida"], dados["causa_erro"]),
+                         (True, 2, "uso"))
+
+    def test_registro_do_programa_que_nao_abre_nao_derruba_o_lote(self):
+        """Sem a pasta Logs do registro do programa, o lote não morre antes de
+        criar e concluir o JSON (o desanexado o deixaria em concluido: false)."""
+        from helestron.nucleo import registro
+
+        arq = self.tmp / "lote.json"
+        saida, erros = io.StringIO(), io.StringIO()
+        with mock.patch.object(registro, "preparar_saidas"), \
+                mock.patch.object(registro, "configurar",
+                                  side_effect=PermissionError(13, "Acesso negado")), \
+                redirect_stdout(saida), redirect_stderr(erros), \
+                mock.patch("sys.stdin", io.StringIO("")):
+            codigo = cli.main([A.formatado, "--json", str(arq)])
+        self.assertEqual(codigo, 0)
+        self.assertIn("não consegui abrir o registro do programa", erros.getvalue())
+        dados = self.ler_json(arq)
+        self.assertEqual((dados["concluido"], dados["codigo_saida"]), (True, 0))
+
+    def test_erro_inesperado_sai_com_o_codigo_do_json_e_o_rastro_no_log(self):
+        """O erro do programa saía com 1 (a exceção solta), o JSON dizia 2, e o
+        rastro, impresso depois de o --log fechar, não chegava a ele."""
+        def falha(*a, **k):
+            raise ValueError("falha de teste 4242")
+
+        arq, log_arq = self.tmp / "lote.json", self.tmp / "execução.log"
+        with mock.patch.object(motor, "executar", falha):
+            codigo, _, erros = self.rodar_com_erros([A.formatado, "--json", str(arq),
+                                                     "--log", str(log_arq)])
+        self.assertEqual(codigo, 2)
+        dados = self.ler_json(arq)
+        self.assertEqual((dados["concluido"], dados["codigo_saida"], dados["causa_erro"]),
+                         (True, 2, "inesperado"))
+        self.assertIn("falha de teste 4242", dados["erro"])
+        self.assertIn("Erro inesperado: falha de teste 4242", erros)
+        conteudo = log_arq.read_text(encoding="utf-8")
+        self.assertIn("Traceback", conteudo)
+        self.assertIn("ValueError: falha de teste 4242", conteudo)
+
+    def test_esperar_navegador_so_aceita_minutos_finitos_ate_um_dia(self):
+        # "inf" passava e estourava a data do fim da espera (erro inesperado)
+        for valor in ("inf", "nan", "-1", "1441", "1e308"):
+            with self.subTest(valor=valor):
+                with redirect_stderr(io.StringIO()) as erros, \
+                        self.assertRaises(SystemExit) as saida:
+                    cli.main([A.formatado, "--esperar-navegador", valor], configurar_log=False)
+                self.assertEqual(saida.exception.code, 2)
+                self.assertIn("--esperar-navegador", erros.getvalue())
+        self.assertEqual(self.rodar([A.formatado, "--esperar-navegador", "1440"])[0], 0)
+        self.assertEqual(self.capturado["opcoes"].esperar_navegador_s, 1440 * 60.0)
+
+    def test_ctrl_c_no_meio_do_lote_sai_1_com_a_causa_interrompido(self):
+        """O motor engole o Ctrl+C e marca o que faltava como interrompido: a
+        saída é a mesma do Ctrl+C que chega à linha de comando (1, causa
+        "interrompido"), e não a de "nada pôde ser feito" (2, sem causa)."""
+        arq = self.tmp / "lote.json"
+
+        def construir(numeros, destino):
+            return [modelos.ResultadoProcesso(i + 1, n.formatado, "TJAL", "esaj",
+                                              modelos.CANCELADO, causa=modelos.CAUSA_INTERROMPIDO)
+                    for i, n in enumerate(numeros)]
+
+        def construir_parcial(numeros, destino):
+            itens = construir(numeros, destino)
+            itens[0].situacao, itens[0].causa = modelos.OK, ""
+            return itens
+
+        for nome, construtor in (("antes do 1º PDF", construir),
+                                 ("depois do 1º PDF", construir_parcial)):
+            with self.subTest(caso=nome):
+                self.construir = construtor
+                codigo, texto = self.rodar([A.formatado, B.formatado, "--json", str(arq)])
+                self.assertEqual(codigo, 1)
+                self.assertIn("Interrompido após", texto)
+                self.assertNotIn("Concluído em", texto)
+                dados = self.ler_json(arq)
+                self.assertEqual((dados["codigo_saida"], dados["erro"], dados["causa_erro"]),
+                                 (1, "interrompido", "interrompido"))
+
     def test_recusa_com_a_pasta_dos_sigilosos_dentro_do_acervo(self):
         # A mesma regra da tela (409 pastas_em_conflito): baixar assim levaria
         # o sigiloso para o que a IA lê.
@@ -522,6 +653,27 @@ class TestCliParaAutomacao(BaseCli):
         # de novo: em dia, sem refazer
         self.rodar([A.formatado, B.formatado, C.formatado, D.formatado,
                     "--destino", str(destino), "--texto", "--json", str(arq)])
+        self.assertEqual(self.ler_json(arq)["processos"][0]["texto_situacao"], "em_dia")
+
+    def test_texto_de_formato_anterior_refeito_e_novo(self):
+        """O _texto de formato 1 (o que a skill gerava na 1.0.1) é refeito no
+        formato 2 com a mesma data de antes, a do PDF: a situação é "novo", e
+        não "em_dia" (as marcas mudaram)."""
+        destino = self.tmp / "Lote"
+        arq = self.tmp / "lote.json"
+        pdf = self.pdf_na_pasta(destino, A)
+        txt = destino / "_texto" / f"{A.nome_arquivo}.txt"
+        txt.parent.mkdir()
+        txt.write_text("=== [fl. 1] ===\ntexto antigo (formato 1)\n", encoding="utf-8")
+        os.utime(txt, (pdf.stat().st_atime, pdf.stat().st_mtime))
+        self.construir = lambda numeros, destino: [modelos.ResultadoProcesso(
+            1, numeros[0].formatado, "TJAL", "esaj", modelos.JA_BAIXADO, arquivo=str(pdf),
+            paginas=2)]
+        argv = [A.formatado, "--destino", str(destino), "--texto", "--json", str(arq)]
+        self.assertEqual(self.rodar(argv)[0], 0)
+        self.assertEqual(self.ler_json(arq)["processos"][0]["texto_situacao"], "novo")
+        self.assertTrue(txt.read_text(encoding="utf-8").startswith("# helestron-texto 2 |"))
+        self.rodar(argv)
         self.assertEqual(self.ler_json(arq)["processos"][0]["texto_situacao"], "em_dia")
 
     def test_texto_diz_as_paginas_sem_texto_no_json(self):
@@ -630,6 +782,7 @@ class TestCliParaAutomacao(BaseCli):
 
     def test_retomar_so_os_que_pedem_nova_tentativa(self):
         destino = self.tmp / "Lote"
+        self.pdf_na_pasta(destino, A)
         motor._gravar_relatorio(destino / "_controle" / "relatorio.csv", [
             [1, A.formatado, "TJAL", "esaj", "OK", 2, 1, "a.pdf", "não", "", "", "", ""],
             [2, B.formatado, "TJAL", "esaj", "ERRO", "", "", "", "não", "", "x", "", "falha"],
@@ -667,12 +820,109 @@ class TestCliParaAutomacao(BaseCli):
 
     def test_retomar_sem_nada_a_fazer(self):
         destino = self.tmp / "Lote"
+        self.pdf_na_pasta(destino, A)
         motor._gravar_relatorio(destino / "_controle" / "relatorio.csv", [
             [1, A.formatado, "TJAL", "esaj", "OK", 2, 1, "a.pdf", "não", "", "", "", ""]])
         codigo, texto = self.rodar(["--destino", str(destino), "--retomar"])
         self.assertEqual(codigo, 0)
         self.assertIn("Nada a retomar", texto)
         self.assertEqual(self.capturado, {})
+
+    def test_retomar_sem_relatorio_na_pasta_sai_2(self):
+        """Só com a pasta do lote, o relatório é a relação: com o caminho
+        errado (ou uma pasta que não é de lote), "nada a retomar" com o
+        código 0 diria à skill que está tudo certo."""
+        destino = self.tmp / "Lote que não existe"
+        arq = self.tmp / "lote.json"
+        for existe in (False, True):
+            with self.subTest(pasta_existe=existe):
+                if existe:
+                    destino.mkdir()
+                codigo, texto = self.rodar(["--destino", str(destino), "--retomar",
+                                            "--json", str(arq)])
+                self.assertEqual(codigo, 2)
+                self.assertIn("não tem o relatório de um lote", texto)
+                self.assertNotIn("Nada a retomar", texto)
+                self.assertEqual(self.capturado, {})
+                dados = self.ler_json(arq)
+                self.assertEqual((dados["concluido"], dados["codigo_saida"], dados["causa_erro"]),
+                                 (True, 2, "sem_processos"))
+                self.assertIn("não tem o relatório de um lote", dados["erro"])
+
+    def test_retomar_refaz_o_baixado_cujo_pdf_saiu_da_pasta(self):
+        """O relatório diz OK, mas o PDF já não está na pasta do lote (nem na de
+        sigilosos dele): o motor o baixaria, e "uma nova tentativa não muda o
+        desfecho" seria falso. O e-SAJ de versão anterior com sinal de
+        numeração deslocada o motor também refaz (sem --rebaixar-incompletos)."""
+        destino = self.tmp / "Lote"
+        sigilosos = motor.pasta_sigilosos_do_lote(self.tmp / "Sigilosos", destino,
+                                                  self.cfg.pasta_processos)
+        self.pdf_na_pasta(destino, B, ausentes={})
+        self.pdf_na_pasta(sigilosos, C, ausentes={})  # o sigiloso está na pasta de sigilosos
+        self.pdf_na_pasta(destino, D)                # da 1.0.1, com folhas ausentes
+        motor._gravar_relatorio(destino / "_controle" / "relatorio.csv", [
+            [1, A.formatado, "TJAL", "esaj", "OK", 2, 1, "", "não", "", "", "", ""],
+            [2, B.formatado, "TJAL", "esaj", "OK", 2, 1, "", "não", "", "", "", ""],
+            [3, C.formatado, "TJAL", "esaj", "JA_BAIXADO", 2, 1, "", "sim", "", "", "", ""],
+            [4, D.formatado, "TJAL", "esaj", "OK", 8, 3, "", "não", "6-7", "", "", ""]])
+        arq = self.tmp / "lote.json"
+        codigo, texto = self.rodar([A.formatado, B.formatado, C.formatado, D.formatado,
+                                    "--destino", str(destino), "--retomar", "--json", str(arq)])
+        self.assertEqual(codigo, 0)
+        self.assertEqual([n.formatado for n in self.capturado["numeros"]],
+                         [A.formatado, D.formatado])
+        self.assertIn("Retomando 2 processos.", texto)
+        ignorados = self.ler_json(arq)["ignorados_por_retomar"]
+        self.assertEqual([(i["numero"], i["motivo"]) for i in ignorados],
+                         [(B.formatado, "baixado: uma nova tentativa não muda o desfecho"),
+                          (C.formatado, "já estava na pasta: uma nova tentativa não muda o "
+                                        "desfecho")])
+        # só com a pasta do lote, a mesma escolha
+        self.rodar(["--destino", str(destino), "--retomar"])
+        self.assertEqual([n.formatado for n in self.capturado["numeros"]],
+                         [A.formatado, D.formatado])
+
+    def test_retomar_com_rebaixar_incompletos_refaz_o_que_tem_folhas_ausentes(self):
+        """'--retomar --rebaixar-incompletos' (a linha da skill): o PDF com
+        folhas que não vieram (peça que falhou: código B) e o de versão
+        anterior, sem o manifesto, chegam ao motor; antes, o --retomar os
+        deixava de fora e a opção não fazia nada."""
+        destino = self.tmp / "Lote"
+        self.pdf_na_pasta(destino, A, ausentes={3: "B", 4: "B"})
+        self.pdf_na_pasta(destino, C)                       # sem o manifesto
+        self.pdf_na_pasta(destino, D, ausentes={})          # completo
+        motor._gravar_relatorio(destino / "_controle" / "relatorio.csv", [
+            [1, A.formatado, "TJAL", "esaj", "OK", 6, 3, "", "não", "3-4",
+             "fls. 3-4: 1 peça não veio e tem página de aviso no lugar", "", ""],
+            [2, B.formatado, "TJAL", "esaj", "ERRO", "", "", "", "não", "", "x", "", "falha"],
+            [3, C.formatado, "TJAL", "esaj", "OK", 2, 1, "", "não", "", "", "", ""],
+            [4, D.formatado, "TJAL", "esaj", "JA_BAIXADO", 6, 3, "", "não", "", "", "", ""]])
+        arq = self.tmp / "lote.json"
+        todos = [A.formatado, B.formatado, C.formatado, D.formatado]
+        codigo, _ = self.rodar(todos + ["--destino", str(destino), "--retomar",
+                                        "--rebaixar-incompletos", "--json", str(arq)])
+        self.assertEqual(codigo, 0)
+        self.assertEqual([n.formatado for n in self.capturado["numeros"]],
+                         [A.formatado, B.formatado, C.formatado])
+        self.assertTrue(self.capturado["opcoes"].rebaixar_incompletos)
+        self.assertEqual([(i["numero"], i["motivo"])
+                          for i in self.ler_json(arq)["ignorados_por_retomar"]],
+                         [(D.formatado, "já estava na pasta: uma nova tentativa não muda o "
+                                        "desfecho")])
+        # só com a pasta do lote, a mesma escolha
+        self.rodar(["--destino", str(destino), "--retomar", "--rebaixar-incompletos"])
+        self.assertEqual([n.formatado for n in self.capturado["numeros"]],
+                         [A.formatado, B.formatado, C.formatado])
+        # sem a opção, o que só ela refaz fica de fora, e o porquê diz como refazê-lo
+        self.rodar(todos + ["--destino", str(destino), "--retomar", "--json", str(arq)])
+        self.assertEqual([n.formatado for n in self.capturado["numeros"]], [B.formatado])
+        motivos = {i["numero"]: i["motivo"] for i in self.ler_json(arq)["ignorados_por_retomar"]}
+        self.assertEqual(motivos[A.formatado], "baixado, com folhas ausentes (3-4): para baixá-lo "
+                                               "de novo, use --rebaixar-incompletos")
+        self.assertEqual(motivos[C.formatado], "baixado, sem o manifesto de paginação (PDF de "
+                                               "versão anterior): para baixá-lo de novo, use "
+                                               "--rebaixar-incompletos")
+        self.assertIn("não muda o desfecho", motivos[D.formatado])
 
     # ---------------------------------------------- opções, cofre, trava
     def test_sem_cofre_e_opcoes_novas_chegam_ao_motor(self):
@@ -737,6 +987,20 @@ class TestCliParaAutomacao(BaseCli):
         codigo, _, erros = self.rodar_com_erros([A.formatado, "--desanexar"])
         self.assertEqual(codigo, 2)
         self.assertIn("--json", erros)
+
+    def test_desanexar_nao_aceita_abreviacao(self):
+        """"--desa" (abreviação que o argparse aceitava) chegava ao filho, que
+        se desanexava de novo, e assim sem fim, sem nunca baixar."""
+        arq = self.tmp / "lote.json"
+        popen = mock.Mock(return_value=mock.Mock(pid=4242))
+        with mock.patch.object(cli.subprocess, "Popen", popen), \
+                redirect_stderr(io.StringIO()) as erros, self.assertRaises(SystemExit) as saida:
+            cli.main([A.formatado, "--json", str(arq), "--desa"], configurar_log=False)
+        self.assertEqual(saida.exception.code, 2)
+        self.assertIn("argumento não reconhecido: --desa", erros.getvalue())
+        popen.assert_not_called()
+        self.assertFalse(arq.exists())
+        self.assertTrue(cli.criar_parser().parse_args([A.formatado, "--desanexar"]).desanexar)
 
 
 if __name__ == "__main__":
