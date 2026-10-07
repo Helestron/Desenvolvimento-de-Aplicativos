@@ -20,7 +20,9 @@ audiência sigilosa, que fica fora do acervo.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
+import re
 import secrets
 import threading
 import time
@@ -156,7 +158,10 @@ class GerenteAudiencia:
             raise erro_400("Informe o número do processo: é ele que dá nome ao documento.",
                            "numero_ausente")
         try:
-            numero = cnj.ler(texto)
+            # O dependente digitado como "/01" ou como "-01" (o do nome dos
+            # arquivos): cnj.ler descartava o "-01", e a audiência do incidente
+            # virava a do principal - outro documento, fora do sigilo dele.
+            numero = cnj.ler_nome_arquivo(texto)
         except cnj.NumeroInvalido as erro:
             raise erro_400(f"“{texto}” não é um número de processo no padrão CNJ "
                            "(0000000-00.0000.0.00.0000).", "numero_invalido") from erro
@@ -264,21 +269,47 @@ class GerenteAudiencia:
             with self._trava:
                 self.documento = Path(documento)
                 self.estado = "encerrada"
-                meta = getattr(sessao, "meta", None)
-                self.ultima = {
-                    "numero": self.numero, "audio": getattr(sessao, "caminho_audio", None),
-                    "falas": list(getattr(sessao, "falas", []) or []),
-                    "sigiloso": bool(getattr(sessao, "sigiloso", self.sigiloso)),
-                    "documento": self.documento,
-                    # a revisão ("Revisar") mantém a ficha da audiência
-                    "tipo": str(getattr(meta, "tipo", "") or self._tipo or ""),
-                    "participantes": dict(getattr(meta, "participantes", None)
-                                          or self._participantes or {}),
-                }
+                self.ultima = self._ficha_da_ultima(sessao)
             self._depois_de_salvar(self.documento)
         finally:
             self.app.recursos.soltar(QUEM_SESSAO)
             self.app.hub.publicar("estado", {})
+
+    def _ficha_da_ultima(self, sessao) -> dict:
+        """O que a revisão ("Revisar") da audiência encerrada precisa.
+
+        'meta': uma CÓPIA da ficha da sessão (MetaAudiencia: início, término,
+        data, unidade, magistrado, tipo e participantes) - sem ela, a revisão
+        perdia o início e o término e punha na Data a da modificação do
+        FLAC; cópia, porque o motor completa a ficha no lugar. 'botoes': o
+        mapa das teclas F1-F8 da tela ({"F1": "Juiz(a)"}), separado de
+        'participantes' ({papel: nome}): o mapa dos botões não é lista de
+        presença, e ia parar na ficha da revisão como "F1: Juiz(a)".
+        """
+        meta = getattr(sessao, "meta", None)
+        # Tecla nunca é participante, mesmo de uma sessão que não separe os
+        # dois (versão antiga, dublê de teste).
+        participantes = {k: v for k, v in (dict(getattr(meta, "participantes", None) or {})
+                                           or self._participantes).items() if not _tecla(k)}
+        copia = None
+        if meta is not None and dataclasses.is_dataclass(meta) and not isinstance(meta, type):
+            try:
+                copia = dataclasses.replace(meta, participantes=dict(participantes))
+            except Exception as erro:        # ficha estranha: a revisão segue sem ela
+                log.debug("não consegui copiar a ficha da audiência: %s", erro)
+        botoes = getattr(sessao, "botoes", None)
+        if not isinstance(botoes, dict):
+            botoes = {k: v for k, v in self._participantes.items() if _tecla(k)}
+        return {
+            "numero": self.numero, "audio": getattr(sessao, "caminho_audio", None),
+            "falas": list(getattr(sessao, "falas", []) or []),
+            "sigiloso": bool(getattr(sessao, "sigiloso", self.sigiloso)),
+            "documento": self.documento,
+            "meta": copia,
+            "tipo": str(getattr(meta, "tipo", "") or self._tipo or ""),
+            "participantes": participantes,
+            "botoes": dict(botoes or {}),
+        }
 
     def _depois_de_salvar(self, documento: Path) -> None:
         """O índice do acervo em dia e, se ligado, o espelho na nuvem.
@@ -483,19 +514,47 @@ def sigilo_da_audiencia(app, numero, pedido, extra: str = "") -> tuple[bool, boo
     return bool(motivo), bool(motivo), motivo
 
 
-def numero_da_gravacao(nome: str, processo: str | None):
-    """O número do processo da gravação: o informado, ou o do nome do arquivo."""
+def numero_da_gravacao(caminho, processo: str | None):
+    """O número do processo da gravação: o informado, ou o do arquivo.
+
+    'caminho': o caminho INTEIRO da gravação (escolhida pelo diálogo do
+    Windows) ou só o nome original (enviada pela página). O número sai do
+    nome do arquivo ou, senão, da pasta - as mídias baixadas com os autos
+    ficam em _controle/midias/<número>/<nome dado pelo portal> -, com o
+    dependente que o programa escreve no nome ("...0001-01").
+
+    O informado vale, com o dependente digitado como "/01" ou "-01"; digitado
+    sem o dependente, o do nome ou da pasta (o mesmo processo, com "-NN")
+    é mantido: sem isso, a gravação do incidente virava a transcrição do
+    principal - outro documento, fora do sigilo do incidente.
+    """
+    do_arquivo = servicos.numero_no_nome(Path(str(caminho))) if caminho else None
     if processo:
         try:
-            return cnj.ler(str(processo))
+            numero = cnj.ler_nome_arquivo(str(processo))
         except cnj.NumeroInvalido as erro:
             raise erro_400(f"“{processo}” não é um número de processo no padrão CNJ.",
                            "numero_invalido") from erro
-    numero = servicos.numero_no_nome(Path(nome))
-    if numero is None:
+        if (not numero.dependente and do_arquivo is not None and do_arquivo.dependente
+                and do_arquivo.digitos == numero.digitos):
+            return do_arquivo
+        return numero
+    if do_arquivo is None:
         raise erro_400("O nome do arquivo não traz o número do processo. Informe o número: ele "
                        "dá nome ao documento.", "numero_ausente")
-    return numero
+    return do_arquivo
+
+
+_RE_TECLA = re.compile(r"^F\d{1,2}$", re.IGNORECASE)
+
+
+def _tecla(chave) -> bool:
+    """A chave é uma tecla (F1, F2...) do mapa de botões da tela?"""
+    try:
+        from ..transcricao.documento import tecla
+    except ImportError:                        # pragma: no cover - sem o pacote da transcrição
+        return bool(_RE_TECLA.match(str(chave or "").strip()))
+    return tecla(str(chave or ""))
 
 
 def quando(caminho: Path) -> str | None:

@@ -16,8 +16,12 @@ Segurança (seção 6.1 da especificação):
     nada daqui;
   * arquivos estáticos (/, /css, /js, /img, /fontes) só de dentro de
     helestron/web, sem token, com o caminho normalizado e '..' recusado;
-  * corpo JSON até 2 MB; envio de arquivo até 500 MB, gravado em
-    LOCAL\\temp e apagado depois.
+  * corpo JSON até 2 MB; envio de arquivo até 500 MB (o limite é por rota:
+    a gravação de audiência vai até 20 GB), gravado em LOCAL\\temp em
+    blocos - nunca na memória -, só depois de conferido o espaço livre no
+    disco, e apagado depois;
+  * o erro inesperado (500) leva à página só o tipo da exceção: o texto e o
+    rastro dela (caminhos, números de processo) ficam no registro.
 
 Toda resposta da API usa o envelope da seção 6.2: {"ok": true, "dados": ...}
 ou {"ok": false, "erro": {"codigo", "mensagem", "detalhe"}}.
@@ -26,12 +30,14 @@ ou {"ok": false, "erro": {"codigo", "mensagem", "detalhe"}}.
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import hmac
 import json
 import logging
 import mimetypes
 import re
+import shutil
 import socket
 import sys
 import threading
@@ -48,7 +54,14 @@ from . import eventos, multipart
 log = logging.getLogger("servidor.http")
 
 LIMITE_JSON = 2 * 1024 * 1024
-LIMITE_ENVIO = 500 * 1024 * 1024
+# O limite do envio de arquivo é por rota (Roteador.adicionar(...,
+# limite_envio=)); este é o das rotas que não dizem outro (relação de
+# processos, relatório da pauta).
+LIMITE_ENVIO = multipart.LIMITE_PADRAO
+# O que tem de sobrar livre no disco depois de receber o arquivo: encher o
+# disco do sistema trava o Windows (e o próprio Helestron, que grava ali o
+# registro e a transcrição).
+FOLGA_DISCO = 512 * 1024 * 1024
 CABECALHO_TOKEN = "X-Helestron-Token"
 PREFIXOS_ESTATICOS = ("/css/", "/js/", "/img/", "/fontes/")
 TIPOS = {
@@ -129,6 +142,42 @@ def erro_400(mensagem: str, codigo: str = "pedido_invalido", detalhe: str = "") 
     return ErroApi(400, codigo, mensagem, detalhe)
 
 
+def tamanho_legivel(n: int | float) -> str:
+    """1536 -> "1,5 KB"; 20 GiB -> "20 GB" (com vírgula, como no Windows)."""
+    valor = float(max(0, n or 0))
+    unidade = "bytes"
+    for unidade in ("bytes", "KB", "MB", "GB", "TB"):
+        if valor < 1024 or unidade == "TB":
+            break
+        valor /= 1024
+    if unidade == "bytes":
+        return f"{int(valor)} bytes"
+    texto = f"{valor:.1f}".rstrip("0").rstrip(".") if valor < 100 else f"{valor:.0f}"
+    return f"{texto.replace('.', ',')} {unidade}"
+
+
+def espaco_livre(pasta: Path) -> int | None:
+    """Os bytes livres no disco de 'pasta' (ou da pasta existente mais
+    próxima, se ela ainda não existe), ou None se não der para saber."""
+    alvo = Path(pasta)
+    for _ in range(64):
+        try:
+            if alvo.exists():
+                return int(shutil.disk_usage(alvo).free)
+        except OSError:
+            return None
+        if alvo.parent == alvo:
+            break
+        alvo = alvo.parent
+    return None
+
+
+def _disco_cheio(erro: BaseException) -> bool:
+    """O erro é de disco cheio (ENOSPC; no Windows, ERROR_DISK_FULL/HANDLE_DISK_FULL)?"""
+    return (getattr(erro, "errno", None) in (errno.ENOSPC, getattr(errno, "EDQUOT", -1))
+            or getattr(erro, "winerror", None) in (39, 112))
+
+
 # ===================================================================== rotas
 @dataclass
 class Rota:
@@ -136,6 +185,7 @@ class Rota:
     padrao: re.Pattern
     modelo: str
     funcao: Callable
+    limite_envio: int | None = None     # envio de arquivo; None = LIMITE_ENVIO
 
 
 class Roteador:
@@ -144,10 +194,14 @@ class Roteador:
     def __init__(self):
         self.rotas: list[Rota] = []
 
-    def adicionar(self, metodo: str, modelo: str, funcao: Callable) -> None:
+    def adicionar(self, metodo: str, modelo: str, funcao: Callable,
+                  limite_envio: int | None = None) -> None:
+        """'limite_envio': o tamanho máximo do envio de arquivo (multipart)
+        nesta rota; sem ele, LIMITE_ENVIO."""
         regex = re.sub(r"\{(\w+)\}", r"(?P<\1>[^/]+)", re.escape(modelo).replace(r"\{", "{")
                        .replace(r"\}", "}"))
-        self.rotas.append(Rota(metodo.upper(), re.compile(f"^{regex}$"), modelo, funcao))
+        self.rotas.append(Rota(metodo.upper(), re.compile(f"^{regex}$"), modelo, funcao,
+                               limite_envio))
 
     def get(self, modelo: str):
         return lambda f: (self.adicionar("GET", modelo, f), f)[1]
@@ -176,7 +230,7 @@ class Pedido:
     """O que o tratador de uma rota recebe."""
 
     def __init__(self, tratador: "Tratador", metodo: str, caminho: str, consulta: dict,
-                 params: dict):
+                 params: dict, limite_envio: int | None = None):
         self.tratador = tratador
         self.servidor: ServidorLocal = tratador.server       # type: ignore[assignment]
         self.app = self.servidor.app
@@ -184,6 +238,8 @@ class Pedido:
         self.caminho = caminho
         self.consulta = consulta
         self.params = params
+        # o limite do envio de arquivo desta rota (Roteador.adicionar)
+        self.limite_envio = int(limite_envio) if limite_envio else LIMITE_ENVIO
         self._json = None
         self._lido = False
 
@@ -220,21 +276,43 @@ class Pedido:
         self._json = dados
         return dados
 
-    def envio(self, pasta: Path) -> multipart.Envio:
-        """O envio de arquivo (multipart). Apague com Envio.apagar() / with."""
+    def envio(self, pasta: Path, limite: int | None = None) -> multipart.Envio:
+        """O envio de arquivo (multipart), gravado em 'pasta' em blocos.
+        Apague com Envio.apagar() / with.
+
+        'limite': o tamanho máximo; sem ele, o da rota (Roteador.adicionar)
+        ou LIMITE_ENVIO. Antes de ler o corpo, confere o espaço livre no
+        disco de 'pasta': sem espaço, nada é gravado e a resposta (507) diz
+        quanto há e quanto o arquivo tem.
+        """
         if self._lido:
             raise erro_400("O corpo do pedido já foi lido.")
         self._lido = True
+        limite = int(limite) if limite else self.limite_envio
         tamanho = self.tamanho
-        if tamanho > LIMITE_ENVIO:
+        if tamanho > limite:
+            self.tratador.close_connection = True
             raise ErroApi(413, "envio_grande_demais",
-                          "O arquivo passa de 500 MB, o limite do envio pela página. Na janela "
-                          "do Helestron, escolha-o pelo botão “Escolher arquivo”, que não tem "
-                          "esse limite.")
+                          f"O arquivo passa de {tamanho_legivel(limite)}, o limite do envio pela "
+                          "página. Na janela do Helestron, escolha-o pelo botão “Escolher "
+                          "arquivo”, que não tem esse limite (o arquivo é lido de onde está, "
+                          "sem cópia).")
+        livre = espaco_livre(pasta)
+        if livre is not None and tamanho + FOLGA_DISCO > livre:
+            self.tratador.close_connection = True
+            log.warning("envio de %s recusado: só %s livres no disco da pasta temporária",
+                        tamanho_legivel(tamanho), tamanho_legivel(livre))
+            raise ErroApi(507, "espaco_insuficiente",
+                          f"Não há espaço no disco para receber este arquivo: ele tem "
+                          f"{tamanho_legivel(tamanho)}, e o disco da pasta temporária do "
+                          f"Helestron tem {tamanho_legivel(livre)} livres (é preciso deixar "
+                          f"{tamanho_legivel(FOLGA_DISCO)} de folga). Libere espaço no disco ou, "
+                          "na janela do Helestron, escolha o arquivo pelo botão “Escolher "
+                          "arquivo”: assim ele é lido de onde está, sem cópia.")
         try:
             envio = multipart.ler(self.tratador.rfile, tamanho,
                                   self.tratador.headers.get("Content-Type", ""), pasta,
-                                  LIMITE_ENVIO)
+                                  limite)
         except multipart.EnvioGrandeDemais as erro:
             self.tratador.close_connection = True
             raise ErroApi(413, "envio_grande_demais", "O envio passou do limite de tamanho.",
@@ -243,6 +321,17 @@ class Pedido:
             self.tratador.close_connection = True
             raise erro_400("O arquivo não chegou inteiro. Tente enviá-lo de novo.",
                            "envio_invalido", str(erro)) from erro
+        except OSError as erro:
+            # O disco encheu no meio (outro programa gravou ao mesmo tempo): o
+            # pedaço já gravado foi apagado pelo multipart.ler.
+            self.tratador.close_connection = True
+            if _disco_cheio(erro):
+                raise ErroApi(507, "espaco_insuficiente",
+                              "O disco encheu enquanto o arquivo era recebido, e o envio foi "
+                              "desfeito. Libere espaço no disco e tente de novo ou, na janela "
+                              "do Helestron, escolha o arquivo pelo botão “Escolher arquivo”: "
+                              "assim ele é lido de onde está, sem cópia.") from erro
+            raise
         finally:
             self.tratador.corpo_consumido = True
         return envio
@@ -377,8 +466,10 @@ class Tratador(BaseHTTPRequestHandler):
         except Exception as erro:                       # pragma: no cover - defesa
             log.exception("falha ao atender %s %s", metodo, self.caminho_seguro())
             try:
+                # Só o tipo, como em traduzir_erro: o texto e o rastro ficam
+                # no registro.
                 self._json_erro(ErroApi(500, "erro_interno", "Algo deu errado no Helestron.",
-                                        f"{type(erro).__name__}: {erro}"))
+                                        type(erro).__name__))
             except Exception:
                 self.close_connection = True
         finally:
@@ -402,7 +493,7 @@ class Tratador(BaseHTTPRequestHandler):
                 self._json_erro(ErroApi(404, "rota_inexistente", "Operação desconhecida.",
                                         caminho))
             return
-        pedido = Pedido(self, metodo, caminho, consulta, params)
+        pedido = Pedido(self, metodo, caminho, consulta, params, rota.limite_envio)
         try:
             dados = rota.funcao(pedido)
         except ErroApi as erro:
@@ -602,10 +693,14 @@ class ServidorLocal(ThreadingHTTPServer):
                     return resultado
             except Exception:                         # pragma: no cover
                 pass
+        # O detalhe completo (o texto e o rastro) vai para o registro; a página
+        # recebe só o tipo da exceção. O texto pode trazer o caminho de um
+        # processo sigiloso ou o nome de uma parte, e a resposta aparece na
+        # tela ("Detalhes técnicos"), vai em capturas e é copiada ao suporte.
         log.error("%s %s falhou:\n%s", metodo, caminho, traceback.format_exc())
         return ErroApi(500, "erro_interno",
                        "Algo deu errado no Helestron. Os detalhes ficaram no registro (pasta "
-                       "Logs).", f"{type(erro).__name__}: {erro}")
+                       "Logs).", type(erro).__name__)
 
     def app_tocar(self) -> None:
         tocar = getattr(self.app, "tocar", None)

@@ -324,6 +324,8 @@ class PontaAPonta(unittest.TestCase):
             self.etapa_processos()
         with self.subTest(etapa="audiências"):
             self.etapa_audiencias()
+        with self.subTest(etapa="audiências: arquivo de áudio ou vídeo"):
+            self.etapa_gravacao()
         with self.subTest(etapa="pauta"):
             self.etapa_pauta()
         with self.subTest(etapa="início depois da pauta"):
@@ -518,6 +520,41 @@ class PontaAPonta(unittest.TestCase):
             "() => !document.querySelector('#cfg-transcricao-dispositivo')"
             ".innerText.includes('Carregando')", timeout=20000)
         self.assertIn("Padrão do Windows", campo.inner_text())
+
+    def etapa_gravacao(self):
+        """O modo "Arquivo de áudio ou vídeo", com o envio de verdade: sem o
+        diálogo do Windows (modo servidor), o seletor do navegador; o arquivo
+        sobe ao programa (com o andamento) e a tarefa lê o áudio com o PyAV. É
+        um vídeo sem trilha de áudio: a tela diz isso, com o nome do arquivo,
+        e o temporário do envio não fica no disco."""
+        try:
+            from testes.test_transcricao_formatos import gerar
+            import av  # noqa: F401
+        except ImportError:
+            self.skipTest("PyAV não instalado")
+        pg = self.pg
+        video = gerar(self.raiz / f"{TJAL}-01 câmera da sala.mp4", "mp4", None, "mpeg4")
+        self.ir("audiencias")
+        pg.click("#modo-audiencia [data-valor='arquivo']")
+        pg.wait_for_selector("#painel-arquivo:not([hidden])")
+        self.vigia.permitir(409, "/api/dialogo/arquivo")
+        with pg.expect_file_chooser() as escolha:
+            pg.click("#escolher-gravacao")
+        self.assertIn("video/*", escolha.value.element.get_attribute("accept"))
+        escolha.value.set_files(str(video))
+        pg.wait_for_selector("#arquivo-escolhido:not([hidden])")
+        # o número (com o dependente) sai do nome do arquivo
+        self.assertEqual(pg.locator("#processo-gravacao").input_value(), f"{TJAL}/01")
+        pg.click("#botao-transcrever")
+        pg.wait_for_selector("#tarefa-gravacao.falhou", timeout=60000)
+        texto = pg.locator("#tarefa-gravacao").inner_text()
+        self.assertIn("vídeo sem trilha de áudio", texto)
+        self.assertIn(video.name, texto)
+        self.capturar("07b-audiencias-video-sem-audio")
+        tarefa = [t for t in self.api("/api/tarefas") if t["tipo"] == "transcricao_arquivo"][-1]
+        self.assertEqual(tarefa["estado"], "falhou")
+        envios = self.local / "temp" / "envios"
+        self.assertEqual(list(envios.glob("envio-*")) if envios.exists() else [], [])
 
     def etapa_pauta(self):
         pg = self.pg
