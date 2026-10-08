@@ -486,9 +486,9 @@ Ele trata **todos** os sigilosos do lote, autorizados ou não: gera o
 texto de cada um (na pasta deles) e lista todos no JSON, com o `pdf` e o
 `texto` (o número no nome), as `paginas` e a `paginacao`. Com a
 autorização de só alguns, filtre a saída antes de lê-la (só os itens com
-`sigiloso: false` e os dos autorizados; a `lote-minutas-esaj` traz o
-filtro, no item 1.4) e não abra o texto dos demais; ou prefira o `texto`
-do `baixar --texto`, que já está lá.
+`sigiloso: false` e os dos autorizados; a Skill-Helestron
+(`skill-helestron`) traz o filtro, no item 1.4) e não abra o texto dos
+demais; ou prefira o `texto` do `baixar --texto`, que já está lá.
 
 ```bash
 "$PY" -I -m helestron preparar --pasta 'C:/Trabalho/Lotes/Semana 41' --incluir-sigilosos --json
@@ -594,7 +594,7 @@ que o Helestron já marca como sigiloso.
   trabalhar os sigilosos das posições 3 e 7?”). Se o lote só tiver
   sigilosos, a pergunta vem logo depois do download. Autorizados depois, a
   skill retoma só esses processos, sem baixar de novo o que já está na
-  pasta. (Na `lote-minutas-esaj`: os públicos passam pelas Fases 1-B, 2 e
+  pasta. (Na Skill-Helestron: os públicos passam pelas Fases 1-B, 2 e
   3, a pergunta vem ao fim delas, ou logo depois da Fase 1 se o lote só
   tiver sigilosos, e os autorizados passam pelas Fases 1-B, 2 e 3.)
 - A autorização é do magistrado e pressupõe que o uso de IA com dados
@@ -653,7 +653,7 @@ e `<sigilosos do lote>\_controle\<número>_capa.json` (e `_capa.txt`,
 - **Na minuta**, observe a anonimização que a lei ou a praxe exigir (por
   exemplo, as iniciais da criança ou do adolescente). O segredo no sistema
   do tribunal continua sendo o do próprio sistema: a minuta é inserida
-  como as demais (na `lote-minutas-esaj`, a Fase 3 a insere no SAJ e
+  como as demais (na Skill-Helestron, a Fase 3 a insere no SAJ e
   finaliza sem assinar).
 - **Rota subsidiária pelo navegador** (o e-SAJ no Chrome), se o Helestron
   não baixou o sigiloso: só com autorização, e o PDF vai para
