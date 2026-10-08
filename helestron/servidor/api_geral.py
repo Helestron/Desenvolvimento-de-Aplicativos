@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .. import NOME, __version__, servicos
-from ..nucleo import caminhos, sistema, tribunais
+from ..nucleo import caminhos, cnj, sistema, tribunais
 from ..tarefas import NAVEGADOR
 from . import esquema
 from .eventos import FIM, INTERVALO_PING_S, formatar_sse
@@ -22,7 +22,11 @@ from .rede import ErroApi, Fluxo, Pedido, Roteador, erro_400
 
 log = logging.getLogger("servidor.api")
 
-RE_PORTAL = re.compile(r"^(esaj|eproc):([A-Za-z0-9]{2,12})$")
+# A chave de um portal: 'esaj:TJAL' (e-SAJ, 1º e 2º grau: o mesmo acesso),
+# 'eproc:TJAL' (eProc, 1º grau) e 'eproc2g:TJAL' (eProc, 2º grau: acesso
+# próprio). A regra é a do catálogo (tribunais.RE_PORTAL), uma só.
+RE_PORTAL = tribunais.RE_PORTAL
+GRAU_INVALIDO = "Grau inválido (use 1g ou 2g)."
 # Extensões que /api/abrir nunca abre (rodariam um programa).
 EXECUTAVEIS = {".exe", ".bat", ".cmd", ".com", ".ps1", ".psm1", ".vbs", ".vbe", ".js", ".jse",
                ".wsf", ".wsh", ".msi", ".msp", ".scr", ".hta", ".lnk", ".pif", ".cpl", ".reg",
@@ -240,36 +244,76 @@ def gravar_config(p: Pedido) -> dict:
     return {"valor": valor}
 
 
+def graus_do_tribunal(t) -> list[str]:
+    """Os graus em que o Helestron baixa deste sistema: ['1g', '2g'] ou ['1g']
+    (o 2º grau só onde o catálogo tem o endereço dele: Tribunal.tem_grau)."""
+    if t is None or not t.suportado:
+        return []
+    return ["1g", "2g"] if t.tem_grau("2g") else ["1g"]
+
+
 def listar_tribunais(p: Pedido) -> list[dict]:
     saida = []
     for t in tribunais.carregar():
         alt = t.alternativo
+        graus = graus_do_tribunal(t)
         saida.append({"sigla": t.sigla, "nome": t.nome, "sistema": t.sistema,
                       "nome_sistema": t.nome_sistema, "suportado": t.suportado,
                       "alternativo": alt.sistema if alt is not None else None,
-                      "chave": t.chave})
+                      "chave": t.chave,
+                      # Os graus do sistema principal e os do alternativo. O
+                      # alternativo só é procurado no grau que o principal tem
+                      # (o motor recusa o grau que o principal não tem).
+                      "graus": graus,
+                      "graus_alternativo": [g for g in graus if alt is not None and alt.suportado
+                                            and alt.tem_grau(g)]})
     return saida
 
 
 # =================================================================== acessos
 def _tribunal_do_portal(portal: str):
+    """'esaj:TJAL', 'eproc:TJAL' ou 'eproc2g:TJAL' -> o Tribunal do portal (o do
+    eProc 2º grau já no 2º grau: tribunais.por_portal), ou 400 com a frase."""
     m = RE_PORTAL.match((portal or "").strip())
     if not m:
         raise erro_400("Portal inválido (use o formato esaj:TJAL ou eproc:TJAL).",
                        "portal_invalido")
-    sistema_, sigla = m.group(1), m.group(2).upper()
-    t = tribunais.por_sigla(sigla)
-    if t is None:
+    prefixo, sigla = m.group(1), m.group(2).upper()
+    if tribunais.por_sigla(sigla) is None:
         raise erro_400(f"Tribunal desconhecido: {sigla}.", "portal_invalido")
-    for alvo in (t, t.alternativo):
-        if alvo is not None and alvo.sistema == sistema_:
-            return alvo
-    raise erro_400(f"O {sigla} não usa o {tribunais.NOMES_SISTEMA.get(sistema_, sistema_)}.",
+    alvo = tribunais.por_portal(f"{prefixo}:{sigla}")
+    if alvo is not None:
+        return alvo
+    if prefixo == tribunais.PREFIXO_EPROC_2G:
+        raise erro_400(f"O {sigla} não tem o eProc do 2º grau no Helestron.", "portal_invalido")
+    raise erro_400(f"O {sigla} não usa o {tribunais.NOMES_SISTEMA.get(prefixo, prefixo)}.",
                    "portal_invalido")
 
 
+def _graus_da_linha(t) -> list[str]:
+    """Os graus que o "Testar" de uma linha de Acessos testa: o e-SAJ, um
+    acesso para os dois graus (onde houver o 2º); o eProc do 1º grau, só o 1º;
+    o eProc do 2º grau (eproc2g), só o 2º."""
+    if t.grau == "2g":
+        return ["2g"]
+    if t.sistema == "esaj":
+        return graus_do_tribunal(t) or ["1g"]
+    return ["1g"]
+
+
 def _acesso(app, cofre, portal: str) -> dict:
-    sistema_, _, sigla = portal.partition(":")
+    prefixo, _, sigla = portal.partition(":")
+    t = tribunais.por_portal(portal)
+    if t is not None:
+        sistema_, grau, graus, rotulo = t.sistema, t.grau, _graus_da_linha(t), t.rotulo
+    else:
+        # Chave do cofre de um portal que o catálogo não tem mais: a linha
+        # aparece assim mesmo (para dar para apagá-la), pelo que a chave diz.
+        segundo = prefixo == tribunais.PREFIXO_EPROC_2G
+        sistema_, grau = ("eproc", "2g") if segundo else (prefixo, "1g")
+        graus = [grau]
+        rotulo = (f"{sigla} · {tribunais.NOMES_SISTEMA.get(sistema_, sistema_)}"
+                  + (" (2º grau)" if segundo else ""))
     usuario, senha = "", ""
     try:
         usuario, senha = cofre.obter(portal)
@@ -279,10 +323,11 @@ def _acesso(app, cofre, portal: str) -> dict:
     guardada = bool(senha)
     if sessao and not usuario:
         usuario = sessao[0]
-    return {"portal": portal, "tribunal": sigla, "sistema": sistema_,
-            "rotulo": f"{sigla} · {tribunais.NOMES_SISTEMA.get(sistema_, sistema_)}",
+    return {"portal": portal, "tribunal": sigla, "sistema": sistema_, "grau": grau,
+            "graus": graus, "rotulo": rotulo,
             "usuario": usuario, "tem_senha": guardada or bool(sessao and sessao[1]),
             "guardada": guardada, "so_agora": bool(sessao) and not guardada,
+            # a forma de entrar é do sistema ([eproc] login vale para os dois graus)
             "modo": (app.cfg.texto(sistema_, "login") or "senha").lower()}
 
 
@@ -298,6 +343,13 @@ def _portais(app, cofre) -> list[str]:
         for alvo in (t, t.alternativo):
             if alvo is not None and alvo.suportado:
                 incluir(alvo.portal)
+        # O 2º grau do tribunal da unidade: o e-SAJ usa o mesmo acesso (a
+        # linha esaj:TJAL); o eProc do 2º grau tem o seu (eproc2g:TJAL).
+        if t.suportado and t.tem_grau("2g"):
+            t2 = t.no_grau("2g")
+            for alvo in (t2, t2.alternativo):
+                if alvo is not None and alvo.suportado:
+                    incluir(alvo.portal)
     try:
         for portal in cofre.portais():
             if RE_PORTAL.match(portal):
@@ -367,9 +419,11 @@ def listar_enderecos(p: Pedido) -> list[dict]:
 
 
 def _enderecos(portal: str) -> dict:
+    # Os endereços são do SISTEMA (os do eProc do 2º grau ficam sob
+    # 'eproc:TJAL', grau '2g'): a linha eproc2g:TJAL abre os do eProc.
     t = _tribunal_do_portal(portal)
-    return {"portal": t.portal, "rotulo": f"{t.sigla} · {t.nome_sistema}",
-            "enderecos": tribunais.enderecos(t.portal)}
+    return {"portal": t.portal_do_sistema, "rotulo": f"{t.sigla} · {t.nome_sistema}",
+            "enderecos": tribunais.enderecos(t.portal_do_sistema)}
 
 
 def enderecos_do_portal(p: Pedido) -> dict:
@@ -379,7 +433,8 @@ def enderecos_do_portal(p: Pedido) -> dict:
 def corrigir_endereco(p: Pedido) -> dict:
     """Corrige (ou, em branco, devolve ao catálogo) o endereço de um portal."""
     t = _tribunal_do_portal(p.campo("portal", obrigatorio=True, tipo=str))
-    grau = p.campo("grau", padrao="base" if t.sistema == "esaj" else "1g", tipo=str).strip()
+    padrao = "base" if t.sistema == "esaj" else t.grau
+    grau = p.campo("grau", padrao=padrao, tipo=str).strip()
     if not re.fullmatch(r"base|[12]g(_\d{2})?", grau):
         raise erro_400("Grau inválido (use base, 1g, 2g ou 1g_71).", "valor_invalido")
     url = p.campo("url", padrao="", tipo=str).strip()
@@ -388,10 +443,10 @@ def corrigir_endereco(p: Pedido) -> dict:
                        "valor_invalido")
     if len(url) > 500:
         raise erro_400("O endereço é longo demais.", "valor_invalido")
-    tribunais.definir_endereco(t.portal, grau, url)
-    log.info("Endereço do %s (%s) %s.", t.portal, grau, f"corrigido para {url}" if url
+    tribunais.definir_endereco(t.portal_do_sistema, grau, url)
+    log.info("Endereço do %s (%s) %s.", t.portal_do_sistema, grau, f"corrigido para {url}" if url
              else "devolvido ao catálogo")
-    return _enderecos(t.portal)
+    return _enderecos(t.portal_do_sistema)
 
 
 def apagar_acesso(p: Pedido) -> dict:
@@ -425,7 +480,8 @@ def _esquecer_sessoes(portal: str) -> None:
 
 
 def tribunal_pedido(texto: str, sistema_: str = ""):
-    """'TJAL', 'esaj:TJAL' ou ('TJAL', 'eproc') -> Tribunal suportado."""
+    """'TJAL', 'esaj:TJAL', 'eproc2g:TJAL' ou ('TJAL', 'eproc') -> Tribunal
+    suportado (o de 'eproc2g:...' já no 2º grau; os demais, no 1º)."""
     texto = (texto or "").strip()
     if ":" in texto:
         return _tribunal_do_portal(texto)
@@ -450,26 +506,48 @@ def credenciais_de(app, portal: str) -> tuple[str, str] | None:
     return (usuario, senha) if usuario and senha else None
 
 
+def no_grau_pedido(t, grau: str):
+    """O Tribunal 't' (o do portal pedido) no grau pedido, ou 400 se o
+    Helestron não tem aquele grau daquele portal. O grau viaja no Tribunal
+    (Tribunal.no_grau): o portal, as credenciais e o perfil do navegador
+    saem dele."""
+    base = t if t.grau == "1g" else (tribunais.por_portal(t.portal_do_sistema) or t)
+    if grau == base.grau:
+        return base
+    if not base.tem_grau(grau):
+        raise erro_400(f"O {base.rotulo} não tem o {tribunais.rotulo_do_grau(grau)} no Helestron.",
+                       "valor_invalido")
+    return base.no_grau(grau)
+
+
 def testar_acesso(p: Pedido) -> dict:
-    """Testa exatamente o portal da linha: {tribunal, sistema} ("esaj" ou
-    "eproc"). Sem o sistema, o principal do tribunal (o e-SAJ no TJAL) - por
-    isso a tela manda o sistema: senão o "Testar" do eProc testava o e-SAJ."""
+    """Testa exatamente o portal da linha: {tribunal, sistema, grau} (sistema
+    "esaj" ou "eproc"; grau "1g" ou "2g", ausente = 1º grau). Sem o sistema, o
+    principal do tribunal (o e-SAJ no TJAL) - por isso a tela manda o sistema:
+    senão o "Testar" do eProc testava o e-SAJ. O 2º grau do e-SAJ usa o mesmo
+    acesso do 1º (esaj:TJAL); o do eProc, o seu (eproc2g:TJAL)."""
     app = p.app
     sistema_ = (p.campo("sistema", padrao="", tipo=str) or "").strip().lower()
     if sistema_ and sistema_ not in tribunais.SUPORTADOS:
         raise erro_400("Sistema inválido (use esaj ou eproc).", "valor_invalido")
+    pedido = (p.campo("grau", padrao="", tipo=str) or "").strip()
+    grau = cnj.normalizar_grau(pedido) if pedido else ""
+    if pedido and not grau:
+        raise erro_400(GRAU_INVALIDO, "valor_invalido")
     t = tribunal_pedido(p.campo("tribunal", obrigatorio=True, tipo=str), sistema_)
+    t = no_grau_pedido(t, grau or t.grau)
     opcoes = servicos.opcoes_download(app.cfg)
     credenciais = credenciais_de(app, t.portal)
+    nome = f"{t.nome_sistema} do {t.sigla}" + (" (2º grau)" if t.grau == "2g" else "")
 
     def alvo(tw):
-        tw.definir_status(f"Abrindo o {t.nome_sistema} do {t.sigla}…")
+        tw.definir_status(f"Abrindo o {nome}…")
         servicos.testar_login(t, opcoes, tw.contexto(), credenciais)
         tw.definir_status("Acesso confirmado.")
-        return {"portal": t.portal,
-                "mensagem": f"Acesso ao {t.sigla} · {t.nome_sistema} confirmado."}
+        return {"portal": t.portal, "grau": t.grau,
+                "mensagem": f"Acesso ao {t.rotulo} confirmado."}
 
-    tw = app.tarefas.iniciar("teste_login", f"Testar o acesso ao {t.sigla} · {t.nome_sistema}",
+    tw = app.tarefas.iniciar("teste_login", f"Testar o acesso ao {t.rotulo}",
                              alvo, (NAVEGADOR,), chave="teste_login")
     return {"tarefa": tw.id}
 

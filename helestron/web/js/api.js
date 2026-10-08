@@ -414,8 +414,13 @@
       enderecosDoPortal: (portal) => chamar("enderecosDoPortal", { params: { portal } }),
       corrigirEndereco: (portal, grau, url) => chamar("enderecoCorrigir", { corpo: { portal, grau, url } }),
       // O portal exato da linha (esaj ou eproc): no TJAL, no TJSP e no TJAC os
-      // dois existem, e só a sigla testaria o principal (o e-SAJ).
-      testar: (tribunal, sistema) => chamar("acessosTestar", { corpo: sistema ? { tribunal, sistema } : { tribunal } }),
+      // dois existem, e só a sigla testaria o principal (o e-SAJ). O grau só
+      // vai no 2º grau: o pedido do 1º grau continua {tribunal, sistema}.
+      testar: (tribunal, sistema, grau) => {
+        const corpo = sistema ? { tribunal, sistema } : { tribunal };
+        if (grau === "2g") corpo.grau = "2g";
+        return chamar("acessosTestar", { corpo });
+      },
     },
     abrir: (tipo, alvo) => chamar("abrir", { corpo: { tipo, alvo } }),
     verificacao: {

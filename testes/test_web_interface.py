@@ -88,6 +88,11 @@ def numero_cnj(sequencial: int, ano: int, j: int, tr: int, origem: int) -> str:
 
 # O processo que a pauta da demonstração marca como sigiloso (demo.js).
 PROCESSO_SIGILOSO = numero_cnj(700888, 2025, 8, 2, 1)
+# O 2º grau (dígito verificador conferido): a apelação existe nos dois graus;
+# o HC (órgão 0000) e os embargos de declaração (/50000) só no 2º.
+APELACAO = "0700001-93.2024.8.02.0058"
+HC = "0803061-28.2025.8.02.0000"
+EMBARGOS = "0706265-50.2017.8.02.0001/50000"
 
 # Palavras que, sem acento, denunciam texto mal escrito na tela.
 SEM_ACENTO = re.compile(
@@ -473,7 +478,9 @@ class InterfaceNoNavegador(unittest.TestCase):
         self.assertEqual(respondidas, ["482193"])
         iniciou = pagina.evaluate(
             "Helestron.demo.chamadas.find(c => c.rota === 'POST /api/download/iniciar').corpo")
-        self.assertEqual(sorted(iniciou["opcoes"]), ["navegador_visivel", "rebaixar", "separar_sigilosos"])
+        # o grau do lote vai sempre (o dos Ajustes, se ninguém o trocou)
+        self.assertEqual(sorted(iniciou["opcoes"]), ["grau", "navegador_visivel", "rebaixar", "separar_sigilosos"])
+        self.assertEqual(iniciou["opcoes"]["grau"], "1g")
         self.assertEqual(len(iniciou["processos"]), 3)
         self.capturar(pagina, "fluxo-lote-concluido")
         self.sem_problemas(pagina)
@@ -833,6 +840,225 @@ class InterfaceNoNavegador(unittest.TestCase):
         self.assertEqual(len(refazer["processos"]), 1)
         self.assertIs(refazer["opcoes"]["rebaixar"], False)
         pagina.wait_for_selector(".lote-concluido", timeout=20000)
+        self.sem_problemas(pagina)
+
+    # ------------------------------------------------------------- 2º grau
+    def colar_relacao(self, pagina, texto):
+        pagina.click("#area-soltar button:has-text('Colar lista')")
+        pagina.fill(".folha textarea", texto)
+        pagina.click(".folha button:has-text('Ler a lista')")
+        pagina.wait_for_selector(".revisao")
+
+    def graus_da_revisao(self, pagina) -> dict:
+        """{número: o grau que o selo da linha mostra}, na revisão."""
+        return pagina.evaluate("""() => Object.fromEntries([...document.querySelectorAll('.revisao tbody tr')]
+            .map(tr => [tr.querySelector('.numero').textContent, tr.querySelector('.selo-grau').textContent]))""")
+
+    def entrar_com_codigo(self, pagina):
+        pagina.wait_for_selector(".folha-pergunta", timeout=15000)
+        pagina.fill("#campo-codigo", "482193")
+        pagina.wait_for_selector(".folha-pergunta", state="detached")
+
+    def test_grau_do_lote_e_coluna_grau(self):
+        """Opções do lote › Grau: o segmentado (com o grau dos Ajustes) muda o
+        selo das linhas cujo número não diz o grau; o HC (órgão 0000) e os
+        embargos (/50000) ficam no 2º grau. O pedido leva o grau, e o
+        andamento mostra o selo do 2º grau."""
+        pagina = self.abrir(secao="processos")
+        self.colar_relacao(pagina, f"{APELACAO}\n{HC}\n{EMBARGOS}")
+        self.assertEqual(pagina.locator(".revisao tbody tr").count(), 3)    # a coluna Grau é coluna
+        self.assertIn("Grau", pagina.evaluate("document.querySelector('.revisao thead').textContent"))
+        self.assertEqual(self.graus_da_revisao(pagina),
+                         {APELACAO: "1º grau", HC: "2º grau", EMBARGOS: "2º grau"})
+        for numero in (HC, EMBARGOS):
+            selo = pagina.locator(f".revisao tbody tr:has-text('{numero}') .selo-grau")
+            self.assertEqual(selo.get_attribute("title"), "Só existe no 2º grau")
+        self.assertEqual(pagina.locator("#grau-lote [role='radio']").count(), 2)
+        self.assertEqual(pagina.locator("#grau-lote [aria-checked='true']").inner_text(), "1º grau")
+        self.assertIn("TJAL · e-SAJ (2º grau)", pagina.locator(".revisao").inner_text())   # pílula do 2º grau
+        pagina.click("#grau-lote button:has-text('2º grau')")
+        self.assertEqual(self.graus_da_revisao(pagina),
+                         {APELACAO: "2º grau", HC: "2º grau", EMBARGOS: "2º grau"})
+        pagina.click("#grau-lote button:has-text('1º grau')")
+        self.assertEqual(self.graus_da_revisao(pagina)[APELACAO], "1º grau")
+        pagina.click("#grau-lote button:has-text('2º grau')")
+        self.numeros_inteiros(pagina, "revisão do 2º grau")
+        self.sem_rolagem_horizontal(pagina, "revisão do 2º grau")
+        self.capturar(pagina, "grau-revisao")
+        pagina.click("#botao-baixar")
+        self.entrar_com_codigo(pagina)
+        pagina.wait_for_selector(".lote-concluido", timeout=20000)
+        iniciou = self.chamadas(pagina, "POST /api/download/iniciar")[0]
+        self.assertEqual(iniciou["opcoes"]["grau"], "2g")
+        self.assertEqual(iniciou["processos"], [APELACAO, HC, EMBARGOS])
+        for numero in (APELACAO, HC, EMBARGOS):
+            with self.subTest(numero=numero):
+                selo = pagina.locator(f".itens-lote tr[data-numero='{numero}'] .selo-contorno")
+                self.assertEqual(selo.inner_text(), "TJAL · 2º grau")
+        self.numeros_inteiros(pagina, "andamento do 2º grau")
+        self.capturar(pagina, "grau-andamento")
+        self.sem_problemas(pagina)
+
+    def test_grau_cabe_nas_janelas_pequenas(self):
+        """A coluna Grau, o segmentado e os dois Testar cabem em 1024 px, em
+        1100x720 e em 1366x768 a 125 %, sem cortar o número dos embargos."""
+        for nome, largura, altura, escala in self.TAMANHOS_PEQUENOS:
+            with self.subTest(tamanho=nome):
+                pagina = self.abrir(largura, altura, escala, secao="processos")
+                self.colar_relacao(pagina, f"{APELACAO}\n{HC}\n{EMBARGOS}")
+                pagina.click("#grau-lote button:has-text('2º grau')")
+                self.numeros_inteiros(pagina, "revisão")
+                self.sem_rolagem_horizontal(pagina, "revisão")
+                self.capturar(pagina, f"{nome}-grau-revisao")
+                self.ir(pagina, "ajustes")
+                pagina.locator("[data-portal='esaj:TJAL'] button:has-text('Testar 2º grau')").wait_for()
+                self.sem_rolagem_horizontal(pagina, "ajustes")
+                self.capturar(pagina, f"{nome}-grau-acessos")
+                self.sem_problemas(pagina)
+
+    def test_lote_do_primeiro_grau_com_o_hc(self):
+        """Lote do 1º grau: a apelação no 1º grau (selo como sempre); o HC, no 2º."""
+        pagina = self.abrir(secao="processos")
+        self.colar_relacao(pagina, f"{APELACAO}\n{HC}")
+        pagina.click("#botao-baixar")
+        self.entrar_com_codigo(pagina)
+        pagina.wait_for_selector(".lote-concluido", timeout=20000)
+        self.assertEqual(self.chamadas(pagina, "POST /api/download/iniciar")[0]["opcoes"]["grau"], "1g")
+        self.assertEqual(pagina.locator(f".itens-lote tr[data-numero='{APELACAO}'] .selo-contorno").inner_text(), "TJAL")
+        self.assertEqual(pagina.locator(f".itens-lote tr[data-numero='{HC}'] .selo-contorno").inner_text(),
+                         "TJAL · 2º grau")
+        self.sem_problemas(pagina)
+
+    def test_testar_o_primeiro_e_o_segundo_grau(self):
+        """Ajustes › Acessos: a linha do e-SAJ do TJAL testa os dois graus (o
+        mesmo acesso); o eProc do 2º grau tem linha e acesso próprios. Ajustes ›
+        Download: Grau dos processos, que vira o grau do próximo lote."""
+        pagina = self.abrir(secao="ajustes")
+        esaj = pagina.locator("[data-portal='esaj:TJAL']")
+        esaj.wait_for()
+        self.assertEqual(esaj.locator("button:has-text('Testar')").count(), 2)
+        # sem senha (e entrando com senha): sem Testar, como antes
+        self.assertEqual(pagina.locator("[data-portal='eproc:TJAL'] button:has-text('Testar')").count(), 0)
+        segundo = pagina.locator("[data-portal='eproc2g:TJAL']")
+        self.assertIn("eProc (2º grau) · TJAL", segundo.inner_text())
+        esaj.locator("button:has-text('Testar 2º grau')").click()
+        pagina.wait_for_selector("[data-portal='esaj:TJAL'] .resultado-teste.ok", timeout=10000)
+        self.assertIn("2º grau: Acesso confirmado", esaj.inner_text())
+        esaj.locator("button:has-text('Testar 1º grau')").click()
+        pagina.wait_for_function(
+            "() => document.querySelectorAll(\"[data-portal='esaj:TJAL'] .resultado-teste.ok\").length === 2",
+            timeout=10000)
+        self.assertIn("1º grau: Acesso confirmado", esaj.inner_text())
+        self.assertEqual(pagina.locator(".folha-fundo").count(), 0, "o Testar abriu também a folha da senha")
+        self.assertEqual(self.chamadas(pagina, "POST /api/acessos/testar"),
+                         [{"tribunal": "TJAL", "sistema": "esaj", "grau": "2g"},
+                          {"tribunal": "TJAL", "sistema": "esaj"}])     # o 1º grau, como antes
+        titulos = pagina.evaluate(
+            "[...Helestron.loja.tarefas.values()].filter(t => t.tipo === 'teste_login').map(t => t.titulo)")
+        self.assertEqual(titulos, ["Testar o acesso ao TJAL · e-SAJ (2º grau)", "Testar o acesso ao TJAL · e-SAJ"])
+        self.capturar(pagina, "ajustes-acessos-dois-graus")
+        # O eProc do 2º grau: acesso próprio, com o Testar dele.
+        segundo.locator("button:has-text('Cadastrar')").click()
+        pagina.wait_for_selector(".folha:has-text('Acesso ao eProc (2º grau) · TJAL')")
+        self.assertEqual(pagina.locator("label[for='acesso-usuario']").inner_text(), "Usuário (CPF ou sigla)")
+        pagina.fill("#acesso-usuario", "AL123")
+        pagina.fill("#acesso-senha", "senha do 2º grau")
+        pagina.click(".folha button:has-text('Salvar')")
+        pagina.wait_for_selector(".folha-fundo", state="detached")
+        self.assertEqual(self.chamadas(pagina, "POST /api/acessos")[-1]["portal"], "eproc2g:TJAL")
+        segundo = pagina.locator("[data-portal='eproc2g:TJAL']:has-text('Senha guardada')")
+        segundo.wait_for()
+        self.assertEqual(segundo.locator("button:has-text('Testar')").count(), 1)
+        segundo.locator("button:has-text('Testar')").click()
+        pagina.wait_for_selector("[data-portal='eproc2g:TJAL'] .resultado-teste.ok", timeout=10000)
+        self.assertEqual(self.chamadas(pagina, "POST /api/acessos/testar")[-1],
+                         {"tribunal": "TJAL", "sistema": "eproc", "grau": "2g"})
+        # "Adicionar acesso" oferece o eProc do 2º grau onde o Helestron o baixa
+        pagina.click("#adicionar-acesso")
+        pagina.wait_for_selector("#acesso-portal")
+        opcoes = pagina.locator("#acesso-portal option").evaluate_all("os => os.map(o => o.value)")
+        for valor in ("esaj:TJAL", "eproc:TJAL", "eproc2g:TJAL", "eproc2g:TRF4"):
+            self.assertIn(valor, opcoes)
+        self.assertNotIn("eproc2g:TJSP", opcoes)
+        self.assertNotIn("esaj2g:TJAL", " ".join(opcoes))
+        pagina.click(".folha button:has-text('Cancelar')")
+        pagina.wait_for_selector(".folha-fundo", state="detached")
+        self.assertIn("O acesso ao e-SAJ vale para o 1º e o 2º grau", pagina.locator("#pagina").inner_text())
+        # Ajustes › Download › Grau dos processos: o padrão do próximo lote
+        pagina.click(".ajustes-indice a[data-grupo='download']")
+        pagina.wait_for_selector("#cfg-download-grau")
+        self.assertEqual(pagina.locator("#cfg-download-grau [role='radio']").count(), 2)
+        pagina.click("#cfg-download-grau button:has-text('2º grau')")
+        pagina.wait_for_function(
+            "() => Helestron.demo.chamadas.some(c => c.rota === 'POST /api/config' && c.corpo.chave === 'grau')")
+        self.assertEqual(self.chamadas(pagina, "POST /api/config")[-1],
+                         {"secao": "download", "chave": "grau", "valor": "2g"})
+        self.ir(pagina, "processos")
+        self.colar_relacao(pagina, APELACAO)
+        self.assertEqual(pagina.locator("#grau-lote [aria-checked='true']").inner_text(), "2º grau")
+        self.assertEqual(self.graus_da_revisao(pagina), {APELACAO: "2º grau"})
+        self.sem_problemas(pagina)
+
+    def test_tentar_de_novo_continua_no_grau_do_lote(self):
+        """O "Tentar de novo" de um lote do 2º grau refaz no 2º grau, mesmo
+        depois de recarregar a página (o rascunho das opções some) com os
+        Ajustes no 1º grau."""
+        pagina = self.abrir(extra="&lote=falhas", secao="processos")
+        self.colar_relacao(pagina, APELACAO)
+        pagina.click("#grau-lote button:has-text('2º grau')")
+        pagina.click("#botao-baixar")
+        self.entrar_com_codigo(pagina)
+        pagina.wait_for_selector(".lote-concluido", timeout=20000)
+        self.assertEqual(pagina.evaluate("Helestron.app.valorConfig('download', 'grau', '')"), "1g")
+        pagina.evaluate("() => { Helestron.loja.processos.opcoes = null; }")   # a página recarregada
+        pagina.click(".andamento button:has-text('Tentar de novo')")
+        pagina.wait_for_function(
+            "() => Helestron.demo.chamadas.filter(c => c.rota === 'POST /api/download/iniciar').length === 2")
+        refazer = self.chamadas(pagina, "POST /api/download/iniciar")[1]
+        self.assertEqual(refazer["opcoes"]["grau"], "2g")
+        self.assertEqual(refazer["processos"], [APELACAO])
+        self.assertIs(refazer["opcoes"]["rebaixar"], False)
+        self.sem_problemas(pagina)
+
+    def test_lote_da_pauta_refeito_continua_no_primeiro_grau(self):
+        """O lote da Pauta é do 1º grau: refeito pelo "Tentar de novo" com o
+        rascunho da tela Processos no 2º grau, continua no 1º."""
+        pagina = self.abrir(secao="processos")
+        self.colar_relacao(pagina, APELACAO)
+        pagina.click("#grau-lote button:has-text('2º grau')")          # o rascunho no 2º grau
+        self.ir(pagina, "pauta")
+        pagina.click("#acao-baixar-periodo")
+        pagina.click(".folha button:has-text('Baixar')")
+        self.entrar_com_codigo(pagina)
+        self.ir(pagina, "processos")
+        pagina.wait_for_selector(".lote-concluido", timeout=30000)
+        self.assertEqual(pagina.evaluate("Helestron.loja.processos.opcoes.grau"), "2g")
+        pagina.locator(".andamento button:has-text('Tentar de novo')").click()
+        pagina.wait_for_function(
+            "() => Helestron.demo.chamadas.filter(c => c.rota === 'POST /api/download/iniciar').length === 1")
+        self.assertEqual(self.chamadas(pagina, "POST /api/download/iniciar")[0]["opcoes"]["grau"], "1g")
+        self.sem_problemas(pagina)
+
+    def test_numero_com_o_recurso_interno_do_segundo_grau(self):
+        """O dependente de 5 dígitos (/50000) não some nem encolhe: na máscara,
+        no número tirado do nome do arquivo (com o sufixo (2G)) e no campo da
+        audiência."""
+        pagina = self.abrir(secao="audiencias")
+        valores = pagina.evaluate("""() => [Helestron.cnj.formatar('0706265-50.2017.8.02.0001/50000'),
+            Helestron.cnj.mascarar('07062655020178020001/50000'),
+            Helestron.cnj.doNome('0706265-50.2017.8.02.0001-50000 (2G).pdf'),
+            Helestron.cnj.doNome('0706265-50.2017.8.02.0001-50000 (2G)_capa.json'),
+            Helestron.cnj.formatar('0706265-50.2017.8.02.0001 / 50001'),
+            Helestron.cnj.doNome('0700001-93.2024.8.02.0058 (2G).pdf'),
+            Helestron.cnj.formatar('0700001-93.2024.8.02.0058/0003'),
+            Helestron.cnj.formatar('0700001-93.2024.8.02.0058/123456')]""")
+        self.assertEqual(valores, [EMBARGOS, EMBARGOS, EMBARGOS, EMBARGOS,
+                                   "0706265-50.2017.8.02.0001/50001", APELACAO,
+                                   APELACAO + "/03", APELACAO])
+        pagina.fill("#processo-audiencia", EMBARGOS)
+        self.assertEqual(pagina.input_value("#processo-audiencia"), EMBARGOS)
+        pagina.wait_for_function("() => /dependente 50000/.test(document.querySelector('#pagina').innerText)")
+        self.numeros_inteiros(pagina, "audiências")
         self.sem_problemas(pagina)
 
     def test_microfone_pelo_nome(self):

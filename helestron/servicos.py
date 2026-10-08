@@ -1003,6 +1003,18 @@ def resumo_acervo(cfg) -> dict:
         pdfs, trans = {}, {}
     indice = raiz / "INDICE.md"
     preparado = datetime.fromtimestamp(_mtime(indice)) if indice.exists() else None
-    return {"processos": len(pdfs), "transcricoes": sum(len(v) for v in trans.values()),
-            "preparado": preparado}
+    return {"processos": _processos_distintos(pdfs),
+            "transcricoes": sum(len(v) for v in trans.values()), "preparado": preparado}
+
+
+def _processos_distintos(pdfs) -> int:
+    """Quantos PROCESSOS há entre os autos do acervo: o processo com os autos
+    dos dois graus ('X' e 'X (2G)', chaves dos autos) conta uma vez só."""
+    processos = set()
+    for chave in pdfs:
+        try:
+            processos.add(cnj.ler_nome_arquivo(str(chave)).nome_arquivo)
+        except cnj.NumeroInvalido:
+            processos.add(str(chave))
+    return len(processos)
 

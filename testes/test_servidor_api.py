@@ -149,7 +149,8 @@ class TestTribunaisEAcessos(ServidorDeTeste):
     def test_guardar_listar_apagar(self):
         self.cfg.definir("unidade", "tribunal", "TJAL")
         lista = self.cliente.dados("GET", "/api/acessos")
-        self.assertEqual([a["portal"] for a in lista], ["esaj:TJAL", "eproc:TJAL"])
+        # o eProc do 2º grau tem acesso próprio (o e-SAJ usa o mesmo nos dois graus)
+        self.assertEqual([a["portal"] for a in lista], ["esaj:TJAL", "eproc:TJAL", "eproc2g:TJAL"])
         self.assertFalse(lista[0]["tem_senha"])
         dados = self.cliente.dados("POST", "/api/acessos", {"portal": "esaj:TJAL",
                                                             "usuario": "123", "senha": "s3"})
