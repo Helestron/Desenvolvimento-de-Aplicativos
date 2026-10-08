@@ -15,6 +15,9 @@ Formato 2 do texto (o único que este módulo grava):
   ``paginas`` é o total de páginas do PDF; ``ausentes``, as páginas do PDF
   que são página de aviso no lugar do que não veio (no e-SAJ, são as
   próprias folhas, porque a página N é a folha N), em faixas ("6-7, 40").
+  Nos autos do 2º grau (o manifesto diz "grau": "2g"; sem manifesto, o
+  " (2G)" no nome do PDF), a linha termina em ``| grau=2g``; nos do 1º grau,
+  ela é a de sempre (ausente = 1º grau).
 * depois, linhas entre colchetes: como citar e, no eProc, a capa e os eventos
   sem documento (tirados do manifesto de paginação gravado no PDF);
 * cada página começa por uma marca, e o que vai entre os colchetes é o que se
@@ -49,6 +52,12 @@ PDF sem manifesto é de versão anterior (1.0.1 ou antes): do e-SAJ, vale
 terminar na última folha deles; do eProc antigo (1º marcador "Capa — dados do
 processo" na página 1), a capa é marcada como não sendo dos autos e as demais
 páginas são citadas pelos marcadores dos eventos.
+
+Autos do 2º grau: as marcas são as mesmas (a folha N é a da Pasta Digital do
+2º grau; no eProc, os eventos do processo no 2º grau), mas a abertura e o
+"como citar" dizem que os autos de origem (1º grau), de mesmo número, são
+outro arquivo, com numeração própria - e que o carimbo "fls." de outros
+autos na página não é folha destes (COMO_CITAR_ESAJ_2G).
 """
 
 from __future__ import annotations
@@ -64,12 +73,13 @@ import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..nucleo import paginacao
+from ..nucleo import cnj, paginacao
 
 log = logging.getLogger(__name__)
 
 VERSAO_TEXTO = 2
 CABECA = f"# helestron-texto {VERSAO_TEXTO}"
+GRAU_1, GRAU_2 = "1g", paginacao.SEGUNDO_GRAU
 
 ESAJ, EPROC, DESCONHECIDO = "esaj", "eproc", "desconhecido"
 FOLHAS, DOCUMENTO, NAO_GARANTIDA = "folhas", "documento", "nao_garantida"
@@ -161,6 +171,7 @@ class _Plano:
     linhas: list[str]                 # cabeçalho entre colchetes
     paginas: list[_Pagina]
     ausentes: set[int] = field(default_factory=set)   # páginas do PDF
+    grau: str = GRAU_1                                # dos autos: "1g" ou "2g"
 
 
 def _limpo(texto, limite: int = 200) -> str:
@@ -206,9 +217,30 @@ def _secoes(sumario, paginas: int) -> list[tuple[int, int, str]]:
     return saida
 
 
-def _cabeca(sistema: str, pag: str, n: int, ausentes) -> str:
+def _cabeca(sistema: str, pag: str, n: int, ausentes, grau: str = GRAU_1) -> str:
+    # O grau só vai no 2º grau, no fim: o texto do 1º grau é o de sempre (nada a
+    # reextrair nem a reenviar à nuvem), e quem lê só o começo da linha não muda.
     return (f"{CABECA} | sistema={sistema} | paginacao={pag} | paginas={n} | "
-            f"ausentes={paginacao.descrever_folhas(ausentes)}")
+            f"ausentes={paginacao.descrever_folhas(ausentes)}"
+            + (f" | grau={GRAU_2}" if grau == GRAU_2 else ""))
+
+
+def grau_dos_autos(manifesto: dict | None, nome="") -> str:
+    """O grau dos autos de um PDF: "2g" ou "1g". Pelo manifesto de paginação
+    (paginacao.grau: sem o campo, 1º grau) e, sem manifesto (PDF de versão
+    anterior ou de outra origem), pelo nome do arquivo (cnj.grau_do_nome: o
+    " (2G)" depois do número). Nome sem número: 1º grau."""
+    if paginacao.valido(manifesto):
+        return paginacao.grau(manifesto)
+    try:
+        return cnj.grau_do_nome(Path(str(nome or "")).name) if nome else GRAU_1
+    except cnj.NumeroInvalido:
+        return GRAU_1
+
+
+def _no_grau(grau: str) -> str:
+    """", 2º grau" no 2º grau (o fim de "autos do e-SAJ do TJAL"); "" no 1º."""
+    return ", 2º grau" if grau == GRAU_2 else ""
 
 
 def _do_tribunal(m: dict) -> str:
@@ -247,6 +279,40 @@ COMO_CITAR_EPROC_NAO_GARANTIDA = (
     "[documento: …] (ou a própria página) indicar, como \"evento N, RÓTULO\", sem a página, e "
     "avise o magistrado de que a página não pôde ser conferida; para a página exata, baixe o "
     "processo de novo.]")
+
+# Os autos do 2º grau. No e-SAJ, a regra do carimbo é a OPOSTA da do 1º grau, de
+# propósito: no 1º grau, o carimbo de outro processo traz outro número, e a
+# folha carimbada que diverge da marca é citada; no 2º grau, a apelação e o RESE
+# têm o MESMO número dos autos de origem, e a peça do 1º grau trazida à Pasta
+# Digital do 2º grau com o carimbo "fls. 120" da origem, numa página marcada
+# [fl. 735], não se distingue pelo número - "cite a carimbada" levaria a IA a
+# citar a fl. 120 como folha do 2º grau.
+COMO_CITAR_ESAJ_2G = (
+    "[Como citar: \"fl. N\", pela marca [fl. N] que abre cada página: é a folha da Pasta "
+    "Digital do 2º grau. Os autos de origem (1º grau), se estiverem no acervo, são outro "
+    "arquivo, sem \"(2G)\" no nome e com folhas próprias: nunca presuma que a fl. N de um é a "
+    "fl. N do outro e, ao citar folha deles, diga \"fl. N dos autos de origem\". A folha marcada "
+    "[folha não disponível no e-SAJ: …] não veio do e-SAJ: não a use como prova. A marca [fl. N] "
+    "é a folha destes autos. Carimbo \"fls.\" diferente na página é de outros autos, inclusive "
+    "dos autos de origem, que têm o mesmo número: nunca o cite como folha destes autos; cite a "
+    "marca e avise o magistrado do carimbo divergente (se precisar dele, \"fl. X dos autos de "
+    "origem\").]")
+# O eProc do 2º grau: os eventos do PDF são os do processo no 2º grau
+EVENTOS_DO_2G = (
+    "Os eventos são os do processo no 2º grau; evento do processo de origem (1º grau) não está "
+    "neste PDF: cite-o como \"evento N, RÓTULO, do processo de origem\".")
+COMO_CITAR_EPROC_2G = COMO_CITAR_EPROC[:-1] + " " + EVENTOS_DO_2G + "]"
+COMO_CITAR_EPROC_NAO_GARANTIDA_2G = (COMO_CITAR_EPROC_NAO_GARANTIDA[:-1] + " " + EVENTOS_DO_2G
+                                     + "]")
+# Autos do 2º grau sem a paginação garantida (sem manifesto, ou alterados depois
+# do download): a "folha carimbada" de COMO_CITAR_NAO_GARANTIDA pode ser a dos
+# autos de origem, que têm o mesmo número - não se manda citá-la.
+COMO_CITAR_NAO_GARANTIDA_2G = (
+    "[Como citar: \"pág. M do PDF\" é só a posição no arquivo, para navegar: nunca a cite "
+    "como folha. Nos autos do 2º grau, o carimbo \"fls.\" na página pode ser dos autos de "
+    "origem (1º grau), que têm o mesmo número e são outro arquivo, sem \"(2G)\" no nome: não o "
+    "cite como folha destes autos; cite o documento (linha [documento: …]) e avise o "
+    "magistrado. Para a numeração exata, baixe o processo de novo.]")
 
 
 def _plural(n: int, um: str, varios: str) -> str:
@@ -306,7 +372,7 @@ def resumo_da_paginacao(m: dict | None, n: int) -> str:
             f"download?): {efeito}; baixe o processo de novo")
 
 
-def _plano_esaj(m: dict, n: int, toc) -> _Plano:
+def _plano_esaj(m: dict, n: int, toc, grau: str = GRAU_1) -> _Plano:
     ultima = int(m.get("ultima") or 0)
     aus = paginacao.ausentes(m)
     docs = _documento_por_pagina(toc, n)
@@ -314,13 +380,18 @@ def _plano_esaj(m: dict, n: int, toc) -> _Plano:
         # O manifesto não descreve este arquivo (alterado depois?): não há
         # como garantir que a página é a folha.
         log.warning("manifesto do e-SAJ diz %d folhas, mas o PDF tem %d páginas", ultima, n)
-        plano = _plano_sem_garantia(toc, n, ESAJ)
-        plano.linhas.insert(0, f"[{_processo(m)}autos do e-SAJ{_do_tribunal(m)}: "
+        plano = _plano_sem_garantia(toc, n, ESAJ, grau=grau)
+        plano.linhas.insert(0, f"[{_processo(m)}autos do e-SAJ{_do_tribunal(m)}{_no_grau(grau)}: "
                                f"{_divergencia(m, n)} (o arquivo foi alterado depois do "
                                "download?): a página do PDF NÃO é garantidamente a folha.]")
         return plano
-    linhas = [f"[{_processo(m)}autos do e-SAJ{_do_tribunal(m)}. A página N deste PDF é "
-              f"sempre a folha N dos autos (fls. 1 a {ultima}).]", COMO_CITAR_ESAJ]
+    if grau == GRAU_2:
+        linhas = [f"[{_processo(m)}autos do e-SAJ{_do_tribunal(m)}, 2º grau (Pasta Digital do "
+                  "processo no Tribunal). A página N deste PDF é sempre a folha N destes autos "
+                  f"(fls. 1 a {ultima}).]", COMO_CITAR_ESAJ_2G]
+    else:
+        linhas = [f"[{_processo(m)}autos do e-SAJ{_do_tribunal(m)}. A página N deste PDF é "
+                  f"sempre a folha N dos autos (fls. 1 a {ultima}).]", COMO_CITAR_ESAJ]
     if aus:
         por_motivo: dict[str, list[int]] = {}
         for f, c in aus.items():
@@ -342,7 +413,7 @@ def _plano_esaj(m: dict, n: int, toc) -> _Plano:
         if docs.get(i):
             p.linhas.append(MARCA_DOCUMENTO.format(titulo=_limpo(docs[i], 300)))
         paginas.append(p)
-    return _Plano(ESAJ, FOLHAS, linhas, paginas, set(aus))
+    return _Plano(ESAJ, FOLHAS, linhas, paginas, set(aus), grau)
 
 
 def _citacao_evento(d: dict) -> str:
@@ -444,7 +515,8 @@ def _fim_eproc(m: dict) -> int:
     return max(fins, default=0)
 
 
-def _plano_eproc(m: dict, n: int, toc) -> _Plano:
+def _plano_eproc(m: dict, n: int, toc, grau: str = GRAU_1) -> _Plano:
+    segundo = grau == GRAU_2
     if not manifesto_confere(m, n):
         # Como no e-SAJ: o manifesto não descreve este arquivo (página apagada
         # ou incluída depois do download, num editor que conserva os anexos),
@@ -452,18 +524,21 @@ def _plano_eproc(m: dict, n: int, toc) -> _Plano:
         # citação é a do eProc (nunca "fl."), e não a do e-SAJ.
         log.warning("manifesto do eProc descreve %d páginas, mas o PDF tem %d", _fim_eproc(m), n)
         plano = _plano_sem_garantia(toc, n, EPROC)
-        plano.linhas = [f"[{_processo(m)}autos do eProc{_do_tribunal(m)}: {_divergencia(m, n)} "
-                        "(o arquivo foi alterado depois do download?): o evento, o documento e "
-                        "a página do eProc de cada página do PDF NÃO são garantidos.]",
-                        COMO_CITAR_EPROC_NAO_GARANTIDA] + _texto_capa(m)
+        plano.grau = grau
+        plano.linhas = [f"[{_processo(m)}autos do eProc{_do_tribunal(m)}{_no_grau(grau)}: "
+                        f"{_divergencia(m, n)} (o arquivo foi alterado depois do download?): o "
+                        "evento, o documento e a página do eProc de cada página do PDF NÃO são "
+                        "garantidos.]",
+                        COMO_CITAR_EPROC_NAO_GARANTIDA_2G if segundo
+                        else COMO_CITAR_EPROC_NAO_GARANTIDA] + _texto_capa(m)
         return plano
     if str(m.get("modo") or "") == "completo":
-        return _plano_eproc_completo(m, n, toc)
-    linhas = [f"[{_processo(m)}autos do eProc{_do_tribunal(m)}, documento a documento, na "
-              "ordem dos eventos. O eProc não numera folhas: cada documento conserva a "
-              "paginação própria, igual à do eProc, e nenhuma página foi inserida antes ou "
-              "entre eles (só uma página de aviso no lugar de documento que não veio).]",
-              COMO_CITAR_EPROC]
+        return _plano_eproc_completo(m, n, toc, grau)
+    linhas = [f"[{_processo(m)}autos do eProc{_do_tribunal(m)}{_no_grau(grau)}, documento a "
+              "documento, na ordem dos eventos. O eProc não numera folhas: cada documento "
+              "conserva a paginação própria, igual à do eProc, e nenhuma página foi inserida "
+              "antes ou entre eles (só uma página de aviso no lugar de documento que não veio).]",
+              COMO_CITAR_EPROC_2G if segundo else COMO_CITAR_EPROC]
     linhas += _texto_capa(m)
     mapa: dict[int, tuple[dict, int]] = {}
     fora, gravacoes = [], []
@@ -522,10 +597,10 @@ def _plano_eproc(m: dict, n: int, toc) -> _Plano:
         p.marca = MARCA_COM_PAGINA.format(citacao=cit, m=i)
         p.linhas.append(MARCA_DOCUMENTO.format(titulo=_titulo_documento(d)))
         paginas.append(p)
-    return _Plano(EPROC, DOCUMENTO, linhas, paginas, ausentes)
+    return _Plano(EPROC, DOCUMENTO, linhas, paginas, ausentes, grau)
 
 
-def _plano_eproc_completo(m: dict, n: int, toc) -> _Plano:
+def _plano_eproc_completo(m: dict, n: int, toc, grau: str = GRAU_1) -> _Plano:
     partes = []
     for p in m.get("partes") or []:
         if isinstance(p, dict):
@@ -534,13 +609,16 @@ def _plano_eproc_completo(m: dict, n: int, toc) -> _Plano:
             except (TypeError, ValueError):
                 continue
     partes = sorted(x for x in partes if x[0] >= 1 and x[1] >= 1) or [(1, n)]
-    linhas = [f"[{_processo(m)}arquivo completo gerado pelo próprio eProc{_do_tribunal(m)} "
-              "(“Download Completo”), sem nenhuma página acrescentada"
+    como_citar = ("[Como citar: o evento e o documento que a própria página ou a linha "
+                  "[documento: …] indicarem; sem eles, a marca da página (\"arquivo completo do "
+                  "eProc, pág. M\"). \"(pág. M do PDF)\" é só a posição no arquivo: nunca a cite.]")
+    if grau == GRAU_2:
+        como_citar = como_citar[:-1] + " " + EVENTOS_DO_2G + "]"
+    linhas = [f"[{_processo(m)}arquivo completo gerado pelo próprio eProc{_do_tribunal(m)}"
+              f"{_no_grau(grau)} (“Download Completo”), sem nenhuma página acrescentada"
               + (": a página M deste PDF é a página M desse arquivo.]" if len(partes) == 1
                  else f", em {len(partes)} partes (cada uma recomeça na página 1).]"),
-              "[Como citar: o evento e o documento que a própria página ou a linha "
-              "[documento: …] indicarem; sem eles, a marca da página (\"arquivo completo do "
-              "eProc, pág. M\"). \"(pág. M do PDF)\" é só a posição no arquivo: nunca a cite.]"]
+              como_citar]
     linhas += _texto_capa(m)
     docs = _documento_por_pagina(toc, n)
     paginas = []
@@ -558,11 +636,11 @@ def _plano_eproc_completo(m: dict, n: int, toc) -> _Plano:
         if docs.get(i):
             p.linhas.append(MARCA_DOCUMENTO.format(titulo=_limpo(docs[i], 300)))
         paginas.append(p)
-    return _Plano(EPROC, DOCUMENTO, linhas, paginas)
+    return _Plano(EPROC, DOCUMENTO, linhas, paginas, grau=grau)
 
 
 def _plano_sem_garantia(toc, n: int, sistema: str = DESCONHECIDO,
-                        avisos: dict[int, str] | None = None) -> _Plano:
+                        avisos: dict[int, str] | None = None, grau: str = GRAU_1) -> _Plano:
     docs = _documento_por_pagina(toc, n)
     avisos = avisos or {}
     paginas = []
@@ -574,7 +652,10 @@ def _plano_sem_garantia(toc, n: int, sistema: str = DESCONHECIDO,
         if docs.get(i):
             p.linhas.append(MARCA_DOCUMENTO.format(titulo=_limpo(docs[i], 300)))
         paginas.append(p)
-    return _Plano(sistema, NAO_GARANTIDA, [COMO_CITAR_NAO_GARANTIDA], paginas, set(avisos))
+    # No 2º grau, a "folha carimbada" pode ser a dos autos de origem (o mesmo
+    # número). (O eProc sem garantia troca estas linhas pelas dele: _plano_eproc.)
+    linhas = [COMO_CITAR_NAO_GARANTIDA_2G if grau == GRAU_2 else COMO_CITAR_NAO_GARANTIDA]
+    return _Plano(sistema, NAO_GARANTIDA, linhas, paginas, set(avisos), grau)
 
 
 def _avisos_antigos_esaj(secoes) -> dict[int, str]:
@@ -586,7 +667,7 @@ def _avisos_antigos_esaj(secoes) -> dict[int, str]:
             if titulo == TITULO_AVISO_ANTIGO and fim == ini}
 
 
-def _plano_esaj_antigo(toc, n: int) -> _Plano:
+def _plano_esaj_antigo(toc, n: int, grau: str = GRAU_1) -> _Plano:
     """PDF do e-SAJ da 1.0.1 (sem manifesto): a página é a folha só se cada
     peça começar na página da sua primeira folha e o PDF terminar na última."""
     secoes = _secoes(toc, n)
@@ -600,7 +681,7 @@ def _plano_esaj_antigo(toc, n: int) -> _Plano:
         and max(b for _i, _a, b in faixas) == n
     avisos = _avisos_antigos_esaj(secoes)
     if not alinhado:
-        plano = _plano_sem_garantia(toc, n, ESAJ, avisos)
+        plano = _plano_sem_garantia(toc, n, ESAJ, avisos, grau)
         plano.linhas.insert(0, "[Autos do e-SAJ baixados por versão anterior à 1.0.2, sem o "
                                "manifesto de paginação, e com as peças fora da página das suas "
                                "folhas (faltam folhas no arquivo, ou uma peça veio com outro "
@@ -619,8 +700,9 @@ def _plano_esaj_antigo(toc, n: int) -> _Plano:
     linhas = ["[Autos do e-SAJ baixados por versão anterior à 1.0.2, sem o manifesto de "
               "paginação: a numeração foi conferida pelos marcadores das peças (cada peça "
               f"começa na página da sua primeira folha, e o PDF termina na fl. {n}). A página "
-              "N deste PDF é a folha N dos autos.]", COMO_CITAR_ESAJ]
-    return _Plano(ESAJ, FOLHAS, linhas, paginas, set(avisos))
+              "N deste PDF é a folha N dos autos.]",
+              COMO_CITAR_ESAJ_2G if grau == GRAU_2 else COMO_CITAR_ESAJ]
+    return _Plano(ESAJ, FOLHAS, linhas, paginas, set(avisos), grau)
 
 
 def _rotulo_do_titulo(resto: str) -> str:
@@ -629,7 +711,7 @@ def _rotulo_do_titulo(resto: str) -> str:
     return resto.split(" — ")[-1].strip() if resto else ""
 
 
-def _plano_eproc_antigo(toc, n: int, textos_paginas: list[str]) -> _Plano:
+def _plano_eproc_antigo(toc, n: int, textos_paginas: list[str], grau: str = GRAU_1) -> _Plano:
     """PDF do eProc da 1.0.1: capa do programa no início, depois os
     documentos (ou o arquivo completo), um marcador por documento."""
     secoes = _secoes(toc, n)
@@ -687,21 +769,23 @@ def _plano_eproc_antigo(toc, n: int, textos_paginas: list[str]) -> _Plano:
               "não é página dos autos. Nos documentos em PDF, \"p. Y\" é a página do documento "
               "no eProc; documento de texto do próprio eProc (despacho, decisão, certidão) "
               "pode ter vindo paginado pelo Helestron: cite-o sem a página. Para a paginação "
-              "exata, baixe o processo de novo.]", COMO_CITAR_EPROC]
-    return _Plano(EPROC, DOCUMENTO, linhas, saida, ausentes)
+              "exata, baixe o processo de novo.]",
+              COMO_CITAR_EPROC_2G if grau == GRAU_2 else COMO_CITAR_EPROC]
+    return _Plano(EPROC, DOCUMENTO, linhas, saida, ausentes, grau)
 
 
-def _planejar(manifesto: dict | None, toc, n: int, textos_paginas: list[str]) -> _Plano:
+def _planejar(manifesto: dict | None, toc, n: int, textos_paginas: list[str],
+              grau: str = GRAU_1) -> _Plano:
     if manifesto and manifesto.get("paginacao") == paginacao.FOLHAS:
-        return _plano_esaj(manifesto, n, toc)
+        return _plano_esaj(manifesto, n, toc, grau)
     if manifesto and manifesto.get("paginacao") == paginacao.DOCUMENTO:
-        return _plano_eproc(manifesto, n, toc)
+        return _plano_eproc(manifesto, n, toc, grau)
     secoes = _secoes(toc, n)
     if secoes and secoes[0][0] == 1 and secoes[0][2] == TITULO_CAPA_ANTIGA:
-        return _plano_eproc_antigo(toc, n, textos_paginas)
+        return _plano_eproc_antigo(toc, n, textos_paginas, grau)
     if any(_RE_FOLHAS_NO_TITULO.search(t) for _i, _f, t in secoes):
-        return _plano_esaj_antigo(toc, n)
-    plano = _plano_sem_garantia(toc, n)
+        return _plano_esaj_antigo(toc, n, grau)
+    plano = _plano_sem_garantia(toc, n, grau=grau)
     plano.linhas.insert(0, "[PDF sem o manifesto de paginação do Helestron (baixado por "
                            "versão anterior à 1.0.2, ou de outra origem): a paginação não é "
                            "garantida, e a página do PDF pode não ser a folha dos autos.]")
@@ -737,7 +821,7 @@ def _aviso_sem_texto(corpo: str) -> str | None:
 
 def _montar(plano: _Plano, textos_paginas: list[str]) -> str:
     n = len(plano.paginas)
-    saida = [_cabeca(plano.sistema, plano.paginacao, n, plano.ausentes)]
+    saida = [_cabeca(plano.sistema, plano.paginacao, n, plano.ausentes, plano.grau)]
     saida += plano.linhas
     for i, p in enumerate(plano.paginas):
         saida.append(p.marca)
@@ -787,12 +871,14 @@ def _ler_com_pypdf(caminho: Path):  # pragma: no cover - só sem o PyMuPDF
 
 def texto_pdf(caminho: Path) -> str:
     """O texto do PDF no formato 2: cabeçalho e, por página, a marca de
-    citação, o documento e o conteúdo."""
+    citação, o documento e o conteúdo. O grau dos autos é o do manifesto e,
+    sem ele, o do nome do arquivo (grau_dos_autos)."""
     try:
         n, toc, manifesto, textos_paginas = _ler_com_pymupdf(Path(caminho))
     except ImportError:  # pragma: no cover - PyMuPDF faz parte da instalação
         n, toc, manifesto, textos_paginas = _ler_com_pypdf(Path(caminho))
-    return _montar(_planejar(manifesto, toc, n, textos_paginas), textos_paginas)
+    grau = grau_dos_autos(manifesto, Path(caminho).name)
+    return _montar(_planejar(manifesto, toc, n, textos_paginas, grau), textos_paginas)
 
 
 def texto_docx(caminho: Path) -> str:
@@ -840,8 +926,9 @@ def analisar(caminho: Path) -> tuple[str, dict]:
 
 def info_do_texto(texto: str) -> dict:
     """O que o texto (formato 2) diz de si: {"versao", "sistema",
-    "paginacao", "paginas", "ausentes", "paginas_sem_texto",
-    "paginas_sem_texto_pdf", "total_sem_texto"}.
+    "paginacao", "paginas", "ausentes", "grau", "paginas_sem_texto",
+    "paginas_sem_texto_pdf", "total_sem_texto"}. "grau": "2g" nos autos do
+    2º grau, "1g" nos do 1º (e no texto sem o cabeçalho do formato 2).
 
     "paginas_sem_texto" cita as páginas sem texto extraível (imagem
     digitalizada sem OCR, só o carimbo do e-SAJ, página ilegível) como os
@@ -874,7 +961,8 @@ def info_do_texto(texto: str) -> dict:
                    f"{paginacao.descrever_folhas(pdf)} do PDF")
     return {"versao": cab.get("versao", 0), "sistema": cab.get("sistema", ""),
             "paginacao": pag, "paginas": cab.get("paginas") or len(lista),
-            "ausentes": cab.get("ausentes", ""), "paginas_sem_texto": citacao,
+            "ausentes": cab.get("ausentes", ""), "grau": cab.get("grau", GRAU_1),
+            "paginas_sem_texto": citacao,
             "paginas_sem_texto_pdf": paginacao.descrever_folhas(pdf),
             "total_sem_texto": len(pdf)}
 
@@ -1020,7 +1108,9 @@ def sem_acento(texto: str) -> str:
 
 def cabecalho(texto: str) -> dict:
     """A 1ª linha do texto, lida: {'versao', 'sistema', 'paginacao',
-    'paginas', 'ausentes'}. Vazio se o texto não for do formato 2."""
+    'paginas', 'ausentes', 'grau'} - 'grau' é "2g" nos autos do 2º grau e
+    "1g" nos do 1º (a linha sem o campo). Vazio se o texto não for do
+    formato 2."""
     primeira = texto.split("\n", 1)[0]
     pedacos = [p.strip() for p in primeira.split(" | ")]
     if not pedacos or pedacos[0] != CABECA:
@@ -1034,6 +1124,7 @@ def cabecalho(texto: str) -> dict:
     except ValueError:
         saida["paginas"] = 0
     saida.setdefault("ausentes", "")
+    saida["grau"] = cnj.normalizar_grau(saida.get("grau")) or GRAU_1
     return saida
 
 
