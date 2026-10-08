@@ -505,7 +505,7 @@ Em **Ajustes › Pastas**, confira:
 - **Pasta do acervo**: processos e transcrições que o Helestron compartilha
   com a IA;
 - **Pasta dos processos sigilosos**: processos em segredo de justiça; fica
-  fora do acervo e nunca vai para a IA;
+  fora do acervo, e o Helestron nunca a leva à IA;
 - **Pasta da pauta exportada**: as planilhas da pauta, também fora do acervo,
   porque trazem as partes dos processos sigilosos.
 
@@ -1438,8 +1438,11 @@ nuvem em conflito**, com o caminho para corrigir.
 
 ### Regras de sigilo
 
-- O processo em segredo de justiça **nunca** vai para a IA, para o pacote,
-  para a nuvem, para o conector ou para o índice, seja qual for a ferramenta.
+- O Helestron **nunca** leva processo em segredo de justiça à IA, ao
+  pacote, à nuvem, ao conector ou ao índice, seja qual for a ferramenta.
+  Uma skill do Claude Code só trabalha um deles com a autorização expressa
+  do magistrado, no chat, lendo-o e gravando o que produzir na própria
+  pasta dos sigilosos (`docs/INTEGRACAO-CLAUDE.md`, seção 11).
   Quem decide o que é sigiloso é a regra única descrita em
   [Segredo de justiça](#segredo-de-justiça): os autos, a transcrição ou a
   gravação na pasta dos sigilosos, a pauta de audiências ou um download
@@ -1501,10 +1504,16 @@ nuvem em conflito**, com o caminho para corrigir.
 
 ## Segredo de justiça
 
-Processo em segredo de justiça **nunca vai para a IA nem para a nuvem**. Para
-garantir isso, o Helestron segue **uma regra só**, a mesma ao baixar os
-autos, ao transcrever a audiência, ao compartilhar o acervo e ao montar a
-pauta.
+O Helestron **nunca leva processo em segredo de justiça à IA nem à
+nuvem**. Para garantir isso, ele segue **uma regra só**, a mesma ao baixar
+os autos, ao transcrever a audiência, ao compartilhar o acervo e ao montar
+a pauta.
+
+Uma skill do Claude Code (como a que monta minutas a partir de um lote) só
+trabalha um processo sigiloso se o magistrado o autorizar expressamente, no
+chat; e então lê os arquivos na própria pasta dos sigilosos e grava lá o
+que produzir. O acervo, o pacote e a nuvem continuam sem ele (veja
+`docs/INTEGRACAO-CLAUDE.md`, seção 11, no repositório do programa).
 
 ### Quando o processo é sigiloso para o Helestron
 
@@ -2002,6 +2011,7 @@ magistrado.
 - Confira a pauta no portal antes de atos que dependam dela.
 - Trate resumos e minutas da IA como sugestões; nunca os junte aos autos sem
   revisão.
-- Processos em segredo de justiça ficam fora do acervo e nunca vão para a IA:
-  mantenha a pasta dos sigilosos fora do acervo e fora de pastas
-  sincronizadas com a nuvem.
+- Processos em segredo de justiça ficam fora do acervo, e o Helestron nunca
+  os leva à IA: mantenha a pasta dos sigilosos fora do acervo e fora de
+  pastas sincronizadas com a nuvem. Uma skill só trabalha um deles com a
+  sua autorização expressa, sem tirá-lo dessa pasta.

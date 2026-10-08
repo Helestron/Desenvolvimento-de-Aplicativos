@@ -31,13 +31,16 @@ as tarefas que mais tomam tempo do magistrado e da equipe:
    (veja [docs/INTEGRACAO-CLAUDE.md](docs/INTEGRACAO-CLAUDE.md)).
 
 Processos em **segredo de justiça** ficam numa pasta própria, **fora** do
-acervo, e nunca vão para a IA, para o pacote, para a nuvem nem para o
-conector. A regra é uma só, no download, na transcrição e no
-compartilhamento: é sigiloso o processo com autos, transcrição ou gravação
-na pasta dos sigilosos, ou que a pauta de audiências marca em segredo de
-justiça (só a indicação positiva conta, como o selo “Segredo de Justiça”;
-“Nível 1” no local da audiência ou “Segredo de justiça: não” não marcam), e
-também o incidente de um processo sigiloso. Com a separação dos sigilosos
+acervo, e o Helestron nunca os leva à IA, ao pacote, à nuvem nem ao
+conector (uma skill do Claude Code só trabalha um deles com a autorização
+expressa do magistrado, sem tirá-lo dessa pasta: seção 11 de
+[docs/INTEGRACAO-CLAUDE.md](docs/INTEGRACAO-CLAUDE.md)). A regra é uma
+só, no download, na transcrição e no compartilhamento: é sigiloso o
+processo com autos, transcrição ou gravação na pasta dos sigilosos, ou
+que a pauta de audiências marca em segredo de justiça (só a indicação
+positiva conta, como o selo “Segredo de Justiça”; “Nível 1” no local da
+audiência ou “Segredo de justiça: não” não marcam), e também o incidente
+de um processo sigiloso. Com a separação dos sigilosos
 ligada (o padrão), o que ainda estiver no acervo de um processo sigiloso é
 levado para a pasta dos sigilosos antes de o acervo ser entregue a qualquer
 ferramenta; quando é a pauta que revela o segredo, isso acontece na hora, com
