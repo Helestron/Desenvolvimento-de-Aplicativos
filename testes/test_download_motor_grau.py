@@ -1,0 +1,773 @@
+"""O 2º grau no motor, no eProc, no navegador e na linha de comando (1.1.0).
+
+O grau de cada processo sai da regra única (cnj.grau_do_processo: o número;
+senão o grau do lote) e viaja dentro do Tribunal até as fábricas, o cofre e
+o perfil do navegador. Os autos do 2º grau chamam-se "<número> (2G).pdf", e
+tudo o que é por arquivo (capa, registro, pasta provisória, linha do
+relatório, --retomar, JA_BAIXADO) segue esse nome - a chave dos autos. O
+sigilo continua por processo e vale para os dois graus.
+
+Números do Anexo B do desenho (dígito verificador conferido): A, apelação
+que existe nos dois graus; H, HC originário (órgão 0000); PL, plantão do 2º
+grau (órgão 9002); P e E, o principal e os embargos de declaração (/50000);
+I, incidente do 1º grau (/01); S, processo público no 1º grau e sigiloso no
+2º. Com portal e navegador de mentira (testes/apoio_download.py); o eProc de
+mentira (testes/apoio_eproc.py) só na última classe, que pula sem Chromium.
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+import json
+import types
+import unittest
+from dataclasses import replace
+from pathlib import Path
+from unittest import mock
+
+from helestron.download import cli, eproc, modelos, motor, navegador
+from helestron.download.acompanhamento import Acompanhamento, processo_json
+from helestron.nucleo import caminhos, cnj, paginacao, sigilo, tribunais
+
+from testes import apoio_download as apoio
+from testes.test_download_cli import BaseCli
+from testes.test_download_motor import BaseMotor
+
+A = cnj.ler("0700001-93.2024.8.02.0058")
+A2 = cnj.ler("0700002-78.2024.8.02.0058")
+H = cnj.ler("0803061-28.2025.8.02.0000")
+PL = cnj.ler("0800103-29.2025.8.02.9002")
+P = cnj.ler("0706265-50.2017.8.02.0001")
+E = cnj.ler("0706265-50.2017.8.02.0001/50000")
+I = cnj.ler("0700001-93.2024.8.02.0058/01")
+S = cnj.ler("0700003-40.2024.8.02.0001")
+SP = apoio.numero("0700001", tr="26", origem="0100")          # TJSP: sem o 2º grau no catálogo
+
+
+def autos(n: cnj.Numero, grau: str) -> str:
+    return cnj.nome_dos_autos(n, grau)
+
+
+def pdf_com_manifesto(caminho: Path, manifesto: dict, paginas: int = 2) -> Path:
+    import pymupdf
+    caminho.parent.mkdir(parents=True, exist_ok=True)
+    doc = pymupdf.open(stream=apoio.pdf_bytes(paginas), filetype="pdf")
+    paginacao.gravar_no_doc(doc, manifesto)
+    doc.save(str(caminho))
+    doc.close()
+    return caminho
+
+
+class ContextoComEventos(apoio.ContextoGravador):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.eventos = []
+
+    def evento(self, tipo, **dados):
+        self.eventos.append((tipo, dados))
+
+
+class BaseGrau(BaseMotor):
+    def setUp(self):
+        super().setUp()
+        self.ctx = ContextoComEventos()
+
+    def lote(self, numeros, grau="1g", roteiro=None, capas=None, cofre=None, destino=None,
+             falha_entrar=None, **opcoes):
+        fp, fn = apoio.fabricas(roteiro, falha_entrar, capas=capas)
+        self.opcoes = apoio.opcoes_de_teste(self.tmp, grau=grau, **opcoes)
+        return motor.executar(numeros, destino or self.destino, self.opcoes, self.ctx,
+                              cofre=cofre, fabrica_portal=fp, fabrica_navegador=fn)
+
+    def relatorio(self, arquivo=None) -> list[dict]:
+        texto = Path(arquivo or self.destino / "_controle" / "relatorio.csv") \
+            .read_bytes().decode("utf-8-sig")
+        return list(csv.DictReader(io.StringIO(texto), delimiter=";"))
+
+
+# ====================================================================== grupos
+class TestGrupos(BaseGrau):
+    def test_lote_do_2o_grau_vai_ao_esaj_do_2o_grau_pelo_tribunal(self):
+        # o exemplo do desenho (§4.3)
+        resumo = self.lote([A], grau="2g")
+        self.assertEqual([(p.portal, p.grau) for p in apoio.PortalFalso.todos],
+                         [("esaj:TJAL", "2g")])
+        self.assertEqual(apoio.PortalFalso.todos[0].destinos[0].name, f"{autos(A, '2g')}.pdf")
+        r = resumo.itens[0]
+        self.assertEqual((r.situacao, r.grau), (modelos.OK, "2g"))
+        self.assertTrue((self.destino / f"{A.nome_arquivo} (2G).pdf").is_file())
+        self.assertFalse((self.destino / f"{A.nome_arquivo}.pdf").exists())
+
+    def test_grupos_por_tribunal_e_grau_com_o_numero_que_so_existe_no_2o(self):
+        # num lote do 1º grau, o HC (órgão 0000), o plantão (9002) e os embargos
+        # (/50000) vão ao 2º grau: dois grupos do TJAL, na ordem da 1ª aparição
+        resumo = self.lote([A, H, P, E, PL, I], grau="1g")
+        self.assertEqual([(r.numero, r.grau) for r in resumo.itens],
+                         [(A.formatado, "1g"), (H.formatado, "2g"), (P.formatado, "1g"),
+                          (E.formatado, "2g"), (PL.formatado, "2g"), (I.formatado, "1g")])
+        portais = apoio.PortalFalso.todos
+        self.assertEqual([(p.portal, p.grau) for p in portais],
+                         [("esaj:TJAL", "1g"), ("esaj:TJAL", "2g")])
+        self.assertEqual([c[0] for c in portais[0].chamadas],
+                         [A.formatado, P.formatado, I.formatado])
+        self.assertEqual([c[0] for c in portais[1].chamadas],
+                         [H.formatado, E.formatado, PL.formatado])
+        # E e P são dois processos (o /50000 não é o principal), com autos próprios
+        nomes = sorted(p.name for p in self.destino.glob("*.pdf"))
+        self.assertEqual(nomes, sorted([f"{A.nome_arquivo}.pdf", f"{H.nome_arquivo} (2G).pdf",
+                                        f"{P.nome_arquivo}.pdf",
+                                        "0706265-50.2017.8.02.0001-50000 (2G).pdf",
+                                        f"{PL.nome_arquivo} (2G).pdf", f"{I.nome_arquivo}.pdf"]))
+        # o 1º grau continua com os nomes de sempre
+        self.assertEqual(I.nome_arquivo, "0700001-93.2024.8.02.0058-01")
+
+    def test_incidente_do_1o_grau_num_lote_do_2o_e_procurado_no_2o(self):
+        resumo = self.lote([I], grau="2g")
+        self.assertEqual(resumo.itens[0].grau, "2g")
+        self.assertEqual([(p.portal, p.grau) for p in apoio.PortalFalso.todos],
+                         [("esaj:TJAL", "2g")])
+
+    def test_tribunal_sem_o_2o_grau_no_catalogo_nao_e_suportado(self):
+        resumo = self.lote([SP, A], grau="2g")
+        sp, a = resumo.itens
+        self.assertEqual(sp.situacao, modelos.NAO_SUPORTADO)
+        self.assertEqual(sp.causa, "")
+        self.assertFalse(sp.refazer)
+        self.assertEqual(sp.detalhe, "o 2º grau do e-SAJ do TJSP ainda não é baixado pelo "
+                                     "Helestron; baixe-o pelo portal do tribunal")
+        self.assertEqual(a.situacao, modelos.OK)
+        self.assertEqual([p.tribunal.sigla for p in apoio.PortalFalso.todos], ["TJAL"])
+        # o mesmo TJSP no 1º grau, como sempre
+        resumo = self.lote([SP], grau="1g", destino=self.tmp / "Acervo" / "Processos" / "SP")
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+
+    def test_nome_do_grupo_e_eventos_com_o_grau_so_no_2o(self):
+        self.lote([A, H], grau="1g")
+        inicios = [d for t, d in self.ctx.eventos if t == "grupo_inicio"]
+        self.assertEqual(len(inicios), 2)
+        self.assertNotIn("grau", inicios[0], "no 1º grau, o evento de sempre")
+        self.assertEqual(inicios[1]["grau"], "2g")
+        self.assertIn("Entrando no e-SAJ do TJAL...", self.ctx.status_)
+        self.assertIn("Entrando no e-SAJ do TJAL (2º grau)...", self.ctx.status_)
+
+    def test_login_recusado_e_sessao_que_cai_levam_o_grau(self):
+        fp, fn = apoio.fabricas({H.formatado: ["sessao", "ok"]})
+        self.opcoes = apoio.opcoes_de_teste(self.tmp)
+        motor.executar([A, H], self.destino, self.opcoes, self.ctx, fabrica_portal=fp,
+                       fabrica_navegador=fn)
+        caiu = [d for t, d in self.ctx.eventos if t == "sessao_caiu"]
+        self.assertEqual([d.get("grau") for d in caiu], ["2g"])
+        # o login recusado nos dois grupos: o evento do 1º grau como era
+        fp, fn = apoio.fabricas(falha_entrar={"TJAL": [modelos.LoginFalhou("recusou")]})
+        self.ctx = ContextoComEventos()
+        motor.executar([A, H], self.tmp / "Acervo" / "Processos" / "Outro", self.opcoes,
+                       self.ctx, fabrica_portal=fp, fabrica_navegador=fn)
+        falhou = [d for t, d in self.ctx.eventos if t == "login_falhou"]
+        self.assertEqual([d.get("grau") for d in falhou], [None, "2g"])
+        self.assertEqual([t for t, _ in self.ctx.avisos],
+                         ["Não foi possível entrar no e-SAJ do TJAL",
+                          "Não foi possível entrar no e-SAJ do TJAL (2º grau)"])
+
+
+# ======================================================== nomes dos autos
+class TestNomesDosAutos(BaseGrau):
+    def test_a_nos_dois_graus_na_mesma_pasta_sem_colisao(self):
+        r1 = self.lote([A], grau="1g").itens[0]
+        r2 = self.lote([A], grau="2g").itens[0]
+        self.assertEqual((r1.situacao, r2.situacao), (modelos.OK, modelos.OK),
+                         "o PDF do 1º grau não é JA_BAIXADO de um pedido do 2º")
+        controle = self.destino / "_controle"
+        for nome in (A.nome_arquivo, f"{A.nome_arquivo} (2G)"):
+            self.assertTrue((self.destino / f"{nome}.pdf").is_file(), nome)
+            self.assertTrue((controle / f"{nome}_capa.txt").is_file(), nome)
+            self.assertTrue((controle / f"{nome}_meta.json").is_file(), nome)
+        meta1 = json.loads((controle / f"{A.nome_arquivo}_meta.json").read_text("utf-8"))
+        meta2 = json.loads((controle / f"{A.nome_arquivo} (2G)_meta.json").read_text("utf-8"))
+        self.assertNotIn("grau", meta1, "o registro do 1º grau fica como era")
+        self.assertEqual(meta2["grau"], "2g")
+        self.assertNotIn("grau", meta1["consultas"][0])
+        self.assertEqual(meta2["consultas"], [{"sistema": "esaj", "situacao": "OK",
+                                               "grau": "2g"}])
+        # a pasta provisória é por chave dos autos, e é apagada
+        self.assertEqual(list((self.tmp / "provisorio").iterdir()), [])
+        # o relatório tem as duas linhas, cada uma com o grau
+        linhas = self.relatorio()
+        self.assertEqual([(l["processo"], l["grau"], l["arquivo"]) for l in linhas],
+                         [(A.formatado, "1g", f"{A.nome_arquivo}.pdf"),
+                          (A.formatado, "2g", f"{A.nome_arquivo} (2G).pdf")])
+        # rodando de novo, cada grau acha o seu
+        r1 = self.lote([A], grau="1g").itens[0]
+        r2 = self.lote([A], grau="2g").itens[0]
+        self.assertEqual((r1.situacao, r2.situacao), (modelos.JA_BAIXADO, modelos.JA_BAIXADO))
+        self.assertEqual((Path(r1.arquivo).name, Path(r2.arquivo).name),
+                         (f"{A.nome_arquivo}.pdf", f"{A.nome_arquivo} (2G).pdf"))
+        self.assertEqual(len(self.relatorio()), 2)
+
+    def test_manifesto_do_outro_grau_baixa_de_novo(self):
+        # um PDF com o nome dos autos do 2º grau cujo manifesto não diz grau (1º)
+        pdf_com_manifesto(self.destino / f"{A.nome_arquivo} (2G).pdf",
+                          paginacao.manifesto_esaj(A.formatado, 2, tribunal="TJAL"))
+        r = self.lote([A], grau="2g").itens[0]
+        self.assertEqual(r.situacao, modelos.OK)
+        self.assertIn("baixado de novo: o PDF na pasta é do outro grau", r.detalhe)
+        # e o inverso: o do 1º grau com o manifesto do 2º
+        pdf_com_manifesto(self.destino / f"{A2.nome_arquivo}.pdf",
+                          paginacao.manifesto_esaj(A2.formatado, 2, tribunal="TJAL", grau="2g"))
+        r = self.lote([A2], grau="1g").itens[0]
+        self.assertEqual(r.situacao, modelos.OK)
+        self.assertIn("o PDF na pasta é do outro grau", r.detalhe)
+        # manifesto do mesmo grau: já estava
+        pdf_com_manifesto(self.destino / f"{H.nome_arquivo} (2G).pdf",
+                          paginacao.manifesto_esaj(H.formatado, 2, tribunal="TJAL", grau="2g"))
+        r = self.lote([H], grau="1g").itens[0]
+        self.assertEqual(r.situacao, modelos.JA_BAIXADO, r.detalhe)
+        self.assertEqual(r.paginacao.get("grau"), "2g")
+
+    def test_json_do_processo_com_o_grau_e_o_nome_dos_autos(self):
+        resumo = self.lote([A, H], grau="1g", roteiro={H.formatado: ["nao_encontrado"]})
+        a, h = resumo.itens
+        pa, ph = processo_json(a), processo_json(h)
+        self.assertEqual((pa["grau"], pa["nome_arquivo"]), ("1g", A.nome_arquivo))
+        # sem PDF, o nome que os autos teriam
+        self.assertEqual((ph["grau"], ph["nome_arquivo"]), ("2g", f"{H.nome_arquivo} (2G)"))
+        self.assertNotIn("grau", pa["consultas"][0])
+        self.assertEqual(ph["consultas"][-1].get("grau"), "2g")
+
+
+# ============================================================ credenciais
+class TestCredenciaisEPerfil(BaseGrau):
+    def test_alternativo_do_2o_grau_pede_o_eproc2g_e_nunca_o_eproc_do_1o(self):
+        cofre = apoio.CofreFalso({"esaj:TJAL": ("u", "s"), "eproc:TJAL": ("u1", "s1"),
+                                  "eproc2g:TJAL": ("u2", "s2")})
+        resumo = self.lote([A], grau="2g", roteiro={A.formatado: ["nao_encontrado"]},
+                           cofre=cofre)
+        self.assertEqual(cofre.pedidos, ["esaj:TJAL", "eproc2g:TJAL"])
+        esaj, eproc_ = apoio.PortalFalso.todos
+        self.assertEqual((eproc_.portal, eproc_.grau, eproc_.credenciais),
+                         ("eproc2g:TJAL", "2g", ("u2", "s2")))
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+        self.assertEqual(resumo.itens[0].sistema, "eproc")
+
+    def test_sem_a_senha_do_eproc2g_so_esse_grupo_abre_a_janela(self):
+        cofre = apoio.CofreFalso({"esaj:TJAL": ("u", "s"), "eproc:TJAL": ("u1", "s1")})
+        self.lote([A], grau="2g", roteiro={A.formatado: ["nao_encontrado"]}, cofre=cofre)
+        self.assertNotIn("eproc:TJAL", cofre.pedidos, "a senha do 1º grau nunca vai ao 2º")
+        esaj, eproc_ = apoio.PortalFalso.todos
+        self.assertEqual(esaj.opcoes.modo_login("esaj"), "senha")
+        self.assertIsNone(eproc_.credenciais)
+        self.assertEqual(eproc_.opcoes.modo_login("eproc"), "manual")
+
+    def test_nao_encontrado_nos_dois_sistemas_do_2o_grau(self):
+        for n in (A, H, PL, E):
+            with self.subTest(n.formatado):
+                self.ctx = ContextoComEventos()
+                resumo = self.lote([n], grau="2g",
+                                   roteiro={n.formatado: ["nao_encontrado", "nao_encontrado"]},
+                                   destino=self.tmp / "Acervo" / "Processos" / n.nome_arquivo)
+                r = resumo.itens[0]
+                self.assertEqual(r.situacao, modelos.NAO_ENCONTRADO)
+                self.assertTrue(r.detalhe.startswith(
+                    "não encontrado no e-SAJ nem no eProc do TJAL (2º grau); confira o número; "),
+                    r.detalhe)
+                self.assertIn(modelos.dica_de_grau(n, "2g"), r.detalhe)
+                self.assertEqual([c.get("grau") for c in r.consultas], ["2g", "2g"])
+        # no 1º grau, a frase de sempre
+        self.ctx = ContextoComEventos()
+        r = self.lote([A2], grau="1g", roteiro={A2.formatado: ["nao_encontrado"] * 2},
+                      destino=self.tmp / "Acervo" / "Processos" / "1g").itens[0]
+        self.assertEqual(r.detalhe, "não encontrado no e-SAJ nem no eProc do TJAL; confira o "
+                                    "número")
+
+    def test_perfil_do_navegador_por_portal(self):
+        abertos = []
+        t = tribunais.por_sigla("TJAL")
+        with mock.patch.object(navegador, "Navegador",
+                               lambda perfil, **k: abertos.append(Path(perfil)) or perfil):
+            opcoes = apoio.opcoes_de_teste(self.tmp)
+            for alvo in (t, t.alternativo, t.no_grau("2g"), t.no_grau("2g").alternativo):
+                motor.fabrica_navegador_padrao(alvo, opcoes)
+            # dublê de Tribunal sem 'perfil': o nome de sempre
+            motor.fabrica_navegador_padrao(
+                types.SimpleNamespace(sistema="esaj", sigla="TJXX", urls={}), opcoes)
+        self.assertEqual([p.name for p in abertos],
+                         ["esaj-TJAL", "eproc-TJAL", "esaj-TJAL", "eproc2g-TJAL", "esaj-TJXX"])
+        self.assertTrue(all(p.parent == caminhos.PERFIS for p in abertos))
+
+    def test_pastas_e_esquecer_o_eproc_do_2o_grau(self):
+        perfis = self.tmp / "perfis"
+        self.assertEqual([p.name for p in navegador.pastas_do_portal("eproc2g:TJAL", perfis)],
+                         ["eproc2g-TJAL", "eproc2g-TJAL-certificado"])
+        self.assertEqual([p.name for p in navegador.pastas_do_portal("eproc:tjal", perfis)],
+                         ["eproc-TJAL", "eproc-TJAL-certificado"])
+        for nome in ("eproc-TJAL", "eproc-TJAL-certificado", "eproc2g-TJAL",
+                     "eproc2g-TJAL-certificado", "esaj-TJAL"):
+            (perfis / nome).mkdir(parents=True)
+            (perfis / nome / "sessao.json").write_text("{}", encoding="utf-8")
+        self.assertTrue(navegador.esquecer_portal("eproc2g:TJAL", perfis))
+        self.assertEqual(sorted(p.name for p in perfis.iterdir() if p.is_dir()),
+                         ["eproc-TJAL", "eproc-TJAL-certificado", "esaj-TJAL"])
+        for invalido in ("eproc3g:TJAL", "eproc2g:../../x", "eproc2g:"):
+            with self.assertRaises(ValueError):
+                navegador.pastas_do_portal(invalido, perfis)
+
+
+# ============================================================== relatório
+class TestRelatorioPorGrau(BaseGrau):
+    def gravar_csv(self, pasta: Path, linhas: list[list], colunas=None):
+        colunas = colunas or motor.COLUNAS
+        arquivo = pasta / "_controle" / "relatorio.csv"
+        arquivo.parent.mkdir(parents=True, exist_ok=True)
+        corpo = "\r\n".join(";".join(str(c) for c in l) for l in [colunas] + linhas)
+        arquivo.write_bytes(("﻿" + corpo + "\r\n").encode("utf-8"))
+        return arquivo
+
+    def test_relatorio_da_1_0_2_com_o_hc_nao_encontrado_vira_uma_linha_so(self):
+        antigas = motor.COLUNAS[:-1]            # 1.0.2: sem a coluna "grau"
+        self.gravar_csv(self.destino, [
+            [1, A.formatado, "TJAL", "esaj", "OK", 2, 1, f"{A.nome_arquivo}.pdf", "não", "", "",
+             "2026-01-01 10:00:00", ""],
+            [2, H.formatado, "TJAL", "esaj", "NAO_ENCONTRADO", "", "", "", "não", "",
+             "não encontrado no e-SAJ nem no eProc do TJAL; confira o número",
+             "2026-01-01 10:01:00", ""]], antigas)
+        (self.destino / f"{A.nome_arquivo}.pdf").write_bytes(apoio.pdf_bytes(2))
+        lidas = motor.ler_relatorio_do_lote(self.destino, self.tmp / "Sigilosos")
+        # a linha antiga do HC, sem grau, vale como do 2º grau (o número só existe nele)
+        self.assertEqual([c for c, _ in lidas], [A.nome_arquivo, f"{H.nome_arquivo} (2G)"])
+        # o --retomar a retoma (sem --grau: o HC vai ao 2º grau assim mesmo)
+        opcoes = apoio.opcoes_de_teste(self.tmp)
+        numeros, ignorados = cli._retomar([], self.destino, opcoes, None, motor, modelos, cnj)
+        self.assertEqual([n.formatado for n in numeros], [H.formatado])
+        self.assertEqual(ignorados, [])
+        # a rodada da 1.1.0 troca a linha antiga pela nova: uma linha só do HC
+        resumo = self.lote([H], grau="1g")
+        self.assertEqual(resumo.itens[0].situacao, modelos.OK)
+        linhas = self.relatorio()
+        self.assertEqual([(l["processo"], l["situacao"], l["grau"]) for l in linhas],
+                         [(A.formatado, "OK", "1g"), (H.formatado, "OK", "2g")])
+
+    def test_retomar_por_grau(self):
+        self.gravar_csv(self.destino, [
+            [1, A.formatado, "TJAL", "esaj", "ERRO", "", "", "", "não", "", "x", "", "falha",
+             "1g"],
+            [2, A.formatado, "TJAL", "esaj", "ERRO", "", "", "", "não", "", "x", "", "falha",
+             "2g"],
+            [3, A2.formatado, "TJAL", "esaj", "ERRO", "", "", "", "não", "", "x", "", "falha",
+             "1g"]])
+        opcoes = apoio.opcoes_de_teste(self.tmp, grau="2g")
+        numeros, ignorados = cli._retomar([], self.destino, opcoes, None, motor, modelos, cnj)
+        self.assertEqual([n.formatado for n in numeros], [A.formatado])
+        self.assertEqual([(i["numero"], i["motivo"]) for i in ignorados],
+                         [(A.formatado, "do 1º grau: para retomá-la, use --grau 1g"),
+                          (A2.formatado, "do 1º grau: para retomá-la, use --grau 1g")])
+        opcoes = apoio.opcoes_de_teste(self.tmp, grau="1g")
+        numeros, ignorados = cli._retomar([], self.destino, opcoes, None, motor, modelos, cnj)
+        self.assertEqual([n.formatado for n in numeros], [A.formatado, A2.formatado])
+        self.assertEqual([i["motivo"] for i in ignorados],
+                         ["do 2º grau: para retomá-la, use --grau 2g"])
+        # a relação pede A no grau do lote: a linha dele é a desse grau
+        numeros, _ = cli._retomar([A], self.destino, opcoes, None, motor, modelos, cnj)
+        self.assertEqual([n.formatado for n in numeros], [A.formatado, A2.formatado])
+
+    def test_retomar_baixado_do_2o_grau_cujo_pdf_saiu(self):
+        self.lote([A], grau="2g")
+        (self.destino / f"{A.nome_arquivo} (2G).pdf").unlink()
+        opcoes = apoio.opcoes_de_teste(self.tmp, grau="2g")
+        numeros, _ = cli._retomar([], self.destino, opcoes, None, motor, modelos, cnj)
+        self.assertEqual([n.formatado for n in numeros], [A.formatado])
+        # o do 1º grau na pasta não conta para os autos do 2º
+        (self.destino / f"{A.nome_arquivo}.pdf").write_bytes(apoio.pdf_bytes(2))
+        numeros, _ = cli._retomar([A], self.destino, opcoes, None, motor, modelos, cnj)
+        self.assertEqual([n.formatado for n in numeros], [A.formatado])
+
+    def test_linha_mascarada_leva_o_grau(self):
+        resumo = self.lote([A], grau="2g", roteiro={A.formatado: ["ok_sigiloso"]})
+        self.assertTrue(resumo.itens[0].sigiloso)
+        linha = self.relatorio()[0]
+        self.assertEqual((linha["processo"], linha["grau"]), (motor.MASCARA_SIGILOSO, "2g"))
+        completo = self.relatorio(self.tmp / "Sigilosos" / self.destino.name / "_controle" /
+                                  "relatorio.csv")
+        self.assertEqual((completo[0]["processo"], completo[0]["grau"]), (A.formatado, "2g"))
+
+    def test_mascarar_mantem_a_linha_do_2o_grau_que_so_o_completo_tem(self):
+        raiz = self.tmp / "Sigilosos"
+        lote = self.tmp / "Acervo" / "Processos" / "Lote X"
+        self.gravar_csv(lote, [
+            [1, A.formatado, "TJAL", "esaj", "OK", 2, 1, f"{A.nome_arquivo}.pdf", "não", "",
+             "", "", "", "1g"]])
+        self.gravar_csv(raiz / "Lote X", [
+            [5, A.formatado, "TJAL", "esaj", "OK", 2, 1, f"{A.nome_arquivo} (2G).pdf", "sim", "",
+             "", "", "", "2g"]])
+        ret = motor.Retirada()
+        motor._mascarar_relatorios(ret, [lote], raiz, {A.nome_arquivo})
+        completo = self.relatorio(raiz / "Lote X" / "_controle" / "relatorio.csv")
+        self.assertEqual([(l["processo"], l["grau"], l["sigiloso"]) for l in completo],
+                         [(A.formatado, "1g", "sim"), (A.formatado, "2g", "sim")])
+        do_lote = self.relatorio(lote / "_controle" / "relatorio.csv")
+        self.assertEqual([(l["processo"], l["grau"]) for l in do_lote],
+                         [(motor.MASCARA_SIGILOSO, "1g")])
+
+    def test_a_dos_dois_graus_sigiloso_no_mesmo_lote(self):
+        self.lote([A], grau="1g", roteiro={A.formatado: ["ok_sigiloso"]})
+        self.lote([A], grau="2g", roteiro={A.formatado: ["ok_sigiloso"]})
+        completo = self.relatorio(self.tmp / "Sigilosos" / self.destino.name / "_controle" /
+                                  "relatorio.csv")
+        self.assertEqual([(l["processo"], l["grau"]) for l in completo],
+                         [(A.formatado, "1g"), (A.formatado, "2g")])
+        self.assertEqual([(l["processo"], l["grau"]) for l in self.relatorio()],
+                         [(motor.MASCARA_SIGILOSO, "1g"), (motor.MASCARA_SIGILOSO, "2g")])
+        sig = self.tmp / "Sigilosos" / self.destino.name
+        self.assertTrue((sig / f"{A.nome_arquivo}.pdf").is_file())
+        self.assertTrue((sig / f"{A.nome_arquivo} (2G).pdf").is_file())
+
+
+# ================================================================== sigilo
+class TestSigiloNosDoisGraus(BaseGrau):
+    def test_s_sigiloso_no_2o_grau_tira_os_autos_e_os_textos_dos_dois_graus(self):
+        acervo = self.tmp / "Acervo"
+        outro = acervo / "Processos" / "Lote antigo"
+        (outro / "_controle").mkdir(parents=True)
+        (outro / f"{S.nome_arquivo}.pdf").write_bytes(apoio.pdf_bytes(2))
+        (outro / "_controle" / f"{S.nome_arquivo}_capa.txt").write_text("capa", "utf-8")
+        # o PDF do incidente fora do 1º nível dos lotes (numa subpasta)
+        sub = outro / "subpasta"
+        sub.mkdir()
+        (sub / f"{S.nome_arquivo}-01.pdf").write_bytes(apoio.pdf_bytes(1))
+        textos = acervo / "_ia" / "texto"
+        textos.mkdir(parents=True)
+        for nome in (S.nome_arquivo, f"{S.nome_arquivo} (2G)", f"{S.nome_arquivo}-01",
+                     f"{S.nome_arquivo}-50000 (2G)", A.nome_arquivo):
+            (textos / f"{nome}.txt").write_text("texto", encoding="utf-8")
+
+        r = self.lote([S], grau="2g", roteiro={S.formatado: ["ok_sigiloso"]}).itens[0]
+        self.assertTrue(r.sigiloso)
+        sig = self.tmp / "Sigilosos"
+        self.assertTrue((sig / self.destino.name / f"{S.nome_arquivo} (2G).pdf").is_file())
+        self.assertFalse((self.destino / f"{S.nome_arquivo} (2G).pdf").exists())
+        # o PDF do 1º grau, de outro lote do acervo, sai também, com a capa
+        self.assertFalse((outro / f"{S.nome_arquivo}.pdf").exists())
+        self.assertTrue((sig / "Lote antigo" / f"{S.nome_arquivo}.pdf").is_file())
+        self.assertTrue((sig / "Lote antigo" / "_controle" / f"{S.nome_arquivo}_capa.txt")
+                        .is_file())
+        self.assertFalse((sub / f"{S.nome_arquivo}-01.pdf").exists())
+        # os textos dos dois graus e dos incidentes saem; o de outro processo fica
+        self.assertEqual(sorted(p.name for p in textos.iterdir()), [f"{A.nome_arquivo}.txt"])
+        # e o próximo download de S, no 1º grau, já nasce sigiloso
+        r = self.lote([S], grau="1g", destino=acervo / "Processos" / "Novo").itens[0]
+        self.assertTrue(r.sigiloso)
+        self.assertTrue((sig / "Novo" / f"{S.nome_arquivo}.pdf").is_file())
+
+    def test_retirar_do_acervo_leva_os_dois_graus_e_o_recurso_interno(self):
+        acervo = self.tmp / "Acervo"
+        lote = acervo / "Processos" / "Lote E"
+        controle = lote / "_controle"
+        controle.mkdir(parents=True)
+        nomes = (P.nome_arquivo, f"{P.nome_arquivo} (2G)", f"{P.nome_arquivo}-50000 (2G)")
+        for nome in nomes:
+            (lote / f"{nome}.pdf").write_bytes(apoio.pdf_bytes(1))
+            (controle / f"{nome}_capa.json").write_text("{}", encoding="utf-8")
+        (lote / f"{A.nome_arquivo} (2G).pdf").write_bytes(apoio.pdf_bytes(1))
+        self.assertEqual(motor._incidentes_no_acervo(P.nome_arquivo, [lote], None),
+                         [E.nome_arquivo])
+        ret = motor.retirar_do_acervo(None, P, raiz_sigilosos=self.tmp / "Sigilosos",
+                                      lotes=[lote], acervo=acervo)
+        self.assertEqual(sorted(p.name for p in ret.autos),
+                         sorted(f"{nome}.pdf" for nome in nomes))
+        destino = self.tmp / "Sigilosos" / "Lote E"
+        for nome in nomes:
+            self.assertTrue((destino / f"{nome}.pdf").is_file(), nome)
+            self.assertTrue((destino / "_controle" / f"{nome}_capa.json").is_file(), nome)
+        self.assertEqual([p.name for p in lote.glob("*.pdf")], [f"{A.nome_arquivo} (2G).pdf"])
+        # pelo embargo (o incidente), o principal fica
+        ret = motor.retirar_do_acervo(None, E, raiz_sigilosos=self.tmp / "Sigilosos",
+                                      lotes=[lote], acervo=acervo)
+        self.assertEqual(ret.autos, {})
+
+    def test_apagar_texto_da_ia_sem_lote_nenhum(self):
+        acervo = self.tmp / "Acervo"
+        textos = acervo / "_ia" / "texto"
+        textos.mkdir(parents=True)
+        for nome in (f"{P.nome_arquivo}-50000 (2G)", f"{P.nome_arquivo}-01", P.nome_arquivo,
+                     A.nome_arquivo):
+            (textos / f"{nome}.txt").write_text("t", encoding="utf-8")
+        motor._apagar_texto_da_ia(acervo, P.nome_arquivo)
+        self.assertEqual(sorted(p.name for p in textos.iterdir()), [f"{A.nome_arquivo}.txt"])
+        # o do incidente só leva o dele
+        (textos / f"{P.nome_arquivo}.txt").write_text("t", encoding="utf-8")
+        (textos / f"{P.nome_arquivo}-01.txt").write_text("t", encoding="utf-8")
+        motor._apagar_texto_da_ia(acervo, f"{P.nome_arquivo}-01")
+        self.assertEqual(sorted(p.name for p in textos.iterdir()),
+                         sorted([f"{A.nome_arquivo}.txt", f"{P.nome_arquivo}.txt"]))
+
+    def test_capa_do_2o_grau_com_segredo_vale_para_o_1o(self):
+        controle = self.destino / "_controle"
+        controle.mkdir(parents=True)
+        (controle / f"{A.nome_arquivo} (2G)_capa.txt").write_text(
+            "Processo ... SEGREDO DE JUSTIÇA", encoding="utf-8")
+        r = self.lote([A], grau="1g").itens[0]
+        self.assertTrue(r.sigiloso)
+
+    def test_originario_herda_o_sigilo_da_origem(self):
+        capa = {"formato": "helestron.capa/2", "grau": "2g",
+                "capa": {"numeros_1a_instancia": [{"numero": A.formatado, "foro": "x"}]}}
+        # A é sigiloso pela pasta dos sigilosos (de outro lote)
+        sig = self.tmp / "Sigilosos" / "Outro lote"
+        sig.mkdir(parents=True)
+        (sig / f"{A.nome_arquivo}.pdf").write_bytes(apoio.pdf_bytes(1))
+        r = self.lote([H], grau="1g", capas={H.formatado: capa}).itens[0]
+        self.assertEqual((r.situacao, r.grau), (modelos.OK, "2g"))
+        self.assertTrue(r.sigiloso)
+        self.assertIn(f"tratado como sigiloso: o processo de origem {A.formatado} é sigiloso",
+                      r.detalhe)
+        self.assertTrue((self.tmp / "Sigilosos" / self.destino.name /
+                         f"{H.nome_arquivo} (2G).pdf").is_file())
+        self.assertFalse((self.destino / f"{H.nome_arquivo} (2G).pdf").exists())
+        self.assertTrue(sigilo.motivo_do_download(H), "vai para a regra única")
+
+    def test_origem_publica_deixa_o_originario_publico(self):
+        capa = {"capa": {"numeros_1a_instancia": [{"numero": A.formatado}, {"numero": ""}]}}
+        r = self.lote([H], grau="2g", capas={H.formatado: capa}).itens[0]
+        self.assertFalse(r.sigiloso)
+        self.assertTrue((self.destino / f"{H.nome_arquivo} (2G).pdf").is_file())
+        self.assertFalse(sigilo.motivo_do_download(H))
+
+
+# =================================================================== eProc
+class TestEProcNoGrau(apoio.PastaTemporaria):
+    def tribunal(self, grau="1g"):
+        t = replace(tribunais.por_sigla("TJRS"),
+                    urls={"1g": ["https://eproc1g.tjfalso.invalid/eproc/"],
+                          "2g": ["https://eproc2g.tjfalso.invalid/eproc/"]})
+        return t.no_grau(grau)
+
+    def portal(self, tribunal, ctx=None, **extra):
+        return eproc.PortalEProc(None, tribunal, apoio.opcoes_de_teste(self.tmp), ctx, None,
+                                 seletores=eproc.SELETORES_PADRAO, **extra)
+
+    def test_grau_so_do_tribunal(self):
+        p1, p2 = self.portal(self.tribunal()), self.portal(self.tribunal("2g"))
+        self.assertEqual((p1.grau, p1.nome), ("1g", "eProc do TJRS"))
+        self.assertEqual((p2.grau, p2.nome), ("2g", "eProc do TJRS (2º grau)"))
+        # grau= igual ao do Tribunal é aceito; divergente é erro
+        self.assertEqual(self.portal(self.tribunal("2g"), grau="2").grau, "2g")
+        with self.assertRaises(ValueError) as caso:
+            self.portal(self.tribunal(), grau="2g")
+        self.assertIn("passe tribunal.no_grau('2g')", str(caso.exception))
+        with self.assertRaises(ValueError):
+            self.portal(self.tribunal("2g"), grau="1g")
+
+    def test_sem_endereco_do_2o_grau_nao_abre(self):
+        so_1g = replace(tribunais.por_sigla("TJRS"),
+                        urls={"1g": ["https://eproc1g.tjfalso.invalid/eproc/"]})
+        self.portal(so_1g)                              # o 1º grau, como sempre
+        with self.assertRaises(modelos.PortalIndisponivel) as caso:
+            self.portal(replace(so_1g, grau="2g"))
+        self.assertIn("eProc do TJRS (2º grau)", str(caso.exception))
+
+    def test_nao_encontrado_com_a_dica_do_grau(self):
+        for grau, inicio in (("1g", "não encontrado no 1º grau do eProc do TJRS. Confira o "
+                                    "número; "),
+                             ("2g", "não encontrado no eProc do TJRS (2º grau). Confira o "
+                                    "número; ")):
+            p = self.portal(self.tribunal(grau))
+            p._pela_pesquisa_rapida = lambda n: "nao_encontrado"
+            p._pela_consulta = lambda n: "nao_encontrado"
+            for n in (A, H, PL, E):
+                with self.subTest(grau=grau, numero=n.formatado):
+                    with self.assertRaises(modelos.ProcessoNaoEncontrado) as caso:
+                        p._abrir_processo(n)
+                    texto = str(caso.exception)
+                    self.assertTrue(texto.startswith(inicio), texto)
+                    self.assertIn(modelos.dica_de_grau(n, grau), texto)
+
+    def test_eventos_com_o_grau_so_no_2o(self):
+        for grau in ("1g", "2g"):
+            ctx = ContextoComEventos()
+            p = self.portal(self.tribunal(grau), ctx)
+            p._evento("login_aguardando", modo="senha", motivo="manual")
+            p._evento("login_concluido")
+            self.assertEqual([t for t, _ in ctx.eventos], ["login_aguardando", "login_concluido"])
+            for tipo, dados in ctx.eventos:
+                self.assertEqual((dados["sistema"], dados["tribunal"]), ("eproc", "TJRS"))
+                with self.subTest(grau=grau, tipo=tipo):
+                    if grau == "2g":
+                        self.assertEqual(dados["grau"], "2g")
+                    else:
+                        self.assertNotIn("grau", dados)
+
+    def test_manifesto_e_capa_json_com_o_grau_so_no_2o(self):
+        n = apoio.numero("5000001", tr="21")
+        m1 = eproc.manifesto_do_processo(n, "eProc do TJRS", "TJRS", {}, [], [], False)
+        m2 = eproc.manifesto_do_processo(n, "eProc do TJRS (2º grau)", "TJRS", {}, [], [],
+                                         False, grau="2g")
+        self.assertNotIn("grau", m1)
+        self.assertEqual((m2["grau"], paginacao.grau(m2), paginacao.grau(m1)), ("2g", "2g", "1g"))
+        c1 = eproc.dados_da_capa(n, "eProc do TJRS", "TJRS", {}, [], [], False, m1)
+        c2 = eproc.dados_da_capa(n, "eProc do TJRS (2º grau)", "TJRS", {}, [], [], False, m2,
+                                 grau="2g")
+        self.assertNotIn("grau", c1)
+        self.assertEqual(list(c2)[:3], ["formato", "sistema", "grau"])
+        self.assertEqual(c2["grau"], "2g")
+        self.assertEqual({k: v for k, v in c2.items() if k not in ("grau", "portal",
+                                                                    "extraido_em")},
+                         {k: v for k, v in c1.items() if k not in ("portal", "extraido_em")})
+
+    def test_essencial_da_paginacao_com_o_grau(self):
+        m = paginacao.manifesto_esaj(A.formatado, 3, tribunal="TJAL", grau="2g")
+        self.assertEqual(motor.essencial_da_paginacao(m)["grau"], "2g")
+        m = paginacao.manifesto_esaj(A.formatado, 3, tribunal="TJAL")
+        self.assertNotIn("grau", motor.essencial_da_paginacao(m))
+
+
+# ==================================================================== CLI
+class TestCliGrau(BaseCli):
+    def ler_json(self, arq):
+        return json.loads(Path(arq).read_text(encoding="utf-8"))
+
+    def test_grau_formas_aceitas_e_erro_de_uso(self):
+        parser = cli.criar_parser()
+        for valor, esperado in (("1g", "1g"), ("2g", "2g"), ("1", "1g"), ("2", "2g"),
+                                ("2º", "2g"), ("1º", "1g"), ("2G", "2g")):
+            with self.subTest(valor):
+                self.assertEqual(parser.parse_args(["--grau", valor]).grau, esperado)
+        self.assertIsNone(parser.parse_args([]).grau)
+        erros = io.StringIO()
+        with mock.patch("sys.stderr", erros), self.assertRaises(SystemExit) as saida:
+            cli.main([A.formatado, "--grau", "3"], configurar_log=False)
+        self.assertEqual(saida.exception.code, 2)
+        self.assertIn("'3' não é grau: use 1g (1º grau) ou 2g (2º grau)", erros.getvalue())
+
+    def test_sem_grau_e_1g_mesmo_com_os_ajustes_em_2g(self):
+        self.cfg.definir("download", "grau", "2g")
+        arq = self.tmp / "lote.json"
+        codigo, _ = self.rodar([A.formatado, "--json", str(arq)])
+        self.assertEqual(codigo, 0)
+        self.assertEqual(self.capturado["opcoes"].grau, "1g")
+        self.assertEqual(self.ler_json(arq)["grau"], "1g")
+        codigo, _ = self.rodar([A.formatado, "--json", str(arq), "--grau", "2g"])
+        self.assertEqual(self.capturado["opcoes"].grau, "2g")
+        dados = self.ler_json(arq)
+        self.assertEqual(dados["grau"], "2g")
+
+    def test_grau_do_topo_em_todo_json(self):
+        # a saída sem relação
+        arq = self.tmp / "sem.json"
+        codigo, _ = self.rodar(["--json", str(arq), "--grau", "2g"])
+        self.assertEqual(codigo, 2)
+        self.assertEqual(self.ler_json(arq)["grau"], "2g")
+        codigo, _ = self.rodar(["--json", str(arq)])
+        self.assertEqual(self.ler_json(arq)["grau"], "1g")
+        # o primeiro JSON do --desanexar
+        arq = self.tmp / "des.json"
+        popen = mock.Mock(return_value=mock.Mock(pid=77))
+        with mock.patch.object(cli.subprocess, "Popen", popen):
+            codigo, _ = self.rodar([A.formatado, "--json", str(arq), "--desanexar",
+                                    "--grau", "2g"])
+        self.assertEqual(codigo, 0)
+        self.assertEqual(self.ler_json(arq)["grau"], "2g")
+        self.assertIn("--grau", popen.call_args.args[0])
+        # o acompanhamento sem quem o crie com o grau: 1g
+        self.assertEqual(Acompanhamento(None).dados()["grau"], "1g")
+
+    def test_completar_aceita_o_recurso_interno(self):
+        codigo, _ = self.rodar(["0706265-50.2017/50000", "0706265-50.2017",
+                                "--completar", "8.02.0001"])
+        self.assertEqual(codigo, 0)
+        self.assertEqual([n.formatado for n in self.capturado["numeros"]],
+                         [E.formatado, P.formatado])
+
+    def test_credenciais_perguntadas_pelo_portal_no_grau(self):
+        self.cfg.definir("eproc", "login", "senha")
+        perguntados = []
+
+        def pedir(grupos, opcoes, cofre):
+            perguntados.extend((t.portal, t.grau) for t in grupos)
+            return {}
+        with mock.patch.object(cli, "_pedir_credenciais", pedir):
+            self.rodar([A.formatado, H.formatado, apoio.numero("5000001", tr="21").formatado,
+                        "--grau", "1g"])
+        self.assertEqual(perguntados, [("esaj:TJAL", "1g"), ("esaj:TJAL", "2g"),
+                                       ("eproc:TJRS", "1g")])
+        perguntados.clear()
+        with mock.patch.object(cli, "_pedir_credenciais", pedir):
+            self.rodar([apoio.numero("5000001", tr="21").formatado, SP.formatado,
+                        "--grau", "2g"])
+        # o TJSP sem o 2º grau fica de fora (o motor o dá como não suportado)
+        self.assertEqual(perguntados, [("eproc2g:TJRS", "2g")])
+
+    def test_pedir_credenciais_uma_vez_por_portal_com_o_nome_do_grau(self):
+        t = tribunais.por_sigla("TJRS")
+        cofre = apoio.CofreFalso()
+        opcoes = apoio.opcoes_de_teste(self.tmp)
+        saida = io.StringIO()
+        with mock.patch("sys.stdout", saida), mock.patch.object(cli, "_interativo",
+                                                                 lambda: False):
+            cli._pedir_credenciais([t, t.no_grau("2g"), t.no_grau("2g")], opcoes, cofre)
+        self.assertEqual(cofre.pedidos, ["eproc:TJRS", "eproc2g:TJRS"])
+        self.assertIn("sem usuário e senha guardados para o eProc do TJRS:", saida.getvalue())
+        self.assertIn("sem usuário e senha guardados para o eProc do TJRS (2º grau):",
+                      saida.getvalue())
+
+
+# ======================================================== eProc de mentira
+class TestEProcDoSegundoGrauDeMentira(apoio.PastaTemporaria):
+    """O PortalEProc do 2º grau contra o eProc de mentira no host do 2º grau
+    (apoio_eproc.EProcFalso(grau="2g")): o endereço, o nome, o manifesto, a
+    capa e as gravações pelo nome dos autos do 2º grau."""
+
+    @classmethod
+    def setUpClass(cls):
+        from testes import apoio_eproc as ae
+        if ae.navegador_de_teste() is None:
+            raise unittest.SkipTest("nenhum navegador (Chromium, Chrome ou Edge) abre aqui")
+
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.object(eproc, "PAUSA_DOCUMENTOS_S", 0)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_baixa_no_eproc2g_com_o_grau(self):
+        from testes import apoio_eproc as ae
+        falso = ae.EProcFalso(grau="2g")
+        t = replace(tribunais.por_sigla("TJRS"), urls={"1g": [ae.BASE], "2g": [ae.BASE_2G]})
+        t2 = t.no_grau("2g")
+        ctx = ContextoComEventos(codigos=[ae.CODIGO])
+        opcoes = apoio.opcoes_de_teste(self.tmp, espera_s=20, espera_login_min=1,
+                                       baixar_midias=True)
+        destino = self.tmp / "provisorio" / f"{ae.P1.nome_arquivo} (2G).pdf"
+        with ae.navegador(falso, self.tmp, "eproc2g-TJRS") as nav:
+            portal = eproc.PortalEProc(nav, t2, opcoes, ctx, (ae.USUARIO, ae.SENHA),
+                                       seletores=eproc.SELETORES_PADRAO)
+            portal.entrar()
+            r = portal.baixar(ae.P1, destino)
+            nao = portal.baixar(ae.P_NAO, self.tmp / "provisorio" / "nao (2G).pdf")
+        self.assertEqual(r.situacao, modelos.OK, r.detalhe)
+        self.assertEqual(portal.base, ae.BASE_2G)
+        self.assertTrue(falso.pedidos)
+        self.assertTrue(all(ae.HOST not in u for _, u in falso.pedidos),
+                        "nada vai ao eProc do 1º grau")
+        m = paginacao.ler_do_pdf(destino)
+        self.assertEqual((m["grau"], m["portal"]), ("2g", "eProc do TJRS (2º grau)"))
+        self.assertIn(";grau=2g", paginacao.palavras_chave(m))
+        controle = destino.parent / "_controle"
+        capa = json.loads((controle / f"{ae.P1.nome_arquivo} (2G)_capa.json")
+                          .read_text("utf-8"))
+        self.assertEqual(capa["grau"], "2g")
+        self.assertTrue((controle / f"{ae.P1.nome_arquivo} (2G)_capa.txt").is_file())
+        self.assertFalse((controle / f"{ae.P1.nome_arquivo}_capa.json").exists())
+        self.assertTrue((controle / "midias" / f"{ae.P1.nome_arquivo} (2G)").is_dir())
+        self.assertEqual(nao.situacao, modelos.NAO_ENCONTRADO)
+        self.assertTrue(nao.detalhe.startswith("não encontrado no eProc do TJRS (2º grau). "
+                                               "Confira o número; "), nao.detalhe)
+        self.assertIn(modelos.dica_de_grau(ae.P_NAO, "2g"), nao.detalhe)
+
+    def test_o_eproc_do_1o_grau_nao_responde_no_host_do_2o(self):
+        from testes import apoio_eproc as ae
+        falso = ae.EProcFalso()
+        self.assertEqual((falso.host, falso.base), (ae.HOST, ae.BASE))
+        self.assertEqual(ae.EProcFalso(grau="2g").base, ae.BASE_2G)
+
+
+if __name__ == "__main__":
+    unittest.main()

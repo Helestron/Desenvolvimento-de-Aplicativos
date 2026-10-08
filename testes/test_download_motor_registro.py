@@ -121,8 +121,11 @@ class TestCausa(BaseRegistro):
                 self.assertTrue(r.refazer)
                 self.assertIn(causa, modelos.CAUSAS)
                 linhas = ler_relatorio(resumo.relatorio)
-                self.assertEqual(linhas[0][-1], "causa")
-                self.assertEqual(linhas[1][-1], causa)
+                # "causa" pelo nome da coluna; "grau" (1.1.0) veio depois dela
+                col = motor.COLUNAS.index("causa")
+                self.assertEqual(linhas[0][col], "causa")
+                self.assertEqual(linhas[1][col], causa)
+                self.assertEqual((linhas[0][-1], linhas[1][-1]), ("grau", "1g"))
 
     def test_interrompido_e_portal_parou(self):
         fp, fn = fabricas_com({TJAL2.formatado: ["cancelar"]})
@@ -169,7 +172,10 @@ class TestCausa(BaseRegistro):
         linhas = ler_relatorio(resumo.relatorio)
         self.assertTrue(all(len(l) == len(motor.COLUNAS) for l in linhas))
         self.assertEqual(linhas[1][1], motor.MASCARA_SIGILOSO)
-        self.assertEqual(linhas[2][-1], modelos.CAUSA_FALHA)
+        col = motor.COLUNAS.index("causa")
+        self.assertEqual(linhas[2][col], modelos.CAUSA_FALHA)
+        # o grau vai também na linha mascarada (não identifica ninguém)
+        self.assertEqual([l[-1] for l in linhas[1:]], ["1g", "1g"])
 
     def test_relatorio_antigo_sem_causa_e_lido_e_mesclado(self):
         controle = self.destino / "_controle"
@@ -185,9 +191,13 @@ class TestCausa(BaseRegistro):
         fp, fn = fabricas_com()
         resumo = self.executar([TJAL2], fp, fn)
         linhas = ler_relatorio(resumo.relatorio)
-        self.assertEqual(linhas[0][-1], "causa")
-        self.assertEqual([(l[1], l[4], l[-1]) for l in linhas[1:]],
-                         [(TJAL1.formatado, "OK", ""), (TJAL2.formatado, "OK", "")])
+        col = motor.COLUNAS.index("causa")
+        self.assertEqual(linhas[0][col], "causa")
+        self.assertEqual(linhas[0][-1], "grau")
+        # a linha antiga, sem grau, é do 1º grau (o número não diz outro) e o
+        # ganha ao ser regravada
+        self.assertEqual([(l[1], l[4], l[col], l[-1]) for l in linhas[1:]],
+                         [(TJAL1.formatado, "OK", "", "1g"), (TJAL2.formatado, "OK", "", "1g")])
         # e o lote inteiro, com as linhas antigas sem causa
         lidas = motor.ler_relatorio_do_lote(self.destino, self.tmp / "Sigilosos")
         self.assertEqual([c for c, _ in lidas], [TJAL1.nome_arquivo, TJAL2.nome_arquivo])

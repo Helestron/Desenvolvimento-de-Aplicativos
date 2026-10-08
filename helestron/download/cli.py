@@ -6,6 +6,11 @@
         --destino PASTA --login certificado --sem-cofre --texto --eventos \\
         --json PASTA\\_helestron.json --log PASTA\\_helestron.log
 
+``--grau 1g|2g`` escolhe o grau dos autos (padrão: 1g, como na 1.0.2 - o
+padrão dos Ajustes vale só para a tela); o número que só existe no 2º grau
+(órgão 0000 ou 9xxx, recurso interno /50000) vai a ele de qualquer jeito.
+Os autos do 2º grau chamam-se "<número> (2G).pdf".
+
 Usa o mesmo motor da janela; o código de verificação do e-SAJ é pedido no
 próprio terminal. Sem terminal (quem chama não tem teclado: a skill do
 Claude, um script), a janela do navegador fica visível e o código é digitado
@@ -63,7 +68,19 @@ MAX_ESPERA_NAVEGADOR_MIN = 24 * 60   # --esperar-navegador: um dia, no máximo
 
 _RE_SUFIXO = re.compile(r"^\d\.\d{2}\.\d{4}$")
 # NNNNNNN-DD.AAAA (o "número curto" do e-SAJ, sem J.TR.OOOO), com ou sem /NN
-_RE_CURTO = re.compile(r"^\s*(\d{7})-?(\d{2})\.?(\d{4})(\s*/\s*\d{1,4})?\s*$")
+# (até /50000: o recurso interno do 2º grau)
+_RE_CURTO = re.compile(r"^\s*(\d{7})-?(\d{2})\.?(\d{4})(\s*/\s*\d{1,5})?\s*$")
+
+
+def _grau(valor: str) -> str:
+    """--grau: 1g ou 2g (aceita também 1, 2, 1º, 2º); outra coisa é erro de uso."""
+    from ..nucleo import cnj
+
+    grau = cnj.normalizar_grau(valor)
+    if not grau:
+        raise argparse.ArgumentTypeError(
+            f"'{valor}' não é grau: use 1g (1º grau) ou 2g (2º grau)")
+    return grau
 
 
 def _sufixo(valor: str) -> str:
@@ -105,6 +122,12 @@ def criar_parser() -> ArgumentParser:
     p.add_argument("--visivel", action="store_true", help="mostrar a janela do navegador")
     p.add_argument("--login", choices=("senha", "certificado", "manual"),
                    help="forma de entrar no portal (padrão: a dos Ajustes)")
+    p.add_argument("--grau", type=_grau, metavar="1g|2g",
+                   help="grau em que procurar os autos: 1g (as varas) ou 2g (os recursos e as "
+                        "ações originárias do tribunal); padrão: 1g (a opção Grau dos "
+                        "processos dos Ajustes vale só para a tela). O número de competência "
+                        "originária do tribunal (órgão 0000) e o recurso interno do 2º grau "
+                        "(/50000) vão sempre ao 2º grau")
     p.add_argument("--rebaixar", action="store_true",
                    help="baixar de novo mesmo o que já está na pasta")
     p.add_argument("--rebaixar-incompletos", action="store_true",
@@ -239,13 +262,23 @@ def _pedir_credenciais(grupos, opcoes, cofre) -> dict[str, tuple[str, str]]:
     """Pergunta usuário e senha dos portais que não têm credencial guardada.
 
     Sem cofre (--sem-cofre), não pergunta nada: o navegador abre na tela de
-    entrada para o usuário entrar."""
+    entrada para o usuário entrar.
+
+    'grupos': os Tribunais do lote JÁ NO GRAU (Tribunal.no_grau): a pergunta
+    é por portal (Tribunal.portal) - o e-SAJ dos dois graus é um acesso só
+    ('esaj:TJAL'); o eProc do 2º grau tem o seu ('eproc2g:TJAL'), e a senha do
+    eProc do 1º grau nunca é usada nele."""
     extras: dict[str, tuple[str, str]] = {}
     if cofre is None:
         return extras
+    perguntados: set[str] = set()
     for t in grupos:
-        if opcoes.modo_login(t.sistema) != "senha":
+        if opcoes.modo_login(t.sistema) != "senha" or t.portal in perguntados:
             continue
+        perguntados.add(t.portal)
+        # o nome com o grau só quando o acesso é do grau (o eProc do 2º grau)
+        nome = f"{t.nome_sistema} do {t.sigla}" + (
+            " (2º grau)" if t.portal != getattr(t, "portal_do_sistema", t.portal) else "")
         try:
             usuario, senha = cofre.obter(t.portal)
         except Exception:
@@ -253,10 +286,10 @@ def _pedir_credenciais(grupos, opcoes, cofre) -> dict[str, tuple[str, str]]:
         if usuario and senha:
             continue
         if not _interativo():
-            print(f"  (sem usuário e senha guardados para o {t.nome_sistema} do {t.sigla}: "
+            print(f"  (sem usuário e senha guardados para o {nome}: "
                   "se a sessão anterior tiver expirado, o navegador abre para você entrar)")
             continue
-        print(f"\nAcesso ao {t.nome_sistema} do {t.sigla} (Enter em branco pula):")
+        print(f"\nAcesso ao {nome} (Enter em branco pula):")
         try:
             usuario = input("  Usuário (CPF): ").strip()
             if not usuario:
@@ -411,7 +444,17 @@ class _RegistroDaExecucao:
                 pass
 
 
-def _registro_inacessivel(caminho: Path, erro: OSError, acomp=None, json_arq=None) -> int:
+def _grau_dos_argumentos(args) -> str:
+    """O grau do lote pela linha de comando: o --grau ou, sem ele, 1g - e não
+    o [download] grau dos Ajustes, que vale só para a tela: a skill que chama
+    o baixar sem --grau (o contrato da 1.0.2) continua no 1º grau."""
+    from ..nucleo import cnj
+
+    return cnj.normalizar_grau(getattr(args, "grau", None)) or "1g"
+
+
+def _registro_inacessivel(caminho: Path, erro: OSError, acomp=None, json_arq=None,
+                          grau: str = "1g") -> int:
     """O arquivo do --log (ou o padrão de --json) não pode ser aberto: sai com
     2, e o JSON diz por quê. Sem ele concluído, quem acompanha o lote pelo
     JSON (o desanexado, sobretudo) esperaria para sempre."""
@@ -419,7 +462,7 @@ def _registro_inacessivel(caminho: Path, erro: OSError, acomp=None, json_arq=Non
           "arquivo com --log, fora do acervo.", file=sys.stderr)
     if acomp is None and json_arq is not None:
         from .acompanhamento import Acompanhamento
-        acomp = Acompanhamento(json_arq)
+        acomp = Acompanhamento(json_arq, grau=grau)
     if acomp is not None:
         acomp.definir(log="")
         acomp.concluir(2, erro=f"não consegui abrir o arquivo de registro {caminho} ({erro})",
@@ -439,7 +482,8 @@ def _desanexar(argv: list[str], args, caminhos) -> int:
         with open(log_arq, "a", encoding="utf-8"):
             pass
     except OSError as erro:
-        return _registro_inacessivel(log_arq, erro, json_arq=json_arq)
+        return _registro_inacessivel(log_arq, erro, json_arq=json_arq,
+                                     grau=_grau_dos_argumentos(args))
     filho = [a for a in argv if a != "--desanexar"]
     if not args.log:
         filho += ["--log", str(log_arq)]
@@ -461,7 +505,7 @@ def _desanexar(argv: list[str], args, caminhos) -> int:
     # Um primeiro JSON, já com o pid de quem vai baixar: quem chamou pode lê-lo
     # na hora; o lote o regrava assim que começar.
     from .acompanhamento import Acompanhamento
-    inicial = Acompanhamento(json_arq, log=str(log_arq))
+    inicial = Acompanhamento(json_arq, log=str(log_arq), grau=_grau_dos_argumentos(args))
     inicial.definir(pid=processo.pid)
     inicial.gravar(forcar=True)
     inicial.fechar()
@@ -485,7 +529,8 @@ class _RegrasDoMotor:
         return self._linha
 
 
-def _baixado_que_volta(n, linha: dict, pastas, opcoes, motor, modelos) -> tuple[bool, str]:
+def _baixado_que_volta(n, linha: dict, pastas, opcoes, motor, modelos,
+                       autos: str | None = None) -> tuple[bool, str]:
     """O processo que o relatório dá como baixado (OK ou JA_BAIXADO) volta ao
     motor no --retomar? Devolve (volta?, por que fica de fora).
 
@@ -493,9 +538,11 @@ def _baixado_que_volta(n, linha: dict, pastas, opcoes, motor, modelos) -> tuple[
     lote (nem na de sigilosos dele) e o que o motor manda refazer ao achá-lo
     lá (_baixar_de_novo) - com --rebaixar-incompletos, o PDF com folhas (ou
     documentos) ausentes ou sem o manifesto de paginação; sempre, o do e-SAJ
-    de versão anterior com sinal de numeração deslocada."""
+    de versão anterior com sinal de numeração deslocada, e o PDF que o
+    manifesto diz ser do outro grau. 'autos': a chave dos autos da linha
+    (no 2º grau, "<número> (2G)"); sem ela, a do 1º grau."""
     situacao = (linha.get("situacao") or "").strip()
-    nome = f"{n.nome_arquivo}.pdf"
+    nome = f"{autos or n.nome_arquivo}.pdf"
     pdf = next((p / nome for p in pastas if motor._pdf_valido(p / nome)), None)
     if pdf is None:
         return True, ""
@@ -524,17 +571,25 @@ def _retomar(numeros, destino: Path, opcoes, cfg, motor, modelos, cnj, senhas=No
     se a relação agora a traz), e os do relatório que pedem nova tentativa.
     Do que o relatório dá como baixado, volta o que o motor baixaria de novo
     (_baixado_que_volta): o relatório sozinho não diz se o PDF continua na
-    pasta, nem se tem folhas ausentes. Devolve (números, ignorados com o porquê)."""
+    pasta, nem se tem folhas ausentes. Devolve (números, ignorados com o porquê).
+
+    Tudo pela chave dos AUTOS (o processo e o grau): o mesmo número no 1º e
+    no 2º grau são duas linhas. Uma linha do relatório só é retomada se o
+    grau dela (vazio, de versão anterior: o que o número diz, senão 1º) for
+    o que a regra dá ao número nesta chamada (cnj.grau_do_processo com o
+    --grau); a de outro grau fica em ignorados, com o --grau que a retoma."""
     pasta_processos = getattr(cfg, "pasta_processos", None)
     linhas = motor.ler_relatorio_do_lote(destino, opcoes.pasta_sigilosos, pasta_processos)
     pastas = (destino, motor.pasta_sigilosos_do_lote(opcoes.pasta_sigilosos, destino,
                                                      pasta_processos))
     baixado = (modelos.OK, modelos.JA_BAIXADO)
+    grau_do_lote = getattr(opcoes, "grau", "1g")
     por_chave = {chave: linha for chave, linha in linhas if chave}
     escolhidos, ignorados, vistos = [], [], set()
     for n in numeros:
-        linha = por_chave.get(n.nome_arquivo)
-        vistos.add(n.nome_arquivo)
+        autos = cnj.nome_dos_autos(n, cnj.grau_do_processo(n, grau_do_lote))
+        linha = por_chave.get(autos)
+        vistos.add(autos)
         if linha is None or modelos.pede_nova_tentativa(linha.get("situacao"), linha.get("causa")):
             escolhidos.append(n)
             continue
@@ -544,7 +599,7 @@ def _retomar(numeros, destino: Path, opcoes, cfg, motor, modelos, cnj, senhas=No
             continue
         motivo = ""
         if situacao.upper() in baixado:
-            volta, motivo = _baixado_que_volta(n, linha, pastas, opcoes, motor, modelos)
+            volta, motivo = _baixado_que_volta(n, linha, pastas, opcoes, motor, modelos, autos)
             if volta:
                 escolhidos.append(n)
                 continue
@@ -570,10 +625,29 @@ def _retomar(numeros, destino: Path, opcoes, cfg, motor, modelos, cnj, senhas=No
             n = cnj.ler(linha.get("processo") or "")
         except cnj.NumeroInvalido:
             continue
-        if ja_baixado and not _baixado_que_volta(n, linha, pastas, opcoes, motor, modelos)[0]:
+        if ja_baixado and not _baixado_que_volta(n, linha, pastas, opcoes, motor, modelos,
+                                                 chave)[0]:
+            continue
+        grau_da_linha = motor._grau_da_linha(linha)
+        if grau_da_linha != cnj.grau_do_processo(n, grau_do_lote):
+            ignorados.append({"numero": n.formatado,
+                              "situacao": (linha.get("situacao") or "").strip(),
+                              "motivo": _fora_do_grau(n, grau_da_linha, cnj)})
             continue
         escolhidos.append(n)
     return escolhidos, ignorados
+
+
+def _fora_do_grau(n, grau_da_linha: str, cnj) -> str:
+    """Por que a linha de outro grau não é retomada nesta chamada: o --grau
+    que a retoma - ou, se o número só é procurado no outro grau (órgão 0000 ou
+    9xxx, /50000), que nenhum --grau a retoma."""
+    rotulo = "2º grau" if grau_da_linha == "2g" else "1º grau"
+    if cnj.grau_do_numero(n):
+        return (f"do {rotulo}, mas este número só é procurado no "
+                f"{'2º grau' if cnj.grau_do_numero(n) == '2g' else '1º grau'}: "
+                "nenhum --grau a retoma")
+    return f"do {rotulo}: para retomá-la, use --grau {grau_da_linha}"
 
 
 def _tem_relatorio(destino: Path, opcoes, cfg, motor) -> bool:
@@ -683,7 +757,8 @@ def main(argv: list[str] | None = None, *, configurar_log: bool = True) -> int:
         criar_parser().print_help()
         print("\nInforme a relação (--lista arquivo.xlsx) ou os números dos processos.")
         from .acompanhamento import Acompanhamento
-        Acompanhamento(Path(os.path.abspath(Path(args.json).expanduser()))).concluir(
+        Acompanhamento(Path(os.path.abspath(Path(args.json).expanduser())),
+                       grau=_grau_dos_argumentos(args)).concluir(
             2, erro="informe a relação (--lista) ou os números dos processos", causa_erro="uso")
         return 2
     if args.desanexar:
@@ -711,8 +786,10 @@ def main(argv: list[str] | None = None, *, configurar_log: bool = True) -> int:
     acomp = None
     if args.json:
         from .acompanhamento import Acompanhamento
+        # o "grau" do topo do JSON é o do lote desde o primeiro JSON gravado
         acomp = Acompanhamento(Path(os.path.abspath(Path(args.json).expanduser())),
-                               log=str(caminho_log) if caminho_log else "")
+                               log=str(caminho_log) if caminho_log else "",
+                               grau=_grau_dos_argumentos(args))
     execucao = None
     if caminho_log is not None:
         try:
@@ -805,6 +882,11 @@ def _baixar(args, cfg, acomp) -> dict:
         print(conflito, file=sys.stderr)
         return falhou(conflito, "pastas_em_conflito")
     opcoes = OpcoesDownload.de_config(cfg)
+    # O grau do lote: o --grau ou, sem ele, 1g - NÃO o [download] grau que o
+    # de_config leu dos Ajustes (esse vale só para a tela): a skill que chama
+    # o baixar sem --grau continua recebendo os autos do 1º grau, como na
+    # 1.0.2. O número que só existe no 2º grau vai a ele assim mesmo.
+    opcoes.grau = _grau_dos_argumentos(args)
     if args.visivel:
         opcoes.mostrar_navegador = True
     if args.login:
@@ -862,12 +944,19 @@ def _baixar(args, cfg, acomp) -> dict:
         print("Retomando 1 processo." if len(numeros) == 1
               else f"Retomando {len(numeros)} processos.")
 
+    # Os grupos do motor (tribunal e grau), com o Tribunal já no grau: é pelo
+    # portal dele que se perguntam as credenciais ('eproc2g:TJAL' no eProc do
+    # 2º grau; o e-SAJ dos dois graus é 'esaj:TJAL').
     vistos, grupos = set(), []
     for n in numeros:
         t = tribunais.por_numero(n)
-        if t is not None and t.suportado and t.chave not in vistos:
-            vistos.add(t.chave)
-            grupos.append(t)
+        if t is None or not t.suportado:
+            continue
+        grau = cnj.grau_do_processo(n, opcoes.grau)
+        if (grau != "1g" and not t.tem_grau(grau)) or (t.chave, grau) in vistos:
+            continue                # sem o grau no catálogo: o motor o dá como não suportado
+        vistos.add((t.chave, grau))
+        grupos.append(t.no_grau(grau))
     if args.sem_cofre:
         cofre = _CofreComMemoria(None, {})
     else:

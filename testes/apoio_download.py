@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import tempfile
@@ -172,12 +173,19 @@ class PortalFalso:
     nao_encontrado | nao_encontrado_sem_acesso (SemAcesso levantado) |
     sem_acesso | sigiloso_sem_senha | login | teclado.
     Processo sem roteiro: "ok".
+
+    Como os portais de verdade, grava a capa e as gravações pelo nome do
+    destino (destino_pdf.stem: no 2º grau, "<número> (2G)") e lê o grau do
+    Tribunal que recebe (o motor o passa já no grau do grupo): ``grau`` e
+    ``portal`` registram o que ele recebeu, e ``destinos``, os destino_pdf
+    pedidos, na ordem. ``capas``: {número formatado: o _capa.json a gravar
+    com o PDF} (ex.: a capa do 2º grau com os "Números de 1ª Instância").
     """
 
     todos: list["PortalFalso"] = []
 
     def __init__(self, nav, tribunal, opcoes, ctx, credenciais, roteiro=None,
-                 falha_entrar=None, sistema="esaj"):
+                 falha_entrar=None, sistema="esaj", capas=None):
         self.nav = nav
         self.tribunal = tribunal
         self.opcoes = opcoes
@@ -186,8 +194,12 @@ class PortalFalso:
         self.roteiro = roteiro if roteiro is not None else {}
         self.falha_entrar = list(falha_entrar or [])
         self.sistema = tribunal.sistema
+        self.grau = getattr(tribunal, "grau", "1g")
+        self.portal = getattr(tribunal, "portal", "")
+        self.capas = capas if capas is not None else {}
         self.entradas = 0
         self.chamadas = []      # (número formatado, senha)
+        self.destinos = []      # os destino_pdf recebidos, na ordem
         PortalFalso.todos.append(self)
 
     def entrar(self):
@@ -199,6 +211,7 @@ class PortalFalso:
 
     def baixar(self, numero, destino_pdf, senha=None):
         self.chamadas.append((numero.formatado, senha))
+        self.destinos.append(Path(destino_pdf))
         acoes = self.roteiro.get(numero.formatado)
         acao = acoes.pop(0) if acoes else "ok"
         r = modelos.ResultadoProcesso(ordem=0, numero=numero.formatado,
@@ -215,12 +228,17 @@ class PortalFalso:
             os.replace(tmp, destino_pdf)
             controle = destino_pdf.parent / "_controle"
             controle.mkdir(exist_ok=True)
-            (controle / f"{numero.nome_arquivo}_capa.txt").write_text("capa", encoding="utf-8")
+            # pelo nome do destino (no 1º grau, Numero.nome_arquivo, como sempre)
+            (controle / f"{destino_pdf.stem}_capa.txt").write_text("capa", encoding="utf-8")
+            if numero.formatado in self.capas:
+                (controle / f"{destino_pdf.stem}_capa.json").write_text(
+                    json.dumps(self.capas[numero.formatado], ensure_ascii=False),
+                    encoding="utf-8")
             r.situacao, r.paginas, r.documentos = modelos.OK, 2, 1
             r.arquivo = str(destino_pdf)
             if acao == "ok_sigiloso":
                 r.sigiloso = True
-                midias = controle / "midias" / numero.nome_arquivo
+                midias = controle / "midias" / destino_pdf.stem
                 midias.mkdir(parents=True, exist_ok=True)
                 (midias / "audiencia.mp3").write_bytes(b"x" * 300)
                 r.midias = [str(midias / "audiencia.mp3")]
@@ -253,11 +271,18 @@ class PortalFalso:
         raise AssertionError(f"ação desconhecida: {acao}")
 
 
-def fabricas(roteiro=None, falha_entrar=None):
+def fabricas(roteiro=None, falha_entrar=None, capas=None):
     """(fabrica_portal, fabrica_navegador) prontas para o motor.executar.
 
     ``falha_entrar``: {sigla: [exceção ou None, ...]} - o que cada entrar()
-    faz, na ordem.
+    faz, na ordem. ``capas``: {número formatado: o _capa.json que o portal
+    grava com o PDF} (PortalFalso).
+
+    Exemplo do 2º grau: ``fp, fn = fabricas(); motor.executar([A], destino,
+    opcoes_de_teste(pasta, grau="2g"), ctx, fabrica_portal=fp,
+    fabrica_navegador=fn)`` -> ``[(p.portal, p.grau) for p in PortalFalso.todos]
+    == [("esaj:TJAL", "2g")]`` e ``PortalFalso.todos[0].destinos[0].name ==
+    "<A> (2G).pdf"``.
     """
     PortalFalso.todos.clear()
     NavegadorFalso.instancias.clear()
@@ -266,7 +291,7 @@ def fabricas(roteiro=None, falha_entrar=None):
 
     def fabrica_portal(nav, tribunal, opcoes, ctx, credenciais):
         return PortalFalso(nav, tribunal, opcoes, ctx, credenciais, roteiro,
-                           falhas.get(tribunal.sigla))
+                           falhas.get(tribunal.sigla), capas=capas)
 
     def fabrica_navegador(tribunal, opcoes):
         return NavegadorFalso(tribunal, opcoes)
