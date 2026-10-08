@@ -22,7 +22,7 @@ from dataclasses import dataclass, replace
 
 # Aceita o número com ou sem pontuação, e também os 20 dígitos corridos.
 # O separador aceita hífen, ponto, espaço e os travessões que o Word põe
-# sozinho no lugar do hífen ("0700123–45.2024...").
+# sozinho no lugar do hífen ("0700003–40.2024...").
 _SEP = r"[-.\s\u2010-\u2015]?"
 # O dependente (/01, /0003 - o e-SAJ usa 4 dígitos no 1º grau; /50000,
 # /50001 - o recurso interno do e-SAJ 2º grau, 5 dígitos) só é aceito quando
@@ -32,7 +32,7 @@ _SEP = r"[-.\s\u2010-\u2015]?"
 #     "... / 3 réus" é texto, não o incidente 03;
 #   * nunca seguido de letra, ordinal ou grau ("/ 1ª Vara", "/2ª Vara",
 #     "/1º"): o \w do Python já cobre letras, dígitos, 'ª' e 'º'.
-# Sem isso, a relação com "0700123-45.2024.8.02.0001 / 1ª Vara" baixava o
+# Sem isso, a relação com "0700003-40.2024.8.02.0001 / 1ª Vara" baixava o
 # incidente 01 no lugar dos autos principais.
 _PADRAO = re.compile(
     rf"(?<!\d)(\d{{7}}){_SEP}(\d{{2}}){_SEP}(\d{{4}}){_SEP}(\d){_SEP}(\d{{2}}){_SEP}(\d{{4}})"
@@ -57,7 +57,7 @@ class Numero:
 
     @property
     def principal(self) -> str:
-        """0700123-45.2024.8.02.0001 — o número sem o sufixo."""
+        """0700003-40.2024.8.02.0001 — o número sem o sufixo."""
         return (f"{self.sequencial}-{self.digito}.{self.ano}"
                 f".{self.segmento}.{self.tribunal}.{self.origem}")
 
@@ -80,7 +80,7 @@ class Numero:
 
     @property
     def unificado(self) -> str:
-        """0700123-45.2024 — o campo 'numeroDigitoAnoUnificado' do e-SAJ."""
+        """0700003-40.2024 — o campo 'numeroDigitoAnoUnificado' do e-SAJ."""
         return f"{self.sequencial}-{self.digito}.{self.ano}"
 
     @property

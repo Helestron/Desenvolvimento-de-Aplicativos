@@ -76,9 +76,10 @@ ESQUEMA: list[tuple[str, str, str, str]] = [
      "Grau em que o download da tela procura os autos quando o número não diz: 1g\n"
      "(1º grau: as varas) ou 2g (2º grau: os recursos e as ações originárias do\n"
      "tribunal). Dá para trocar em cada lote. A linha de comando não lê este\n"
-     "valor: usa --grau (sem ele, 1g). O número de competência originária do\n"
-     "tribunal (órgão 0000) e o recurso interno do 2º grau (/50000) vão sempre\n"
-     "ao 2º grau."),
+     "valor: usa --grau (sem ele, 1g). Vão sempre ao 2º grau o número de\n"
+     "competência originária do tribunal (órgão 0000), o do plantão do 2º grau\n"
+     "e da turma recursal (órgão começando por 9) e o recurso interno do 2º\n"
+     "grau (/50000)."),
 
     ("esaj", "login", "senha", "Como entrar no e-SAJ: senha, certificado ou manual."),
     ("eproc", "login", "senha", "Como entrar no eProc: senha ou manual."),
