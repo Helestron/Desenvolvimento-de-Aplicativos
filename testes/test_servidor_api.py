@@ -215,9 +215,12 @@ class TestTribunaisEAcessos(ServidorDeTeste):
         with mock.patch.object(tribunais, "ARQUIVO_LOCAL", arquivo):
             dados = self.cliente.dados("GET", "/api/tribunais/enderecos/esaj:TJAL")
             self.assertEqual(dados["rotulo"], "TJAL · e-SAJ")
-            self.assertEqual(dados["enderecos"], [{
-                "grau": "base", "rotulo": "Endereço do portal", "url": "https://www2.tjal.jus.br",
-                "padrao": "https://www2.tjal.jus.br", "corrigido": False}])
+            self.assertEqual(dados["enderecos"], [
+                {"grau": "base", "rotulo": "Endereço do portal", "url": "https://www2.tjal.jus.br",
+                 "padrao": "https://www2.tjal.jus.br", "corrigido": False},
+                # o e-SAJ de 2º grau do TJAL (cposg5), corrigível à parte
+                {"grau": "2g", "rotulo": "2º grau", "url": "https://www2.tjal.jus.br/cposg5",
+                 "padrao": "https://www2.tjal.jus.br/cposg5", "corrigido": False}])
             self.assertEqual(self.cliente.dados("GET", "/api/tribunais/enderecos"), [])
 
             novo = "https://novo.tjal.jus.br"
