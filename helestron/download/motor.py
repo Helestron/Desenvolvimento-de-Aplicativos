@@ -28,6 +28,14 @@ O que o motor garante, seja qual for o portal:
 * tribunal em transição (TJAL, TJSP, TJAC: e-SAJ e eProc): o que não for
   achado no sistema principal é procurado no alternativo, com outro
   navegador e outro login; o relatório diz em que sistema cada um foi achado;
+* cada processo vai ao grau que a regra única lhe dá (cnj.grau_do_processo:
+  o número - órgão 0000 ou 9xxx, recurso interno /50000 -, senão o grau do
+  lote), num grupo por tribunal e grau, sem troca automática de grau (a
+  troca de sistema e-SAJ -> eProc é dentro do mesmo grau). Os autos do 2º
+  grau chamam-se "<número> (2G).pdf", e a capa, o registro, a pasta
+  provisória e a linha do relatório seguem esse nome (a chave dos autos):
+  o mesmo número no 1º e no 2º grau, na mesma pasta, são dois autos. O
+  sigilo continua por processo e vale para os dois graus;
 * portal no modo "senha" sem senha guardada: o navegador abre na tela de
   entrada e o usuário entra à mão (é o que a tela promete ao avisar que
   falta a senha), em vez de o grupo inteiro falhar;
@@ -38,8 +46,9 @@ O que o motor garante, seja qual for o portal:
   situação, a CAUSA (coluna "causa", legível por máquina) do que não deu OK;
 * o que já estava na pasta conserva o registro do download que o trouxe
   (sistema, documentos, folhas ausentes, detalhe): o manifesto de paginação
-  gravado no PDF, o _controle/<número>_meta.json ao lado dele e, por fim, a
-  linha anterior do relatório - rodar a mesma relação de novo não apaga nada;
+  gravado no PDF, o _controle/<chave dos autos>_meta.json ao lado dele e, por
+  fim, a linha anterior do relatório - rodar a mesma relação de novo não
+  apaga nada;
 * a pasta do lote não é usada por dois downloads ao mesmo tempo
   (_controle/.executando);
 * o computador não dorme enquanto o lote roda.
@@ -75,14 +84,17 @@ from .modelos import (CANCELADO, CAUSA_FALHA, CAUSA_GRAVACAO, CAUSA_INESPERADO,
                       NAO_SUPORTADO, OK, SEM_ACESSO, SIGILOSO_SEM_SENHA, TENTAR_DE_NOVO,
                       Cancelado, CopiaAntigaPresa, LoginFalhou, NavegadorOcupado, OpcoesDownload,
                       PortalIndisponivel, ProcessoNaoEncontrado, ResultadoProcesso, ResumoLote,
-                      SemAcesso, SessaoPerdida, SigilosoSemSenha)
+                      SemAcesso, SessaoPerdida, SigilosoSemSenha, dica_de_grau)
 
 log = logging.getLogger("download.motor")
 
 # "causa" vai no FIM: quem lê o relatório pelo nome da coluna (o programa, o
 # Excel, a skill do Claude) continua lendo os relatórios antigos e os novos.
+# "grau" (1.1.0) veio depois dela, pelo mesmo motivo: "1g" ou "2g"; vazia no
+# relatório de versão anterior, vale o que o número diz (cnj.grau_do_numero)
+# ou, se ele não diz, 1º grau (_grau_da_linha).
 COLUNAS = ["ordem", "processo", "tribunal", "sistema", "situacao", "paginas", "documentos",
-           "arquivo", "sigiloso", "incompleto", "detalhe", "data_hora", "causa"]
+           "arquivo", "sigiloso", "incompleto", "detalhe", "data_hora", "causa", "grau"]
 MASCARA_SIGILOSO = "(processo sigiloso)"
 SIGILO_ANTERIOR = "assim constava de download anterior"
 DETALHE_MASCARA = ("processo em segredo de justiça; o número e os detalhes estão no relatório da "
@@ -173,7 +185,9 @@ def fabrica_portal_padrao(nav, tribunal, opcoes: OpcoesDownload, ctx: Contexto,
 
 
 def fabrica_navegador_padrao(tribunal, opcoes: OpcoesDownload):
-    """Um navegador com perfil próprio por portal (%LOCALAPPDATA%)."""
+    """Um navegador com perfil próprio por portal (%LOCALAPPDATA%): o do
+    e-SAJ serve aos dois graus (o mesmo login); o eProc do 2º grau, outra
+    instalação, tem o seu (perfis/eproc2g-TJAL, Tribunal.perfil)."""
     from .navegador import Navegador
     sistema = tribunal.sistema
     escolha = opcoes.navegador or "auto"
@@ -181,8 +195,10 @@ def fabrica_navegador_padrao(tribunal, opcoes: OpcoesDownload):
     if escolha.lower() not in ("auto", "chrome", "msedge", "chromium"):
         # caminho de um navegador (ex.: Chrome portátil) escrito no config.ini
         executavel, escolha = (escolha if Path(escolha).is_file() else None), "auto"
+    # O getattr protege os dublês de Tribunal (sem 'perfil'): o nome de sempre.
+    perfil = getattr(tribunal, "perfil", "") or f"{sistema}-{tribunal.sigla}"
     return Navegador(
-        caminhos.PERFIS / f"{sistema}-{tribunal.sigla}",
+        caminhos.PERFIS / perfil,
         # O eProc abre SEMPRE com janela: captcha, escolha de perfil e o
         # Keycloak só se resolvem nela. Depois do login o portal a minimiza
         # (CDP) se "mostrar o navegador" estiver desligado.
@@ -350,6 +366,19 @@ def _juntar(*partes: str) -> str:
     return "; ".join(p for p in partes if p)
 
 
+def _do_grau(grau) -> dict:
+    """{"grau": "2g"} no 2º grau; {} no 1º - os eventos, as consultas e o
+    registro do 1º grau ficam como eram (ausente = 1º grau)."""
+    return {"grau": "2g"} if grau == "2g" else {}
+
+
+def nome_do_portal(tribunal) -> str:
+    """'e-SAJ do TJAL'; no 2º grau, 'e-SAJ do TJAL (2º grau)': o nome do
+    portal nas frases ("Entrando no ...", "Login no ... falhou")."""
+    sufixo = " (2º grau)" if getattr(tribunal, "grau", "1g") == "2g" else ""
+    return f"{tribunal.nome_sistema} do {tribunal.sigla}{sufixo}"
+
+
 def _mesmo_volume(a: Path, b: Path) -> bool:
     try:
         return os.stat(a).st_dev == os.stat(b.parent).st_dev
@@ -411,7 +440,8 @@ def _nome_livre_do_grupo(pasta: Path, grupo: list[Path]) -> str:
 def _levar_arquivos(origem_dir: Path, alvo_dir: Path, nome: str,
                     manter_destino: bool = False) -> tuple[Path | None, list[str], Exception | None]:
     """Leva o PDF, a capa (texto e JSON), o registro do download (meta) e as
-    gravações do processo 'nome' (Numero.nome_arquivo) de uma pasta de lote
+    gravações dos autos 'nome' (a chave dos autos: cnj.nome_dos_autos - no
+    1º grau, Numero.nome_arquivo; no 2º, com " (2G)") de uma pasta de lote
     (ou da área provisória) para outra. O PDF vai por ÚLTIMO: onde ele está,
     o resto já chegou. 'manter_destino': o que já está no destino (a cópia
     recém-baixada) não é trocado pela cópia antiga.
@@ -510,14 +540,27 @@ def _levar_transcricoes_do_acervo(cfg, nome: str) -> tuple[int, list[Path], bool
 
 
 def _apagar_texto_da_ia(acervo, nome: str) -> None:
-    """O texto integral dos autos em <acervo>/_ia/texto não fica para trás."""
+    """O texto integral dos autos do processo 'nome' (Numero.nome_arquivo) em
+    <acervo>/_ia/texto não fica para trás: o dos dois graus ("<nome>.txt",
+    "<nome> (2G).txt") e o dos incidentes dele ("<nome>-01.txt",
+    "<nome>-50000 (2G).txt"), que herdam o sigilo - estejam onde estiverem os
+    PDFs (numa subpasta do lote, num lote que já saiu do acervo): a varredura
+    do acervo não olha _ia, e o texto ficaria lá até o próximo preparo."""
     if acervo is None:
         return
-    texto = Path(acervo) / "_ia" / "texto" / f"{nome}.txt"
+    pasta = Path(acervo) / "_ia" / "texto"
+    chaves = frozenset({nome})
     try:
-        _apagar(texto)
+        textos = [p for p in pasta.glob("*.txt")
+                  if sigilo.contem(chaves, chave_do_nome(p.name))]
     except OSError as erro:
-        log.warning("não consegui apagar %s (%s)", texto, erro)
+        log.warning("não consegui ler %s (%s)", pasta, erro)
+        return
+    for texto in textos:
+        try:
+            _apagar(texto)
+        except OSError as erro:
+            log.warning("não consegui apagar %s (%s)", texto, erro)
 
 
 # Pastas que a varredura por nome de arquivo não percorre: o cache da IA (o
@@ -843,6 +886,9 @@ def _mascarar_relatorios(ret: Retirada, lotes: list[Path], raiz_sigilosos: Path,
             completo = _ler_relatorio(completo_arq) or []
             por_ordem = {l.get("ordem"): l for l in completo
                          if _chave_relatorio(l.get("processo")) is not None}
+            # As linhas se casam pela chave dos AUTOS (processo e grau): com A
+            # no 1º e no 2º grau no mesmo lote, a linha do 2º grau que só o
+            # relatório completo tem não some por já se ter visto a do 1º.
             novo_completo, vistos = [], set()
             for l in linhas:
                 chave = _chave_relatorio(l.get("processo"))
@@ -855,16 +901,15 @@ def _mascarar_relatorios(ret: Retirada, lotes: list[Path], raiz_sigilosos: Path,
                     if l.get("arquivo") and "(na pasta de sigilosos)" not in l["arquivo"]:
                         l["arquivo"] = f"{l['arquivo']} (na pasta de sigilosos)"
                 if chave is not None:
-                    vistos.add(chave)
+                    vistos.add(_chave_da_linha(l))
                 novo_completo.append(l)
             for l in completo:              # o que só o completo tinha
-                chave = _chave_relatorio(l.get("processo"))
+                chave = _chave_da_linha(l)
                 if chave is not None and chave not in vistos:
                     vistos.add(chave)
                     novo_completo.append(l)
             try:
-                _gravar_relatorio(completo_arq, [[l.get(c, "") or "" for c in COLUNAS]
-                                                 for l in novo_completo])
+                _gravar_relatorio(completo_arq, [_valores_da_linha(l) for l in novo_completo])
             except OSError as erro:
                 # Sem a linha completa guardada, o número não sai do relatório
                 log.warning("não consegui gravar o relatório da pasta de sigilosos (%s)", erro)
@@ -876,7 +921,7 @@ def _mascarar_relatorios(ret: Retirada, lotes: list[Path], raiz_sigilosos: Path,
                     mascaradas.append(_Lote._linha_antiga(dict(l, sigiloso="sim"),
                                                           l.get("ordem", ""), True))
                 else:
-                    mascaradas.append([l.get(c, "") or "" for c in COLUNAS])
+                    mascaradas.append(_valores_da_linha(l))
             try:
                 _gravar_relatorio(arquivo, mascaradas)
             except OSError as erro:
@@ -891,13 +936,40 @@ def _mascarar_relatorios(ret: Retirada, lotes: list[Path], raiz_sigilosos: Path,
             log.info("    número do sigiloso tirado do relatório do lote %s.", lote.name)
 
 
+def _retirar_autos_do_lote(ret: Retirada, lote: Path, autos: str, raiz_sigilosos: Path,
+                           alvos: dict | None) -> None:
+    """Leva os autos 'autos' (a chave dos autos) de um lote do acervo, com a
+    capa, o registro do download e as gravações, para a pasta de sigilosos
+    do lote; o que não puder sair fica na Retirada, com o motivo."""
+    controle = lote / "_controle"
+    tem_pdf = (lote / f"{autos}.pdf").exists()
+    # a capa (texto e JSON) traz as partes e o registro do download, o
+    # número: andam com os autos e, se ficarem, também são aviso
+    restos = [controle / f"{autos}{sufixo}" for sufixo in SUFIXOS_CONTROLE]
+    restos.append(controle / "midias" / autos)
+    if not (tem_pdf or any(p.exists() for p in restos)):
+        return
+    novo, _problemas, erro = _levar_arquivos(
+        lote, _sigilosos_do_lote(lote, raiz_sigilosos, alvos), autos, manter_destino=True)
+    for resto in restos:
+        if resto.exists():
+            ret._preso(ret.outros_presos, resto, None)
+    if not tem_pdf:
+        return
+    if erro is not None or novo is None:
+        ret._preso(ret.autos_presos, lote / f"{autos}.pdf", erro)
+        return
+    ret.autos[lote / f"{autos}.pdf"] = novo
+    log.info("    cópia do sigiloso em %s levada para a pasta de sigilosos.", lote.name)
+
+
 def retirar_do_acervo(cfg, numero, *, raiz_sigilosos=None, lotes: list[Path] | None = None,
                       acervo=None, arquivos: list[Path] | None = None,
                       alvos: dict | None = None) -> Retirada:
     """Tira do acervo toda cópia de um processo sigiloso - e dos incidentes
-    dele, que herdam o sigilo: os autos de cada lote (Processos/<lote>/, com
-    capa e gravações) vão para <sigilosos>/<lote>/ - o que já estiver lá
-    vence -, as transcrições (com a gravação e o diário) para
+    dele, que herdam o sigilo: os autos de cada lote (Processos/<lote>/, os
+    dos dois graus, com capa e gravações) vão para <sigilosos>/<lote>/ - o
+    que já estiver lá vence -, as transcrições (com a gravação e o diário) para
     <sigilosos>/Transcricoes, o resto com o número dele no nome (a minuta em
     Produtos/, a do usuário noutra pasta, os autos numa subpasta do lote)
     para o mesmo caminho dentro da pasta dos sigilosos, o número dele sai dos
@@ -923,27 +995,12 @@ def retirar_do_acervo(cfg, numero, *, raiz_sigilosos=None, lotes: list[Path] | N
     ret = Retirada()
     nomes = [nome] + _incidentes_no_acervo(nome, lotes, cfg)
     for um in nomes:
-        for lote in lotes:
-            controle = lote / "_controle"
-            tem_pdf = (lote / f"{um}.pdf").exists()
-            # a capa (texto e JSON) traz as partes e o registro do download, o
-            # número: andam com os autos e, se ficarem, também são aviso
-            restos = [controle / f"{um}{sufixo}" for sufixo in SUFIXOS_CONTROLE]
-            restos.append(controle / "midias" / um)
-            if not (tem_pdf or any(p.exists() for p in restos)):
-                continue
-            novo, _problemas, erro = _levar_arquivos(
-                lote, _sigilosos_do_lote(lote, raiz_sigilosos, alvos), um, manter_destino=True)
-            for resto in restos:
-                if resto.exists():
-                    ret._preso(ret.outros_presos, resto, None)
-            if not tem_pdf:
-                continue
-            if erro is not None or novo is None:
-                ret._preso(ret.autos_presos, lote / f"{um}.pdf", erro)
-                continue
-            ret.autos[lote / f"{um}.pdf"] = novo
-            log.info("    cópia do sigiloso em %s levada para a pasta de sigilosos.", lote.name)
+        # O sigilo é do processo, nos dois graus: saem os autos do 1º grau
+        # ("<um>.pdf") e os do 2º ("<um> (2G).pdf"), cada um com a capa, o
+        # registro do download e as gravações dele.
+        for autos in (um, um + cnj.SUFIXO_2G):
+            for lote in lotes:
+                _retirar_autos_do_lote(ret, lote, autos, raiz_sigilosos, alvos)
         if cfg is not None:
             levados, presas, gravando = _levar_transcricoes_do_acervo(cfg, um)
             ret.transcricoes += levados
@@ -967,6 +1024,40 @@ def _chave_relatorio(texto) -> str | None:
         return cnj.ler_nome_arquivo(str(texto or "").strip()).nome_arquivo
     except Exception:
         return None
+
+
+def _numero_da_linha(linha: dict) -> Numero | None:
+    try:
+        return cnj.ler_nome_arquivo(str(linha.get("processo") or "").strip())
+    except Exception:
+        return None
+
+
+def _grau_da_linha(linha: dict) -> str:
+    """O grau dos autos de uma linha do relatório: o da coluna "grau" ou, se
+    ela está vazia (relatório de versão anterior à 1.1.0, que nem a tinha), o
+    que o número diz - o HC de órgão 0000 e o /50000 só têm autos no 2º grau
+    (a 1.0.2 os procurava no 1º e gravava a linha sem grau) - e, se ele não
+    diz, 1º grau. "" só na linha sem número legível (a mascarada) e sem grau."""
+    grau = cnj.normalizar_grau(linha.get("grau"))
+    if grau:
+        return grau
+    n = _numero_da_linha(linha)
+    return "" if n is None else (cnj.grau_do_numero(n) or "1g")
+
+
+def _chave_da_linha(linha: dict) -> str | None:
+    """A chave dos AUTOS de uma linha do relatório (o processo da linha e o
+    grau dela: cnj.nome_dos_autos), ou None (linha mascarada, editada à mão).
+    É por ela que as linhas se casam: A no 1º grau e A no 2º são duas linhas."""
+    n = _numero_da_linha(linha)
+    return None if n is None else cnj.nome_dos_autos(n, _grau_da_linha(linha))
+
+
+def _valores_da_linha(linha: dict) -> list[str]:
+    """Os valores da linha na ordem de COLUNAS, com o grau escrito (a linha
+    de relatório anterior à coluna "grau" a ganha, pelo que o número diz)."""
+    return [linha.get(c, "") or "" for c in COLUNAS[:-1]] + [_grau_da_linha(linha)]
 
 
 def _sim(valor) -> bool:
@@ -1011,27 +1102,29 @@ def ler_csv_do_controle(controle: Path) -> list[dict]:
 
 
 def _mesclar_relatorios(do_lote: list[dict], completo: list[dict]) -> list[tuple[str | None, dict]]:
-    """[(chave do processo ou None, linha)] do relatório do lote, na ordem
+    """[(chave dos autos ou None, linha)] do relatório do lote, na ordem
     dele. A linha mascarada ("(processo sigiloso)") é trocada pela do
     relatório completo da pasta de sigilosos, de mesma ordem; sem ele, fica
-    como está. O que só o completo tem vem no fim."""
+    como está. O que só o completo tem vem no fim. A chave é a dos AUTOS
+    (_chave_da_linha: o processo e o grau da linha): o mesmo número no 1º e
+    no 2º grau são duas linhas."""
     por_ordem = {linha.get("ordem"): linha for linha in completo
                  if _chave_relatorio(linha.get("processo")) is not None}
     saida: list[tuple[str | None, dict]] = []
     vistos: set[str] = set()
     for linha in do_lote or completo:
-        chave = _chave_relatorio(linha.get("processo"))
+        chave = _chave_da_linha(linha)
         if chave is None and _sim(linha.get("sigiloso")):
             real = por_ordem.get(linha.get("ordem"))
             if real is not None:
-                linha, chave = real, _chave_relatorio(real.get("processo"))
+                linha, chave = real, _chave_da_linha(real)
         if chave is not None:
             if chave in vistos:
                 continue
             vistos.add(chave)
         saida.append((chave, linha))
     for linha in completo:              # o que só o completo ainda tem
-        chave = _chave_relatorio(linha.get("processo"))
+        chave = _chave_da_linha(linha)
         if chave is not None and chave not in vistos:
             vistos.add(chave)
             saida.append((chave, linha))
@@ -1041,8 +1134,11 @@ def _mesclar_relatorios(do_lote: list[dict], completo: list[dict]) -> list[tuple
 def ler_relatorio_do_lote(destino, raiz_sigilosos, pasta_processos=None) -> list[tuple[str | None, dict]]:
     """O relatório inteiro de uma pasta de lote: as linhas do relatório do
     lote, com as dos sigilosos tiradas do relatório completo da pasta de
-    sigilosos dele. [(chave do processo ou None, linha)], na ordem do lote.
-    É o que o motor mescla a cada rodada e o que "baixar --retomar" consulta."""
+    sigilosos dele. [(chave dos autos ou None, linha)], na ordem do lote - a
+    chave dos autos (cnj.nome_dos_autos) é, no 1º grau, a do processo; no 2º,
+    com " (2G)"; a linha sem grau (versão anterior) vale pelo que o número
+    diz (_grau_da_linha). É o que o motor mescla a cada rodada e o que
+    "baixar --retomar" consulta."""
     pasta = pasta_sigilosos_do_lote(raiz_sigilosos, destino, pasta_processos)
     return _mesclar_relatorios(ler_csv_do_controle(Path(destino) / "_controle"),
                                ler_csv_do_controle(pasta / "_controle"))
@@ -1148,6 +1244,9 @@ def essencial_da_paginacao(m: dict | None) -> dict:
         return {}
     e: dict = {"sistema": m.get("sistema", ""), "paginacao": m.get("paginacao", ""),
                "formato": m.get("formato", paginacao.FORMATO), "resumo": paginacao.resumo(m)}
+    if paginacao.grau(m) == paginacao.SEGUNDO_GRAU:
+        # só no 2º grau (sem o campo, 1º grau: o JSON do 1º grau fica como era)
+        e["grau"] = paginacao.SEGUNDO_GRAU
     if m.get("paginacao") == paginacao.FOLHAS:
         e.update(ultima=_inteiro(m.get("ultima")),
                  ausentes={str(k): str(v) for k, v in (m.get("ausentes") or {}).items()},
@@ -1209,6 +1308,8 @@ def gravar_meta(r: ResultadoProcesso) -> Path | None:
              "paginacao": dict(r.paginacao or {}), "sigiloso": bool(r.sigiloso),
              "consultas": list(r.consultas or []),
              "baixado_em": datetime.now().isoformat(timespec="seconds")}
+    if getattr(r, "grau", "1g") == "2g":
+        dados["grau"] = "2g"        # só no 2º grau: o registro do 1º grau fica como era
     destino = arquivo_meta(pdf.parent, pdf.stem)
     try:
         from ..nucleo.sistema import gravar_atomico
@@ -1480,20 +1581,33 @@ class _Lote:
 
         self.itens: list[ResultadoProcesso] = []
         self.numeros: list[Numero] = []
+        # O grau dos autos de cada item (a regra única, cnj.grau_do_processo:
+        # o número; senão o grau do lote) e a chave dos autos dele
+        # (cnj.nome_dos_autos: o nome do PDF, da capa, do registro e da linha
+        # do relatório), na ordem dos itens.
+        self.graus: list[str] = []
+        self.autos: list[str] = []
+        grau_do_lote = getattr(opcoes, "grau", "1g")
         vistos: set[str] = set()
         for n in numeros:
+            # num lote, o grau é função do número: a deduplicação continua
+            # pelo número (e o /50000 não é o principal)
             k = cnj.chave(n)
             if k in vistos:
                 log.info("%s aparece mais de uma vez na relação; baixo uma vez só.", n.formatado)
                 continue
             vistos.add(k)
             t = tribunais.por_numero(n)
+            grau = cnj.grau_do_processo(n, grau_do_lote)
             self.numeros.append(n)
+            self.graus.append(grau)
+            self.autos.append(cnj.nome_dos_autos(n, grau))
             self.itens.append(ResultadoProcesso(
                 ordem=len(self.itens) + 1, numero=n.formatado,
                 tribunal=t.sigla if t else n.chave_tribunal,
-                sistema=t.sistema if t else "?"))
+                sistema=t.sistema if t else "?", grau=grau))
         self.tribunal_de = {cnj.chave(n): tribunais.por_numero(n) for n in self.numeros}
+        self._autos_de = {cnj.chave(n): a for n, a in zip(self.numeros, self.autos)}
         # O relatório que esta pasta de lote já tinha (o "Tentar de novo" refaz
         # só os que falharam, na mesma pasta): as linhas refeitas agora
         # substituem as antigas, e as demais continuam - senão o relatório do
@@ -1510,6 +1624,15 @@ class _Lote:
 
     def feitos(self) -> int:
         return sum(1 for i, r in enumerate(self.itens) if r.concluido or i in self._reabertos)
+
+    def _nome_dos_autos(self, n: Numero) -> str:
+        """A chave dos autos do item 'n' (cnj.nome_dos_autos com o grau dele):
+        o nome do PDF, da capa, do registro e da pasta provisória."""
+        autos = self._autos_de.get(cnj.chave(n))
+        if autos is None:
+            autos = cnj.nome_dos_autos(n, cnj.grau_do_processo(n, getattr(self.opcoes, "grau",
+                                                                          "1g")))
+        return autos
 
     def _publicar(self, r: ResultadoProcesso) -> None:
         try:
@@ -1537,28 +1660,29 @@ class _Lote:
         Mescla com o relatório anterior da mesma pasta (_linhas_anteriores):
         cada processo desta rodada fica no lugar da linha antiga dele, os
         que não foram refeitos continuam como estavam, e os novos vêm no fim.
+        As linhas se casam pela chave dos AUTOS (processo e grau): o mesmo
+        número no 1º e no 2º grau são duas linhas.
         """
         saida = io.StringIO()
         w = csv.writer(saida, delimiter=";", lineterminator="\r\n")
         w.writerow(COLUNAS)
         atuais = {}
-        for r in self.itens:
-            atuais.setdefault(_chave_relatorio(r.numero), r)
+        for autos, r in zip(self.autos, self.itens):
+            atuais.setdefault(autos, r)
         linhas: list = []
         usados: set = set()
         for chave, antiga in self._linhas_anteriores:
             if chave is not None and chave in atuais:
                 if chave not in usados:
                     usados.add(chave)
-                    linhas.append(atuais[chave])
+                    linhas.append((chave, atuais[chave]))
                 continue
-            linhas.append(antiga)
-        for r in self.itens:
-            chave = _chave_relatorio(r.numero)
-            if chave not in usados:
-                usados.add(chave)
-                linhas.append(r)
-        for ordem, item in enumerate(linhas, 1):
+            linhas.append((chave, antiga))
+        for autos, r in zip(self.autos, self.itens):
+            if autos not in usados:
+                usados.add(autos)
+                linhas.append((autos, r))
+        for ordem, (chave, item) in enumerate(linhas, 1):
             if isinstance(item, dict):
                 w.writerow(self._linha_antiga(item, ordem, mascarar))
                 continue
@@ -1566,15 +1690,14 @@ class _Lote:
             if mascarar and r.sigiloso:
                 w.writerow([ordem, MASCARA_SIGILOSO, r.tribunal, r.sistema,
                             r.situacao or "PENDENTE", "", "", "", "sim", "", DETALHE_MASCARA,
-                            r.data_hora, r.causa])
+                            r.data_hora, r.causa, r.grau])
                 continue
             arquivo = Path(r.arquivo).name if r.arquivo else ""
             if r.arquivo and r.sigiloso and r.situacao in (OK, JA_BAIXADO) \
                     and not str(r.arquivo).startswith(str(self.destino)):
                 arquivo += " (na pasta de sigilosos)"
             documentos, incompleto, detalhe = r.documentos or "", r.incompleto, r.detalhe
-            fica = None if r.situacao in (OK, JA_BAIXADO) else \
-                self._pdf_que_fica(_chave_relatorio(r.numero))
+            fica = None if r.situacao in (OK, JA_BAIXADO) else self._pdf_que_fica(chave)
             if fica is not None:
                 # A rodada não trocou o PDF que já estava na pasta (falhou,
                 # foi interrompida ou ainda não chegou nele): a linha leva o
@@ -1587,15 +1710,16 @@ class _Lote:
             w.writerow([ordem, r.numero, r.tribunal, r.sistema, r.situacao or "PENDENTE",
                         r.paginas or "", documentos, arquivo,
                         "sim" if r.sigiloso else "não", incompleto, detalhe, r.data_hora,
-                        r.causa])
+                        r.causa, r.grau])
         return saida.getvalue()
 
     def _pdf_que_fica(self, chave: str | None) -> tuple[str, str, str] | None:
-        """(incompleto, documentos, detalhe) do PDF que o processo já tinha na
-        pasta do lote (ou na de sigilosos dele), pela linha anterior do
-        relatório - a de um download que deu certo ou a de uma rodada que
-        não o trocou. None se não há esse PDF ou registro dele. Visto uma
-        vez por lote: o que esta rodada não troca continua como estava."""
+        """(incompleto, documentos, detalhe) do PDF que os autos 'chave' (a
+        chave dos autos) já tinham na pasta do lote (ou na de sigilosos dele),
+        pela linha anterior do relatório - a de um download que deu certo ou
+        a de uma rodada que não o trocou. None se não há esse PDF ou registro
+        dele. Visto uma vez por lote: o que esta rodada não troca continua
+        como estava."""
         if chave not in self._pdfs_que_ficam:
             saida = None
             linha = self._linha_anterior(chave) if chave else None
@@ -1612,15 +1736,17 @@ class _Lote:
         """A linha de um processo de rodada anterior, como estava (mascarada no
         relatório do acervo, se for sigiloso)."""
         if mascarar and _sim(linha.get("sigiloso")):
+            # o grau fica na linha mascarada: não identifica ninguém
             return [ordem, MASCARA_SIGILOSO, linha.get("tribunal", ""), linha.get("sistema", ""),
                     linha.get("situacao") or "PENDENTE", "", "", "", "sim", "", DETALHE_MASCARA,
-                    linha.get("data_hora", ""), linha.get("causa", "") or ""]
-        return [ordem] + [linha.get(c, "") or "" for c in COLUNAS[1:]]
+                    linha.get("data_hora", ""), linha.get("causa", "") or "",
+                    _grau_da_linha(linha)]
+        return [ordem] + _valores_da_linha(linha)[1:]
 
     _ler_csv = staticmethod(ler_csv_do_controle)
 
     def _ler_relatorio_anterior(self) -> list[tuple[str | None, dict]]:
-        """[(chave do processo ou None, linha)] do relatório que a pasta do lote
+        """[(chave dos autos ou None, linha)] do relatório que a pasta do lote
         já tinha, na ordem dele. A linha mascarada do acervo ("(processo
         sigiloso)") é trocada pela do relatório completo da pasta de
         sigilosos, de mesma ordem; sem ele, fica como está."""
@@ -1628,7 +1754,8 @@ class _Lote:
                                    ler_csv_do_controle(self.pasta_sigilosos / "_controle"))
 
     def _linha_anterior(self, nome: str) -> dict | None:
-        """A linha do processo 'nome' no relatório anterior do lote (ou None)."""
+        """A linha dos autos 'nome' (a chave dos autos) no relatório anterior
+        do lote (ou None)."""
         for chave, linha in self._linhas_anteriores:
             if chave == nome:
                 return linha
@@ -1725,7 +1852,10 @@ class _Lote:
         return sabidos
 
     def _ja_baixado(self, n: Numero) -> Path | None:
-        nome = f"{n.nome_arquivo}.pdf"
+        """O PDF dos autos de 'n' que já está na pasta do lote (ou na de
+        sigilosos dele), pelo nome dos autos: o do 1º grau não é o do 2º, e
+        vice-versa."""
+        nome = f"{self._nome_dos_autos(n)}.pdf"
         for pasta in (self.destino, self.pasta_sigilosos):
             if _pdf_valido(pasta / nome):
                 return pasta / nome
@@ -1743,13 +1873,15 @@ class _Lote:
         # O incidente herda o sigilo do principal (a regra única).
         if sigilo.contem(self._sigilosos_sabidos, nome):
             return SIGILO_ANTERIOR
-        try:
-            with open(self.controle / f"{nome}_capa.txt", encoding="utf-8",
-                      errors="replace") as f:
-                if "SEGREDO DE JUSTIÇA" in f.read(2000):
-                    return SIGILO_ANTERIOR
-        except OSError:
-            pass
+        # A capa guardada de qualquer dos dois graus: o sigilo é do processo.
+        for grau in cnj.GRAUS:
+            try:
+                with open(self.controle / f"{cnj.nome_dos_autos(n, grau)}_capa.txt",
+                          encoding="utf-8", errors="replace") as f:
+                    if "SEGREDO DE JUSTIÇA" in f.read(2000):
+                        return SIGILO_ANTERIOR
+            except OSError:
+                pass
         return (sigilo.motivo_da_pasta(self.raiz_sigilosos, n) or sigilo.motivo_da_pauta(n)
                 or sigilo.motivo_do_download(n))
 
@@ -1791,9 +1923,9 @@ class _Lote:
     def _levar(self, origem_dir: Path, alvo_dir: Path, n: Numero,
                r: ResultadoProcesso | None,
                manter_destino: bool = False) -> tuple[Path | None, list[str], Exception | None]:
-        """_levar_arquivos, e as gravações do resultado 'r' passam a apontar
-        para o novo lugar."""
-        nome = n.nome_arquivo
+        """_levar_arquivos dos autos de 'n' (pela chave dos autos), e as
+        gravações do resultado 'r' passam a apontar para o novo lugar."""
+        nome = self._nome_dos_autos(n)
         novo, problemas, erro = _levar_arquivos(origem_dir, alvo_dir, nome, manter_destino)
         if r is not None and r.midias:
             velho_midias = origem_dir / "_controle" / "midias" / nome
@@ -1805,7 +1937,7 @@ class _Lote:
         """Leva o processo recém-baixado da área provisória para o lote - ou,
         se sigiloso, para a pasta de sigilosos. Se não der, o processo fica
         como ERRO e NADA dele entra no acervo."""
-        nome = f"{n.nome_arquivo}.pdf"
+        nome = f"{self._nome_dos_autos(n)}.pdf"
         sigilo = r.sigiloso and self._separar(n)
         alvo_dir = self.pasta_sigilosos if sigilo else self.destino
         if sigilo:
@@ -1873,7 +2005,7 @@ class _Lote:
         self._sigilo_motivos.update({str(k): v for k, v in ret.motivos.items()})
         if ret.autos or ret.outros:
             self._retirou_do_acervo = True
-        novo = ret.autos.get(self.destino / f"{n.nome_arquivo}.pdf")
+        novo = ret.autos.get(self.destino / f"{self._nome_dos_autos(n)}.pdf")
         if novo is not None:
             r.arquivo = str(novo)
             r.detalhe = _juntar(r.detalhe, "levado agora para a pasta de sigilosos")
@@ -1965,18 +2097,19 @@ class _Lote:
                 + " para a pasta de sigilosos")
 
     def _area_provisoria(self, n: Numero) -> Path:
-        """A pasta provisória deste processo, vazia."""
-        pasta = self.provisorio / n.nome_arquivo
+        """A pasta provisória destes autos (provisorio/<chave dos autos>), vazia."""
+        pasta = self.provisorio / self._nome_dos_autos(n)
         shutil.rmtree(pasta, ignore_errors=True)
         pasta.mkdir(parents=True, exist_ok=True)
         return pasta
 
     def _limpar_parcial(self, n: Numero) -> None:
-        shutil.rmtree(self.provisorio / n.nome_arquivo, ignore_errors=True)
+        autos = self._nome_dos_autos(n)
+        shutil.rmtree(self.provisorio / autos, ignore_errors=True)
         # parciais de versões anteriores, que gravavam direto no lote
         for sufixo in (".pdf.parcial", ".pdf.parcial2"):
             try:
-                (self.destino / f"{n.nome_arquivo}{sufixo}").unlink()
+                (self.destino / f"{autos}{sufixo}").unlink()
             except OSError:
                 pass
 
@@ -1993,12 +2126,16 @@ class _Lote:
 
     # ------------------------------------------------------------ grupos
     def grupos(self) -> "OrderedDict[str, tuple]":
-        """(tribunal, índices dos itens) por tribunal, na ordem da primeira
-        aparição na relação. Quem não tem portal suportado já sai marcado."""
+        """(tribunal no grau, índices dos itens) por tribunal e grau, na ordem
+        da primeira aparição na relação: um navegador e um login por grupo, e
+        o Tribunal do grupo já no grau dele (Tribunal.no_grau), que leva o
+        grau às fábricas, aos portais, ao cofre e ao perfil do navegador.
+        Quem não tem portal suportado (no grau dele) já sai marcado."""
         saida: OrderedDict[str, tuple] = OrderedDict()
         for i, n in enumerate(self.numeros):
             t = self.tribunal_de[cnj.chave(n)]
             r = self.itens[i]
+            grau = self.graus[i]
             if t is None:
                 r.situacao = NAO_SUPORTADO
                 r.detalhe = tribunais.problema() or (
@@ -2013,7 +2150,16 @@ class _Lote:
                 r.detalhe += "; baixe pelo portal do tribunal"
                 r.carimbar()
                 continue
-            saida.setdefault(t.chave, (t, []))[1].append(i)
+            if grau != "1g" and not t.tem_grau(grau):
+                # O sistema principal do tribunal não tem o grau no catálogo (o
+                # e-SAJ do TJSP não tem a consulta de 2º grau): repetir não muda.
+                r.situacao = NAO_SUPORTADO
+                r.detalhe = (f"o {tribunais.rotulo_do_grau(grau)} do {t.nome_sistema} do "
+                             f"{t.sigla} ainda não é baixado pelo Helestron; baixe-o pelo portal "
+                             "do tribunal")
+                r.carimbar()
+                continue
+            saida.setdefault(f"{t.chave}|{grau}", (t.no_grau(grau), []))[1].append(i)
         return saida
 
     def _encerrar_grupo(self, indices: list[int], situacao: str, detalhe: str,
@@ -2023,7 +2169,7 @@ class _Lote:
             if r.situacao == "":
                 # o sistema do grupo nem chegou a ser consultado para este item
                 r.consultas.append({"sistema": r.sistema, "consultado": False, "causa": causa,
-                                    "detalhe": detalhe})
+                                    "detalhe": detalhe, **_do_grau(r.grau)})
                 if i in self._anteriores:
                     # O sistema alternativo nem pôde ser consultado: vale o
                     # "não encontrado" do principal, com o porquê - e a causa,
@@ -2073,8 +2219,8 @@ class _Lote:
         sistema = tribunal.sistema
         if self.opcoes.modo_login(sistema) != "senha" or credenciais is not None:
             return self.opcoes
-        log.info("Sem usuário e senha guardados para o %s do %s: o navegador abre na tela "
-                 "de entrada para você entrar.", tribunal.nome_sistema, tribunal.sigla)
+        log.info("Sem usuário e senha guardados para o %s: o navegador abre na tela "
+                 "de entrada para você entrar.", nome_do_portal(tribunal))
         return replace(self.opcoes, login={**self.opcoes.login, sistema: "manual"})
 
     def executar(self) -> ResumoLote:
@@ -2248,14 +2394,25 @@ class _Lote:
                 self._reabertos.discard(i)
                 if antes is None:
                     continue           # devolvido ao "não encontrado" do principal
+                segundo = getattr(tribunal, "grau", "1g") == "2g"
                 if r.situacao == NAO_ENCONTRADO:
                     r.sistema = antes[2]
-                    r.detalhe = (f"não encontrado no {tribunal.nome_sistema} nem no "
-                                 f"{alt.nome_sistema} do {tribunal.sigla}; confira o número")
+                    if segundo:
+                        # a dica de grau: trocar o grau do lote (a apelação que
+                        # não subiu está no 1º grau) - ou, se o número só existe
+                        # no 2º grau, que trocar não muda nada
+                        r.detalhe = (f"não encontrado no {tribunal.nome_sistema} nem no "
+                                     f"{alt.nome_sistema} do {tribunal.sigla} (2º grau); "
+                                     "confira o número; "
+                                     + dica_de_grau(self.numeros[i], "2g"))
+                    else:
+                        r.detalhe = (f"não encontrado no {tribunal.nome_sistema} nem no "
+                                     f"{alt.nome_sistema} do {tribunal.sigla}; confira o número")
                     self._concluir(r)
                 elif r.situacao == ERRO:
-                    r.detalhe = (f"não encontrado no {tribunal.nome_sistema}; no "
-                                 f"{alt.nome_sistema}: {r.detalhe}")
+                    r.detalhe = (f"não encontrado no {tribunal.nome_sistema}"
+                                 + (" (2º grau)" if segundo else "")
+                                 + f"; no {alt.nome_sistema}: {r.detalhe}")
                     self._concluir(r)
                 elif r.situacao in ("", CANCELADO):
                     r.sistema = antes[2]     # interrompido: nada se apurou no alternativo
@@ -2298,11 +2455,14 @@ class _Lote:
 
     # -------------------------------------------------------------- grupo
     def _grupo(self, tribunal, indices: list[int], alternativo: bool = False) -> None:
-        nome = f"{tribunal.nome_sistema} do {tribunal.sigla}"
+        nome = nome_do_portal(tribunal)
+        # "grau": "2g" nos eventos do grupo do 2º grau (no 1º, como eram)
+        do_grau = _do_grau(getattr(tribunal, "grau", "1g"))
         credenciais = self._credenciais(tribunal)
         opcoes = self._opcoes_do_grupo(tribunal, credenciais)
         self._evento("grupo_inicio", sistema=tribunal.sistema, tribunal=tribunal.sigla,
-                     alternativo=bool(alternativo), ordens=[self.itens[i].ordem for i in indices])
+                     alternativo=bool(alternativo), ordens=[self.itens[i].ordem for i in indices],
+                     **do_grau)
         # Navegador ocupado por outro download (o mesmo perfil não abre duas
         # vezes), ou que não abre porque a cópia antiga do perfil ficou presa
         # (CopiaAntigaPresa): com "esperar o navegador", tenta de novo a cada
@@ -2336,7 +2496,8 @@ class _Lote:
                         self.ctx.status(frase)
                         self._evento("navegador_ocupado", sistema=tribunal.sistema,
                                      tribunal=tribunal.sigla,
-                                     ate=ate.isoformat(timespec="seconds"), motivo=motivo)
+                                     ate=ate.isoformat(timespec="seconds"), motivo=motivo,
+                                     **do_grau)
                     try:
                         self._dormir(min(ESPERA_NAVEGADOR_S, restante))
                     except Cancelado:
@@ -2351,7 +2512,7 @@ class _Lote:
             except LoginFalhou as erro:
                 log.error("Login no %s falhou: %s", nome, erro)
                 self._evento("login_falhou", sistema=tribunal.sistema, tribunal=tribunal.sigla,
-                             detalhe=str(erro))
+                             detalhe=str(erro), **do_grau)
                 self._encerrar_grupo(indices, ERRO, f"login falhou: {erro}", CAUSA_LOGIN)
                 try:
                     texto = str(erro)
@@ -2427,11 +2588,21 @@ class _Lote:
         A linha vale se é de um download que deu certo ou de uma rodada que
         não trocou o PDF (a que falhou ao baixá-lo de novo, por exemplo):
         esta leva adiante, depois de PDF_ANTERIOR, o que se sabia dele.
+
+        Tudo pela chave dos AUTOS - o nome do PDF achado ('existente' é
+        "<chave dos autos>.pdf"): o registro do 1º grau não é o do 2º.
         """
-        nome = n.nome_arquivo
+        nome = existente.stem
+        try:
+            grau = cnj.grau_do_nome(existente.name)
+        except cnj.NumeroInvalido:
+            grau = "1g"
         reg: dict = {"sistema": "", "tribunal": "", "documentos": 0, "incompleto": "",
                      "detalhe": "", "paginacao": {}, "linha": None, "meta": False,
-                     "manifesto": False}
+                     "manifesto": False,
+                     # o grau dos autos pedidos (pelo nome) e o que o manifesto do
+                     # PDF diz ("" sem manifesto): _baixar_de_novo os compara
+                     "grau": grau, "grau_do_pdf": ""}
         linha = self._linha_anterior(nome)
         do_pdf = _detalhe_do_pdf(linha) if linha is not None else None
         if do_pdf is not None:
@@ -2458,6 +2629,7 @@ class _Lote:
         essencial = essencial_da_paginacao(manifesto)
         if essencial:
             reg["manifesto"] = True
+            reg["grau_do_pdf"] = paginacao.grau(manifesto)
             reg["paginacao"] = essencial
             reg["sistema"] = essencial.get("sistema") or reg["sistema"]
             if manifesto.get("tribunal"):
@@ -2480,6 +2652,12 @@ class _Lote:
         """Por que o PDF que já está na pasta deve ser baixado de novo ("" =
         não deve)."""
         sistema = reg["sistema"] or getattr(portal, "sistema", "") or ""
+        # O manifesto diz que o PDF com o nome destes autos é do outro grau
+        # (renomeado à mão, copiado de outra pasta): não são estes autos.
+        grau_do_pdf = reg.get("grau_do_pdf") or ""
+        if grau_do_pdf and grau_do_pdf != (reg.get("grau") or "1g"):
+            return (f"o PDF na pasta é do outro grau (o manifesto de paginação dele diz "
+                    f"{tribunais.rotulo_do_grau(grau_do_pdf)})")
         if getattr(self.opcoes, "rebaixar_incompletos", False):
             if reg["incompleto"]:
                 o_que = "documentos" if sistema == "eproc" else "folhas"
@@ -2575,7 +2753,9 @@ class _Lote:
                 log.info("    %s; baixando de novo.", de_novo)
 
         provisorio = self._area_provisoria(n)
-        alvo = provisorio / f"{n.nome_arquivo}.pdf"
+        # O portal grava os autos, a capa e as gravações pelo nome do destino
+        # (destino.stem): no 2º grau, "<número> (2G).pdf".
+        alvo = provisorio / f"{self._nome_dos_autos(n)}.pdf"
         senha = senha_de(n, self.senhas)
         inicio = time.monotonic()
         tentativas = max(1, int(self.opcoes.tentativas))
@@ -2607,7 +2787,7 @@ class _Lote:
                 tentativa -= 1           # relogin não gasta tentativa
                 log.info("    a sessão caiu (%s); entrando de novo...", str(erro)[:120])
                 self._evento("sessao_caiu", sistema=r.sistema, tribunal=r.tribunal,
-                             ordem=r.ordem)
+                             ordem=r.ordem, **_do_grau(r.grau))
                 self.ctx.status("A sessão caiu; entrando de novo...")
                 portal.entrar()
                 continue
@@ -2707,6 +2887,16 @@ class _Lote:
         # tentativa que falhou, ou um download anterior, vale para esta.
         if n.nome_arquivo in (getattr(portal, "sigilosos_apurados", None) or ()):
             r.sigiloso = True
+        if r.situacao == OK and r.grau == "2g" and not r.sigiloso and not motivo:
+            # O originário do 2º grau (HC, MS, AI de órgão 0000) tem número
+            # próprio, mas traz cópia da ação de origem: se ela já se sabe
+            # sigilosa, ele também o é (o lado seguro, como o incidente, que
+            # herda do principal). Antes de os autos irem para o lote.
+            origem = self._origem_sigilosa(n, alvo)
+            if origem:
+                r.sigiloso = True
+                r.detalhe = _juntar(r.detalhe, f"tratado como sigiloso: o processo de origem "
+                                               f"{origem} é sigiloso")
         if r.sigiloso or self._sigilo_so_do_relatorio(n, motivo):
             # O sigilo que o portal mostrou (agora ou numa rodada anterior
             # deste lote) passa a valer na regra única ANTES de o PDF ir para
@@ -2744,6 +2934,7 @@ class _Lote:
         consulta = {"sistema": r.sistema, "situacao": r.situacao}
         if r.causa:
             consulta["causa"] = r.causa
+        consulta.update(_do_grau(r.grau))
         r.consultas.append(consulta)
         if guardado:
             # a paginação do PDF e o registro do download, ao lado dele
@@ -2751,6 +2942,44 @@ class _Lote:
         r.segundos = round(time.monotonic() - inicio, 1)
         self._concluir(r)
         return True, fora
+
+    def _origem_sigilosa(self, n: Numero, pdf: Path) -> str:
+        """O processo de origem dos autos do 2º grau recém-baixados que o
+        programa já sabe sigiloso (o número formatado), ou "" se nenhum.
+
+        A origem sai da capa do 2º grau que o portal gravou ao lado do PDF
+        (_controle/<chave dos autos>_capa.json, "Números de 1ª Instância":
+        capa.numeros_1a_instancia[].numero - o e-SAJ; o eProc não traz essa
+        lista nesta versão), e o sigilo, da mesma regra que vale para o
+        próprio processo (_motivo_sigilo: relatório e capa deste lote, pasta
+        dos sigilosos, pauta, registro do download)."""
+        arquivo = Path(pdf).parent / "_controle" / f"{Path(pdf).stem}_capa.json"
+        try:
+            dados = json.loads(arquivo.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        if not isinstance(dados, dict):
+            return ""
+        capa = dados.get("capa") if isinstance(dados.get("capa"), dict) else {}
+        lista = capa.get("numeros_1a_instancia")
+        if not isinstance(lista, list):
+            lista = dados.get("numeros_1a_instancia")
+        if not isinstance(lista, list):
+            return ""
+        for item in lista:
+            texto = item.get("numero") if isinstance(item, dict) else item
+            try:
+                origem = cnj.ler(str(texto or ""))
+            except cnj.NumeroInvalido:
+                continue
+            if origem.nome_arquivo == n.nome_arquivo:
+                continue                 # a apelação: o próprio processo, já conferido
+            try:
+                if self._motivo_sigilo(origem):
+                    return origem.formatado
+            except Exception:            # a regra nunca derruba o item
+                log.debug("sigilo da origem %s não conferido", origem.formatado, exc_info=True)
+        return ""
 
     @staticmethod
     def _definitivo(r: ResultadoProcesso, situacao: str, erro: Exception) -> ResultadoProcesso:
@@ -2766,6 +2995,10 @@ def executar(numeros: list[Numero], destino: Path, opcoes: OpcoesDownload, ctx: 
     ``fabrica_portal(nav, tribunal, opcoes, ctx, credenciais)`` e
     ``fabrica_navegador(tribunal, opcoes)`` existem para os testes
     injetarem dublês; ``cfg`` só é usado no preparo final para a IA.
+    ``opcoes.grau`` é o grau do lote: cada processo vai ao grau que
+    cnj.grau_do_processo lhe dá (o número, senão o do lote), e o Tribunal que
+    as fábricas recebem já está nesse grau (Tribunal.no_grau); cada
+    ResultadoProcesso sai com o ``grau`` dele.
     """
     lote = _Lote(numeros, destino, opcoes, ctx, senhas, cofre,
                  fabrica_portal, fabrica_navegador, cfg)

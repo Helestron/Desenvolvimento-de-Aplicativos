@@ -16,7 +16,7 @@ futuras, os existentes não mudam de sentido)::
 
     {
       "formato": "helestron.baixar/1",
-      "versao": "1.0.2",                  # versão do Helestron
+      "versao": "1.1.0",                  # versão do Helestron
       "pid": 4321,                        # processo que está baixando
       "inicio": "2026-10-04T10:00:00",
       "atualizado_em": "2026-10-04T10:03:12",
@@ -26,6 +26,11 @@ futuras, os existentes não mudam de sentido)::
       "causa_erro": "",                   # uso | relacao_invalida | sem_processos | destino |
                                           # pastas_em_conflito | lote_em_andamento |
                                           # interrompido | inesperado
+      "grau": "1g",                       # (1.1.0) o grau do lote: "1g" ou "2g" (--grau;
+                                          # sem ele, 1g), sempre presente, desde o
+                                          # primeiro JSON gravado. O de cada processo
+                                          # está no processo (o número que só existe
+                                          # no 2º grau vai a ele num lote de 1º grau)
       "destino": "C:\\...\\Lote 2026-10-04 10h00",
       "sigilosos_do_lote": "C:\\...\\Sigilosos\\Lote 2026-10-04 10h00",
       "relatorio": "...\\_controle\\relatorio.csv",      # o do lote (sigilosos mascarados)
@@ -40,9 +45,10 @@ futuras, os existentes não mudam de sentido)::
       "aguardando": null,                 # ou o evento que espera o usuário: {"tipo":
                                           # "login_aguardando", "sistema", "tribunal",
                                           # "modo", "prazo_min", "ate", "motivo"}, ou
-                                          # "acao_na_janela" / "navegador_ocupado"
+                                          # "acao_na_janela" / "navegador_ocupado"; no
+                                          # 2º grau o evento leva "grau": "2g"
       "ultimo_evento": {"tipo": "grupo_inicio", "momento": "...", ...},
-      "ignorados": [{"argumento": "0700001-70.2024", "motivo": "..."}],
+      "ignorados": [{"argumento": "0700001-93.2024", "motivo": "..."}],
       "ignorados_por_retomar": [{"numero": "...", "situacao": "OK", "motivo": "..."}],
       "avisos": [{"titulo": "...", "mensagem": "..."}],
       "sigilosos_no_acervo": ["...pdf"],  # autos de sigiloso presos no acervo: não compartilhe
@@ -55,16 +61,18 @@ Cada processo::
 
     {
       "ordem": 1,
-      "numero": "0700001-70.2024.8.02.0058",   # o número REAL, mesmo se sigiloso
-      "nome_arquivo": "0700001-70.2024.8.02.0058",
+      "numero": "0700001-93.2024.8.02.0058",   # o número REAL, mesmo se sigiloso
+      "nome_arquivo": "0700001-93.2024.8.02.0058",   # o nome dos autos (sem extensão):
+                                          # no 2º grau, "0700001-93.2024.8.02.0058 (2G)"
       "tribunal": "TJAL",
       "sistema": "esaj",                  # onde foi achado: "esaj" ou "eproc"
+      "grau": "1g",                       # (1.1.0) o grau dos autos: "1g" ou "2g"
       "situacao": "OK",                   # OK | JA_BAIXADO | ERRO | NAO_ENCONTRADO |
                                           # SEM_ACESSO | SIGILOSO_SEM_SENHA |
                                           # NAO_SUPORTADO | CANCELADO | PENDENTE
       "rotulo": "baixado",
       "sigiloso": false,
-      "pdf": "C:\\...\\0700001-70.2024.8.02.0058.pdf",   # "" se não há PDF
+      "pdf": "C:\\...\\0700001-93.2024.8.02.0058.pdf",   # "" se não há PDF
       "capa": "...\\_controle\\..._capa.txt",           # "" se não há
       "capa_json": "...\\_controle\\..._capa.json",     # "" se não há
       "meta": "...\\_controle\\..._meta.json",          # registro do download, "" se não há
@@ -109,7 +117,8 @@ Cada processo::
       "refazer": false,                   # uma nova rodada pode mudar o desfecho?
       "consultas": [{"sistema": "esaj", "situacao": "NAO_ENCONTRADO"},
                     {"sistema": "eproc", "consultado": false, "causa": "login",
-                     "detalhe": "..."}],
+                     "detalhe": "..."}],   # no 2º grau, cada uma com "grau": "2g"
+      #   "paginacao" do 2º grau leva também "grau": "2g" (o manifesto do PDF)
       "detalhe": "...",
       "midias": [],
       "segundos": 41.2,
@@ -162,11 +171,13 @@ def _se_existe(caminho: Path | None) -> str:
 
 
 def _nome_arquivo(r: ResultadoProcesso) -> str:
+    """O nome dos autos (sem extensão): o do PDF ou, sem PDF, o que ele teria
+    (cnj.nome_dos_autos: no 2º grau, com " (2G)")."""
     if r.arquivo:
         return Path(r.arquivo).stem
     try:
         from ..nucleo import cnj
-        return cnj.ler_nome_arquivo(r.numero).nome_arquivo
+        return cnj.nome_dos_autos(cnj.ler_nome_arquivo(r.numero), getattr(r, "grau", "1g"))
     except Exception:
         return ""
 
@@ -195,6 +206,7 @@ def processo_json(r: ResultadoProcesso, extra: dict | None = None) -> dict:
         "nome_arquivo": nome,
         "tribunal": r.tribunal,
         "sistema": r.sistema,
+        "grau": getattr(r, "grau", "1g") or "1g",
         "situacao": r.situacao or "PENDENTE",
         "rotulo": rotulo(r.situacao),
         "sigiloso": bool(r.sigiloso),
@@ -248,10 +260,13 @@ class Acompanhamento:
         self._ultima = 0.0
         self._agendado: threading.Timer | None = None
         self._fechado = False
+        # "grau" começa com o da linha de comando sem --grau (1g); quem cria o
+        # acompanhamento passa o do lote (grau=...) antes do primeiro JSON.
         self._dados: dict = {
             "formato": FORMATO, "versao": _versao(), "pid": os.getpid(), "inicio": _agora(),
             "atualizado_em": "", "concluido": False, "codigo_saida": None, "erro": "",
-            "causa_erro": "", "destino": "", "sigilosos_do_lote": "", "relatorio": "",
+            "causa_erro": "", "grau": "1g", "destino": "", "sigilosos_do_lote": "",
+            "relatorio": "",
             "relatorio_completo": "", "log": "", "status": "", "navegador_visivel": False,
             "progresso": {"feitos": 0, "total": 0, "em_curso": ""},
             "aguardando": None, "ultimo_evento": None,

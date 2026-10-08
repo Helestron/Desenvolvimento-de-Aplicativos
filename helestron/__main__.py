@@ -81,13 +81,20 @@ Sem argumentos, abre o programa (servidor + janela)."""
 #   baixar.codigo-na-janela
 #                     sem terminal, o código do e-mail do e-SAJ é digitado na
 #                     janela do navegador, que fica visível (nunca lido de arquivo)
+#   baixar.grau       baixar --grau 1g|2g (sem ele, 1g); "grau" no JSON (topo e
+#                     processo), na coluna "grau" do relatorio.csv e no
+#                     "caminhos --json" (o padrão da tela); autos do 2º grau em
+#                     "<número> (2G).pdf"
+#   esaj.2g           o 2º grau do e-SAJ (a consulta de 2º grau do catálogo; no
+#                     TJAL, o cposg5), com o mesmo acesso do 1º grau (esaj:TJAL)
+#   eproc.2g          o eProc do 2º grau, com acesso próprio (eproc2g:TJAL)
 RECURSOS = ("versao", "caminhos", "baixar.json", "baixar.eventos", "baixar.log", "baixar.texto",
             "baixar.retomar", "baixar.completar", "baixar.esperar-navegador",
             "baixar.rebaixar-incompletos", "baixar.sem-cofre", "baixar.desanexar",
             "relatorio.causa", "relatorio.meta", "paginacao.manifesto", "preparar.pasta",
             "preparar.json", "folhas.fieis", "texto.v2", "capa.v2", "texto.paginas-sem-texto",
             "baixar.codigo-na-janela", "baixar.pastas-em-conflito", "comando.cmd",
-            "registro.hkcu")
+            "registro.hkcu", "baixar.grau", "esaj.2g", "eproc.2g")
 
 SAIDA_SIGILOSO_NO_ACERVO = 3     # "preparar": autos de sigiloso presos no acervo
 
@@ -330,7 +337,8 @@ def _analisador_do_subcomando(comando: str) -> argparse.ArgumentParser:
                            description="Mostra onde o programa guarda cada coisa (acervo, "
                                        "sigilosos, pauta, configuração, registros) e o que esta "
                                        "versão oferece. Não cria nada. Senhas, perfis do "
-                                       "navegador e sessões não aparecem.")
+                                       "navegador e sessões não aparecem. O grau é o padrão da "
+                                       "tela (Ajustes); o baixar sem --grau usa sempre 1g.")
         p.add_argument("--json", action="store_true", help="saída em JSON, para programas")
         return p
     if comando == "preparar":
@@ -370,7 +378,7 @@ def _caminhos(opcoes) -> int:
     perfis do navegador, o arquivo de senhas e a sessão guardada - que nenhum
     programa de fora deve ler."""
     from . import servicos
-    from .nucleo import caminhos, config
+    from .nucleo import caminhos, cnj, config
 
     cfg = config.carregar(criar=False)
     # como o download lê (modelos._modo_login): o que não for um dos três é "senha"
@@ -408,6 +416,9 @@ def _caminhos(opcoes) -> int:
         "login": login,
         "espera_login_min": cfg.inteiro("download", "espera_login_minutos"),
         "conflito_de_pastas": conflito,
+        # Ajustes › Download: o grau padrão dos processos - o da TELA (inválido
+        # = 1g). O baixar sem --grau usa 1g: a skill passa --grau explícito.
+        "grau": cnj.normalizar_grau(cfg.texto("download", "grau")) or "1g",
     }
     if opcoes.json:
         _imprimir_json(dados)
@@ -481,7 +492,7 @@ def _preparar_pasta(opcoes, cfg) -> int:
     """preparar --pasta: o texto dos autos de uma pasta de lote, e nada mais."""
     from .compartilhar import textos
     from .download import motor
-    from .nucleo import sigilo
+    from .nucleo import cnj, paginacao, sigilo
 
     pasta = Path(opcoes.pasta).expanduser()
     if not pasta.is_dir():
@@ -517,7 +528,13 @@ def _preparar_pasta(opcoes, cfg) -> int:
         for pdf in sorted(p for p in origem.glob("*.pdf") if p.is_file()):
             chave = motor.chave_do_nome(pdf.name)
             sigiloso = da_pasta_de_sigilosos or bool(chave and sigilo.contem(sigilosas, chave))
-            item = {"pdf": str(pdf), "texto": "", "situacao": "", "erro": "",
+            # o grau dos autos: pelo nome ("<número> (2G).pdf"), até o manifesto
+            # de paginação do PDF, se houver, dizer (abaixo)
+            try:
+                grau = cnj.grau_do_nome(pdf.name)
+            except cnj.NumeroInvalido:
+                grau = "1g"
+            item = {"pdf": str(pdf), "grau": grau, "texto": "", "situacao": "", "erro": "",
                     "sigiloso": sigiloso, "paginas": 0, "paginacao": None,
                     "paginas_sem_texto": "", "paginas_sem_texto_pdf": ""}
             if sigiloso and no_acervo and not da_pasta_de_sigilosos:
@@ -536,6 +553,8 @@ def _preparar_pasta(opcoes, cfg) -> int:
                 paginas, m = textos.info_pdf(pdf)       # o PDF aberto uma vez só
                 item.update(texto=str(alvo), situacao="novo" if novo else "em_dia",
                             paginas=paginas)
+                if paginacao.valido(m):
+                    item["grau"] = paginacao.grau(m)    # o manifesto diz o grau
                 # A mesma conferência do texto: o manifesto que não descreve o
                 # arquivo (página incluída ou apagada depois do download) não
                 # garante nada, e o texto sai "nao_garantida"

@@ -336,6 +336,45 @@ class TestComandosParaAutomacao(unittest.TestCase):
         self.assertEqual(codigo, 0)
         self.assertIn(f"acervo: {self.acervo}", saida)
 
+    def test_caminhos_diz_o_grau_padrao_da_tela_e_os_recursos_do_2o_grau(self):
+        codigo, saida, _ = self.rodar("caminhos", "--json")
+        self.assertEqual(codigo, 0)
+        dados = json.loads(saida)
+        self.assertEqual(dados["grau"], "1g")
+        # recurso novo vai no fim, nessa ordem
+        self.assertEqual(dados["recursos"][-3:], ["baixar.grau", "esaj.2g", "eproc.2g"])
+        for valor, grau in (("2", "2g"), ("2º grau", "2g"), ("1g", "1g"), ("xyz", "1g")):
+            with self.subTest(valor):
+                self.amb.cfg.definir("download", "grau", valor)
+                self.assertEqual(json.loads(self.rodar("caminhos", "--json")[1])["grau"], grau)
+        codigo, saida, _ = self.rodar("caminhos", "-h")
+        self.assertIn("--grau usa sempre 1g", saida.replace("\n", " ").replace("  ", " "))
+
+    def test_preparar_pasta_diz_o_grau_de_cada_autos(self):
+        import pymupdf
+
+        from helestron.nucleo import paginacao
+
+        lote = self.amb.raiz / "Lotes da skill" / "Lote grau"
+        lote.mkdir(parents=True)
+        num, outro = "0700001-93.2024.8.02.0058", "0700002-78.2024.8.02.0058"
+        doc = pymupdf.open()
+        doc.new_page().insert_text((72, 72), "Acórdão")
+        paginacao.gravar_no_doc(doc, paginacao.manifesto_esaj(num, 1, {}, tribunal="TJAL",
+                                                              grau="2g"))
+        doc.save(str(lote / f"{num} (2G).pdf"))
+        doc.close()
+        self.pdf(lote / f"{num}.pdf", "Sentença")
+        self.pdf(lote / f"{outro} (2G).pdf", "Sem manifesto: o nome diz")
+        codigo, saida, _ = self.rodar("preparar", "--pasta", str(lote), "--json")
+        self.assertEqual(codigo, 0)
+        itens = {Path(i["pdf"]).stem: i for i in json.loads(saida)["itens"]}
+        self.assertEqual({k: i["grau"] for k, i in itens.items()},
+                         {f"{num} (2G)": "2g", num: "1g", f"{outro} (2G)": "2g"})
+        self.assertEqual(itens[f"{num} (2G)"]["paginacao"]["grau"], "2g")
+        self.assertNotIn("grau", itens[num]["paginacao"])
+        self.assertTrue(Path(itens[f"{num} (2G)"]["texto"]).name.endswith(" (2G).txt"))
+
     def test_caminhos_diz_o_conflito_com_que_o_baixar_recusa_comecar(self):
         """Achado R15: com o acervo contendo a pasta das senhas e dos perfis,
         'caminhos' dizia as pastas em ordem, e o 'baixar' saía com 2

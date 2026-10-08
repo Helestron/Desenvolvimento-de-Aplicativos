@@ -46,7 +46,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from ..nucleo import caminhos, cofre_senhas, sistema
+from ..nucleo import caminhos, cofre_senhas, sistema, tribunais
 from ..nucleo.registro import censurar
 from .modelos import (AJUSTES_ACESSOS, ENTRAR_MANUALMENTE, CopiaAntigaPresa, NavegadorOcupado,
                       PortalIndisponivel)
@@ -636,13 +636,16 @@ def migrar_sessao(arquivo: Path) -> bool:
 
 
 def pastas_do_portal(portal: str, perfis: Path | None = None) -> list[Path]:
-    """As pastas do navegador de um portal ('esaj:TJAL'): a do login por
-    senha (com a sessão guardada) e a do certificado."""
-    m = re.fullmatch(r"(esaj|eproc):([A-Za-z0-9]{2,12})", (portal or "").strip())
-    if not m:
+    """As pastas do navegador de um portal ('esaj:TJAL', 'eproc:TJAL' ou
+    'eproc2g:TJAL' - o eProc do 2º grau, outra instalação, com perfil e
+    sessão próprios): a do login por senha (com a sessão guardada) e a do
+    certificado. O nome é o de tribunais.nome_do_perfil (Tribunal.perfil), o
+    mesmo com que o motor abre o navegador do portal."""
+    texto = (portal or "").strip()
+    if not tribunais.RE_PORTAL.fullmatch(texto):
         raise ValueError(f"portal inválido: {portal!r}")
     base = Path(perfis or caminhos.PERFIS)
-    nome = f"{m.group(1)}-{m.group(2).upper()}"
+    nome = tribunais.nome_do_perfil(texto)
     return [base / nome, base / f"{nome}-certificado"]
 
 
