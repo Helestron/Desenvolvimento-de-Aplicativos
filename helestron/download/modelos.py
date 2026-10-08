@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from ..nucleo import caminhos
+from ..nucleo import caminhos, cnj
 
 
 # ------------------------------------------------------------------ exceções
@@ -181,6 +181,38 @@ ONDE_CORRIGIR_ENDERECO = (f"em {AJUSTES_ACESSOS}, “{ENDERECO_DO_PORTAL}” (a 
 ROTULOS_CITADOS = (MOSTRAR_NAVEGADOR, TENTAR_DE_NOVO, ENTRAR_MANUALMENTE, "Ajustes",
                    "Acessos aos portais", "Acesso aos portais", PRAZO_LOGIN, PERFIL_EPROC,
                    "Pastas", ENDERECO_DO_PORTAL)
+# Onde trocar o grau do lote: na tela (Opções do lote) e na linha de comando.
+# Um só texto para o e-SAJ, o eProc e o motor. (O rótulo da opção só passa a
+# ser citado entre aspas - e a entrar em ROTULOS_CITADOS - quando a tela o
+# tiver.)
+DICA_GRAU_2G = "escolha 2º grau nas Opções do lote (na linha de comando, --grau 2g)"
+DICA_GRAU_1G = "escolha 1º grau nas Opções do lote (na linha de comando, --grau 1g)"
+
+
+def dica_de_grau(numero, grau: str) -> str:
+    """O fim da frase de "não encontrado", depois de "Confira o número; " (sem
+    ponto final): onde mais procurar os autos. No 1º grau, escolher o 2º; no
+    2º, escolher o 1º (o recurso pode não ter subido) - salvo quando o próprio
+    número só existe no 2º grau (cnj.grau_do_numero): aí trocar o grau do lote
+    não muda a busca, e a frase o diz. 'numero': um cnj.Numero ou um texto."""
+    if (cnj.normalizar_grau(grau) or "1g") == "1g":
+        return f"se o processo estiver no 2º grau, {DICA_GRAU_2G}"
+    n = numero
+    if not isinstance(n, cnj.Numero):
+        try:
+            n = cnj.ler(str(numero or ""))
+        except cnj.NumeroInvalido:
+            n = None
+    if n is not None and cnj.grau_do_numero(n) == "2g":
+        sem_efeito = "trocar o grau do lote não muda a busca"
+        if n.origem == "0000":
+            return ("o processo originário do tribunal (órgão 0000) só existe no 2º grau: "
+                    + sem_efeito)
+        if n.origem.startswith("9"):
+            return (f"o órgão {n.origem} (plantão do 2º grau ou turma recursal) só é procurado "
+                    "no 2º grau: " + sem_efeito)
+        return f"o recurso interno do 2º grau (/{n.dependente}) só existe no 2º grau: " + sem_efeito
+    return f"se o recurso ainda não subiu, os autos estão no 1º grau: {DICA_GRAU_1G}"
 
 
 def rotulo(situacao: str) -> str:
@@ -221,6 +253,9 @@ class ResultadoProcesso:
     # {"paginacao", "sistema", "ultima", "ausentes", ...}; vazio = PDF sem
     # manifesto (versão anterior) ou ainda sem PDF.
     paginacao: dict = field(default_factory=dict)
+    # O grau dos autos deste processo: "1g" ou "2g" (cnj.grau_do_processo).
+    # Quem o decide é o motor, ao montar o lote; absorver() não o troca.
+    grau: str = "1g"
 
     @property
     def pendente(self) -> bool:
@@ -291,6 +326,11 @@ class OpcoesDownload:
     # Ler as senhas guardadas no cofre (modo "senha"). Desligado, o portal no
     # modo "senha" abre na tela de entrada para o usuário entrar à mão.
     usar_cofre: bool = True
+    # O grau do lote, "1g" ou "2g": na tela, a opção Grau do lote (sem ela, o
+    # [download] grau dos Ajustes, que é o que de_config lê); na linha de
+    # comando, --grau (sem ele, 1g: a CLI troca o valor de de_config). O número
+    # que só existe no 2º grau vai ao 2º grau assim mesmo (cnj.grau_do_processo).
+    grau: str = "1g"
 
     def modo_login(self, sistema: str) -> str:
         return _modo_login(self.login.get(sistema, "senha"))
@@ -322,6 +362,7 @@ class OpcoesDownload:
             pasta_diagnostico=caminhos.LOGS / "diagnostico",
             login={"esaj": _modo_login(cfg.texto("esaj", "login")),
                    "eproc": _modo_login(cfg.texto("eproc", "login"))},
+            grau=cnj.normalizar_grau(cfg.texto("download", "grau")) or "1g",
         )
 
 

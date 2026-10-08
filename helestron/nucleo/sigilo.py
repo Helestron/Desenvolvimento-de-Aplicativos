@@ -61,6 +61,7 @@ import csv
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.parse
@@ -146,11 +147,23 @@ def principal(nome) -> str | None:
     return n.principal if n.dependente else None
 
 
+# A chave do processo como a regra a guarda (Numero.nome_arquivo): o principal
+# ou o incidente "-NN" (até "-50000", o recurso interno do 2º grau).
+_RE_CHAVE_DO_PROCESSO = re.compile(r"^\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}(?:-\d{2,5})?$")
+
+
 def contem(chaves, nome) -> bool:
     """O processo 'nome' (Numero.nome_arquivo) está entre os sigilosos
-    'chaves' - ele mesmo ou, se for incidente, o principal dele?"""
+    'chaves' - ele mesmo ou, se for incidente, o principal dele?
+
+    'nome' pode vir também como a chave dos AUTOS ("...0001 (2G)", "...0001-01
+    (2G)": cnj.chave_dos_autos), como um Numero ou como um nome de arquivo: o
+    sigilo é do processo, nos dois graus, e a chave é normalizada antes de
+    comparar - sem isso, os autos do 2º grau de um processo sigiloso passariam."""
     if not chaves or not nome:
         return False
+    if not (isinstance(nome, str) and _RE_CHAVE_DO_PROCESSO.match(nome)):
+        nome = _nome(nome) or str(nome)
     if frozenset.__contains__(chaves, nome) if isinstance(chaves, frozenset) else nome in chaves:
         return True
     p = principal(nome)

@@ -24,9 +24,10 @@ from dataclasses import dataclass, replace
 # O separador aceita hífen, ponto, espaço e os travessões que o Word põe
 # sozinho no lugar do hífen ("0700123–45.2024...").
 _SEP = r"[-.\s\u2010-\u2015]?"
-# O dependente (/01, /0003 - o e-SAJ usa 4 dígitos) só é aceito quando é
-# mesmo um sufixo do número, e não o começo do texto que vem depois dele:
-#   * colado à barra ("/1", "/01", "/0003"), de 1 a 4 dígitos;
+# O dependente (/01, /0003 - o e-SAJ usa 4 dígitos no 1º grau; /50000,
+# /50001 - o recurso interno do e-SAJ 2º grau, 5 dígitos) só é aceito quando
+# é mesmo um sufixo do número, e não o começo do texto que vem depois dele:
+#   * colado à barra ("/1", "/01", "/0003", "/50000"), de 1 a 5 dígitos;
 #   * com espaço em volta da barra (" / 01"), só com 2 ou mais dígitos -
 #     "... / 3 réus" é texto, não o incidente 03;
 #   * nunca seguido de letra, ordinal ou grau ("/ 1ª Vara", "/2ª Vara",
@@ -35,7 +36,7 @@ _SEP = r"[-.\s\u2010-\u2015]?"
 # incidente 01 no lugar dos autos principais.
 _PADRAO = re.compile(
     rf"(?<!\d)(\d{{7}}){_SEP}(\d{{2}}){_SEP}(\d{{4}}){_SEP}(\d){_SEP}(\d{{2}}){_SEP}(\d{{4}})"
-    r"(?:(?:/|\s*/\s*(?=\d\d))(\d{1,4})(?![\w°]))?"
+    r"(?:(?:/|\s*/\s*(?=\d\d))(\d{1,5})(?![\w°]))?"
     r"(?!\d)"
 )
 
@@ -52,7 +53,7 @@ class Numero:
     segmento: str     # J
     tribunal: str     # TR
     origem: str       # OOOO  (o foro, usado na consulta do e-SAJ)
-    dependente: str = ""   # 01, 02... quando o número traz /NN
+    dependente: str = ""   # 01, 02... quando o número traz /NN; 50000... no recurso interno do 2º grau
 
     @property
     def principal(self) -> str:
@@ -117,7 +118,8 @@ class Numero:
 
 def _montar(m: re.Match) -> Numero:
     partes = list(m.groups())
-    # '/0003' e '/3' são o mesmo dependente: guarda-se sempre com 2 dígitos
+    # '/0003' e '/3' são o mesmo dependente: guarda-se com 2 dígitos, no
+    # mínimo ('/50000', o recurso interno do 2º grau, fica com os 5)
     sufixo = ""
     if partes[6] is not None:
         sufixo = (partes[6].strip().lstrip("0") or "0").zfill(2)
@@ -136,7 +138,7 @@ def ler(texto: str) -> Numero:
 # No NOME DE ARQUIVO o dependente vem como "-NN" (Numero.nome_arquivo), porque
 # o Windows não aceita "/". Sem ler o sufixo, o PDF do incidente
 # ("...0001-01.pdf") e o do principal ("...0001.pdf") teriam a mesma chave.
-_DEPENDENTE_NO_NOME = re.compile(r"-(?:inc)?0*(\d{1,4})(?=$|[\s._()\[\]])", re.I)
+_DEPENDENTE_NO_NOME = re.compile(r"-(?:inc)?0*(\d{1,5})(?=$|[\s._()\[\]])", re.I)
 
 
 def ler_nome_arquivo(texto: str) -> Numero:
@@ -195,3 +197,88 @@ def ler_lista(texto: str) -> list[Numero]:
                 vistos.add(k)
                 numeros.append(n)
     return numeros
+
+
+# ===================================================================== grau
+# O grau dos autos: "1g" (1º grau: as varas) ou "2g" (2º grau: os recursos e
+# as ações originárias do tribunal). O número sozinho quase nunca diz o grau
+# (a apelação e o RESE sobem com o número da origem): ver grau_do_processo.
+GRAUS = ("1g", "2g")
+# O nome dos autos do 2º grau: "<número> (2G).pdf", e o mesmo na capa, no
+# registro e no texto ("<número> (2G)_capa.json", "<número> (2G).txt"). O
+# sufixo vem DEPOIS do número e do "-NN" do dependente, separado por espaço
+# (nunca colado com hífen: "-2G" apagaria o incidente do nome), em ASCII. O
+# 1º grau continua com o nome de sempre (Numero.nome_arquivo).
+SUFIXO_2G = " (2G)"
+_RE_GRAU = re.compile(r"^\s*([12])\s*(?:g|[º°o])?\s*(?:grau)?\s*$", re.I)
+# O sufixo do 2º grau logo depois do número (e do "-NN"): " (2G)" - o que o
+# programa grava - e, na leitura, também " (2g)", " (2º grau)" e " - 2g". Não
+# casa a cópia do Windows " (2)" nem " - 2ª Vara".
+_GRAU_NO_NOME = re.compile(
+    r"^(?:-(?:inc)?\d{1,5})?(?:\s*\(\s*2\s*(?:g|[º°o]\s*grau)\s*\)"
+    r"|\s+-\s+2\s*(?:g|[º°o]\s*grau))(?=$|[\s._()\[\]])", re.I)
+
+
+def normalizar_grau(valor) -> str:
+    """'1', '1g', '1G', '1º', '1° grau', '1o' -> '1g'; o mesmo com 2 -> '2g';
+    qualquer outra coisa (vazio, '3', 'ambos') -> ''. Quem chama decide o que
+    fazer com o '' (a linha de comando recusa; o config.ini vale 1g)."""
+    m = _RE_GRAU.match(str(valor or ""))
+    return f"{m.group(1)}g" if m else ""
+
+
+def grau_do_numero(n: Numero) -> str:
+    """'2g' quando o número só existe no 2º grau; '' quando não diz o grau.
+
+    Só no 2º grau: o órgão OOOO = 0000 (competência originária do tribunal:
+    HC, MS, agravo de instrumento, revisão criminal - Res. CNJ 65/2008), o
+    OOOO começando por 9 (plantão do 2º grau, turma recursal) e o dependente de
+    5 dígitos começando por 5 (/50000, /50001: o recurso interno do e-SAJ 2º
+    grau - embargos de declaração, agravo interno)."""
+    if n.origem == "0000" or n.origem.startswith("9"):
+        return "2g"
+    if len(n.dependente) == 5 and n.dependente.startswith("5"):
+        return "2g"
+    return ""
+
+
+def grau_do_processo(n: Numero, grau_do_lote: str = "") -> str:
+    """A regra única do grau de um processo do lote, nesta ordem: o número
+    (grau_do_numero), o grau do lote (OpcoesDownload.grau: a opção "Grau" do
+    lote ou --grau; sem ela, o [download] grau dos Ajustes) e, por fim, 1g.
+    Não há troca automática de grau: a apelação existe nos dois."""
+    return grau_do_numero(n) or normalizar_grau(grau_do_lote) or "1g"
+
+
+def nome_dos_autos(n: Numero, grau: str = "1g") -> str:
+    """O nome (sem extensão) do PDF dos autos - e da capa, do registro e do
+    texto: o do 1º grau é Numero.nome_arquivo, como sempre; o do 2º grau leva
+    SUFIXO_2G ('0700001-93.2024.8.02.0058 (2G)', '...0001-50000 (2G)')."""
+    return n.nome_arquivo + (SUFIXO_2G if normalizar_grau(grau) == "2g" else "")
+
+
+def grau_do_nome(texto) -> str:
+    """'2g' se o nome (de arquivo ou pasta, ou a chave dos autos) traz o
+    sufixo do 2º grau logo depois do número (e do "-NN"); '1g' se não traz.
+    Levanta NumeroInvalido se o texto não tiver número."""
+    texto = str(texto or "")
+    m = _PADRAO.search(texto)
+    if not m:
+        raise NumeroInvalido(f"número de processo não reconhecido em '{texto.strip()}'")
+    return "2g" if _GRAU_NO_NOME.match(texto[m.end():]) else "1g"
+
+
+def chave_dos_autos(texto) -> str:
+    """A identidade do ARQUIVO de autos (processo + grau), de um nome de
+    arquivo ou pasta, de uma chave dos autos ou de um número: 'X', 'X-01',
+    'X (2G)', 'X-50000 (2G)'. No 1º grau é a chave do processo
+    (Numero.nome_arquivo): acervos e textos de antes não mudam. A chave do
+    PROCESSO (sigilo, motor) continua ler_nome_arquivo(texto).nome_arquivo,
+    que ignora o sufixo do grau. Levanta NumeroInvalido se não houver número.
+
+    Um nome (texto) vale pelo que diz: sem o sufixo, 1º grau. Um Numero não
+    traz nome: o grau é o que o próprio número diz (grau_do_numero) - o HC de
+    órgão 0000 e o /50000 só têm autos no 2º grau -, e 1º grau no resto."""
+    if isinstance(texto, Numero):
+        return nome_dos_autos(texto, grau_do_numero(texto) or "1g")
+    return nome_dos_autos(ler_nome_arquivo(str(texto or "")), grau_do_nome(texto))
