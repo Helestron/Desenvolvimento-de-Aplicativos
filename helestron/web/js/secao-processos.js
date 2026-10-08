@@ -13,7 +13,7 @@
   "use strict";
 
   const H = window.Helestron;
-  const { el, icone, botao, cartao, cabecalhoCartao, vazio, faixa, pilula, interruptor, trocar, folha, aviso, situacaoDownload, nomeSistema } = H.ui;
+  const { el, icone, botao, cartao, cabecalhoCartao, vazio, faixa, pilula, interruptor, trocar, folha, aviso, situacaoDownload, nomeSistema, rotuloGrau, normalizarGrau, portalNoGrau } = H.ui;
   const { fmt, api } = H;
 
   // As mesmas extensões de nucleo/listas.py (EXTENSOES): test_web_contrato confere.
@@ -180,13 +180,23 @@
         navegador_visivel: H.app.flag(H.app.valorConfig("download", "mostrar_navegador", "false")),
       };
     }
+    // O grau do lote: o dos Ajustes (Grau dos processos) até você trocar aqui.
+    if (!r.opcoes.grau) r.opcoes.grau = normalizarGrau(H.app.valorConfig("download", "grau", "1g")) || "1g";
+    // O grau que cada linha terá: o que o número impõe (o originário do
+    // tribunal, o recurso interno /50000) ou o do lote (cnj.grau_do_processo).
+    const grauDe = (p) => p.grau_fixo || r.opcoes.grau;
+    // Os que mudam quando o grau do lote muda (os selos, as pílulas, os acessos).
+    const aoTrocarGrau = [];
 
-    // --- resumo por tribunal
-    const porPortal = new Map();
-    for (const p of l.processos || []) {
-      const chave = `${p.tribunal}|${p.sistema}`;
-      porPortal.set(chave, (porPortal.get(chave) || 0) + 1);
-    }
+    // --- resumo por tribunal (e por grau)
+    const porPortal = () => {
+      const mapa = new Map();
+      for (const p of l.processos || []) {
+        const chave = `${p.tribunal}|${p.sistema}|${grauDe(p)}`;
+        mapa.set(chave, (mapa.get(chave) || 0) + 1);
+      }
+      return mapa;
+    };
     const contagem = el("p", { classe: "cartao-sub" });
     const atualizarContagem = () => {
       const n = ativos().length;
@@ -198,12 +208,16 @@
         ` · ${fmt.plural(new Set(ativos().map((p) => p.tribunal)).size, "tribunal", "tribunais")}`);
     };
 
-    const chips = el("div", { classe: "grupo-botoes", estilo: { margin: "4px 0 2px", gap: "8px" } },
-      Array.from(porPortal.entries()).map(([chave, n]) => {
-        const [tribunal, sistema] = chave.split("|");
+    const chips = el("div", { classe: "grupo-botoes", estilo: { margin: "4px 0 2px", gap: "8px" } });
+    const desenharChips = () => trocar(chips,
+      Array.from(porPortal().entries()).map(([chave, n]) => {
+        const [tribunal, sistema, grau] = chave.split("|");
         return el("span", { classe: "selo selo-contorno", estilo: { height: "26px", padding: "0 10px", fontSize: "13px" } },
-          `${tribunal} · ${nomeSistema(sistema)}`, el("strong", { estilo: { marginLeft: "4px", color: "var(--navy-900)" }, texto: String(n) }));
+          `${tribunal} · ${nomeSistema(sistema)}` + (grau === "2g" ? " (2º grau)" : ""),
+          el("strong", { estilo: { marginLeft: "4px", color: "var(--navy-900)" }, texto: String(n) }));
       }));
+    desenharChips();
+    aoTrocarGrau.push(desenharChips);
 
     // --- avisos e rejeitados
     const avisos = [];
@@ -226,11 +240,26 @@
     const corpo = el("tbody");
     (l.processos || []).forEach((p, i) => {
       const remover = botao({ icone: "x", titulo: `Tirar ${p.numero} do lote`, tamanho: "pequeno", tipo: "texto" });
+      // O grau da linha (sem clique): o do lote, ou o que o número impõe.
+      const seloGrau = el("span", { classe: "selo selo-grau" });
+      const desenharGrau = () => {
+        const grau = grauDe(p);
+        const fora = Array.isArray(p.graus) && !p.graus.includes(grau);
+        seloGrau.textContent = rotuloGrau(grau);
+        seloGrau.classList.toggle("selo-grau-2g", grau === "2g");
+        seloGrau.classList.toggle("selo-grau-fixo", !!p.grau_fixo);
+        seloGrau.classList.toggle("selo-grau-fora", fora);
+        seloGrau.title = fora ? `O Helestron ainda não baixa o ${rotuloGrau(grau)} do ${p.tribunal}: este processo vai aparecer como não suportado.`
+          : p.grau_fixo ? "Só existe no 2º grau" : "";
+      };
+      desenharGrau();
+      aoTrocarGrau.push(desenharGrau);
       const linha = el("tr", {},
         el("td", { classe: "tabular", estilo: { color: "var(--texto-2)", width: "36px" }, texto: String(i + 1) }),
         el("td", { classe: "numero", texto: p.numero }),
         el("td", {}, el("span", { classe: "selo selo-contorno", texto: p.tribunal || "—" })),
         el("td", {}, el("span", { classe: "selo", texto: nomeSistema(p.sistema) })),
+        el("td", {}, seloGrau),
         el("td", {}, p.tem_senha ? pilula("Senha na relação", "navy", "chave") : null),
         el("td", { estilo: { textAlign: "right", width: "44px" } }, remover));
       const aplicar = () => {
@@ -253,7 +282,7 @@
       el("table", { classe: "tabela" },
         el("thead", {}, el("tr", {},
           el("th", { texto: "#" }), el("th", { texto: "Processo" }), el("th", { texto: "Tribunal" }),
-          el("th", { texto: "Sistema" }), el("th", { texto: "Senha" }), el("th", {}, el("span", { classe: "oculto-visual", texto: "Ações" })))),
+          el("th", { texto: "Sistema" }), el("th", { texto: "Grau" }), el("th", { texto: "Senha" }), el("th", {}, el("span", { classe: "oculto-visual", texto: "Ações" })))),
         corpo));
 
     const revisao = cartao({ classe: "revisao" },
@@ -276,36 +305,64 @@
       acessorio: interruptor({ marcado: r.opcoes[chave], rotulo: titulo, aoMudar: (v) => { r.opcoes[chave] = v; } }),
     });
     const acessosCaixa = el("div", {}, H.ui.esqueleto(1));
+    // O grau do lote: onde procurar os autos quando o número não diz. A tela
+    // sempre o manda no pedido (o servidor, sem ele, usaria o dos Ajustes).
+    const seletorGrau = H.ui.segmentado({
+      opcoes: [{ valor: "1g", rotulo: "1º grau" }, { valor: "2g", rotulo: "2º grau" }], valor: r.opcoes.grau, rotulo: "Grau",
+      aoMudar: (v) => { r.opcoes.grau = v; aoTrocarGrau.forEach((f) => f()); },
+    });
+    seletorGrau.id = "grau-lote";
     const opcoes = cartao({ classe: "opcoes" },
       cabecalhoCartao("Opções do lote", "engrenagem"),
       el("label", { classe: "rotulo", for: "nome-lote", texto: "Nome do lote (vira o nome da pasta)" }),
       nome,
       el("div", { classe: "grupo-lista", estilo: { marginTop: "16px", boxShadow: "none" } },
+        H.ui.linha({ titulo: "Grau",
+          sub: "Onde procurar os autos. O processo originário do tribunal (órgão 0000) e o recurso interno (/50000) vão sempre ao 2º grau.",
+          acessorio: seletorGrau }),
         opcao("separar_sigilosos", "Separar os sigilosos", "Processo em segredo de justiça vai para a pasta dos sigilosos, fora do acervo da IA."),
         opcao("rebaixar", "Baixar de novo o que já existe", "Desligado, o processo cujo PDF já está na pasta é pulado."),
         opcao("navegador_visivel", "Mostrar o navegador enquanto baixa", "Útil para acompanhar ou quando o portal pede alguma confirmação.")),
       el("h3", { classe: "grupo-titulo", estilo: { padding: "20px 4px 8px" }, texto: "Acesso aos portais" }),
       acessosCaixa);
 
-    const carregarAcessos = async () => {
-      let acessos = [];
-      try { acessos = await api.acessos.listar(); } catch (_e) { acessos = []; }
-      if (!ctx.vivo) return;
-      const portais = Array.from(porPortal.keys()).map((k) => k.split("|")).filter(([, s]) => s === "esaj" || s === "eproc");
-      if (!portais.length) { trocar(acessosCaixa); return; }
-      trocar(acessosCaixa, el("div", { classe: "grupo-lista", estilo: { boxShadow: "none" } }, portais.map(([tribunal, sistema]) => {
-        const portal = `${sistema}:${tribunal}`;
+    // Uma linha por portal do sistema principal de cada processo, no grau dele:
+    // o e-SAJ usa o mesmo acesso nos dois graus (esaj:TJAL); o eProc do 2º
+    // grau, o seu (eproc2g:TRF4).
+    let acessos = null;
+    const desenharAcessos = () => {
+      if (acessos === null) return;
+      const portais = new Map();
+      for (const p of l.processos || []) {
+        if (p.sistema !== "esaj" && p.sistema !== "eproc") continue;
+        const grau = grauDe(p);
+        const portal = portalNoGrau(p.sistema, p.tribunal, grau);
+        if (!portais.has(portal)) portais.set(portal, [p.tribunal, p.sistema, p.sistema === "eproc" ? grau : "1g"]);
+      }
+      if (!portais.size) { trocar(acessosCaixa); return; }
+      trocar(acessosCaixa, el("div", { classe: "grupo-lista", estilo: { boxShadow: "none" } }, Array.from(portais.entries()).map(([portal, [tribunal, sistema, grau]]) => {
         const a = acessos.find((x) => x.portal === portal);
         const ok = a && a.tem_senha;
-        return H.ui.linha({
+        const rotulo = `${nomeSistema(sistema)}${grau === "2g" ? " (2º grau)" : ""} · ${tribunal}`;
+        const l2 = H.ui.linha({
           icone: ok ? "chave" : "pessoa", cor: ok ? "aco" : "cinza",
-          titulo: `${nomeSistema(sistema)} · ${tribunal}`,
+          titulo: rotulo,
           sub: ok ? (a.so_agora ? "Senha só até fechar o Helestron" : "Senha guardada") + (a.usuario ? " · " + a.usuario : "")
             : "Sem senha guardada: o navegador abre para você entrar.",
           acessorio: botao({ rotulo: ok ? "Alterar" : "Cadastrar", tipo: ok ? "texto" : "tonal", tamanho: "pequeno",
-            acao: async () => { if (await H.acessos.editar({ portal, rotulo: `${nomeSistema(sistema)} · ${tribunal}`, usuario: a ? a.usuario : "", sistema })) carregarAcessos(); } }),
+            acao: async () => { if (await H.acessos.editar({ portal, rotulo, usuario: a ? a.usuario : "", sistema })) carregarAcessos(); } }),
         });
+        l2.dataset.portal = portal;
+        return l2;
       })));
+    };
+    aoTrocarGrau.push(desenharAcessos);
+    const carregarAcessos = async () => {
+      let lista = [];
+      try { lista = await api.acessos.listar(); } catch (_e) { lista = []; }
+      if (!ctx.vivo) return;
+      acessos = lista;
+      desenharAcessos();
     };
 
     // --- rodapé com a ação principal
@@ -388,7 +445,8 @@
       trocar(tr,
         el("td", { classe: "tabular", estilo: { color: "var(--texto-2)", width: "36px" }, texto: String(i + 1) }),
         el("td", { classe: "numero" }, item.numero, item.sigiloso ? [" ", icone("cadeado", { tamanho: 14, rotulo: "Segredo de justiça" })] : null),
-        el("td", {}, el("span", { classe: "selo selo-contorno", texto: H.cnj.tribunal(item.numero) || "—" })),
+        // No 2º grau, o selo diz o grau ("TJAL · 2º grau"); no 1º, como sempre.
+        el("td", {}, el("span", { classe: "selo selo-contorno", texto: (H.cnj.tribunal(item.numero) || "—") + (item.grau === "2g" ? " · 2º grau" : "") })),
         el("td", {}, sit, item.mensagem ? el("span", { classe: "mensagem-item mensagem-sob", texto: item.mensagem }) : null),
         el("td", { classe: "coluna-detalhe" }, el("span", { classe: "mensagem-item", texto: item.mensagem || "" })),
         el("td", { classe: "coluna-abrir" }, item.arquivo
@@ -458,8 +516,11 @@
             // relatório do lote, sem apagar as dos que já estavam baixados.
             // O nome vem da pasta do lote que terminou, e não do rascunho -
             // que pode ser de outro lote (um começado pela Pauta, por exemplo).
+            // O grau também: o do lote que terminou (o rascunho é nulo depois
+            // de recarregar a página, e o da Pauta é sempre do 1º grau).
             const nomeLote = String(res.pasta || "").split(/[\\/]/).filter(Boolean).pop() || r.nomeLote;
-            const resposta = await api.download.iniciar({ processos: res.a_refazer, nome_lote: nomeLote, opcoes: Object.assign({}, r.opcoes || {}, { rebaixar: false }) });
+            const grau = normalizarGrau(res.grau) || normalizarGrau(H.app.valorConfig("download", "grau", "1g")) || "1g";
+            const resposta = await api.download.iniciar({ processos: res.a_refazer, nome_lote: nomeLote, opcoes: Object.assign({}, r.opcoes || {}, { rebaixar: false, grau }) });
             r.tarefaId = resposta.tarefa;
             r.numeros = res.a_refazer.slice();
             r.nomeLote = nomeLote;

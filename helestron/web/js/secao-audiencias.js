@@ -61,8 +61,9 @@
   // da rota no servidor (api_audiencias.LIMITE_ENVIO_GRAVACAO). Pelo diálogo
   // do Windows não há limite: vai só o caminho.
   const LIMITE_ENVIO_GRAVACAO = 20 * 1024 * 1024 * 1024;
-  // "0700123-83.2024.8.02.0001/0001": o número e o dependente mais longo.
-  const TAMANHO_NUMERO = 30;
+  // "0706265-50.2017.8.02.0001/50000": o número e o dependente mais longo (o
+  // recurso interno do 2º grau, de 5 dígitos).
+  const TAMANHO_NUMERO = 31;
 
   // O envio da gravação pela página em curso. Sobrevive a sair e voltar à
   // tela: {promessa, cancelar, fracao, total, nome, ouvintes}.
@@ -89,8 +90,8 @@
    */
   function numeroQuebravel(numero) {
     const texto = String(numero || "");
-    // com o dependente ("/01") junto da segunda metade
-    const m = /^(\d{7}-\d{2}\.\d{4}\.)(\d\.\d{2}\.\d{4}(?:[/-]\d{1,4})?)$/.exec(texto);
+    // com o dependente ("/01", "/50000") junto da segunda metade
+    const m = /^(\d{7}-\d{2}\.\d{4}\.)(\d\.\d{2}\.\d{4}(?:[/-]\d{1,5})?)$/.exec(texto);
     return m ? [m[1], el("wbr"), m[2]] : texto;
   }
 

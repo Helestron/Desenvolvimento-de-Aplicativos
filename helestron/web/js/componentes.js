@@ -197,17 +197,17 @@
 
   // O dependente (incidente) depois dos 20 dígitos: "/01" (como nos autos) ou
   // "-01" (como nos nomes de arquivo: o Windows não aceita "/"), colado ao
-  // número, com até 4 dígitos ("/0003" do e-SAJ). Nunca seguido de letra,
-  // ordinal ou grau: "... - 1ª Vara" é texto, não o incidente 01 (a mesma
-  // regra de nucleo/cnj.py, ler_nome_arquivo).
-  const DEPENDENTE_DIGITADO = /^([/-])(?:inc)?(\d{0,4})(?![\dA-Za-zÀ-ÿªº°])/i;
-  const DEPENDENTE_COM_ESPACO = /^\s*(\/)\s*(\d{2,4})(?![\dA-Za-zÀ-ÿªº°])/;
+  // número, com até 5 dígitos ("/0003" do e-SAJ; "/50000", o recurso interno
+  // do 2º grau). Nunca seguido de letra, ordinal ou grau: "... - 1ª Vara" é
+  // texto, não o incidente 01 (a mesma regra de nucleo/cnj.py, ler_nome_arquivo).
+  const DEPENDENTE_DIGITADO = /^([/-])(?:inc)?(\d{0,5})(?![\dA-Za-zÀ-ÿªº°])/i;
+  const DEPENDENTE_COM_ESPACO = /^\s*(\/)\s*(\d{2,5})(?![\dA-Za-zÀ-ÿªº°])/;
   // O número num nome de arquivo ou pasta, com o dependente "-NN" ou "/NN"
   // (o separador aceita hífen, ponto, espaço e os travessões do Word).
   const SEP_CNJ = "[-.\\s\\u2010-\\u2015]?";
   const NUMERO_NO_NOME = new RegExp("(?:^|\\D)(\\d{7})" + SEP_CNJ + "(\\d{2})" + SEP_CNJ + "(\\d{4})" + SEP_CNJ +
     "(\\d)" + SEP_CNJ + "(\\d{2})" + SEP_CNJ + "(\\d{4})" +
-    "(?:\\/(\\d{1,4})(?![\\dA-Za-zÀ-ÿªº°])|-(?:inc)?0*(\\d{1,4})(?=$|[\\s._()[\\]]))?(?!\\d)", "i");
+    "(?:\\/(\\d{1,5})(?![\\dA-Za-zÀ-ÿªº°])|-(?:inc)?0*(\\d{1,5})(?=$|[\\s._()[\\]]))?(?!\\d)", "i");
 
   const cnj = {
     digitos: (s) => String(s || "").replace(/\D/g, ""),
@@ -301,6 +301,26 @@
   // ============================================================ rótulos
   const SISTEMAS = { esaj: "e-SAJ", eproc: "eProc", arquivo: "Arquivo", outro: "Outro" };
   const nomeSistema = (s) => SISTEMAS[String(s || "").toLowerCase()] || s || "";
+
+  // O grau dos autos: "1g" (1º grau: as varas) ou "2g" (2º grau: os recursos
+  // e as ações originárias do tribunal), os valores do servidor (nucleo/cnj.py).
+  const GRAUS = { "1g": "1º grau", "2g": "2º grau" };
+  const rotuloGrau = (g) => GRAUS[g] || "";
+  /** "2", "2g", "2º grau" → "2g"; o que não for grau → "" (a regra de cnj.normalizar_grau). */
+  function normalizarGrau(v) {
+    const m = /^\s*([12])\s*(?:g|[º°o])?\s*(?:grau)?\s*$/i.exec(v === undefined || v === null ? "" : String(v));
+    return m ? m[1] + "g" : "";
+  }
+  /**
+   * A chave do acesso a um portal num grau: o e-SAJ usa a mesma nos dois graus
+   * ("esaj:TJAL"); o eProc do 2º grau tem a sua ("eproc2g:TJAL").
+   */
+  const portalNoGrau = (sistema, tribunal, grau) => (sistema === "eproc" && grau === "2g" ? "eproc2g" : sistema) + ":" + tribunal;
+  /** O sistema de uma chave de portal: "eproc2g:TJAL" → "eproc". */
+  const sistemaDoPortal = (portal) => {
+    const prefixo = String(portal || "").split(":")[0];
+    return prefixo === "eproc2g" ? "eproc" : prefixo;
+  };
 
   // Situações da pauta (8.1) → classe da pílula.
   const SITUACAO_PAUTA = {
@@ -1007,7 +1027,8 @@
     el, anexar, trocar, icone, botao, logo, executarAcao, interruptor, segmentado, anel, medidor,
     pilula, pilulaSituacao, seloTipo, seloSistema, blocoIcone, linha, grupo, vazio, faixa,
     esqueleto, cartao, cabecalhoCartao, cabecalho, aviso, folha, copiar, copiarTexto, esperar, debounce,
-    situacaoDownload, nomeSistema, COR_TIPO, SITUACAO_PAUTA,
+    situacaoDownload, nomeSistema, rotuloGrau, normalizarGrau, portalNoGrau, sistemaDoPortal,
+    COR_TIPO, SITUACAO_PAUTA,
   };
   H.fmt = fmt;
   H.cnj = cnj;

@@ -22,7 +22,7 @@ from .. import servicos
 from ..nucleo import caminhos, cnj, sistema, tribunais
 from ..tarefas import NAVEGADOR, NUVEM
 from .api_audiencias import _com_outro_nome
-from .api_geral import iso, maiuscula
+from .api_geral import GRAU_INVALIDO, iso, maiuscula
 from .rede import ErroApi, Pedido, Roteador, erro_400
 
 log = logging.getLogger("servidor.processos")
@@ -70,6 +70,11 @@ def leitura_para_json(app, leitura, nome_lote: str = "") -> dict:
             "alternativo": alt.sistema if alt is not None and alt.suportado else None,
             "descricao": tribunais.descrever(n), "tem_senha": bool(senha),
             "digito_confere": n.digito_confere, "dependente": n.e_dependente,
+            # O grau que o próprio número impõe ("2g": o originário do tribunal,
+            # órgão 0000; o plantão e a turma, 9xxx; o recurso interno, /50000)
+            # e os graus que o Helestron baixa do sistema principal dele.
+            "grau_fixo": cnj.grau_do_numero(n) or None,
+            "graus": ["1g", "2g"] if t.tem_grau("2g") else ["1g"],
         })
     avisos = []
     # Só os que entram no lote: o de tribunal sem suporte já tem o seu aviso.
@@ -234,12 +239,30 @@ def item_json(tw, r, destino: Path) -> dict:
     quem acompanha o lote pela API decide por eles, sem adivinhar pelo texto."""
     causa = getattr(r, "causa", "")
     refazer = getattr(r, "refazer", False)
+    # O grau dos autos da linha ("1g" ou "2g"), o que o motor decidiu
+    # (cnj.grau_do_processo): sempre presente, como no JSON da linha de comando.
+    grau = getattr(r, "grau", "1g")
     return {"tarefa": tw.id, "numero": r.numero, "situacao": r.situacao or "",
             "rotulo": r.rotulo, "mensagem": _observacao(r, destino), "arquivo": r.arquivo or "",
             "sigiloso": bool(r.sigiloso), "paginas": r.paginas or 0, "tribunal": r.tribunal,
             "sistema": r.sistema, "ordem": r.ordem,
             "causa": causa if isinstance(causa, str) else "",
-            "refazer": refazer if isinstance(refazer, bool) else False}
+            "refazer": refazer if isinstance(refazer, bool) else False,
+            "grau": (cnj.normalizar_grau(grau) if isinstance(grau, str) else "") or "1g"}
+
+
+def grau_do_pedido(opcoes_pedido: dict | None, padrao: str) -> str:
+    """O grau do lote pedido ('1g' ou '2g'): o "grau" das opções do pedido
+    (1g, 2g, 1, 2, 1º, 2º...); ausente ou em branco, 'padrao' (o dos Ajustes,
+    [download] grau); outra coisa, 400."""
+    valor = (opcoes_pedido or {}).get("grau")
+    if valor is None or (isinstance(valor, str) and not valor.strip()):
+        return cnj.normalizar_grau(padrao) or "1g"
+    grau = cnj.normalizar_grau(valor) if isinstance(valor, (str, int)) and \
+        not isinstance(valor, bool) else ""
+    if not grau:
+        raise erro_400(GRAU_INVALIDO, "valor_invalido")
+    return grau
 
 
 def exigir_pastas_separadas(app) -> None:
@@ -262,11 +285,16 @@ def exigir_pastas_separadas(app) -> None:
 def iniciar_lote(app, numeros: list, nome_lote: str, opcoes_pedido: dict | None = None,
                  senhas_pedido: dict | None = None, titulo: str = "") -> object:
     """Começa o lote de download (usado também pela pauta: "Baixar autos").
-    Com as pastas em conflito, recusa (409) antes de abrir o navegador."""
-    exigir_pastas_separadas(app)
+    Com as pastas em conflito, recusa (409) antes de abrir o navegador.
+
+    'opcoes_pedido' pode trazer o "grau" do lote (1g ou 2g; sem ele, o dos
+    Ajustes); o número que só existe no 2º grau vai ao 2º grau assim mesmo
+    (a regra única, cnj.grau_do_processo, aplicada pelo motor)."""
     cfg = app.cfg
     opcoes = servicos.opcoes_download(cfg)
     extra = opcoes_pedido or {}
+    opcoes.grau = grau_do_pedido(extra, getattr(opcoes, "grau", "1g"))
+    exigir_pastas_separadas(app)
     if "separar_sigilosos" in extra:
         opcoes.separar_sigilosos = bool(extra["separar_sigilosos"])
     if "rebaixar" in extra:
@@ -332,7 +360,9 @@ def iniciar_lote(app, numeros: list, nome_lote: str, opcoes_pedido: dict | None 
                 "sigilosos": len(resumo.sigilosos),
                 "a_refazer": list(resumo.a_refazer()),
                 "sigilosos_no_acervo": [str(p) for p in presos],
-                "minutos": round(float(getattr(resumo, "minutos", 0) or 0), 1)}
+                "minutos": round(float(getattr(resumo, "minutos", 0) or 0), 1),
+                # o grau do LOTE: o "Tentar de novo" o repete (e não o rascunho da tela)
+                "grau": opcoes.grau}
 
     titulo = titulo or f"Baixar {_plural(len(numeros), 'processo')}"
     tw = app.tarefas.iniciar("download", titulo, alvo, (NAVEGADOR,), chave="download",

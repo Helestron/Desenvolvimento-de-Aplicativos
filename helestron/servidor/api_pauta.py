@@ -382,7 +382,9 @@ def baixar_autos(p: Pedido) -> dict:
         raise ErroApi(409, "vazio", "Nenhuma audiência do período tem número de processo para "
                                     "baixar.")
     nome = f"Pauta {de.isoformat()} a {ate.isoformat()}" if de != ate else f"Pauta {de.isoformat()}"
-    tw = iniciar_lote(app, numeros, nome,
+    # A pauta é de audiências do 1º grau: o lote dela é do 1º grau, seja qual
+    # for o grau dos Ajustes (o número que só existe no 2º grau vai ao 2º).
+    tw = iniciar_lote(app, numeros, nome, {"grau": "1g"},
                       titulo=f"Baixar os autos da pauta ({len(numeros)} "
                              f"processo{'s' if len(numeros) != 1 else ''})")
     return {"tarefa": tw.id, "processos": len(numeros)}

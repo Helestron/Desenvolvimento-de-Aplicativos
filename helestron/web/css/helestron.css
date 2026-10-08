@@ -1186,6 +1186,24 @@ a.linha:active {
   box-shadow: inset 0 0 0 1px rgba(11, 26, 51, 0.14);
 }
 
+/* O grau de cada linha da revisão (Processos): o 2º grau em azul; o grau que
+   o próprio número impõe, com contorno; o grau que o Helestron ainda não baixa
+   daquele tribunal, em âmbar (o processo vai aparecer como não suportado). */
+.selo-grau-2g {
+  background: var(--azul-fundo);
+  color: var(--azul-texto);
+}
+
+.selo-grau-fixo {
+  box-shadow: inset 0 0 0 1px rgba(10, 102, 232, 0.35);
+}
+
+.selo-grau-fora {
+  background: rgba(194, 124, 14, 0.14);
+  color: var(--ambar-texto);
+  box-shadow: none;
+}
+
 .chip {
   display: flex;
   flex-direction: column;
@@ -2828,6 +2846,13 @@ button.item-simples:hover {
 
 .resultado-teste.ok {
   color: var(--verde-texto);
+}
+
+/* Os botões de uma linha de Acessos ("Testar 1º grau", "Testar 2º grau",
+   "Alterar"): sem espaço, descem para a linha de baixo, à direita. */
+.acoes-acesso {
+  justify-content: flex-end;
+  gap: 4px 10px;
 }
 
 /* A última sincronização da fonte falhou (Ajustes › Pauta): o ponto âmbar

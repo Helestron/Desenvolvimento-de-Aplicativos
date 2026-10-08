@@ -12,7 +12,7 @@
   "use strict";
 
   const H = window.Helestron;
-  const { el, icone, botao, cartao, vazio, interruptor, trocar, folha, aviso, blocoIcone, pilula, linha, grupo, nomeSistema } = H.ui;
+  const { el, icone, botao, cartao, vazio, interruptor, trocar, folha, aviso, blocoIcone, pilula, linha, grupo, nomeSistema, rotuloGrau, sistemaDoPortal } = H.ui;
   const { fmt, api } = H;
 
   // 'curto' é o nome no índice (cabe na coluna estreita); 'titulo', o da página.
@@ -42,7 +42,7 @@
   }
 
   const RODAPES = {
-    acessos: "As senhas ficam cifradas pelo Windows (DPAPI): só a sua conta, neste computador, consegue lê-las. Com “Entrar manualmente”, o navegador abre na tela de entrada do portal e o Helestron continua depois que você entrar.",
+    acessos: "As senhas ficam cifradas pelo Windows (DPAPI): só a sua conta, neste computador, consegue lê-las. Com “Entrar manualmente”, o navegador abre na tela de entrada do portal e o Helestron continua depois que você entrar. O acesso ao e-SAJ vale para o 1º e o 2º grau; o eProc do 2º grau tem acesso próprio.",
     pastas: "A pasta dos sigilosos fica fora do acervo (e o acervo, fora dela): tudo o que está no acervo é lido pela IA e copiado para a nuvem. A pauta exportada também fica fora, porque traz as partes dos processos sigilosos.",
     download: "Não zere a pausa entre processos em listas grandes: rajada de acessos pode ser lida pelo portal como abuso.",
     transcricao: "A transcrição roda no próprio computador, sem internet: o áudio da audiência não sai da máquina.",
@@ -61,15 +61,22 @@
       let tribunais = [];
       try { tribunais = await api.tribunais(); } catch (_e) { tribunais = []; }
       const opcoes = [];
+      // O e-SAJ tem um acesso só para os dois graus; o eProc do 2º grau, onde
+      // o Helestron o baixa, tem o seu (eproc2g:SIGLA).
+      const incluir = (s, sigla, graus) => {
+        if (s !== "esaj" && s !== "eproc") return;
+        opcoes.push([`${s}:${sigla}`, `${sigla} · ${nomeSistema(s)}`, s]);
+        if (s === "eproc" && (graus || []).includes("2g")) opcoes.push([`eproc2g:${sigla}`, `${sigla} · ${nomeSistema(s)} (2º grau)`, s]);
+      };
       for (const t of tribunais) {
-        if (t.sistema === "esaj" || t.sistema === "eproc") opcoes.push([`${t.sistema}:${t.sigla}`, `${t.sigla} · ${nomeSistema(t.sistema)}`, t.sistema]);
-        if (t.alternativo === "esaj" || t.alternativo === "eproc") opcoes.push([`${t.alternativo}:${t.sigla}`, `${t.sigla} · ${nomeSistema(t.alternativo)}`, t.alternativo]);
+        incluir(t.sistema, t.sigla, t.graus);
+        incluir(t.alternativo, t.sigla, t.graus_alternativo);
       }
       escolhaPortal = el("select", { classe: "campo", id: "acesso-portal" }, opcoes.map(([v, r]) => el("option", { value: v, texto: r })));
       escolhaPortal._opcoes = opcoes;
       conteudo.push(el("div", {}, el("label", { classe: "rotulo", for: "acesso-portal", texto: "Portal" }), escolhaPortal));
     }
-    const sistemaAtual = () => (escolhaPortal ? String(escolhaPortal.value).split(":")[0] : sistema || String(portal).split(":")[0]);
+    const sistemaAtual = () => (escolhaPortal ? sistemaDoPortal(escolhaPortal.value) : sistema || sistemaDoPortal(portal));
     const rotuloUsuario = el("label", { classe: "rotulo", for: "acesso-usuario" });
     const campoUsuario = el("input", { classe: "campo", id: "acesso-usuario", autocomplete: "username", spellcheck: "false" });
     campoUsuario.value = usuario || "";
@@ -322,65 +329,82 @@
   // ================================================================ cada grupo
   async function telaAcessos(ctx, campos) {
     const lista = el("div", {}, H.ui.esqueleto(2));
-    // O teste de cada portal (portal → id da tarefa), vivo enquanto a janela
-    // estiver aberta. O resultado aparece na própria linha, ao lado do botão,
-    // e não num aviso por cima da lista.
+    // O teste de cada portal em cada grau ("portal|grau" → id da tarefa), vivo
+    // enquanto a janela estiver aberta. O resultado aparece na própria linha,
+    // ao lado do botão, e não num aviso por cima da lista.
     const testes = H.loja.testesAcesso || (H.loja.testesAcesso = new Map());
     const naTela = H.loja.resultadosNaTela || new Set();
     for (const id of testes.values()) naTela.add(id);
     ctx.aoSair(() => { for (const id of testes.values()) naTela.delete(id); });
     let acessos = [];
 
-    function situacaoDoTeste(portal) {
-      const id = testes.get(portal);
+    function situacaoDoTeste(chave, prefixo) {
+      const id = testes.get(chave);
       if (!id) return null;
       const t = H.loja.tarefas.get(id) || { estado: "rodando" };
+      const p = prefixo ? prefixo + ": " : "";
       if (t.estado === "rodando") {
-        return el("span", { classe: "resultado-teste" }, el("span", { classe: "girando", estilo: { width: "12px", height: "12px", borderWidth: "1.5px" } }), "Testando o acesso…");
+        return el("span", { classe: "resultado-teste" }, el("span", { classe: "girando", estilo: { width: "12px", height: "12px", borderWidth: "1.5px" } }), `${p}Testando o acesso…`);
       }
       if (t.estado === "concluida") {
         const hora = t.fim ? fmt.hora(t.fim) : "";
-        return el("span", { classe: "resultado-teste ok" }, icone("check-circulo", { tamanho: 14 }), hora ? `Acesso confirmado às ${hora}.` : "Acesso confirmado.");
+        return el("span", { classe: "resultado-teste ok" }, icone("check-circulo", { tamanho: 14 }), p + (hora ? `Acesso confirmado às ${hora}.` : "Acesso confirmado."));
       }
       if (t.estado === "falhou") {
-        return el("span", { classe: "resultado-teste erro" }, icone("aviso", { tamanho: 14 }), `O teste falhou. ${t.erro || t.status || "O portal não respondeu."}`);
+        return el("span", { classe: "resultado-teste erro" }, icone("aviso", { tamanho: 14 }), `${p}O teste falhou. ${t.erro || t.status || "O portal não respondeu."}`);
       }
-      return el("span", { classe: "resultado-teste" }, "Teste interrompido.");
+      return el("span", { classe: "resultado-teste" }, `${p}Teste interrompido.`);
     }
 
     const desenhar = () => {
       const linhas = acessos.map((a) => {
-        const [sistema, tribunal] = String(a.portal).split(":");
+        // O sistema e o tribunal vêm do servidor: a chave "eproc2g:TJAL" não
+        // diz o sistema pelo prefixo.
+        const sistema = a.sistema || sistemaDoPortal(a.portal);
+        const tribunal = a.tribunal || String(a.portal).split(":")[1] || "";
         const rotulo = a.rotulo || a.portal;
-        const id = testes.get(a.portal);
-        const t = id ? H.loja.tarefas.get(id) : null;
-        const testando = !!id && (!t || t.estado === "rodando");
+        // Os graus que a linha testa: o e-SAJ do TJAL, os dois (um acesso só);
+        // o eProc do 1º grau, o 1º; o do 2º grau (eproc2g), o 2º.
+        const graus = Array.isArray(a.graus) && a.graus.length ? a.graus : [a.grau || "1g"];
+        const varios = graus.length > 1;
+        const chave = (g) => `${a.portal}|${g}`;
+        // Com certificado ou entrando à mão, o teste abre a janela e espera
+        // você entrar (como o download); com senha, só com ela guardada.
+        const podeTestar = a.tem_senha || a.modo === "certificado" || a.modo === "manual";
         // Testar e Alterar são botões irmãos numa linha que não é botão: um
         // botão dentro de outro abria a folha da senha junto com o teste.
-        const testar = a.tem_senha ? botao({ rotulo: testando ? "Testando…" : "Testar", tamanho: "pequeno", tipo: "texto", desativado: testando,
-          atributos: { "aria-label": `Testar o acesso ao ${rotulo}` }, acao: async () => {
-            const r = await api.acessos.testar(tribunal, sistema);
-            testes.set(a.portal, r.tarefa);
-            naTela.add(r.tarefa);
-            desenhar();
-          } }) : null;
+        const testar = podeTestar ? graus.map((g) => {
+          const id = testes.get(chave(g));
+          const t = id ? H.loja.tarefas.get(id) : null;
+          const testando = !!id && (!t || t.estado === "rodando");
+          const nome = varios ? `Testar ${rotuloGrau(g)}` : "Testar";
+          return botao({ rotulo: testando ? "Testando…" : nome, tamanho: "pequeno", tipo: "texto", desativado: testando,
+            atributos: { "aria-label": `Testar o acesso ao ${rotulo}` + (varios ? ` (${rotuloGrau(g)})` : ""), "data-grau": g }, acao: async () => {
+              const r = await api.acessos.testar(tribunal, sistema, g);
+              testes.set(chave(g), r.tarefa);
+              naTela.add(r.tarefa);
+              desenhar();
+            } });
+        }) : [];
         const temAlgo = a.tem_senha || a.usuario;
         const alterar = botao({ rotulo: temAlgo ? "Alterar" : "Cadastrar", tamanho: "pequeno", tipo: temAlgo ? "texto" : "tonal",
           atributos: { "aria-label": `${temAlgo ? "Alterar" : "Cadastrar"} o acesso ao ${rotulo}` },
           acao: async () => {
             if (await editarAcesso({ portal: a.portal, rotulo, usuario: a.usuario, sistema, temSenha: a.tem_senha })) {
-              testes.delete(a.portal);        // o resultado era da senha anterior
+              for (const g of graus) testes.delete(chave(g));   // o resultado era da senha anterior
               carregar();
             }
           } });
         const sub = a.so_agora ? `Senha só até fechar o Helestron${a.usuario ? " · " + a.usuario : ""}`
-          : a.tem_senha ? `Senha guardada${a.usuario ? " · " + a.usuario : ""}` : "Sem senha guardada";
-        const teste = a.tem_senha ? situacaoDoTeste(a.portal) : null;
+          : a.tem_senha ? `Senha guardada${a.usuario ? " · " + a.usuario : ""}`
+            : a.modo === "certificado" ? "Entrada com o certificado digital"
+              : a.modo === "manual" ? "Entrada manual, na janela do navegador" : "Sem senha guardada";
+        const resultados = podeTestar ? graus.map((g) => situacaoDoTeste(chave(g), varios ? rotuloGrau(g) : "")).filter(Boolean) : [];
         const l = linha({
           icone: a.tem_senha ? "chave" : "pessoa", cor: a.tem_senha ? "aco" : "cinza",
           titulo: rotulo,
-          sub: teste ? el("span", {}, el("span", { estilo: { display: "block" }, texto: sub }), teste) : sub,
-          acessorio: el("span", { classe: "grupo-botoes", estilo: { flexWrap: "nowrap" } }, testar, alterar),
+          sub: resultados.length ? el("span", {}, el("span", { estilo: { display: "block" }, texto: sub }), resultados) : sub,
+          acessorio: el("span", { classe: "grupo-botoes acoes-acesso" }, testar, alterar),
         });
         l.dataset.portal = a.portal;
         return l;

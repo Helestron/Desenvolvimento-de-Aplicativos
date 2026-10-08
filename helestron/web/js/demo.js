@@ -212,12 +212,24 @@
    */
   function processoFormatado(processo) {
     const texto = String(processo || "").trim();
-    const m = /^(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})(?:\s*[/-]\s*(?:inc)?0*(\d{1,4}))?$/i.exec(texto);
+    const m = /^(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})(?:\s*[/-]\s*(?:inc)?0*(\d{1,5}))?$/i.exec(texto);
     if (!m) return texto;
     return m[1] + (m[2] !== undefined ? "/" + (m[2].replace(/^0+/, "") || "0").padStart(2, "0") : "");
   }
   /** O nome do documento: o dependente com "-NN" (o Windows não aceita "/"). */
   const nomeDoProcesso = (processo) => processoFormatado(processo).replace("/", "-");
+  /**
+   * O grau que o próprio número impõe (como cnj.grau_do_numero): "2g" para o
+   * originário do tribunal (órgão 0000), o plantão e a turma (9xxx) e o recurso
+   * interno do 2º grau (/50000); "" quando o número não diz.
+   */
+  function grauDoNumero(numero) {
+    const m = /\.(\d{4})(?:\/(\d+))?$/.exec(processoFormatado(numero));
+    if (!m) return "";
+    if (m[1] === "0000" || m[1].charAt(0) === "9") return "2g";
+    return m[2] && m[2].length === 5 && m[2].charAt(0) === "5" ? "2g" : "";
+  }
+  const grauNormalizado = (v) => { const m = /^\s*([12])\s*(?:g|[º°o])?\s*(?:grau)?\s*$/i.exec(v === undefined || v === null ? "" : String(v)); return m ? m[1] + "g" : ""; };
   /** Por que o programa já sabe que o processo é sigiloso ("" = não sabe). */
   function sigiloConhecido(numero) {
     numero = processoFormatado(numero);
@@ -317,6 +329,7 @@
     ["eproc", "login", "escolha", "Entrar no eProc com", "O código do aplicativo autenticador é pedido numa janela do Helestron.", [["senha", "Usuário e senha"], ["manual", "Manualmente"]]],
     ["eproc", "perfil", "texto", "Perfil no eProc", "Quando você tem mais de um perfil (ex.: MAGISTRADO). Em branco, o Helestron pergunta."],
     ["download", "espera_login_minutos", "inteiro", "Esperar o login até (min)", "Tempo para você concluir o login (código por e-mail, certificado)."],
+    ["download", "grau", "escolha", "Grau dos processos", "Onde o download procura os autos quando o número não diz: 1º grau (varas) ou 2º grau (recursos e ações originárias do tribunal). Dá para trocar em cada lote, em Processos.", [["1g", "1º grau"], ["2g", "2º grau"]]],
     ["download", "pular_baixados", "flag", "Pular o que já foi baixado", "Processo cujo PDF já está na pasta do lote não é baixado de novo."],
     ["download", "separar_sigilosos", "flag", "Separar os sigilosos", "Processo em segredo de justiça vai para a pasta dos sigilosos, fora do acervo."],
     ["download", "baixar_midias", "flag", "Baixar também as gravações de audiência", "Ficam em _controle\\midias, dentro da pasta do lote."],
@@ -348,7 +361,7 @@
     unidade: { magistrado: "Camila Duarte Albuquerque", cargo: "Juíza de Direito", vara: "2ª Vara Cível da Capital", comarca: "Maceió", tribunal: "Tribunal de Justiça de Alagoas" },
     esaj: { login: "senha" },
     eproc: { login: "senha", perfil: "MAGISTRADO", modo: "documentos" },
-    download: { espera_login_minutos: "10", pular_baixados: "true", separar_sigilosos: "true", baixar_midias: "false", mostrar_navegador: "false", navegador: "auto", pausa_entre_processos: "3", tentativas: "2" },
+    download: { espera_login_minutos: "10", grau: "1g", pular_baixados: "true", separar_sigilosos: "true", baixar_midias: "false", mostrar_navegador: "false", navegador: "auto", pausa_entre_processos: "3", tentativas: "2" },
     transcricao: {
       modelo_ao_vivo: "small", modelo_revisao: "medium", refinar_ao_encerrar: "false", separar_falantes: "true",
       dispositivo: params.get("microfone") || "",
@@ -362,15 +375,31 @@
 
   // Endereços dos portais: o do catálogo e as correções do usuário.
   const ENDERECOS_CATALOGO = {
-    "esaj:TJAL": { base: "https://www2.tjal.jus.br" },
+    "esaj:TJAL": { base: "https://www2.tjal.jus.br", "2g": "https://www2.tjal.jus.br/cposg5" },
     "eproc:TJAL": { "1g": "https://eproc1g.tjal.jus.br/eproc/", "2g": "https://eproc2g.tjal.jus.br/eproc/" },
     "esaj:TJSP": { base: "https://esaj.tjsp.jus.br" },
     "eproc:TRF4": { "1g_70": "https://eproc.jfpr.jus.br/eprocV2/", "1g_71": "https://eproc.jfrs.jus.br/eprocV2/", "1g_72": "https://eproc.jfsc.jus.br/eprocV2/", "2g": "https://eproc.trf4.jus.br/eproc2trf4/" },
   };
   const enderecosLocais = {};
   const rotuloGrau = (g) => (g === "base" ? "Endereço do portal" : ({ "1g": "1º grau", "2g": "2º grau" }[g.split("_")[0]] || g) + (g.includes("_") ? " — " + ({ 70: "Paraná", 71: "Rio Grande do Sul", 72: "Santa Catarina" }[g.split("_")[1]] || "seção " + g.split("_")[1]) : ""));
-  const rotuloPortal = (portal) => { const [s, sigla] = portal.split(":"); return `${sigla} · ${s === "eproc" ? "eProc" : "e-SAJ"}`; };
+  // As chaves dos portais como as do servidor: 'eproc2g:TJAL' é o eProc do 2º
+  // grau (acesso próprio); o e-SAJ usa 'esaj:TJAL' nos dois graus.
+  const rotuloPortal = (portal) => { const [s, sigla] = portal.split(":"); return `${sigla} · ${s === "esaj" ? "e-SAJ" : "eProc"}` + (s === "eproc2g" ? " (2º grau)" : ""); };
+  const sistemaDoPortal = (portal) => { const s = String(portal).split(":")[0]; return s === "eproc2g" ? "eproc" : s; };
+  // Os graus que o "Testar" da linha testa (api_geral._graus_da_linha).
+  const grausDoPortal = (portal) => (portal.startsWith("eproc2g:") ? ["2g"] : portal === "esaj:TJAL" ? ["1g", "2g"] : ["1g"]);
+  /** A linha de Acessos (GET /api/acessos), com o sistema, o grau e os graus que ela testa. */
+  function acessoDe(portal, usuario, temSenha) {
+    const [prefixo, sigla] = portal.split(":");
+    const sistema = sistemaDoPortal(portal);
+    const graus = grausDoPortal(portal);
+    return { portal, tribunal: sigla, sistema, grau: graus.length === 1 ? graus[0] : "1g", graus,
+      rotulo: `${sistema === "eproc" ? "eProc" : "e-SAJ"}${prefixo === "eproc2g" ? " (2º grau)" : ""} · ${sigla}`,
+      usuario: usuario || "", tem_senha: !!temSenha, guardada: !!temSenha, so_agora: false,
+      modo: (valores[sistema] && valores[sistema].login) || "senha" };
+  }
   function enderecosDe(portal) {
+    portal = portal.startsWith("eproc2g:") ? "eproc:" + portal.split(":")[1] : portal;
     const catalogo = ENDERECOS_CATALOGO[portal] || (portal.startsWith("esaj:") ? { base: "https://esaj." + portal.split(":")[1].toLowerCase() + ".jus.br" } : { "1g": "https://eproc1g." + portal.split(":")[1].toLowerCase() + ".jus.br/eproc/" });
     const locais = enderecosLocais[portal] || {};
     return {
@@ -380,22 +409,26 @@
   }
 
   let acessos = [
-    { portal: "esaj:TJAL", rotulo: "e-SAJ · TJAL", usuario: "camila.albuquerque", tem_senha: true },
-    { portal: "eproc:TJAL", rotulo: "eProc · TJAL", usuario: "", tem_senha: false },
-    { portal: "esaj:TJSP", rotulo: "e-SAJ · TJSP", usuario: "", tem_senha: false },
+    acessoDe("esaj:TJAL", "camila.albuquerque", true),
+    acessoDe("eproc:TJAL", "", false),
+    // O eProc do 2º grau do TJAL: acesso próprio (o e-SAJ vale para os dois graus).
+    acessoDe("eproc2g:TJAL", "", false),
+    acessoDe("esaj:TJSP", "", false),
   ];
 
+  // 'graus' e 'graus_alternativo': os graus que o Helestron baixa do sistema
+  // principal e do alternativo (o 2º grau só onde o catálogo tem o endereço).
   const TRIBUNAIS = [
-    { sigla: "TJAL", nome: "Tribunal de Justiça — Alagoas", sistema: "esaj", alternativo: "eproc" },
-    { sigla: "TJAC", nome: "Tribunal de Justiça — Acre", sistema: "esaj", alternativo: "eproc" },
-    { sigla: "TJAM", nome: "Tribunal de Justiça — Amazonas", sistema: "esaj", alternativo: "" },
-    { sigla: "TJMS", nome: "Tribunal de Justiça — Mato Grosso do Sul", sistema: "esaj", alternativo: "" },
-    { sigla: "TJSP", nome: "Tribunal de Justiça — São Paulo", sistema: "esaj", alternativo: "eproc" },
-    { sigla: "TJRS", nome: "Tribunal de Justiça — Rio Grande do Sul", sistema: "eproc", alternativo: "" },
-    { sigla: "TJSC", nome: "Tribunal de Justiça — Santa Catarina", sistema: "eproc", alternativo: "" },
-    { sigla: "TJTO", nome: "Tribunal de Justiça — Tocantins", sistema: "eproc", alternativo: "" },
-    { sigla: "TRF2", nome: "Tribunal Regional Federal da 2ª Região", sistema: "eproc", alternativo: "" },
-    { sigla: "TRF4", nome: "Tribunal Regional Federal da 4ª Região", sistema: "eproc", alternativo: "" },
+    { sigla: "TJAL", nome: "Tribunal de Justiça — Alagoas", sistema: "esaj", alternativo: "eproc", graus: ["1g", "2g"], graus_alternativo: ["1g", "2g"] },
+    { sigla: "TJAC", nome: "Tribunal de Justiça — Acre", sistema: "esaj", alternativo: "eproc", graus: ["1g"], graus_alternativo: ["1g"] },
+    { sigla: "TJAM", nome: "Tribunal de Justiça — Amazonas", sistema: "esaj", alternativo: "", graus: ["1g"], graus_alternativo: [] },
+    { sigla: "TJMS", nome: "Tribunal de Justiça — Mato Grosso do Sul", sistema: "esaj", alternativo: "", graus: ["1g"], graus_alternativo: [] },
+    { sigla: "TJSP", nome: "Tribunal de Justiça — São Paulo", sistema: "esaj", alternativo: "eproc", graus: ["1g"], graus_alternativo: ["1g"] },
+    { sigla: "TJRS", nome: "Tribunal de Justiça — Rio Grande do Sul", sistema: "eproc", alternativo: "", graus: ["1g", "2g"], graus_alternativo: [] },
+    { sigla: "TJSC", nome: "Tribunal de Justiça — Santa Catarina", sistema: "eproc", alternativo: "", graus: ["1g", "2g"], graus_alternativo: [] },
+    { sigla: "TJTO", nome: "Tribunal de Justiça — Tocantins", sistema: "eproc", alternativo: "", graus: ["1g", "2g"], graus_alternativo: [] },
+    { sigla: "TRF2", nome: "Tribunal Regional Federal da 2ª Região", sistema: "eproc", alternativo: "", graus: ["1g", "2g"], graus_alternativo: [] },
+    { sigla: "TRF4", nome: "Tribunal Regional Federal da 4ª Região", sistema: "eproc", alternativo: "", graus: ["1g", "2g"], graus_alternativo: [] },
   ];
 
   // ============================================================== eventos
@@ -457,7 +490,7 @@
   ];
 
   function tribunalDe(numero) {
-    const m = /\.(\d)\.(\d{2})\.\d{4}$/.exec(numero);
+    const m = /\.(\d)\.(\d{2})\.\d{4}(?:\/\d+)?$/.exec(numero);
     if (!m) return ["", "outro"];
     const chave = m[1] + "." + m[2];
     const mapa = { "8.02": ["TJAL", "esaj"], "8.26": ["TJSP", "esaj"], "8.21": ["TJRS", "eproc"], "4.04": ["TRF4", "eproc"], "8.17": ["TJPE", "outro"] };
@@ -465,10 +498,16 @@
     return [sigla, sistema];
   }
 
+  // Os tribunais da demonstração que o Helestron baixa no 2º grau (o e-SAJ do
+  // TJAL; o eProc do TJRS e do TRF4).
+  const COM_2G = ["TJAL", "TJRS", "TRF4"];
   function leituraDe(numeros, extras = {}) {
     const processos = numeros.map((n) => {
       const [tribunal, sistema] = tribunalDe(n);
-      return { numero: n, tribunal, sistema, tem_senha: false };
+      // como o servidor (api_processos.leitura_para_json): o grau que o número
+      // impõe e os graus que o sistema principal tem
+      return { numero: n, tribunal, sistema, tem_senha: false, grau_fixo: grauDoNumero(n) || null,
+        graus: COM_2G.includes(tribunal) ? ["1g", "2g"] : ["1g"] };
     });
     return Object.assign({ formato: "lista", origem: "", processos, avisos: [], corrompidos: [], sem_suporte: [] }, extras);
   }
@@ -487,10 +526,11 @@
   function lerTexto(texto) {
     const achados = [];
     const avisos = [];
-    const re = /(\d{7})-?(\d{2})\.?(\d{4})\.?(\d)\.?(\d{2})\.?(\d{4})/g;
+    // com o dependente ("/01", "/50000"), como o programa (nucleo/cnj.py)
+    const re = /(\d{7})-?(\d{2})\.?(\d{4})\.?(\d)\.?(\d{2})\.?(\d{4})(?:\/(\d{1,5})(?![\dA-Za-zÀ-ÿªº°]))?/g;
     let m;
     while ((m = re.exec(texto))) {
-      const numero = `${m[1]}-${m[2]}.${m[3]}.${m[4]}.${m[5]}.${m[6]}`;
+      const numero = processoFormatado(`${m[1]}-${m[2]}.${m[3]}.${m[4]}.${m[5]}.${m[6]}` + (m[7] ? "/" + m[7] : ""));
       const valido = BigInt(m[1] + m[3] + m[4] + m[5] + m[6] + m[2]) % 97n === 1n;
       if (!valido) { avisos.push(`O dígito verificador de ${numero} não confere: ele ficou de fora.`); continue; }
       if (!achados.includes(numero)) achados.push(numero);
@@ -506,23 +546,29 @@
 
   async function simularDownload(t, numeros, nomeLote, opcoes) {
     const pasta = PASTAS.processos + "\\" + nomeLote;
+    // O grau do lote (sem ele, o dos Ajustes) e o de cada processo: o número
+    // que só existe no 2º grau vai ao 2º grau (cnj.grau_do_processo).
+    const grauLote = grauNormalizado(opcoes.grau) || grauNormalizado(valores.download.grau) || "1g";
+    const grauDe = (n) => grauDoNumero(n) || grauLote;
+    const nomeDosAutos = (n) => nomeDoProcesso(n) + (grauDe(n) === "2g" ? " (2G)" : "");
     // Como o servidor: a tarefa guarda os itens (GET /api/tarefas/{id} os devolve).
     t._itens = {};
     const emitirItem = (dados) => {
       dados.ordem = numeros.indexOf(dados.numero);
+      dados.grau = grauDe(dados.numero);
       t._itens[dados.numero] = dados;
       emitir("item", dados);
     };
     let baixados = 0, falhas = 0, jaTinha = 0, sigilosos = 0;
     let perguntou = false;
-    // 'causa' e 'refazer': os do servidor (api_processos.item_json), os mesmos do relatório.
-    for (const n of numeros) emitirItem({ tarefa: t.id, numero: n, situacao: "", mensagem: "", arquivo: "", sigiloso: false, causa: "", refazer: true });
+    // 'causa', 'refazer' e 'grau': os do servidor (api_processos.item_json), os mesmos do relatório.
+    for (const n of numeros) emitirItem({ tarefa: t.id, numero: n, situacao: "", mensagem: "", arquivo: "", sigiloso: false, causa: "", refazer: true, grau: grauDe(n) });
     await pausa(500);
     for (let i = 0; i < numeros.length; i++) {
       if (t._parar) break;
       const n = numeros[i];
       const [tribunal, sistema] = tribunalDe(n);
-      const portal = `${sistema === "eproc" ? "eProc" : "e-SAJ"} (${tribunal})`;
+      const portal = `${sistema === "eproc" ? "eProc" : "e-SAJ"} (${tribunal}${grauDe(n) === "2g" ? ", 2º grau" : ""})`;
       if (!perguntou && sistema === "esaj") {
         perguntou = true;
         atualizar(t, { status: `Entrando no ${portal}…`, progresso: { atual: n } });
@@ -545,15 +591,16 @@
       emitirItem({ tarefa: t.id, numero: n, situacao: "BAIXANDO", mensagem: "Abrindo a pasta digital…", arquivo: "", sigiloso: false, causa: "", refazer: true });
       atualizar(t, { status: `Baixando ${n} no ${portal}`, progresso: { atual: n } });
       await pausa(650 + (i % 3) * 180);
-      let item = { tarefa: t.id, numero: n, situacao: "OK", mensagem: `${entre(18, 412)} páginas`, arquivo: pasta + "\\" + n + ".pdf", sigiloso: false, causa: "", refazer: false };
+      let item = { tarefa: t.id, numero: n, situacao: "OK", mensagem: `${entre(18, 412)} páginas`, arquivo: pasta + "\\" + nomeDosAutos(n) + ".pdf", sigiloso: false, causa: "", refazer: false };
       if (LOTE_FALHA) item = Object.assign(item, { situacao: "ERRO", mensagem: "O portal não respondeu (tempo esgotado).", arquivo: "", causa: "portal", refazer: true });
+      else if (grauDe(n) === "2g" && !COM_2G.includes(tribunal)) item = Object.assign(item, { situacao: "NAO_SUPORTADO", mensagem: `O 2º grau do ${sistema === "eproc" ? "eProc" : "e-SAJ"} do ${tribunal} ainda não é baixado pelo Helestron; baixe-o pelo portal do tribunal.`, arquivo: "" });
       else if (i === 2) item = Object.assign(item, { situacao: "JA_BAIXADO", mensagem: "O PDF já estava na pasta do lote." });
-      if (i === 4 && opcoes.separar_sigilosos !== false) item = Object.assign(item, { sigiloso: true, mensagem: "Segredo de justiça: salvo na pasta dos sigilosos.", arquivo: PASTAS.sigilosos + "\\" + nomeLote + "\\" + n + ".pdf" });
+      if (i === 4 && opcoes.separar_sigilosos !== false) item = Object.assign(item, { sigiloso: true, mensagem: "Segredo de justiça: salvo na pasta dos sigilosos.", arquivo: PASTAS.sigilosos + "\\" + nomeLote + "\\" + nomeDosAutos(n) + ".pdf" });
       if (i === 7) item = Object.assign(item, { situacao: "NAO_ENCONTRADO", mensagem: "Não achei o processo no e-SAJ do TJSP.", arquivo: "", causa: "portal", refazer: true });
       emitirItem(item);
       if (item.situacao === "OK") baixados++;
       if (item.situacao === "JA_BAIXADO") jaTinha++;
-      if (item.situacao === "NAO_ENCONTRADO" || item.situacao === "ERRO") falhas++;
+      if (["NAO_ENCONTRADO", "ERRO", "NAO_SUPORTADO"].includes(item.situacao)) falhas++;
       if (item.sigiloso) sigilosos++;
       atualizar(t, { progresso: { feitos: i + 1, percentual: (100 * (i + 1)) / numeros.length } });
     }
@@ -561,7 +608,8 @@
     if (jaTinha) partes.push(`${jaTinha} ${jaTinha === 1 ? "já existia" : "já existiam"}`);
     if (falhas) partes.push(`${falhas} com falha`);
     const aRefazer = LOTE_FALHA ? numeros.slice() : numeros.filter((_n, i) => i === 7);
-    const resultado = { texto: partes.join(", "), pasta, relatorio: pasta + "\\_controle\\relatorio.csv", total: numeros.length, baixados, pulados: jaTinha, falhas, sigilosos, a_refazer: aRefazer };
+    // 'grau': o do lote, como o servidor (o "Tentar de novo" o repete).
+    const resultado = { texto: partes.join(", "), pasta, relatorio: pasta + "\\_controle\\relatorio.csv", total: numeros.length, baixados, pulados: jaTinha, falhas, sigilosos, a_refazer: aRefazer, grau: grauLote };
     if (t._parar) {
       concluir(t, "parada", { status: "Parado a seu pedido: " + partes.join(", ") + ".", resultado });
     } else {
@@ -731,7 +779,7 @@
       pendencias.unshift({ chave: SIGILO === "autos" ? "sigilo" : "sigilo-arquivos", titulo: n.titulo, mensagem: n.mensagem, acao: "compartilhar", arquivos: n.arquivos.slice() });
     }
     return {
-      nome: "Helestron", versao: "1.0.2", modo: MODO_JANELA, usuario: valores.geral.nome_usuario, pastas: PASTAS, pendencias,
+      nome: "Helestron", versao: "1.1.0", modo: MODO_JANELA, usuario: valores.geral.nome_usuario, pastas: PASTAS, pendencias,
       audiencia: { ativa: !!sessao.id && sessao.estado !== "encerrada", estado: sessao.estado, processo: sessao.id ? sessao.processo : null },
       resumo: {
         processos: 312, transcricoes: 47,
@@ -784,17 +832,15 @@
     "GET /api/tribunais": () => TRIBUNAIS,
     "GET /api/acessos": () => acessos,
     "POST /api/acessos": ({ corpo }) => {
-      const [sistema, sigla] = String(corpo.portal).split(":");
-      const rotulo = `${sistema === "eproc" ? "eProc" : "e-SAJ"} · ${sigla}`;
-      const novo = { portal: corpo.portal, rotulo, usuario: corpo.usuario || "", tem_senha: !!corpo.senha };
+      const novo = acessoDe(String(corpo.portal), corpo.usuario || "", !!corpo.senha);
       acessos = acessos.filter((a) => a.portal !== corpo.portal).concat([novo]);
       emitir("estado", {});
       return novo;
     },
     "DELETE /api/acessos/{portal}": ({ params: p }) => {
-      acessos = acessos.map((a) => (a.portal === p.portal ? Object.assign({}, a, { usuario: "", tem_senha: false }) : a));
+      acessos = acessos.map((a) => (a.portal === p.portal ? Object.assign({}, a, { usuario: "", tem_senha: false, guardada: false }) : a));
       emitir("estado", {});
-      return {};
+      return { portal: p.portal };
     },
     "GET /api/tribunais/enderecos": () => Object.entries(enderecosLocais).flatMap(([portal, graus]) =>
       Object.entries(graus).map(([grau, url]) => ({ portal, grau, rotulo: rotuloGrau(grau), url, rotulo_portal: rotuloPortal(portal) }))),
@@ -808,11 +854,16 @@
     },
     "POST /api/acessos/testar": ({ corpo }) => {
       // Como o servidor: com 'sistema', testa exatamente aquele portal; sem
-      // ele, o sistema principal do tribunal.
+      // ele, o sistema principal do tribunal. 'grau' ausente = 1º grau.
       const sigla = String(corpo.tribunal || "").toUpperCase();
       const trib = TRIBUNAIS.find((x) => x.sigla === sigla);
       const sistema = corpo.sistema || (trib ? trib.sistema : "esaj");
-      const nome = rotuloPortal(`${sistema}:${sigla}`);
+      const grau = corpo.grau === undefined || corpo.grau === null || corpo.grau === "" ? "1g" : grauNormalizado(corpo.grau);
+      if (!grau) throw erro("valor_invalido", "Grau inválido (use 1g ou 2g).");
+      const graus = trib ? (sistema === trib.sistema ? trib.graus : trib.graus_alternativo) || ["1g"] : ["1g"];
+      if (!graus.includes(grau)) throw erro("valor_invalido", `O ${rotuloPortal(`${sistema}:${sigla}`)} não tem o 2º grau no Helestron.`);
+      const nome = grau === "2g" ? rotuloPortal(`${sistema === "eproc" ? "eproc2g" : sistema}:${sigla}`) + (sistema === "esaj" ? " (2º grau)" : "")
+        : rotuloPortal(`${sistema}:${sigla}`);
       const t = novaTarefa("teste_login", `Testar o acesso ao ${nome}`, 0);
       (async () => {
         atualizar(t, { status: "Abrindo o portal…" });
@@ -918,6 +969,8 @@
     "POST /api/download/iniciar": ({ corpo }) => {
       const numeros = corpo.processos || [];
       const nome = corpo.nome_lote || "Lote";
+      const g = (corpo.opcoes || {}).grau;
+      if (g !== undefined && g !== null && g !== "" && !grauNormalizado(g)) throw erro("valor_invalido", "Grau inválido (use 1g ou 2g).");
       const t = novaTarefa("download", `Baixar “${nome}”`, numeros.length);
       simularDownload(t, numeros, nome, corpo.opcoes || {});
       return { tarefa: t.id, pasta: PASTAS.processos + "\\" + nome };
@@ -1167,7 +1220,8 @@
       const numeros = Array.from(new Set(lista.map((a) => a.processo)));
       const nome = numeros.length === 1 ? `Pauta — ${numeros[0]}` : `Pauta ${corpo.de || ""} a ${corpo.ate || ""}`.trim();
       const t = novaTarefa("download", `Baixar os autos da pauta`, numeros.length);
-      simularDownload(t, numeros, nome, {});
+      // Como o servidor: a pauta é de audiências do 1º grau, e o lote dela também.
+      simularDownload(t, numeros, nome, { grau: "1g" });
       return { tarefa: t.id };
     },
 
