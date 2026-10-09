@@ -2833,8 +2833,18 @@ autos no 2º grau).
   `causa`, `refazer` falso (repetir daria as mesmas opções; baixe pelo
   portal). A página em segredo que vem sem número, só com o código e o
   pedido de senha, vale só para o pedido do principal, com um candidato
-  único (`_pagina_com_senha_2g`). O incidente `/01` do 1º grau não existe no
-  2º: sem opção exata, `ProcessoNaoEncontrado`.
+  único (`_pagina_com_senha_2g`, que olha o modal duas vezes pelo
+  `precisa_senha`, como o 1º grau: ele abre por script). Para o pedido do
+  `/50000` nessa página, com o modal à vista, `_Ambiguo` com a frase
+  própria (“a consulta de 2º grau abriu a página do processo principal em
+  segredo de justiça, sem o número; o recurso interno … de processo em
+  segredo não é escolhido pelo Helestron: baixe-o pelo portal do tribunal”)
+  e o número entra em `sigilosos_apurados`: o resultado nasce sigiloso, e a
+  linha do relatório do acervo é mascarada. Sem o modal à vista, a página
+  não se reconhece e o erro é passageiro (`RuntimeError` comum: “a página
+  aberta pela consulta de 2º grau não traz o número do processo (sem
+  acesso, ou sessão expirada?)”), nunca `_Ambiguo`. O incidente `/01` do 1º
+  grau não existe no 2º: sem opção exata, `ProcessoNaoEncontrado`.
 * **Página do processo**: `show.do?processo.codigo=<cd>`, só com o código (o
   foro interno do 2º grau não é o OOOO do número). `conferir_pagina_2g`
   confere os 20 dígitos, o código e, no recurso interno, que a página se

@@ -615,6 +615,19 @@ class TestBaixar2g(apoio.PastaTemporaria):
                 self.assertFalse(self.destino().exists())
                 self.assertFalse((self.tmp / "Lote" / "_controle").exists())
 
+    def test_recurso_interno_de_processo_em_segredo_nao_e_suportado_e_nasce_sigiloso(self):
+        """Achado da verificação: o /50000 de processo em segredo de justiça
+        (a busca cai na página do principal, sem número) saía com a frase
+        falsa "devolveu processos e nenhum traz exatamente este número". É
+        recusa definitiva, com a frase certa, e o resultado nasce sigiloso:
+        o número não vai ao relatório do acervo."""
+        p = PortalDeConsulta2G(SO_CODIGO, modal_senha=True)
+        r = p.baixar(E, self.tmp / "Lote" / f"{cnj.nome_dos_autos(E, '2g')}.pdf")
+        self.assertEqual((r.situacao, r.causa, r.refazer, r.sigiloso),
+                         (modelos.NAO_SUPORTADO, "", False, True), r.detalhe)
+        self.assertEqual(r.detalhe, FRASE_SEGREDO_50000.format(E.formatado))
+        self.assertFalse((self.tmp / "Lote").exists())
+
     def test_senha_no_2o_grau_e_conferida_depois(self):
         p = PortalDeDownload2G(senha_pedida=[True])
         r = p.baixar(A, self.destino(), senha="s1")
@@ -670,6 +683,14 @@ class PortalDeConsulta2G(PortalESAJ):
 NADA = {"candidatos": [], "mensagem": "Não existem informações disponíveis para os parâmetros "
                                       "informados.",
         "texto": "Não existem informações disponíveis para os parâmetros informados."}
+# a página do processo em segredo de justiça: só o código, nem o número
+SO_CODIGO = {"candidatos": [{"origem": "pagina", "codigo": "P0000SSSS0000", "numero": "",
+                             "titulo": "", "dependente": ""}]}
+FRASE_SEGREDO_50000 = ("a consulta de 2º grau abriu a página do processo principal em segredo "
+                       "de justiça, sem o número; o recurso interno {} de processo em segredo "
+                       "não é escolhido pelo Helestron: baixe-o pelo portal do tribunal")
+FRASE_PAGINA_SEM_NUMERO = ("a página aberta pela consulta de 2º grau não traz o número do "
+                           "processo (sem acesso, ou sessão expirada?)")
 
 
 class TestConsulta2g(unittest.TestCase):
@@ -759,6 +780,42 @@ class TestConsulta2g(unittest.TestCase):
             PortalDeConsulta2G(so_codigo).achar_codigo_2g(A)
         with self.assertRaises(RuntimeError):
             PortalDeConsulta2G(so_codigo, modal_senha=True).achar_codigo_2g(E)
+
+    def test_recurso_interno_de_processo_em_segredo_e_recusado_com_a_frase_certa(self):
+        """Achado da verificação: para o /50000, a página em segredo (um
+        candidato só, sem número) caía na recusa "devolveu processos e nenhum
+        traz exatamente este número", falsa: a consulta abriu exatamente o
+        principal pedido. A recusa é definitiva, com a frase certa, e nasce
+        sigilosa (o pedido de senha é o segredo)."""
+        p = PortalDeConsulta2G(SO_CODIGO, modal_senha=True)
+        with self.assertRaises(esaj._Ambiguo) as caso:
+            p.achar_codigo_2g(E)
+        self.assertEqual(str(caso.exception), FRASE_SEGREDO_50000.format(E.formatado))
+        self.assertIn(E.nome_arquivo, p.sigilosos_apurados)
+        self.assertEqual(p.conferidas, [], "não abre a página de outro processo")
+
+    def test_pagina_sem_numero_e_sem_o_pedido_de_senha_e_falha_passageira(self):
+        """Sem o pedido de senha à vista, a página sem número não se reconhece:
+        erro comum (ERRO, "Tentar de novo"), não a recusa definitiva - para o
+        principal e para o /50000."""
+        for n in (A, E):
+            with self.subTest(numero=n.formatado):
+                p = PortalDeConsulta2G(SO_CODIGO, modal_senha=False)
+                with self.assertRaises(RuntimeError) as caso:
+                    p.achar_codigo_2g(n)
+                self.assertNotIsInstance(caso.exception, esaj._Ambiguo)
+                self.assertEqual(str(caso.exception), FRASE_PAGINA_SEM_NUMERO)
+                self.assertTrue(esaj.cheira_a_sessao(str(caso.exception)))
+                self.assertNotIn(n.nome_arquivo, p.sigilosos_apurados)
+
+    def test_o_pedido_de_senha_que_abre_por_script_e_olhado_duas_vezes(self):
+        """Como no 1º grau (precisa_senha): o modal é aberto pelo script da
+        página, e uma olhada só o perdia."""
+        p = PortalDeConsulta2G(SO_CODIGO)
+        olhadas = [False, True]
+        p.modal_senha_visivel = lambda: olhadas.pop(0)
+        self.assertEqual(p.achar_codigo_2g(A), "P0000SSSS0000")
+        self.assertEqual(olhadas, [], "duas olhadas")
 
     def test_nao_encontrado_do_1o_grau_com_a_dica(self):
         p = tde.PortalDeConsulta(html="<p>Não existem informações disponíveis para os "

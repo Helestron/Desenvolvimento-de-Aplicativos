@@ -796,7 +796,7 @@ Situações sem causa são definitivas (`refazer: false`):
 | `NAO_ENCONTRADO` | o número não existe nos sistemas consultados, **no grau pedido** (`grau` do processo): confira o número com o usuário. Com `causa` preenchida, o sistema alternativo nem pôde ser consultado, e `--retomar` o tenta de novo. Não troque de grau por conta própria: no 2º grau, a apelação pode ainda não ter subido, e os autos do 1º grau são os de origem, não os do recurso (seção 14) |
 | `SEM_ACESSO` | o perfil do usuário não acessa o processo: informe |
 | `SIGILOSO_SEM_SENHA` | seção 11 |
-| `NAO_SUPORTADO` | tribunal, sistema ou grau que o Helestron não atende (o 2º grau do e-SAJ do TJSP, por exemplo), a Pasta Digital do 2º grau que numera folhas em duplicidade ou a consulta de 2º grau com mais de um processo do mesmo número exato (o `detalhe` diz qual): baixe pelo portal do tribunal |
+| `NAO_SUPORTADO` | tribunal, sistema ou grau que o Helestron não atende (o 2º grau do e-SAJ do TJSP, por exemplo), a Pasta Digital do 2º grau que numera folhas em duplicidade, a consulta de 2º grau com mais de um processo do mesmo número exato ou o recurso interno `/50000` de processo em segredo de justiça no 2º grau (a consulta abre a página em segredo, sem opções; o item volta `sigiloso: true`) — o `detalhe` diz qual: baixe pelo portal do tribunal |
 
 O `relatorio.csv` do lote (colunas `ordem`, `processo`, `tribunal`,
 `sistema`, `situacao`, `paginas`, `documentos`, `arquivo`, `sigiloso`,
@@ -979,6 +979,17 @@ segue também nas minutas:
   folha em peças diferentes não vira PDF: o item volta `NAO_SUPORTADO`,
   sem `causa` e com `refazer: false`, e o `detalhe` manda baixar os autos
   pelo portal.
+- **Mais de um processo com o número exato** na consulta de 2º grau:
+  `NAO_SUPORTADO`, sem `causa`, `refazer: false`; o `detalhe` diz “o 2º grau
+  do e-SAJ tem mais de um processo com este número (…); não baixei, para
+  não gravar autos trocados”; baixe pelo portal (seção 12). O mesmo para o
+  **recurso interno `/50000` de processo em segredo de justiça**: a consulta
+  abre a página do principal em segredo, sem o número nem as opções, e o
+  Helestron não o escolhe; o `detalhe` diz “a consulta de 2º grau abriu a
+  página do processo principal em segredo de justiça, sem o número; o
+  recurso interno … de processo em segredo não é escolhido pelo Helestron:
+  baixe-o pelo portal do tribunal”, e o item volta `sigiloso: true` (a linha
+  do relatório do acervo é mascarada, como na seção 11).
 
 ### O conector MCP
 
