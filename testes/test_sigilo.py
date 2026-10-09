@@ -462,6 +462,137 @@ class TestRelatorioDoLote(Base):
                                  {x.nome_arquivo, y.nome_arquivo})
 
 
+def _originario(seq: str, origem: str = "0000") -> cnj.Numero:
+    """Um número que só existe no 2º grau: órgão 0000 (HC, MS, AI) ou 9xxx
+    (plantão do 2º grau, turma recursal), com o dígito verificador certo."""
+    corpo = f"{seq}2025802{origem}"
+    dv = 98 - int(corpo + "00") % 97
+    return cnj.ler(f"{seq}-{dv:02d}.2025.8.02.{origem}")
+
+
+def _capa_2g(controle: Path, n: cnj.Numero, *origens: cnj.Numero) -> Path:
+    """A capa do 2º grau como o e-SAJ a grava ("<número> (2G)_capa.json", com
+    a lista "numeros_1a_instancia" no nível de cima)."""
+    controle.mkdir(parents=True, exist_ok=True)
+    arquivo = controle / f"{cnj.nome_dos_autos(n, '2g')}_capa.json"
+    arquivo.write_text(json.dumps({
+        "processo": n.formatado, "grau": "2g", "capa": {"classe": "Habeas Corpus"},
+        "numeros_1a_instancia": [{"numero": o.formatado, "foro": "Maceió"} for o in origens]}),
+        encoding="utf-8")
+    return arquivo
+
+
+class TestOrigemDoOriginario(Base):
+    """Achado C3 da revisão do 2º grau: o originário do 2º grau (o HC, o MS, o
+    AI de órgão 0000) só herdava o sigilo da ação de origem no download
+    (motor._origem_sigilosa). Se a origem virava sigilosa DEPOIS, o HC, que
+    traz cópia dela, seguia no índice, no texto para a IA, no conector, no
+    pacote e na nuvem: a regra única não lia a capa guardada em _controle."""
+
+    def setUp(self):
+        super().setUp()
+        self.acervo = self.tmp / "Acervo"
+        self.controle = self.acervo / "Processos" / "Lote 1" / "_controle"
+        self.a, self.b = _numero("0700971"), _numero("0700972")     # as ações de origem
+        self.hc = _originario("0803001")                            # origem A
+        self.hc_publico = _originario("0803002")                    # origem B, pública
+
+    def test_a_origem_que_vira_sigilosa_depois_alcanca_o_hc(self):
+        _capa_2g(self.controle, self.hc, self.a)
+        _capa_2g(self.controle, self.hc_publico, self.b)
+        _capa_2g(self.controle, self.a, self.a)       # a apelação: a origem é ela mesma
+        # ninguém sigiloso: a capa não faz o HC sigiloso por si
+        self.assertEqual(set(sigilo.chaves_sigilosas(self.sigilosos, self.acervo)), set())
+        self.assertFalse(sigilo.arquivo_do_download().exists())
+        # A passa a ser sigilosa pela pasta, depois do download do HC
+        self.arquivo(f"Lote 9/{self.a.nome_arquivo}.pdf")
+        chaves = sigilo.chaves_sigilosas(self.sigilosos, self.acervo)
+        self.assertEqual(set(chaves), {self.a.nome_arquivo, self.hc.nome_arquivo})
+        self.assertIn(cnj.nome_dos_autos(self.hc, "2g"), chaves)   # a chave dos autos também
+        self.assertNotIn(self.hc_publico.nome_arquivo, chaves)
+        # uma vez apurado, fica: o HC vai para o registro do download (A, que
+        # a pasta dá, não), e vale sem o acervo
+        self.assertEqual(sigilo.apuradas_no_download(), {self.hc.nome_arquivo})
+        self.assertEqual(sigilo.motivo(self.cfg, self.hc), sigilo.MOTIVO_DOWNLOAD)
+        self.assertEqual(set(sigilo.chaves_sigilosas(self.sigilosos)),
+                         {self.a.nome_arquivo, self.hc.nome_arquivo})
+
+    def test_origem_sigilosa_pela_pauta_pelo_registro_ou_pelo_relatorio(self):
+        da_pauta, do_registro, do_relatorio = (_numero(f"0700{i}") for i in (981, 982, 983))
+        incidente = _numero("0700971", dependente="01")          # de A, que será sigilosa
+        hcs = {o: _originario(f"08030{i}") for i, o in enumerate(
+            (da_pauta, do_registro, do_relatorio, incidente), 11)}
+        for origem, hc in hcs.items():
+            _capa_2g(self.controle, hc, origem)
+        sigilo.lembrar_da_pauta([da_pauta])
+        sigilo.lembrar_do_download([do_registro])
+        _relatorio(self.controle, [(do_relatorio.formatado, "sim")])
+        self.arquivo(f"Lote 9/{self.a.nome_arquivo}.pdf")
+        chaves = sigilo.chaves_sigilosas(self.sigilosos, self.acervo)
+        for origem, hc in hcs.items():
+            self.assertIn(hc.nome_arquivo, chaves, origem.formatado)
+        # pauta=None: sem a pauta e sem o registro, valem a pasta e o relatório
+        chaves = sigilo.chaves_sigilosas(self.sigilosos, self.acervo, pauta=None)
+        self.assertIn(hcs[do_relatorio].nome_arquivo, chaves)
+        self.assertIn(hcs[incidente].nome_arquivo, chaves)
+        self.assertNotIn(hcs[da_pauta].nome_arquivo, chaves)
+
+    def test_so_a_capa_do_originario_e_aberta(self):
+        """A capa da apelação (e a do recurso interno dela), cuja origem é o
+        próprio número, não é aberta: seria a capa de quase todo o acervo."""
+        plantao = _originario("0800103", origem="9002")
+        embargos = _numero("0700971", dependente="50000")
+        _capa_2g(self.controle, self.hc, self.a)
+        _capa_2g(self.controle, plantao, self.a)
+        _capa_2g(self.controle, self.a, self.a)
+        _capa_2g(self.controle, embargos, self.a)
+        (self.controle / f"{self.a.nome_arquivo}_capa.json").write_text("{", encoding="utf-8")
+        self.arquivo(f"Lote 9/{self.a.nome_arquivo}.pdf")
+        lidas = []
+        original = sigilo._origens_da_capa
+
+        def contar(dados):
+            lidas.append(dados["processo"])
+            return original(dados)
+
+        with mock.patch.object(sigilo, "_origens_da_capa", contar):
+            chaves = sigilo.chaves_sigilosas(self.sigilosos, self.acervo)
+        self.assertEqual(sorted(lidas), sorted([self.hc.formatado, plantao.formatado]))
+        self.assertEqual(set(chaves), {self.a.nome_arquivo, self.hc.nome_arquivo,
+                                       plantao.nome_arquivo})
+        self.assertIn(embargos.nome_arquivo, chaves, "o recurso interno herda de A")
+
+    def test_capa_relida_so_quando_muda(self):
+        arquivo = _capa_2g(self.controle, self.hc, self.b)
+        self.arquivo(f"Lote 9/{self.a.nome_arquivo}.pdf")
+        leituras = []
+        original = sigilo._origens_da_capa
+
+        def contar(dados):
+            leituras.append(dados)
+            return original(dados)
+
+        sabidas = sigilo.Sigilosas({self.a.nome_arquivo})
+        with mock.patch.object(sigilo, "_origens_da_capa", contar):
+            for _ in range(3):
+                self.assertEqual(sigilo.herdadas_das_origens(self.acervo, sabidas), set())
+            self.assertEqual(len(leituras), 1)
+            _capa_2g(self.controle, self.hc, self.b, self.a)     # a capa refeita lista A
+            depois = arquivo.stat().st_mtime_ns + 10 ** 9
+            os.utime(arquivo, ns=(depois, depois))
+            self.assertEqual(sigilo.herdadas_das_origens(self.acervo, sabidas),
+                             {self.hc.nome_arquivo})
+            self.assertEqual(len(leituras), 2)
+            # presa por um instante: vale o que se leu da última vez
+            os.utime(arquivo, ns=(depois + 10 ** 9, depois + 10 ** 9))
+            with mock.patch.object(Path, "read_text",
+                                   side_effect=PermissionError(13, "Acesso negado")):
+                self.assertEqual(sigilo.herdadas_das_origens(self.acervo, sabidas),
+                                 {self.hc.nome_arquivo})
+        self.assertEqual(sigilo.herdadas_das_origens(None, sabidas), set())
+        self.assertEqual(sigilo.herdadas_das_origens(self.acervo, set()), set())
+
+
 class TestPastaFunda(Base):
     """Achado 16: o que o preparo leva para a pasta dos sigilosos conta."""
 

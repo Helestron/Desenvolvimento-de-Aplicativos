@@ -508,9 +508,11 @@ def _preparar_pasta(opcoes, cfg) -> int:
     # Fora do acervo o texto é gerado, mas o JSON diz que o processo é sigiloso
     # - também o que só o relatório do próprio lote dá como sigiloso (o lote
     # fora do acervo, baixado com a separação desligada antes do registro do
-    # download, ou com ele perdido).
-    sigilosas = sigilo.Sigilosas(sigilo.chaves_sigilosas(cfg.pasta_sigilosos, raiz=acervo)
-                                 | sigilo.sigilosos_dos_relatorios(pasta))
+    # download, ou com ele perdido) e o originário do 2º grau cuja capa, no
+    # próprio lote, liga a uma ação de origem sigilosa.
+    sabidas = sigilo.Sigilosas(sigilo.chaves_sigilosas(cfg.pasta_sigilosos, raiz=acervo)
+                               | sigilo.sigilosos_dos_relatorios(pasta))
+    sigilosas = sigilo.Sigilosas(sabidas | sigilo.herdadas_das_origens(pasta, sabidas))
     pastas = [(pasta, textos_em, False)]
     if opcoes.incluir_sigilosos:
         sig = motor.pasta_sigilosos_do_lote(cfg.pasta_sigilosos, pasta,

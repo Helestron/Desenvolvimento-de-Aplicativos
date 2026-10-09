@@ -22,7 +22,15 @@ fontes, e qualquer uma basta:
    desligada antes de existir o registro do download (versão anterior), ou
    depois de ele se perder (a pasta LOCAL apagada, o acervo levado para
    outro computador). chaves_sigilosas, ao dar com um processo que só o
-   relatório conhece, o acrescenta ao registro do download.
+   relatório conhece, o acrescenta ao registro do download;
+6. a CAPA do 2º grau de um ORIGINÁRIO (o HC, o MS, o AI de órgão 0000, o
+   originário de turma recursal, 9xxx: número próprio) guardada num lote
+   dentro do acervo (<lote>/_controle/<número> (2G)_capa.json) lista, em
+   "Números de 1ª Instância", uma ação de origem sigilosa por qualquer das
+   fontes acima (herdadas_das_origens). A petição traz cópia da origem; o
+   motor já trata o originário como sigiloso no download, se a origem já se
+   sabe sigilosa, e por aqui a origem que vira sigilosa DEPOIS o alcança
+   também. chaves_sigilosas o acrescenta ao registro do download.
 
 A gravação dos registros (4 e o da pauta) passa uma de cada vez também
 entre processos (a janela, o "baixar" da linha de comando e o conector) e
@@ -122,6 +130,8 @@ _trava_apurado = threading.Lock()
 _lidas: dict[str, tuple[tuple, frozenset[str], float]] = {}
 # relatório de lote -> (assinatura: mtime e tamanho, processos que ele dá como sigilosos)
 _relatorios_lidos: dict[str, tuple[tuple, frozenset[str]]] = {}
+# capa do 2º grau de um originário -> (assinatura, os processos de origem que ela lista)
+_capas_lidas: dict[str, tuple[tuple, frozenset[str]]] = {}
 _avisou_pasta_grande: set[str] = set()
 
 
@@ -753,31 +763,143 @@ def sigilosos_dos_relatorios(raiz) -> Sigilosas:
     return Sigilosas(nomes)
 
 
+# ================================================= capa do originário do 2º grau
+# O fim do nome da capa dos autos do 2º grau: "<número> (2G)_capa.json"
+_FIM_CAPA_2G = (cnj.SUFIXO_2G + "_capa.json").lower()
+
+
+def _originario(n: cnj.Numero) -> bool:
+    """O número só existe no 2º grau pelo ÓRGÃO (0000: HC, MS, AI, revisão
+    criminal; 9xxx: plantão do 2º grau, turma recursal), e não só pelo
+    dependente (/50000, o recurso interno de uma apelação): é o processo com
+    número próprio, que a regra por processo não liga à ação de origem."""
+    return cnj.grau_do_numero(replace(n, dependente="")) == "2g"
+
+
+def _origens_da_capa(dados) -> frozenset[str]:
+    """Os processos de origem (Numero.nome_arquivo) que a capa do 2º grau
+    lista em "numeros_1a_instancia" (o nível de cima do arquivo, com o
+    "numero" de cada item no formato CNJ - o e-SAJ; o eProc não traz a lista
+    nesta versão), lidos como motor._origem_sigilosa os lê."""
+    lista = dados.get("numeros_1a_instancia") if isinstance(dados, dict) else None
+    if not isinstance(lista, list):
+        return frozenset()
+    nomes: set[str] = set()
+    for item in lista:
+        texto = item.get("numero") if isinstance(item, dict) else item
+        try:
+            nomes.add(cnj.ler(str(texto or "")).nome_arquivo)
+        except cnj.NumeroInvalido:
+            continue
+    return frozenset(nomes)
+
+
+def _da_capa(arquivo: Path) -> frozenset[str]:
+    """_origens_da_capa de uma capa, guardada enquanto ela não muda (a data
+    e o tamanho), como _do_relatorio. Presa por um instante ou ilegível:
+    vale o que se leu da última vez."""
+    try:
+        st = os.stat(arquivo)
+    except OSError:
+        return frozenset()
+    assinatura = (st.st_mtime_ns, st.st_size)
+    chave = str(arquivo)
+    with _trava:
+        guardado = _capas_lidas.get(chave)
+    if guardado is not None and guardado[0] == assinatura:
+        return guardado[1]
+    try:
+        dados = json.loads(arquivo.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as erro:
+        log.info("não consegui ler a capa %s (%s)", arquivo, str(erro)[:120])
+        return guardado[1] if guardado is not None else frozenset()
+    nomes = _origens_da_capa(dados)
+    with _trava:
+        _capas_lidas[chave] = (assinatura, nomes)
+    return nomes
+
+
+def _capas_de_originarios(controle: Path):
+    """(chave do processo, capa) de cada "<número> (2G)_capa.json" de um
+    originário do 2º grau na _controle de um lote. Só os nomes decidem: a
+    capa da apelação (e a do recurso interno dela), cuja origem é o próprio
+    número, não é aberta - seria a capa de quase todo o acervo."""
+    try:
+        with os.scandir(controle) as it:
+            entradas = list(it)
+    except OSError:
+        return
+    for e in entradas:
+        if not e.name.lower().endswith(_FIM_CAPA_2G):
+            continue
+        try:
+            n = cnj.ler_nome_arquivo(e.name)
+        except cnj.NumeroInvalido:
+            continue
+        if _originario(n):
+            yield n.nome_arquivo, Path(e.path)
+
+
+def herdadas_das_origens(raiz, sabidas) -> frozenset[str]:
+    """Os originários do 2º grau (Numero.nome_arquivo) com capa guardada na
+    _controle de algum lote dentro de 'raiz' (o acervo) cuja ação de origem
+    - a lista "numeros_1a_instancia" da capa, sem o próprio processo - está
+    em 'sabidas' (contem: o incidente herda do principal).
+
+    O HC, o MS e o AI de órgão 0000 (e o originário de turma recursal, 9xxx)
+    têm número próprio, mas a petição traz cópia da ação de origem: o motor
+    os trata como sigilosos no download, se a origem já se sabe sigilosa
+    (motor._origem_sigilosa). A origem que vira sigilosa DEPOIS (a apelação
+    dela baixada meses mais tarde com o selo, os autos levados à pasta dos
+    sigilosos, a pauta) alcança o originário por aqui, pela mesma capa, que
+    o download deixou em _controle. As pastas são as de
+    _pastas_de_controle (com o mesmo limite de acervo grande); só as capas
+    "<número> (2G)_capa.json" de originários são abertas, cada uma relida
+    só quando muda. Nunca levanta."""
+    if raiz is None or not sabidas:
+        return frozenset()
+    nomes: set[str] = set()
+    try:
+        for controle in _pastas_de_controle(Path(raiz)):
+            for nome, capa in _capas_de_originarios(controle):
+                if any(origem != nome and contem(sabidas, origem)
+                       for origem in _da_capa(capa)):
+                    nomes.add(nome)
+    except (OSError, ValueError, TypeError) as erro:
+        log.warning("não consegui ler as capas do 2º grau dos lotes do acervo (%s)",
+                    str(erro)[:160])
+    return frozenset(nomes)
+
+
 # ===================================================================== regra
 def chaves_sigilosas(sigilosos, raiz=None, pauta=PAUTA_DO_PROGRAMA) -> Sigilosas:
     """TODOS os processos sigilosos que o programa conhece (Numero.nome_arquivo):
     os da pasta dos sigilosos (autos, transcrição, gravação, diário), os
     que a pauta marca, os que um download já apurou e, com 'raiz', os que o
-    relatório de um lote dentro dela dá como sigilosos. 'raiz': o acervo
-    (ver chaves_na_pasta e sigilosos_dos_relatorios); 'pauta': o banco da
+    relatório de um lote dentro dela dá como sigilosos e os originários do
+    2º grau cuja ação de origem, pela capa guardada no lote, é sigilosa por
+    qualquer dessas fontes. 'raiz': o acervo (ver chaves_na_pasta,
+    sigilosos_dos_relatorios e herdadas_das_origens); 'pauta': o banco da
     pauta, com o registro do download ao lado (None: nem um nem outro). Num
     Sigilosas: 'chave in ...' vale também para o incidente de um deles.
 
     O processo que só o relatório conhece (o lote baixado antes do registro
-    do download, ou com ele perdido) passa a valer também no registro do
-    download, para o resto do programa (a transcrição, a tela da
-    audiência). O que a pasta ou a pauta já dão não vai para ele: o relatório
-    marca também o que o lote só TRATOU como sigiloso por elas, e o registro
-    do download diria que o portal o apurou."""
+    do download, ou com ele perdido) e o originário que só a capa liga à
+    origem sigilosa passam a valer também no registro do download, para o
+    resto do programa (a transcrição, a tela da audiência, o próximo
+    download): uma vez apurado, fica. O que a pasta ou a pauta já dão não
+    vai para ele: o relatório marca também o que o lote só TRATOU como
+    sigiloso por elas, e o registro do download diria que o portal o apurou."""
     sabidas = Sigilosas(chaves_na_pasta(sigilosos, raiz) | chaves_da_pauta(pauta)
                         | apuradas_no_download(pauta))
     if raiz is None:
         return sabidas
     dos_relatorios = sigilosos_dos_relatorios(raiz)
-    novas = sorted(n for n in dos_relatorios if n not in sabidas)
+    das_origens = herdadas_das_origens(raiz, Sigilosas(sabidas | dos_relatorios))
+    novas = sorted(n for n in dos_relatorios | das_origens if n not in sabidas)
     if novas:
         lembrar_do_download(novas, pauta)
-    return Sigilosas(sabidas | dos_relatorios)
+    return Sigilosas(sabidas | dos_relatorios | das_origens)
 
 
 def motivo_da_pasta(sigilosos, numero) -> str:
