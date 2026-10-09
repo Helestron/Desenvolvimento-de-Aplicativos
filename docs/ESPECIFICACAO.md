@@ -2645,9 +2645,11 @@ resposta que repete um texto sem forma em UTF-8 (o escape `\ud800` no
   aviso não é prova; no eProc, cita-se evento, rótulo e p. Y;
   “(pág. M do PDF)” nunca se cita; o que fazer com `nao_garantida` (PDF
   de versão anterior ou alterado depois do download; no eProc, nunca
-  “fl.”); e, desde a 1.1.0, os autos do 2º grau: `<número CNJ> (2G).pdf`,
-  o recurso interno `-50000`, a numeração própria do 2º grau, “fl. N dos
-  autos de origem” e o carimbo divergente que não se cita (seção 14.7).
+  “fl.”; nos autos do 2º grau, sem citar o carimbo, que pode ser o dos
+  autos de origem); e, desde a 1.1.0, os autos do 2º grau:
+  `<número CNJ> (2G).pdf`, o recurso interno `-50000`, a numeração própria
+  do 2º grau, “fl. N dos autos de origem” e o carimbo divergente que não
+  se cita (seção 14.7).
 * **`INDICE.md`**: as colunas Processo, Tribunal, **Sistema**, Páginas,
   **Paginação** (`textos.resumo_da_paginacao`: o `paginacao.resumo` do
   manifesto que descreve o arquivo; “NÃO garantida…”, sem as ausentes, se

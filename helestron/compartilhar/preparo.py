@@ -288,8 +288,9 @@ sufixo `-50000`, `-50001`…: `0000000-00.0000.0.00.0000-50000 (2G).pdf`.
    - com `paginacao=nao_garantida` na 1ª linha do texto (PDF de versão
      anterior ou alterado depois do download), a página do PDF **pode não
      ser** a folha: cite a folha carimbada na própria página ou o documento
-     (no eProc, nunca “fl.”: o evento e o documento, sem a página), e sugira
-     baixar o processo de novo.
+     (no eProc, nunca “fl.”: o evento e o documento, sem a página; nos autos
+     do 2º grau, **não cite o carimbo**: pode ser o dos autos de origem; cite
+     o documento e avise o magistrado), e sugira baixar o processo de novo.
 
    Não presuma fatos que não estejam nos autos; se faltar informação, diga o
    que falta e onde ela deveria estar.
@@ -385,7 +386,8 @@ description: Método de trabalho com o acervo judicial desta pasta — autos em 
   - Com `paginacao=nao_garantida` (PDF de versão anterior ou alterado depois
     do download), a página do PDF pode não ser a folha: cite a folha
     carimbada na página ou o documento (no eProc, nunca “fl.”: o evento e o
-    documento, sem a página).
+    documento, sem a página; nos autos do 2º grau, não cite o carimbo: pode
+    ser o dos autos de origem; cite o documento e avise o magistrado).
 - Não invente fato, lei, súmula ou julgado.
 - Estrutura de sentença: relatório, fundamentação (questões processuais,
   prejudiciais, mérito ponto a ponto, com as provas) e dispositivo (com
