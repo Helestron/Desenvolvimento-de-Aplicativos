@@ -1589,10 +1589,11 @@ class _Lote:
         # Uma vez sigiloso, sempre sigiloso: o que relatórios anteriores
         # deste lote já apuraram (a página nem sempre repete o aviso).
         self._sigilosos_sabidos = self._ler_sigilos_anteriores()
-        # Principal -> o recurso interno cuja consulta, nesta rodada, abriu a
-        # página dele em segredo de justiça (_principal_apurado): o porquê
-        # que o item dele diz, se vier depois na relação.
-        self._apurados_pelo_recurso: dict[str, str] = {}
+        # Principal -> (o recurso interno que o apurou sigiloso nesta rodada,
+        # se foi a consulta dele que abriu a página do principal em segredo
+        # de justiça), por _principal_apurado: o porquê que o item dele diz,
+        # se vier depois na relação.
+        self._apurados_pelo_recurso: dict[str, tuple[str, bool]] = {}
         # Itens reabertos para o sistema alternativo: já contavam como feitos
         # e continuam contando, para a barra de progresso não andar para trás.
         self._reabertos: set[int] = set()
@@ -1938,19 +1939,26 @@ class _Lote:
                 or sigilo.motivo_do_download(n))
 
     def _pelo_recurso_interno(self, n: Numero) -> str:
-        """O porquê do sigilo do principal 'n' que a consulta de um recurso
-        interno dele abriu em segredo de justiça nesta rodada
-        (_principal_apurado) - ou, se 'n' é incidente desse principal (o /01
-        pedido depois do /50000), o do principal dele -, ou ""."""
-        recurso = self._apurados_pelo_recurso.get(n.nome_arquivo)
-        if recurso:
-            return (f"a consulta do recurso interno {recurso} abriu a página dele em segredo de "
-                    "justiça")
-        recurso = self._apurados_pelo_recurso.get(n.principal) if n.e_dependente else None
-        if not recurso:
+        """O porquê do sigilo do principal 'n' que um recurso interno dele
+        apurou nesta rodada (_principal_apurado: a consulta do recurso abriu
+        a página do principal em segredo de justiça, ou o próprio recurso é
+        sigiloso) - ou, se 'n' é incidente desse principal (o /01 pedido
+        depois do /50000), o do principal dele -, ou ""."""
+        apurado = self._apurados_pelo_recurso.get(n.nome_arquivo)
+        if apurado:
+            recurso, pela_pagina = apurado
+            if pela_pagina:
+                return (f"a consulta do recurso interno {recurso} abriu a página dele em "
+                        "segredo de justiça")
+            return f"o recurso interno {recurso} é sigiloso"
+        apurado = self._apurados_pelo_recurso.get(n.principal) if n.e_dependente else None
+        if not apurado:
             return ""
-        return (f"a consulta do recurso interno {recurso} abriu a página do processo principal "
-                f"{n.principal} em segredo de justiça")
+        recurso, pela_pagina = apurado
+        if pela_pagina:
+            return (f"a consulta do recurso interno {recurso} abriu a página do processo "
+                    f"principal {n.principal} em segredo de justiça")
+        return f"o recurso interno {recurso}, do processo principal {n.principal}, é sigiloso"
 
     def _sigilo_so_do_relatorio(self, n: Numero, motivo: str) -> bool:
         """O sigilo vem só de um relatório anterior deste lote (ou da capa)?
@@ -2140,14 +2148,16 @@ class _Lote:
                 + " à mão antes de compartilhar o acervo")
         # O relatório do lote no acervo que ficou com o número porque o
         # relatório completo do lote, na pasta de sigilosos, não pôde ser
-        # regravado (_mascarar_relatorios): o deste lote, salvar_relatorio o
-        # regrava no fim do item (mascarado, com a separação ligada), e não
-        # é aviso; o de outro lote fica com o número até o acervo ser
-        # preparado de novo, e vai para os avisos do lote (o fim do lote, o
-        # Início).
+        # regravado (_mascarar_relatorios): o que este lote está gravando
+        # (self.relatorio), salvar_relatorio o regrava no fim do item
+        # (mascarado, com a separação ligada), e não é aviso; o outro deste
+        # lote (o relatorio.csv aberto no Excel, que deu lugar ao
+        # "(atualizado)", ou um "(atualizado)" antigo) e o de outro lote
+        # ficam com o número até o acervo ser preparado de novo, e vão para
+        # os avisos do lote (o fim do lote, o Início).
         pelo_completo = [p for presos_dele in ret.completos_presos.values() for p in presos_dele]
         avisos = [p for p in ret.avisam if p not in ret.transcricoes_presas
-                  and not (p in pelo_completo and _dentro(p, self.controle))]
+                  and not (p in pelo_completo and _mesma_pasta(p, self.relatorio))]
         # uma vez só: dois sigilosos da rodada podem deixar o mesmo relatório
         self._sigilo_avisos += [str(p) for p in avisos if str(p) not in self._sigilo_avisos]
         # O completo em si não está no acervo: não há o que mover, só o que
@@ -2158,7 +2168,7 @@ class _Lote:
             log.warning("o relatório completo da pasta de sigilosos não pôde ser atualizado: %s",
                         ", ".join(str(p) for p in completos))
             um = len(completos) == 1
-            de_outro_lote = any(not _dentro(p, self.controle) for p in pelo_completo)
+            com_o_numero = any(p in avisos for p in pelo_completo)
             r.detalhe = _juntar(
                 r.detalhe, "atenção: "
                 + ("o relatório completo da pasta de sigilosos não pôde ser atualizado" if um
@@ -2166,7 +2176,7 @@ class _Lote:
                         "puderam ser atualizados")
                 + ": " + ", ".join(f"{_relativo(p, self.raiz_sigilosos)} "
                                    f"({ret.motivos.get(p, 'aberto?')})" for p in completos[:5])
-                + (". Feche-o: o próximo download do lote o regrava" if not de_outro_lote
+                + (". Feche-o: o próximo download do lote o regrava" if not com_o_numero
                    else ". Feche-o e prepare o acervo para a IA de novo: até lá, o relatório do "
                         "lote no acervo continua com o número dele" if um
                    else ". Feche-os e prepare o acervo para a IA de novo: até lá, os relatórios "
@@ -3079,6 +3089,16 @@ class _Lote:
         if n.e_dependente and n.principal in apurados:
             # a consulta do recurso interno abriu a página do principal em segredo
             self._principal_apurado(r, n)
+        elif (r.sigiloso or motivo) and n.e_dependente \
+                and n.principal in sigilo.com_principais_dos_recursos({n.nome_arquivo}) \
+                and not self._motivo_sigilo(cnj.ler(n.principal)):
+            # O próprio recurso interno do 2º grau é sigiloso (a página dele, ou o
+            # que o programa já sabia dele): o principal também (a regra única).
+            # Sem isso, ele só iria para o registro do download quando a regra
+            # única rodasse (o preparo, o conector), e até lá o download noutro
+            # lote e a transcrição o dariam como público. O que herdou o sigilo
+            # do principal não muda nada.
+            self._principal_apurado(r, n, pela_pagina=False)
         if r.situacao == OK and r.grau == "2g" and not r.sigiloso and not motivo:
             # O originário do 2º grau (HC, MS, AI de órgão 0000) tem número
             # próprio, mas traz cópia da ação de origem: se ela já se sabe
@@ -3173,17 +3193,21 @@ class _Lote:
                 log.debug("sigilo da origem %s não conferido", origem.formatado, exc_info=True)
         return ""
 
-    def _principal_apurado(self, r: ResultadoProcesso, n: Numero) -> None:
-        """A consulta do recurso interno 'n' (/50000) abriu a página do
-        processo principal em segredo de justiça, e o portal o pôs também nos
-        sigilosos_apurados: o sigilo é dele, e os autos dele baixados quando
-        era público (nos dois graus, deste lote ou de outro) saem do acervo
-        como os de qualquer sigiloso - pelo recurso interno, a retirada não os
-        alcança (o principal não herda do incidente). O sigilo vai para o
-        registro do download e para o que o lote já sabe (a linha dele sai
-        mascarada; pedido depois, ele nasce sigiloso, com esse porquê). O
-        item dele nesta rodada passa a dizê-lo; sem item, o detalhe de 'r'
-        diz o que saiu e o que ficou."""
+    def _principal_apurado(self, r: ResultadoProcesso, n: Numero,
+                           pela_pagina: bool = True) -> None:
+        """O processo principal do recurso interno 'n' (/50000) é sigiloso:
+        a consulta de 'n' abriu a página dele em segredo de justiça, e o
+        portal o pôs também nos sigilosos_apurados ('pela_pagina'), ou o
+        próprio recurso interno é sigiloso, o que torna sigiloso também o
+        principal (a regra única, sigilo.com_principais_dos_recursos). O
+        sigilo é dele, e os autos dele baixados quando era público (nos dois
+        graus, deste lote ou de outro) saem do acervo como os de qualquer
+        sigiloso - pelo recurso interno, a retirada não os alcança (o
+        principal não herda do incidente). O sigilo vai para o registro do
+        download e para o que o lote já sabe (a linha dele sai mascarada;
+        pedido depois, ele nasce sigiloso, com esse porquê). O item dele
+        nesta rodada passa a dizê-lo; sem item, o detalhe de 'r' diz o que
+        saiu e o que ficou."""
         p = cnj.ler(n.principal)
         dele = next((o for o, m in zip(self.itens, self.numeros)
                      if cnj.chave(m) == cnj.chave(p)), None)
@@ -3191,7 +3215,7 @@ class _Lote:
             return                       # o item dele já se apurou sigiloso
         self._lembrar_sigilo(p)
         self._sigilosos_sabidos.add(p.nome_arquivo)
-        self._apurados_pelo_recurso.setdefault(p.nome_arquivo, n.formatado)
+        self._apurados_pelo_recurso.setdefault(p.nome_arquivo, (n.formatado, pela_pagina))
         porque = f"tratado como sigiloso: {self._pelo_recurso_interno(p)}"
         if dele is not None and dele.situacao in (OK, JA_BAIXADO) and dele.arquivo \
                 and _dentro(dele.arquivo, self.destino):

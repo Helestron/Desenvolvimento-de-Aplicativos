@@ -1938,9 +1938,16 @@ Se o processo é público e você precisa dele no acervo:
    tem uma linha por grau em que foi baixado (coluna `grau`: `1g` e `2g`)
    e pode estar em mais de um lote (o 1º grau num, o 2º noutro, por
    exemplo): basta uma linha com “sim” para ele voltar a ser sigiloso, nos
-   dois graus. Com **Separar os processos sigilosos** ligado, as linhas
-   dele neste último não têm o número: dizem “(processo sigiloso)” e têm,
-   na coluna `ordem`, o mesmo número da linha dele no relatório completo.
+   dois graus. O mesmo vale para a linha de um recurso interno dele no 2º
+   grau (`<número>/50000`, `/50001`…, os embargos de declaração): o
+   recurso interno sigiloso torna sigiloso também o processo (veja
+   [Segredo de justiça](#segredo-de-justiça)). Troque também as linhas dos
+   recursos internos dele e, no passo 6, traga de volta os autos deles
+   (`<número>-50000 (2G).pdf`, que já têm o número dele no nome). Com
+   **Separar os processos sigilosos** ligado, as linhas dele (e as dos
+   recursos internos dele) neste último não têm o número: dizem
+   “(processo sigiloso)” e têm, na coluna `ordem`, o mesmo número da linha
+   no relatório completo.
    Troque cada uma dessas linhas inteira pela linha de mesma ordem
    copiada do relatório completo (já com “não”): desde a versão 1.1.0, a
    linha “(processo sigiloso)” vale “sim” mesmo que o relatório completo
@@ -1962,7 +1969,11 @@ Se o processo é público e você precisa dele no acervo:
    `Sigilosos\Transcricoes\_audio\` para `Acervo\Transcricoes\_audio\`); e o
    que mais tiver o número dele no nome (a capa, que o passo 7 confere, e
    o registro do download, em `_controle\`, ou uma minuta em
-   `Sigilosos\Produtos\`, por exemplo). Leve de volta também o processo
+   `Sigilosos\Produtos\`, por exemplo). Traga do mesmo jeito os autos dos
+   recursos internos dele do passo 5 (`<número>-50000 (2G).pdf`, com a
+   capa e o registro do download, em `_controle\`), da pasta dos
+   sigilosos do lote em que cada um foi baixado: enquanto estiverem lá,
+   também o tornam sigiloso. Leve de volta também o processo
    originário do 2º grau (o habeas corpus, o mandado de segurança, o
    agravo de instrumento: `<outro número> (2G).pdf`, com a capa) cuja capa
    lista esse processo em **Números de 1ª Instância**: ele foi levado

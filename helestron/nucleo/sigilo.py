@@ -980,9 +980,12 @@ def chaves_sigilosas(sigilosos, raiz=None, pauta=PAUTA_DO_PROGRAMA) -> Sigilosas
     também o principal (com_principais_dos_recursos): o principal que só a
     consulta do recurso apurou volta ao registro pela linha do recurso no
     relatório do lote - o do acervo ou o completo, na pasta dos sigilosos,
-    onde a linha não é mascarada (recursos_dos_completos)."""
-    sabidas = Sigilosas(com_principais_dos_recursos(
-        chaves_na_pasta(sigilosos, raiz) | chaves_da_pauta(pauta) | apuradas_no_download(pauta)))
+    onde a linha não é mascarada (recursos_dos_completos). O que só os autos
+    do recurso na pasta, ou só o recurso no registro, dão como sigiloso vai
+    para o registro também: as consultas de um número só (motivo,
+    processo_sigiloso) não fazem essa extensão."""
+    base = chaves_na_pasta(sigilosos, raiz) | chaves_da_pauta(pauta) | apuradas_no_download(pauta)
+    sabidas = Sigilosas(com_principais_dos_recursos(base))
     if raiz is None:
         return sabidas
     # já com os principais dos recursos internos
@@ -997,6 +1000,9 @@ def chaves_sigilosas(sigilosos, raiz=None, pauta=PAUTA_DO_PROGRAMA) -> Sigilosas
             origem, capa = origens[nome]
             log.warning("originário %s tratado como sigiloso: o processo de origem %s é "
                         "sigiloso (capa do 2º grau em %s)", nome, origem, capa)
+    # o principal que só um recurso interno dele dá (os autos do recurso na
+    # pasta, ou só o recurso no registro)
+    novas += sorted(sabidas - base)
     if novas:
         lembrar_do_download(novas, pauta)
     return Sigilosas(sabidas | dos_relatorios | das_origens)

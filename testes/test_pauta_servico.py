@@ -734,6 +734,24 @@ class TestSigiloPelaRegraUnica(Base):
         self.assertFalse(self.sigilo_por_processo(
             self.servico.listar(self.D, self.D)["audiencias"])[inc])
 
+    def test_o_principal_herda_do_recurso_interno_do_2o_grau(self):
+        # Achado Z2 da sexta verificação: o recurso interno do 2º grau
+        # sigiloso (/50000) torna sigiloso o principal, como na regra única -
+        # pelos autos dele na pasta dos sigilosos ou pelo registro do download
+        from helestron.nucleo import sigilo
+
+        pela_pasta, pelo_registro = ap.numero("0700110"), ap.numero("0700111")
+        (self.amb.sigilosos / "Lote 1" / f"{pela_pasta}-50000 (2G).pdf").write_bytes(
+            apoio.pdf_bytes(1))
+        sigilo.lembrar_do_download([f"{pelo_registro}/50000"], self.servico.arquivo_banco)
+        self.servico.armazem.gravar([self.a(pela_pasta, "15:00", "A x B"),
+                                     self.a(pelo_registro, "16:00", "C x D")],
+                                    "esaj-tjal", None, registrar_novas=False)
+        self.servico._fora_do_banco = (0.0, "", self.servico._fora_do_banco[2])   # relê a pasta
+        sigilos = self.sigilo_por_processo(self.servico.listar(self.D, self.D)["audiencias"])
+        self.assertTrue(sigilos[pela_pasta])
+        self.assertTrue(sigilos[pelo_registro])
+
     def test_o_que_a_pauta_ja_apurou_vale_com_o_banco_refeito(self):
         from helestron.nucleo import sigilo
 

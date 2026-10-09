@@ -389,3 +389,98 @@ class TestPrincipalApuradoPeloRecursoInterno(BaseGrau):
         self.assertTrue((lote3 / f"{P.nome_arquivo}.pdf").is_file())
         # a regra inteira ainda o dá como sigiloso, pelo relatório completo
         self.assertTrue(self.regra(P))
+
+
+class TestDesfazerPrincipalComRecursoInterno(BaseGrau):
+    """Achados Z3 e Z4 da sexta verificação: P marcado (aqui, baixado
+    sigiloso no 1º grau) e o recurso interno dele, E = P/50000, baixado em
+    seguida no 2º grau, noutro lote: E herda o sigilo (a linha "sim" e os
+    autos na pasta dos sigilosos). Como o recurso interno sigiloso torna
+    sigiloso também o principal, o manual seguido só com as linhas e os
+    autos de P não desfaz a marcação: o passo 8 leva os autos dele de volta
+    para a pasta dos sigilosos. Os passos 5 e 6 mandam agora tratar também
+    as linhas e os autos dos recursos internos dele."""
+
+    regra = TestPrincipalApuradoPeloRecursoInterno.regra
+    ler = TestPrincipalApuradoPeloRecursoInterno.ler
+    gravar = TestPrincipalApuradoPeloRecursoInterno.gravar
+    no_indice_ou_no_conector = TestPrincipalApuradoPeloRecursoInterno.no_indice_ou_no_conector
+
+    def setUp(self):
+        super().setUp()
+        self.lote1, self.lote2 = (self.tmp / "Acervo" / "Processos" / f"Lote {i}"
+                                  for i in (1, 2))
+
+    def desfazer(self, com_o_recurso: bool):
+        """P sigiloso no Lote 1, E herdando no Lote 2, e os passos 4 a 8 do
+        manual para P - com as linhas e os autos de E também, se
+        'com_o_recurso'. Devolve o relatório do preparo do passo 8."""
+        p = self.lote([P], destino=self.lote1, roteiro={P.formatado: ["ok_sigiloso"]}).itens[0]
+        self.assertTrue(p.sigiloso)
+        e = self.lote([E], grau="2g", destino=self.lote2).itens[0]   # a página dele, pública
+        self.assertTrue(e.sigiloso, "herda de P")
+        self.assertTrue((self.tmp / "Sigilosos" / self.lote2.name /
+                         f"{cnj.nome_dos_autos(E, '2g')}.pdf").is_file())
+        sigilo.arquivo_do_download().unlink()                          # 4
+        alvos = [(self.lote1, P)] + ([(self.lote2, E)] if com_o_recurso else [])
+        for lote, n in alvos:
+            sig = self.tmp / "Sigilosos" / lote.name
+            completo = sig / "_controle" / "relatorio.csv"
+            do_acervo = lote / "_controle" / "relatorio.csv"
+            linhas, trocadas = self.ler(completo), {}                  # 5
+            for linha in linhas:
+                if linha["processo"] == n.formatado:
+                    linha["sigiloso"] = "não"
+                    trocadas[linha["ordem"]] = linha
+            self.assertTrue(trocadas)
+            self.gravar(completo, linhas)
+            self.gravar(do_acervo, [
+                trocadas.get(l["ordem"], l) if l["processo"] == motor.MASCARA_SIGILOSO else l
+                for l in self.ler(do_acervo)])
+            for pasta in (sig, sig / "_controle", sig / "_controle" / "midias"):   # 6
+                for arquivo in list(pasta.glob(f"{n.nome_arquivo}*")):
+                    novo = lote / arquivo.relative_to(sig)
+                    novo.parent.mkdir(parents=True, exist_ok=True)
+                    arquivo.replace(novo)
+        # 7: a capa do portal de mentira não traz a linha "SEGREDO DE JUSTIÇA"
+        return preparo.atualizar_contexto(self.cfg, extrair_texto=False)    # 8
+
+    def test_o_manual_fala_dos_recursos_internos_do_principal(self):
+        p5, p6 = passo(5), passo(6)
+        for frase in ("O mesmo vale para a linha de um recurso interno dele no 2º grau "
+                      "(`<número>/50000`, `/50001`…, os embargos de declaração): o recurso "
+                      "interno sigiloso torna sigiloso também o processo",
+                      "Troque também as linhas dos recursos internos dele e, no passo 6, "
+                      "traga de volta os autos deles (`<número>-50000 (2G).pdf`"):
+            self.assertIn(frase, p5)
+        self.assertIn("os autos dos recursos internos dele do passo 5 "
+                      "(`<número>-50000 (2G).pdf`", p6)
+
+    def test_so_as_linhas_do_principal_o_deixam_sigiloso(self):
+        # por que os passos 5 e 6 mandam tratar também o recurso interno
+        rel = self.desfazer(com_o_recurso=False)
+        self.assertEqual(rel.sigilosos_levados, 1)
+        self.assertTrue(self.regra(P))
+        self.assertTrue((self.tmp / "Sigilosos" / self.lote1.name /
+                         f"{P.nome_arquivo}.pdf").is_file())
+        self.assertFalse((self.lote1 / f"{P.nome_arquivo}.pdf").exists())
+        self.assertFalse(self.no_indice_ou_no_conector(P))
+
+    def test_com_as_linhas_do_recurso_interno_o_principal_fica_publico(self):
+        rel = self.desfazer(com_o_recurso=True)
+        self.assertEqual(rel.sigilosos_levados, 0)
+        self.assertFalse(self.regra(P))
+        self.assertFalse(self.regra(E))
+        self.assertTrue(self.no_indice_ou_no_conector(P))
+        # as rodadas seguintes, nos dois lotes, não o marcam de novo
+        r = self.lote([P], destino=self.lote1).itens[0]
+        pdf = self.lote1 / f"{P.nome_arquivo}.pdf"
+        self.assertEqual((r.situacao, r.sigiloso, r.arquivo), (modelos.JA_BAIXADO, False, str(pdf)))
+        r = self.lote([E], grau="2g", destino=self.lote2).itens[0]
+        pdf = self.lote2 / f"{cnj.nome_dos_autos(E, '2g')}.pdf"
+        self.assertEqual((r.situacao, r.sigiloso, r.arquivo), (modelos.JA_BAIXADO, False, str(pdf)))
+        self.assertEqual(preparo.atualizar_contexto(self.cfg, extrair_texto=False)
+                         .sigilosos_levados, 0)
+        self.assertFalse(self.regra(P))
+        self.assertTrue(pdf.is_file())
+        self.assertNotIn(P.nome_arquivo, sigilo.apuradas_no_download())

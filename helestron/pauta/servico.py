@@ -379,9 +379,12 @@ class ServicoPauta:
         quando, guardado_onde, nomes = self._fora_do_banco
         if guardado_onde == onde and _time.monotonic() - quando < CACHE_SIGILOSOS_S:
             return nomes
-        nomes = sigilo.Sigilosas(sigilo.chaves_na_pasta(pasta, acervo)
-                                 | sigilo.apuradas_da_pauta(self.arquivo_banco)
-                                 | sigilo.apuradas_no_download(self.arquivo_banco))
+        # o recurso interno do 2º grau sigiloso torna sigiloso o principal,
+        # como na regra única (sigilo.com_principais_dos_recursos)
+        nomes = sigilo.Sigilosas(sigilo.com_principais_dos_recursos(
+            sigilo.chaves_na_pasta(pasta, acervo)
+            | sigilo.apuradas_da_pauta(self.arquivo_banco)
+            | sigilo.apuradas_no_download(self.arquivo_banco)))
         self._fora_do_banco = (_time.monotonic(), onde, nomes)
         return nomes
 

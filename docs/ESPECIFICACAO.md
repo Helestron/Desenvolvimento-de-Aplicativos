@@ -2061,8 +2061,13 @@ dados ficam com a instalação registrada.
     `na_pasta`: o motor, fora dos relatórios do lote, e a transcrição) não
     fazem essa extensão: veem o principal só pelo que é dele — os autos na
     pasta, a pauta e o registro do download, onde `_principal_apurado` o
-    põe e `chaves_sigilosas` o devolve (o preparo, o conector, a nuvem). Os
-    incidentes comuns (`-01`) continuam sem fazer o principal sigiloso.
+    põe (no download do recurso interno sigiloso, salvo o que herdou o
+    sigilo do principal já sabido) e `chaves_sigilosas` o devolve
+    (o preparo, o conector, a nuvem), também quando só a linha “sim”, os
+    autos na pasta ou o registro do recurso interno o dão. A pauta
+    (`ServicoPauta._sigilosas_fora_do_banco`) faz a extensão sobre a pasta
+    e os registros que lê. Os incidentes comuns (`-01`) continuam sem fazer
+    o principal sigiloso.
   * **O sigilo vale nos dois graus** (1.1.0). A regra continua por
     processo, sem grau: `sigilo.contem` normaliza a chave dos autos
     (`X (2G)`, `X-01 (2G)`, um `Numero` ou um nome de arquivo) para a do
@@ -2242,14 +2247,17 @@ dados ficam com a instalação registrada.
     preciso cadastrar as fontes, sincronizar e importar de novo antes de
     baixar ou transcrever), o `download.sigilo.json` se o sigilo veio de um
     download, trocar “sim” por “não” em todas as linhas dele (uma por grau,
-    coluna `grau`) no relatório de cada lote em que foi baixado (fonte 5, e
-    “uma vez sigiloso, sempre sigiloso” do motor: uma linha com “sim”
-    basta para refazer a marcação, nos dois graus) e trazer os arquivos de
-    volta da pasta dos sigilosos para o acervo — os autos dos dois graus,
-    de cada `Sigilosos\<lote>` em que estiverem, e também o originário do
-    2º grau levado pela capa (fonte 6), que fica sigiloso pela própria
-    pasta, com o “sim” da linha dele no relatório completo. A capa
-    (`_controle\<número>_capa.txt` e `<número> (2G)_capa.txt`) perde a
+    coluna `grau`) — e nas dos recursos internos dele do 2º grau
+    (`…/50000`), que `com_principais_dos_recursos` faz marcar o principal —
+    no relatório de cada lote em que foi baixado (fonte 5, e “uma vez
+    sigiloso, sempre sigiloso” do motor: uma linha com “sim” basta para
+    refazer a marcação, nos dois graus) e trazer os arquivos de volta da
+    pasta dos sigilosos para o acervo — os autos dos dois graus, de cada
+    `Sigilosos\<lote>` em que estiverem, os dos recursos internos dele
+    (`<número>-50000 (2G).pdf`), que também o marcam pela pasta, e também
+    o originário do 2º grau levado pela capa (fonte 6), que fica sigiloso
+    pela própria pasta, com o “sim” da linha dele no relatório completo.
+    A capa (`_controle\<número>_capa.txt` e `<número> (2G)_capa.txt`) perde a
     linha “SEGREDO DE JUSTIÇA” que o download grava no começo da capa do
     processo que achou sigiloso (ou é apagada), num passo próprio do
     manual, onde ela estiver: a que volta da pasta dos sigilosos e também a
@@ -2260,10 +2268,11 @@ dados ficam com a instalação registrada.
     marcação. Com a separação dos sigilosos ligada, o “não” vai no
     relatório completo, e cada linha mascarada “(processo sigiloso)” de
     mesma ordem, no relatório do acervo (e no “(atualizado)”), é trocada
-    pela linha copiada do completo (as do processo, uma por grau, e a do
-    originário levado junto); o manual lembra que o Excel pode não abrir
-    ao mesmo tempo os dois `relatorio.csv` (copiar a linha, fechar um e
-    abrir o outro). Desde a 1.1.0 (contrato C9, seção 6.6), a linha
+    pela linha copiada do completo (as do processo, uma por grau, as dos
+    recursos internos dele e a do originário levado junto); o manual
+    lembra que o Excel pode não abrir ao mesmo tempo os dois
+    `relatorio.csv` (copiar a linha, fechar um e abrir o outro). Desde a
+    1.1.0 (contrato C9, seção 6.6), a linha
     mascarada vale “sim” mesmo que o completo diga “não”, para o completo
     desatualizado (preso no Excel na rodada que apurou o sigilo) não
     devolver o número ao acervo, e não há como distinguir dele o completo
@@ -2272,17 +2281,19 @@ dados ficam com a instalação registrada.
     de volta para a pasta dos sigilosos (uma vez sigiloso, sempre
     sigiloso). Afastado o `download.sigilo.json`, os outros processos que
     um download apurou continuam sigilosos pela pasta (fonte 1) ou pelo
-    relatório do lote (fonte 5), e também o principal que só a consulta de
-    um recurso interno dele apurou (`_principal_apurado`), pela linha “sim”
-    do recurso interno (veja o incidente, abaixo): no relatório do lote no
-    acervo ou, com a separação ligada (a linha no acervo é mascarada), no
-    completo, na pasta dos sigilosos (`recursos_dos_completos`), também com
-    o principal nunca baixado. Mas o que só o relatório marca volta ao
-    registro apenas quando `chaves_sigilosas` roda — no manual, o “Preparar
-    acervo para a IA” do último passo: até lá, as consultas de um número só
-    não o veem, e o download noutro lote (sem o relatório do lote do
-    recurso) e a transcrição o tratam como público. Por isso o manual manda
-    preparar o acervo antes de baixar ou transcrever.
+    relatório do lote (fonte 5), e também o principal que só um recurso
+    interno dele apurou (`_principal_apurado`), pela linha “sim” do recurso
+    interno (veja o incidente, abaixo): no relatório do lote no acervo ou,
+    com a separação ligada (a linha no acervo é mascarada), no completo, na
+    pasta dos sigilosos (`recursos_dos_completos`), também com o principal
+    nunca baixado — ou pelos autos do recurso interno na pasta dos
+    sigilosos. Mas o que só o relatório ou os autos do recurso interno
+    marcam volta ao registro apenas quando `chaves_sigilosas` roda — no
+    manual, o “Preparar acervo para a IA” do último passo: até lá, as
+    consultas de um número só não o veem, e o download noutro lote (sem o
+    relatório do lote do recurso) e a transcrição o tratam como público.
+    Por isso o manual manda preparar o acervo antes de baixar ou
+    transcrever.
   * **Download.** O processo que o programa já sabe sigiloso pela regra
     única vai para a pasta dos sigilosos mesmo que a página do portal não
     mostre o selo (segredo decretado depois, leiaute que a leitura não
@@ -3128,6 +3139,18 @@ fora nesta versão: o PDF traz os eventos do próprio processo no 2º grau.
   principal (o `/01`) pedido depois, na mesma rodada, herda o sigilo com o
   porquê do principal: “tratado como sigiloso: a consulta do recurso
   interno … abriu a página do processo principal … em segredo de justiça”.
+  O recurso interno consultado no portal e sigiloso por outro caminho — a
+  própria página dele em segredo (`SIGILOSO_SEM_SENHA`, ou `OK` sigiloso
+  com a senha: o e-SAJ põe só ele em `sigilosos_apurados`) ou o que o
+  programa já sabia dele (os autos dele na pasta dos sigilosos de outro
+  lote, o registro do download, a capa) — apura o principal do mesmo
+  jeito, com o porquê “o recurso interno … é sigiloso” (no incidente do
+  principal, “o recurso interno …, do processo principal …, é
+  sigiloso”), salvo se o principal já se sabia sigiloso
+  (`_motivo_sigilo`): o recurso interno que herdou o sigilo dele não
+  acrescenta nada. O que já estava na pasta do lote (`JA_BAIXADO`) tem a
+  linha “sim” no relatório do lote, que já dá o principal ao lote
+  (`_ler_sigilos_anteriores`) e, pela regra única, ao registro.
   Sem o item dele com os autos no lote, o detalhe do recurso interno diz o
   que saiu, com os autos dele contados à
   parte dos autos dos incidentes dele (“1 cópia dos autos dele e 1 dos
@@ -3162,11 +3185,13 @@ fora nesta versão: o PDF traz os eventos do próprio processo no 2º grau.
   de novo: até lá, o relatório do lote no acervo continua com o número
   dele” (com mais de um completo, “Feche-os e prepare o acervo para a IA
   de novo: até lá, os relatórios dos outros lotes, no acervo, continuam
-  com o número dele”). O do lote em curso não vira aviso, porque
-  `salvar_relatorio` o regrava no fim do item (mascarado, com a separação
-  ligada), e o detalhe diz “Feche-o: o próximo download do lote o
-  regrava”. O grau vazio (CSV de versão
-  anterior) é
+  com o número dele”). O relatório que o lote em curso está gravando
+  (`_Lote.relatorio`) não vira aviso: `salvar_relatorio` o regrava no fim
+  do item (mascarado, com a separação ligada), e, se só ele ficou com o
+  número, o detalhe diz “Feche-o: o próximo download do lote o regrava”.
+  O outro, isto é, o `relatorio.csv` aberto no Excel, que deu lugar ao
+  `(atualizado)`, ou um `(atualizado)` antigo, é aviso como o de outro
+  lote, com o mesmo detalhe. O grau vazio (CSV de versão anterior) é
   `cnj.grau_do_numero(n) or "1g"` (`_grau_da_linha`): a 1.0.2 procurava o
   HC de órgão `0000` no 1º grau e gravava a linha sem grau, e lida como 1º
   grau ela nunca seria substituída pela nova nem retomada.

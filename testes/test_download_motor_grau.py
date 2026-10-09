@@ -673,6 +673,70 @@ class TestRelatorioPorGrau(BaseGrau):
         self.assertNotIn("próximo download", a.detalhe)
         self.assertNotIn("mova-o", a.detalhe)
 
+    def completo_preso_no_lote_em_curso(self, relatorio_aberto: bool) -> tuple:
+        """Achado Z1: A, pública no Lote X (que já tem o relatório completo),
+        se mostra sigilosa no 2º grau no próprio Lote X, com o completo
+        aberto no Excel. 'relatorio_aberto': o relatorio.csv do lote também
+        está aberto (salvar_relatorio grava o "(atualizado)"); sem isso, há
+        um "(atualizado)" antigo, de uma rodada em que o relatorio.csv estava
+        aberto. Devolve o resumo e o relatório do lote que fica com o número
+        de A (o outro, salvar_relatorio o regrava mascarado)."""
+        lote_x = self.tmp / "Acervo" / "Processos" / "Lote X"
+        do_lote = lote_x / "_controle" / "relatorio.csv"
+        atualizado = lote_x / "_controle" / "relatorio (atualizado).csv"
+        completo = self.tmp / "Sigilosos" / "Lote X" / "_controle" / "relatorio.csv"
+        presos: set[Path] = set()
+        original = os.replace
+
+        def preso(origem, destino, *a, **k):
+            if Path(destino) in presos:
+                raise PermissionError(13, "O arquivo está sendo usado por outro processo",
+                                      str(destino))
+            return original(origem, destino, *a, **k)
+        self.lote([S], roteiro={S.formatado: ["ok_sigiloso"]}, destino=lote_x)
+        with mock.patch.object(motor.os, "replace", preso):
+            if relatorio_aberto:
+                self.lote([A], destino=lote_x)           # A pública, no relatorio.csv
+                presos = {completo, do_lote}
+            else:
+                presos = {do_lote}
+                self.lote([A], destino=lote_x)           # A pública, no "(atualizado)"
+                presos = {completo}
+            self.ctx = ContextoComEventos()
+            resumo = self.lote([A], grau="2g", roteiro={A.formatado: ["ok_sigiloso"]},
+                               destino=lote_x)
+        self.assertEqual([(r.grau, r.sigiloso) for r in resumo.itens], [("2g", True)])
+        fica, regravado = (do_lote, atualizado) if relatorio_aberto else (atualizado, do_lote)
+        self.assertIn(A.formatado, fica.read_bytes().decode("utf-8-sig"), "o número ficou")
+        self.assertNotIn(A.formatado, regravado.read_bytes().decode("utf-8-sig"))
+        return resumo, fica
+
+    def avisa_o_relatorio_que_ficou(self, relatorio_aberto: bool) -> None:
+        """Achado Z1: o relatório do lote em curso que salvar_relatorio não
+        regrava fica com o número no acervo; é aviso do lote (como na 1.0.2),
+        e o detalhe manda preparar o acervo de novo."""
+        resumo, fica = self.completo_preso_no_lote_em_curso(relatorio_aberto)
+        a = resumo.itens[0]
+        self.assertIn(str(fica), resumo.sigilosos_avisos)
+        self.assertEqual(resumo.sigilosos_avisos, [str(fica)], "o regravado não é aviso")
+        self.assertEqual(resumo.sigilosos_motivos[str(fica)],
+                         "o relatório completo do lote, na pasta dos sigilosos, não pôde ser "
+                         "atualizado: está aberto em outro programa?")
+        [(titulo, _frase)] = self.ctx.avisos
+        self.assertEqual(titulo, "Arquivo de processo sigiloso no acervo")
+        self.assertIn("Feche-o e prepare o acervo para a IA de novo: até lá, o relatório do "
+                      "lote no acervo continua com o número dele", a.detalhe)
+        self.assertNotIn("próximo download", a.detalhe)
+
+    def test_completo_preso_com_o_relatorio_do_lote_aberto_avisa(self):
+        # o relatorio.csv aberto no Excel: o lote grava o "(atualizado)", e o
+        # relatorio.csv fica com o número
+        self.avisa_o_relatorio_que_ficou(relatorio_aberto=True)
+
+    def test_completo_preso_com_o_atualizado_antigo_avisa(self):
+        # o "(atualizado)" antigo: salvar_relatorio regrava só o relatorio.csv
+        self.avisa_o_relatorio_que_ficou(relatorio_aberto=False)
+
     def test_marcado_por_engano_e_desfeito_pelo_manual_continua_publico(self):
         """Achados W8 e W10: desde a correção V3, a linha "(processo sigiloso)"
         do relatório do acervo vale "sim" mesmo que o completo diga "não". O
@@ -1134,6 +1198,122 @@ class TestSigiloNosDoisGraus(BaseGrau):
         sigilo.arquivo_do_download().unlink()
         p = self.lote([P], grau="1g", separar_sigilosos=False).itens[0]
         self.assertEqual((p.situacao, p.sigiloso), (modelos.OK, False))
+
+    def test_recurso_interno_sigiloso_pela_propria_pagina_registra_o_principal(self):
+        """Achado Z2 da sexta verificação: E (= P/50000) sigiloso pela PRÓPRIA
+        página (a opção exata existe na consulta e a página dela pede a
+        senha: o e-SAJ põe em sigilosos_apurados só E, não P). A regra única
+        dá P como sigiloso, e o registro do download também: senão, as
+        consultas de um número só (o download noutro lote, a transcrição) o
+        davam como público."""
+        lote1, lote2 = (self.tmp / "Acervo" / "Processos" / f"Lote {i}" for i in (1, 2))
+        e = self.lote([E], grau="2g", destino=lote1,
+                      roteiro={E.formatado: ["sigiloso_sem_senha"]}).itens[0]
+        self.assertEqual((e.situacao, e.sigiloso), (modelos.SIGILOSO_SEM_SENHA, True))
+        self.assertFalse(getattr(apoio.PortalFalso.todos[-1], "sigilosos_apurados", None))
+        self.assertLessEqual({E.nome_arquivo, P.nome_arquivo}, set(sigilo.apuradas_no_download()))
+        self.assertEqual(sigilo.motivo(self.cfg, P), sigilo.MOTIVO_DOWNLOAD)
+        self.assertNotIn("processo principal", e.detalhe, "nada dele havia no acervo")
+        # P noutro lote, com a página do 1º grau sem o selo
+        p = self.lote([P], grau="1g", destino=lote2).itens[0]
+        pdf = self.tmp / "Sigilosos" / lote2.name / f"{P.nome_arquivo}.pdf"
+        self.assertEqual((p.situacao, p.sigiloso, p.arquivo), (modelos.OK, True, str(pdf)))
+        self.assertTrue(pdf.is_file())
+        self.assertIn(f"tratado como sigiloso: {sigilo.MOTIVO_DOWNLOAD}", p.detalhe)
+        self.assertEqual(list(lote2.glob("*.pdf")), [])
+        self.assertEqual(processo_json(p)["sigiloso"], True)
+
+    PORQUE_DO_RECURSO = f"tratado como sigiloso: o recurso interno {E.formatado} é sigiloso"
+
+    def test_principal_antes_do_recurso_interno_sigiloso_sai_do_acervo(self):
+        """Achado Z2, no mesmo lote [P, E]: P, baixado público, sai do acervo
+        quando E se mostra sigiloso pela própria página, com o porquê de
+        verdade - não "a consulta do recurso interno abriu a página dele",
+        que não houve."""
+        p, e = self.lote([P, E], grau="2g", roteiro={E.formatado: ["sigiloso_sem_senha"]}).itens
+        pdf = self.tmp / "Sigilosos" / self.destino.name / f"{P.nome_arquivo} (2G).pdf"
+        self.assertEqual((p.situacao, p.sigiloso, p.arquivo), (modelos.OK, True, str(pdf)))
+        self.assertTrue(pdf.is_file())
+        self.assertIn(self.PORQUE_DO_RECURSO, p.detalhe)
+        self.assertIn("levado agora para a pasta de sigilosos", p.detalhe)
+        self.assertNotIn("abriu a página", p.detalhe)
+        self.assertEqual(list(self.destino.glob("*.pdf")), [])
+        self.assertEqual(processo_json(p)["sigiloso"], True)
+        self.assertNotIn(P.nome_arquivo, (self.destino / "_controle" / "relatorio.csv")
+                         .read_bytes().decode("utf-8-sig"))
+
+    def test_principal_depois_do_recurso_interno_sigiloso_diz_o_porque(self):
+        """Achado Z2, no mesmo lote [E, P, P/01]: P e o incidente dele, pedidos
+        depois de E (sigiloso pela própria página), nascem sigilosos com o
+        porquê de verdade."""
+        P01 = cnj.ler(f"{P.formatado}/01")
+        e, p, p01 = self.lote([E, P, P01], grau="1g",
+                              roteiro={E.formatado: ["sigiloso_sem_senha"]}).itens
+        self.assertEqual((e.grau, p.grau, p01.grau), ("2g", "1g", "1g"))
+        self.assertEqual((p.situacao, p.sigiloso), (modelos.OK, True))
+        self.assertIn(self.PORQUE_DO_RECURSO, p.detalhe)
+        self.assertNotIn(motor.SIGILO_ANTERIOR, p.detalhe)
+        self.assertEqual((p01.situacao, p01.sigiloso), (modelos.OK, True))
+        self.assertIn(f"tratado como sigiloso: o recurso interno {E.formatado}, do processo "
+                      f"principal {P.formatado}, é sigiloso", p01.detalhe)
+        self.assertEqual(list(self.destino.glob("*.pdf")), [])
+
+    def test_recurso_interno_que_herdou_do_principal_nao_acrescenta_nada(self):
+        """Achado Z2: E baixado com P já sigiloso (pela pauta) herda o sigilo
+        dele - e, mesmo com a página dele em segredo, não apura P de novo:
+        sem detalhe novo, e P, que só a pauta marca, fora do registro do
+        download (desfazer a marcação da pauta continua bastando)."""
+        sigilo.lembrar_da_pauta([P])
+        sigilo.esquecer_pauta()
+        e = self.lote([E], grau="2g").itens[0]
+        self.assertTrue(e.sigiloso)
+        self.assertIn(f"tratado como sigiloso: {sigilo.MOTIVO_PAUTA_PRINCIPAL}", e.detalhe)
+        self.assertNotIn("recurso interno", e.detalhe)
+        e = self.lote([E], grau="2g", roteiro={E.formatado: ["sigiloso_sem_senha"]},
+                      destino=self.tmp / "Acervo" / "Processos" / "Outro").itens[0]
+        self.assertTrue(e.sigiloso)
+        self.assertNotIn("processo principal", e.detalhe)
+        self.assertNotIn("recurso interno", e.detalhe)
+        self.assertEqual(set(sigilo.apuradas_no_download()), {E.nome_arquivo})
+
+    def test_principal_dos_autos_do_recurso_interno_volta_ao_registro(self):
+        """Achado Z2, a variante do registro afastado: E baixado com a senha
+        (OK sigiloso, os autos na pasta dos sigilosos), o download.sigilo.json
+        afastado (o passo 4 do manual, para desfazer a marcação de OUTRO
+        processo) e a regra única aplicada (o passo 8, Preparar): P, que só os
+        autos de E dão como sigiloso, volta ao registro."""
+        e = self.lote([E], grau="2g", roteiro={E.formatado: ["ok_sigiloso"]}).itens[0]
+        self.assertTrue(e.sigiloso)
+        self.assertTrue((self.tmp / "Sigilosos" / self.destino.name /
+                         f"{autos(E, '2g')}.pdf").is_file())
+        sigilo.arquivo_do_download().unlink()
+        chaves = sigilo.chaves_sigilosas(self.tmp / "Sigilosos", raiz=self.tmp / "Acervo")
+        self.assertIn(P.nome_arquivo, chaves)
+        self.assertIn(P.nome_arquivo, set(sigilo.apuradas_no_download()))
+        self.assertEqual(sigilo.motivo(self.cfg, P), sigilo.MOTIVO_DOWNLOAD)
+        # sem o relatório do lote também: só os autos de E na pasta
+        sigilo.arquivo_do_download().unlink()
+        for nome in motor.RELATORIOS:
+            for pasta in (self.destino, self.tmp / "Sigilosos" / self.destino.name):
+                (pasta / "_controle" / nome).unlink(missing_ok=True)
+        sigilo.chaves_sigilosas(self.tmp / "Sigilosos", raiz=self.tmp / "Acervo")
+        self.assertEqual(set(sigilo.apuradas_no_download()), {P.nome_arquivo})
+
+    def test_incidente_comum_sigiloso_nao_poe_o_principal_no_registro(self):
+        """Achado Z2, o controle: o incidente comum (P/01) sigiloso, pela
+        página ou com os autos na pasta, não põe o principal no registro do
+        download - nem no motor, nem na regra única."""
+        P01 = cnj.ler(f"{P.formatado}/01")
+        r = self.lote([P01], grau="1g", roteiro={P01.formatado: ["ok_sigiloso"]}).itens[0]
+        self.assertTrue(r.sigiloso)
+        self.assertTrue((self.tmp / "Sigilosos" / self.destino.name /
+                         f"{P01.nome_arquivo}.pdf").is_file())
+        self.assertEqual(set(sigilo.apuradas_no_download()), {P01.nome_arquivo})
+        sigilo.arquivo_do_download().unlink()
+        chaves = sigilo.chaves_sigilosas(self.tmp / "Sigilosos", raiz=self.tmp / "Acervo")
+        self.assertNotIn(P.nome_arquivo, chaves)
+        self.assertNotIn(P.nome_arquivo, set(sigilo.apuradas_no_download()))
+        self.assertEqual(sigilo.motivo(self.cfg, P), "")
 
     def test_principal_ja_baixado_depois_do_recurso_interno_diz_o_porque(self):
         """Achado X3 (a): P baixado público numa rodada; depois [E, P]. A
