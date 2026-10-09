@@ -418,7 +418,11 @@ class TestConector2G(Base2G):
             ac.ler_processo(A)
         self.assertEqual(str(erro.exception),
                          f"o processo {A} tem autos dos dois graus no acervo ({A} e {A2G}): "
-                         "informe grau=\"1g\" ou grau=\"2g\" (ou use a chave da listagem)")
+                         f"informe grau=\"1g\" ou grau=\"2g\" (ou peça \"{A} (1º grau)\" ou "
+                         f"\"{A2G}\")")
+        # as duas formas que a frase sugere escolhem os autos de um grau
+        self.assertIn("e-SAJ, 2º grau", ac.ler_processo(A2G))
+        self.assertIn("(1º grau — autos de origem", ac.ler_processo(f"{A} (1º grau)"))
 
     def test_ler_o_2g(self):
         ac = self.acervo()

@@ -359,8 +359,10 @@ class TestCapa2g(unittest.TestCase):
              "vara": "1ª Vara Criminal", "juiz": "Juiz Fulano", "obs": "", "principal": True},
             {"numero": "", "foro": "Foro de Maceió", "vara": "", "juiz": "", "obs": "apensado",
              "principal": False}])
-        self.assertEqual(d["capa"]["numeros_1a_instancia"], d["numeros_1a_instancia"],
-                         "também em capa.numeros_1a_instancia (o motor lê a origem por ali)")
+        # um lugar só (o nível de cima, onde o motor lê a origem): o objeto
+        # "capa" continua só com os rótulos da página
+        self.assertNotIn("numeros_1a_instancia", d["capa"])
+        self.assertTrue(all(isinstance(v, str) for v in d["capa"].values()))
         self.assertEqual(d["composicao"], [{"papel": "Relator", "nome": "Des. João Exemplo"},
                                            {"papel": "Revisor", "nome": "Des. Pedro Revisor"},
                                            {"papel": "3º Julgador", "nome": "Desa. Maria Vogal"}])

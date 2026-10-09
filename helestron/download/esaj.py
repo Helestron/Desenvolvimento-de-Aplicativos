@@ -64,7 +64,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ..nucleo import caminhos, cnj, paginacao, sistema
+from ..nucleo import caminhos, cnj, paginacao, sistema, tribunais
 from ..nucleo.cnj import Numero
 from . import pdf
 from .contexto import Contexto
@@ -1093,11 +1093,13 @@ def dados_da_capa(info: dict, numero: Numero, sigla: str, sigiloso: bool = False
     Claude a lê pelo "capa_json" do --json do baixar).
 
     Com ``grau="2g"`` (a capa dos autos do 2º grau), vão também "grau": "2g"
-    e as listas da página do 2º grau: "numeros_1a_instancia" (repetida em
-    capa.numeros_1a_instancia, onde o motor procura a ação de origem para o
-    sigilo), "composicao", "julgamentos" e "subprocessos" (as linhas de
-    "Incidentes, ações incidentais, recursos...", as mesmas de "incidentes").
-    No 1º grau, nada disso: o capa.json de sempre."""
+    e, no nível de cima, ao lado de "incidentes" e "movimentacoes", as listas
+    da página do 2º grau: "numeros_1a_instancia" (é dela, e só dela, que o
+    motor lê a ação de origem para o sigilo herdado), "composicao",
+    "julgamentos" e "subprocessos" (as linhas de "Incidentes, ações
+    incidentais, recursos...", as mesmas de "incidentes"). O objeto "capa"
+    continua só com os rótulos da página e seus textos. No 1º grau, nada
+    disso: o capa.json de sempre."""
     quando = quando or datetime.now()
     segundo = cnj.normalizar_grau(grau) == "2g"
     marcas, sinais = marcas_da_capa(info, sigiloso)
@@ -1128,9 +1130,8 @@ def dados_da_capa(info: dict, numero: Numero, sigla: str, sigiloso: bool = False
     for chave, _titulo in SECOES_CAPA:
         dados[chave] = linhas_da_secao(chave, secoes.get(chave))
     if segundo:
-        numeros = numeros_de_1a_instancia(secoes.get("numeros_1a_instancia"))
-        dados["numeros_1a_instancia"] = numeros
-        dados["capa"]["numeros_1a_instancia"] = [dict(x) for x in numeros]
+        dados["numeros_1a_instancia"] = numeros_de_1a_instancia(
+            secoes.get("numeros_1a_instancia"))
         dados["composicao"] = composicao_do_julgamento(secoes.get("composicao"))
         dados["julgamentos"] = julgamentos_da_capa(secoes.get("julgamentos"))
         dados["subprocessos"] = [dict(x) for x in dados["incidentes"]]
@@ -2589,9 +2590,11 @@ class PortalESAJ:
             break
         texto = self._texto_da_pagina() or corpo
         if diz_nao_encontrado(texto):
+            # a dica da opção “2º grau” só onde o Helestron baixa o 2º grau
+            dica = dica_de_grau(numero, "1g",
+                                com_o_2o_grau=tribunais.baixa_o_2o_grau(self.tribunal))
             raise ProcessoNaoEncontrado(
-                f"não encontrado no 1º grau do {self.nome}. Confira o número; "
-                f"{dica_de_grau(numero, '1g')}.")
+                f"não encontrado no 1º grau do {self.nome}. Confira o número; {dica}.")
         self._diagnosticar_processo(self._diag(f"consulta-{numero.nome_arquivo}"), numero)
         raise RuntimeError("não consegui identificar o processo na consulta "
                            "(sem acesso, ou sessão expirada?)")

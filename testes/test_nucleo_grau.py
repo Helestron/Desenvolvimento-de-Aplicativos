@@ -231,13 +231,16 @@ class TestGrau(unittest.TestCase):
 
 
 class TestDicaDeGrau(unittest.TestCase):
-    """As frases de troca de grau (§1.5): uma só fonte, sem aspas (§0.5)."""
+    """As frases de troca de grau (§1.5): uma só fonte, que cita entre aspas
+    curvas os rótulos da tela (§5.4: o segmentado “Grau” das Opções do lote)."""
 
     def test_constantes(self):
         self.assertEqual(modelos.DICA_GRAU_2G,
-                         "escolha 2º grau nas Opções do lote (na linha de comando, --grau 2g)")
+                         "escolha “2º grau” em “Grau”, nas Opções do lote (na linha de comando, "
+                         "--grau 2g)")
         self.assertEqual(modelos.DICA_GRAU_1G,
-                         "escolha 1º grau nas Opções do lote (na linha de comando, --grau 1g)")
+                         "escolha “1º grau” em “Grau”, nas Opções do lote (na linha de comando, "
+                         "--grau 1g)")
 
     def test_exemplos(self):
         no_1g = "se o processo estiver no 2º grau, " + modelos.DICA_GRAU_2G
@@ -260,6 +263,25 @@ class TestDicaDeGrau(unittest.TestCase):
                 self.assertEqual(modelos.dica_de_grau(texto, grau), esperado)
                 self.assertEqual(modelos.dica_de_grau(cnj.ler(texto), grau), esperado)
 
+    def test_tribunal_sem_o_2o_grau_nao_manda_escolher_o_2o_grau(self):
+        # o e-SAJ do TJSP e o do TJAM não têm o 2º grau no Helestron: a opção
+        # “2º grau” daria “não suportado” (a dica manda ao portal do tribunal)
+        self.assertEqual(modelos.dica_de_grau(A, "1g", com_o_2o_grau=False),
+                         modelos.DICA_SEM_2G)
+        self.assertNotIn("“", modelos.DICA_SEM_2G)
+        self.assertEqual(modelos.dica_de_grau(A, "2g", com_o_2o_grau=False),
+                         modelos.dica_de_grau(A, "2g"))
+        for sigla, tem in (("TJAL", True), ("TJRS", True), ("TRF4", True), ("TJSP", False),
+                           ("TJAM", False), ("TJAC", False)):
+            with self.subTest(sigla=sigla):
+                t = tribunais.por_sigla(sigla)
+                self.assertEqual(tribunais.baixa_o_2o_grau(t), tem)
+                if t.alternativo is not None:
+                    # o eProc do TJSP tem o 2º grau no catálogo, mas o principal não
+                    self.assertEqual(tribunais.baixa_o_2o_grau(t.alternativo), tem)
+                if tem:
+                    self.assertTrue(tribunais.baixa_o_2o_grau(t.no_grau("2g")))
+
     def test_grau_e_numero_em_qualquer_forma(self):
         self.assertEqual(modelos.dica_de_grau(A, "2"), modelos.dica_de_grau(A, "2g"))
         self.assertEqual(modelos.dica_de_grau(A, ""), modelos.dica_de_grau(A, "1g"))
@@ -279,10 +301,16 @@ class TestDicaDeGrau(unittest.TestCase):
                 self.assertNotIn("..", detalhe)
                 self.assertFalse(frase.endswith("."))
                 self.assertEqual(frase, frase.strip())
-                # sem aspas (o rótulo novo só existe depois da tela) e sem "(s)"
-                for marca in ("“", "”", '"', "(s)"):
+                # sem aspas retas e sem "(s)"; aspas curvas só em volta de
+                # rótulo da tela (os de ROTULOS_CITADOS, conferidos contra a
+                # interface por test_download_motor.TestRotulosCitados)
+                for marca in ('"', "(s)"):
                     self.assertNotIn(marca, frase)
-        self.assertNotIn("Grau", modelos.ROTULOS_CITADOS)
+                for citado in re.findall(r"“([^”]+)”", frase):
+                    self.assertIn(citado, modelos.ROTULOS_CITADOS)
+        for rotulo in ("Grau", "1º grau", "2º grau"):
+            self.assertIn(rotulo, modelos.ROTULOS_CITADOS)
+            self.assertIn(f"“{rotulo}”", modelos.DICA_GRAU_2G + modelos.DICA_GRAU_1G)
 
 
 class TestSigiloNosDoisGraus(unittest.TestCase):

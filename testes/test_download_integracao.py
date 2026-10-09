@@ -515,7 +515,7 @@ class TestSegundoGrau(_ComServidor):
             "numero": A.formatado, "foro": "Foro de Arapiraca",
             "vara": "1ª Vara Criminal de Arapiraca", "juiz": "Juiz Fulano de Tal", "obs": "",
             "principal": True}])
-        self.assertEqual(c2["capa"]["numeros_1a_instancia"], c2["numeros_1a_instancia"])
+        self.assertNotIn("numeros_1a_instancia", c2["capa"], "a lista fica num lugar só")
         self.assertEqual([x["papel"] for x in c2["composicao"]],
                          ["Relator", "Revisor", "3º Julgador"])
         self.assertEqual(c2["julgamentos"], [{"data": "09/10/2024", "situacao": "Julgado",

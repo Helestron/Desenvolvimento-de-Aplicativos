@@ -2948,8 +2948,9 @@ class _Lote:
         programa já sabe sigiloso (o número formatado), ou "" se nenhum.
 
         A origem sai da capa do 2º grau que o portal gravou ao lado do PDF
-        (_controle/<chave dos autos>_capa.json, "Números de 1ª Instância":
-        capa.numeros_1a_instancia[].numero - o e-SAJ; o eProc não traz essa
+        (_controle/<chave dos autos>_capa.json, "Números de 1ª Instância": a
+        lista "numeros_1a_instancia" do nível de cima do arquivo, com o
+        "numero" de cada um no formato CNJ - o e-SAJ; o eProc não traz essa
         lista nesta versão), e o sigilo, da mesma regra que vale para o
         próprio processo (_motivo_sigilo: relatório e capa deste lote, pasta
         dos sigilosos, pauta, registro do download)."""
@@ -2958,12 +2959,7 @@ class _Lote:
             dados = json.loads(arquivo.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return ""
-        if not isinstance(dados, dict):
-            return ""
-        capa = dados.get("capa") if isinstance(dados.get("capa"), dict) else {}
-        lista = capa.get("numeros_1a_instancia")
-        if not isinstance(lista, list):
-            lista = dados.get("numeros_1a_instancia")
+        lista = dados.get("numeros_1a_instancia") if isinstance(dados, dict) else None
         if not isinstance(lista, list):
             return ""
         for item in lista:

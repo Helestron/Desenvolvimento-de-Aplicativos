@@ -364,6 +364,19 @@ def por_portal(portal: str) -> Tribunal | None:
     return alvo
 
 
+def baixa_o_2o_grau(tribunal) -> bool:
+    """O Helestron baixa o 2º grau deste tribunal? Só se o sistema PRINCIPAL
+    dele (o do catálogo, pela chave) tem o endereço do 2º grau - a mesma regra
+    com que o motor recusa (não suportado) o 2º grau dos demais, ainda que o
+    alternativo o tenha (o eProc do TJSP). 'tribunal': o do portal, em
+    qualquer grau e sistema; um dublê fora do catálogo vale pelo que diz."""
+    principal = por_chave(getattr(tribunal, "chave", "") or "")
+    if principal is None:
+        tem = getattr(tribunal, "tem_grau", None)
+        return bool(tem("2g")) if callable(tem) else True
+    return principal.tem_grau("2g")
+
+
 def _do_portal(lista: tuple[Tribunal, ...], portal: str) -> Tribunal | None:
     sistema, _, sigla = _portal_do_sistema(portal).partition(":")
     for t in lista:

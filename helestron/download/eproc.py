@@ -85,7 +85,7 @@ from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 
-from ..nucleo import caminhos, paginacao, sistema
+from ..nucleo import caminhos, paginacao, sistema, tribunais
 from ..nucleo.cnj import Numero, normalizar_grau
 from . import pdf
 from .contexto import Contexto
@@ -2865,14 +2865,16 @@ class PortalEProc:
                                             and consulta == "indisponivel"):
             # A dica final diz onde mais procurar (modelos.dica_de_grau): o
             # outro grau - ou, para o número que só existe no 2º, que trocar
-            # o grau do lote não muda nada.
+            # o grau do lote não muda nada. A opção “2º grau” só é sugerida
+            # onde o Helestron baixa o 2º grau (tribunais.baixa_o_2o_grau).
             if self.grau == paginacao.SEGUNDO_GRAU:
                 raise ProcessoNaoEncontrado(
                     f"não encontrado no {self.nome}. Confira o número; "
                     f"{dica_de_grau(numero, '2g')}.")
+            dica = dica_de_grau(numero, "1g",
+                                com_o_2o_grau=tribunais.baixa_o_2o_grau(self.tribunal))
             raise ProcessoNaoEncontrado(
-                f"não encontrado no 1º grau do {self.nome}. Confira o número; "
-                f"{dica_de_grau(numero, '1g')}.")
+                f"não encontrado no 1º grau do {self.nome}. Confira o número; {dica}.")
         dica = self._diagnosticar_processo(f"eproc-abrir-{numero.nome_arquivo}", numero)
         if rapida == "nao_encontrado":
             raise RuntimeError("a pesquisa rápida não achou o processo, e a consulta processual "

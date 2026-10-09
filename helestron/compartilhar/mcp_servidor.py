@@ -386,9 +386,12 @@ class Acervo:
         if not achadas:
             raise LookupError(f"o processo {numero} não está no acervo")
         if len(achadas) > 1:
+            # A chave da listagem dos autos do 1º grau é o próprio número
+            # (a ambígua): a frase diz as duas formas que escolhem um grau.
             raise ValueError(f"o processo {n.formatado} tem autos dos dois graus no acervo "
                              f"({achadas[0]} e {achadas[1]}): informe grau=\"1g\" ou "
-                             "grau=\"2g\" (ou use a chave da listagem)")
+                             f"grau=\"2g\" (ou peça \"{achadas[0]} (1º grau)\" ou "
+                             f"\"{achadas[1]}\")")
         return achadas[0]
 
     def texto_processo(self, numero: str, pdfs: dict[str, Path] | None = None,

@@ -508,8 +508,8 @@ class TestSigiloNosDoisGraus(BaseGrau):
         self.assertTrue(r.sigiloso)
 
     def test_originario_herda_o_sigilo_da_origem(self):
-        capa = {"formato": "helestron.capa/2", "grau": "2g",
-                "capa": {"numeros_1a_instancia": [{"numero": A.formatado, "foro": "x"}]}}
+        capa = {"formato": "helestron.capa/2", "grau": "2g", "capa": {"classe": "Habeas Corpus"},
+                "numeros_1a_instancia": [{"numero": A.formatado, "foro": "x"}]}
         # A é sigiloso pela pasta dos sigilosos (de outro lote)
         sig = self.tmp / "Sigilosos" / "Outro lote"
         sig.mkdir(parents=True)
@@ -525,7 +525,7 @@ class TestSigiloNosDoisGraus(BaseGrau):
         self.assertTrue(sigilo.motivo_do_download(H), "vai para a regra única")
 
     def test_origem_publica_deixa_o_originario_publico(self):
-        capa = {"capa": {"numeros_1a_instancia": [{"numero": A.formatado}, {"numero": ""}]}}
+        capa = {"numeros_1a_instancia": [{"numero": A.formatado}, {"numero": ""}]}
         r = self.lote([H], grau="2g", capas={H.formatado: capa}).itens[0]
         self.assertFalse(r.sigiloso)
         self.assertTrue((self.destino / f"{H.nome_arquivo} (2G).pdf").is_file())

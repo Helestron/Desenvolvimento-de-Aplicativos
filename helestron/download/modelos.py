@@ -178,24 +178,39 @@ ENDERECO_DO_PORTAL = "Endereço do portal"
 ONDE_CORRIGIR_ENDERECO = (f"em {AJUSTES_ACESSOS}, “{ENDERECO_DO_PORTAL}” (a correção fica "
                           "no arquivo enderecos-locais.json da pasta de dados do Helestron, "
                           "%LOCALAPPDATA%\\Helestron) - ou peça ao suporte")
+# Onde trocar o grau do lote: o segmentado “Grau” das Opções do lote, na tela
+# Processos (“1º grau” | “2º grau”), e o --grau da linha de comando. Um só
+# texto para o e-SAJ, o eProc e o motor.
+OPCAO_GRAU = "Grau"
+OPCAO_1G = "1º grau"
+OPCAO_2G = "2º grau"
 ROTULOS_CITADOS = (MOSTRAR_NAVEGADOR, TENTAR_DE_NOVO, ENTRAR_MANUALMENTE, "Ajustes",
                    "Acessos aos portais", "Acesso aos portais", PRAZO_LOGIN, PERFIL_EPROC,
-                   "Pastas", ENDERECO_DO_PORTAL)
-# Onde trocar o grau do lote: na tela (Opções do lote) e na linha de comando.
-# Um só texto para o e-SAJ, o eProc e o motor. (O rótulo da opção só passa a
-# ser citado entre aspas - e a entrar em ROTULOS_CITADOS - quando a tela o
-# tiver.)
-DICA_GRAU_2G = "escolha 2º grau nas Opções do lote (na linha de comando, --grau 2g)"
-DICA_GRAU_1G = "escolha 1º grau nas Opções do lote (na linha de comando, --grau 1g)"
+                   "Pastas", ENDERECO_DO_PORTAL, OPCAO_GRAU, OPCAO_1G, OPCAO_2G)
+DICA_GRAU_2G = (f"escolha “{OPCAO_2G}” em “{OPCAO_GRAU}”, nas Opções do lote (na linha de "
+                "comando, --grau 2g)")
+DICA_GRAU_1G = (f"escolha “{OPCAO_1G}” em “{OPCAO_GRAU}”, nas Opções do lote (na linha de "
+                "comando, --grau 1g)")
+# O tribunal cujo sistema principal não tem o 2º grau no Helestron (o e-SAJ
+# do TJSP, do TJAM...): mandar escolher “2º grau” daria NAO_SUPORTADO.
+DICA_SEM_2G = ("se o processo estiver no 2º grau, baixe-o pelo portal do tribunal (o Helestron "
+               "ainda não baixa o 2º grau dele)")
 
 
-def dica_de_grau(numero, grau: str) -> str:
+def dica_de_grau(numero, grau: str, *, com_o_2o_grau: bool = True) -> str:
     """O fim da frase de "não encontrado", depois de "Confira o número; " (sem
     ponto final): onde mais procurar os autos. No 1º grau, escolher o 2º; no
     2º, escolher o 1º (o recurso pode não ter subido) - salvo quando o próprio
     número só existe no 2º grau (cnj.grau_do_numero): aí trocar o grau do lote
-    não muda a busca, e a frase o diz. 'numero': um cnj.Numero ou um texto."""
+    não muda a busca, e a frase o diz. 'numero': um cnj.Numero ou um texto.
+
+    'com_o_2o_grau': o Helestron baixa o 2º grau deste tribunal
+    (tribunais.baixa_o_2o_grau)? Sem ele, a dica do 1º grau manda ao portal
+    do tribunal (DICA_SEM_2G), e não à opção “2º grau”, que o motor recusaria
+    (não suportado)."""
     if (cnj.normalizar_grau(grau) or "1g") == "1g":
+        if not com_o_2o_grau:
+            return DICA_SEM_2G
         return f"se o processo estiver no 2º grau, {DICA_GRAU_2G}"
     n = numero
     if not isinstance(n, cnj.Numero):
