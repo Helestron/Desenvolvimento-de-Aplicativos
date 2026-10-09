@@ -43,7 +43,8 @@ processo com autos, transcrição ou gravação na pasta dos sigilosos, ou
 que a pauta de audiências marca em segredo de justiça (só a indicação
 positiva conta, como o selo “Segredo de Justiça”; “Nível 1” no local da
 audiência ou “Segredo de justiça: não” não marcam), e também o incidente
-de um processo sigiloso. Com a separação dos sigilosos
+de um processo sigiloso e o principal cujo recurso interno do 2º grau
+(`/50000`) é sigiloso. Com a separação dos sigilosos
 ligada (o padrão), o que ainda estiver no acervo de um processo sigiloso é
 levado para a pasta dos sigilosos antes de o acervo ser entregue a qualquer
 ferramenta; quando é a pauta que revela o segredo, isso acontece na hora, com

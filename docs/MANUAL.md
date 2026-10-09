@@ -1790,7 +1790,9 @@ Basta uma destas situações:
    sigilosos** desligado, é esse relatório que guarda o sigilo dos lotes
    baixados por uma versão anterior, ou depois de o registro do item 4 se
    perder (as configurações apagadas na desinstalação, o acervo levado para
-   outro computador); o Helestron o devolve ao registro.
+   outro computador); o Helestron o devolve ao registro. Do recurso interno
+   do 2º grau, vale também a linha dele no relatório completo do lote, na
+   pasta dos sigilosos.
 
 O **incidente** de um processo sigiloso (o `...0001-01`, como o cumprimento
 de sentença) também é sigiloso: as partes e o conteúdo são os mesmos. O
@@ -1921,12 +1923,12 @@ Se o processo é público e você precisa dele no acervo:
    registro. Vale também para o processo principal que a consulta de um
    recurso interno dele no 2º grau (`...0001-50000`) achou em segredo, sem
    linha própria no relatório: a linha “sim” do recurso interno o marca
-   também. A exceção é o principal que nunca foi baixado, com a separação
-   ligada: no acervo, a linha do recurso interno diz “(processo
-   sigiloso)”, e só o relatório completo, na pasta dos sigilosos, o marca
-   de novo, e só nos downloads daquele lote. Antes de baixar esse
-   principal (o número do recurso interno sem o `/50000`) em outro lote,
-   baixe de novo o recurso interno no 2º grau: a consulta o apura de novo.
+   também, no relatório do lote do recurso interno no acervo ou, com a
+   separação ligada (em que essa linha, no acervo, diz “(processo
+   sigiloso)”), no relatório completo, na pasta dos sigilosos. Mas o
+   relatório só os devolve ao registro no passo 8: até lá, o download em
+   outro lote e a transcrição os tratam como públicos. Por isso, não baixe
+   processos nem transcreva audiências antes do passo 8.
 5. No relatório de cada lote em que ele foi baixado, troque “sim” por
    “não” na coluna `sigiloso` de todas as linhas dele (o Excel abre o
    arquivo; salve-o no mesmo formato): no
@@ -1982,7 +1984,8 @@ Se o processo é público e você precisa dele no acervo:
    de Notas) ou a capa inteira; sem isso, o próximo download dele no lote
    o marca de novo. Confira do mesmo jeito a capa do originário do passo 6.
 8. Abra o Helestron e, na tela Compartilhar, clique em **Preparar acervo
-   para a IA**.
+   para a IA**, **antes** de baixar processos ou de transcrever audiências
+   (veja o passo 4).
 
 Na dúvida, não faça nada: um processo público marcado por engano só fica
 fora da IA e da nuvem.

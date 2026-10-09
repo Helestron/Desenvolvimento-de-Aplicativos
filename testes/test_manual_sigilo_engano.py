@@ -15,7 +15,9 @@ Achado Y5 da quinta verificação: com a separação dos sigilosos desligada, os
 autos e a capa nem saem do acervo, e o passo 6 só falava da capa que volta
 da pasta dos sigilosos; a que ficou no _controle do lote, com a linha,
 refazia a marcação. Agora a capa tem passo próprio (o 7), onde ela estiver.
-E o achado Y4: o passo 4 fala do principal que só o recurso interno apurou.
+E o achado Y4: o passo 4 fala do principal que só o recurso interno apurou,
+que a linha "sim" do recurso interno marca de novo, mas só a partir do
+passo 8 (Preparar acervo para a IA), que vem antes de qualquer download.
 
 Com portal e navegador de mentira (testes/apoio_download.py) e a capa como
 o e-SAJ de verdade a grava (esaj.formatar_capa).
@@ -28,12 +30,13 @@ import io
 import re
 from pathlib import Path
 
-from helestron.compartilhar import preparo
+from helestron.compartilhar import mcp_servidor, preparo
 from helestron.download import esaj, modelos, motor
 from helestron.nucleo import cnj, sigilo
 
 from testes import apoio_download as apoio
 from testes.test_download_motor import BaseMotor
+from testes.test_download_motor_grau import E, P, BaseGrau, PortalDoSegredo
 
 A = cnj.ler("0700001-93.2024.8.02.0058")       # existe nos dois graus
 A2 = cnj.ler("0700002-78.2024.8.02.0058")
@@ -171,17 +174,26 @@ class TestManualSigiloEngano(BaseMotor):
         # recurso interno (/50000) apurou não tem linha própria no relatório,
         # e o passo 4 prometia que todo apurado continuava sigiloso sem o
         # download.sigilo.json. Desde a correção, a linha "sim" do recurso
-        # interno marca também o principal; o passo diz isso e a exceção.
+        # interno marca também o principal, no relatório do acervo ou no
+        # completo; mas só o passo 8 o devolve ao registro, e o passo diz
+        # para não baixar nem transcrever antes dele.
         regra = re.sub(r"\s+", " ", MANUAL.read_text(encoding="utf-8"))
         self.assertIn("o recurso interno sigiloso, por qualquer das situações acima, torna "
                       "sigiloso também o processo principal", regra)
+        self.assertIn("Do recurso interno do 2º grau, vale também a linha dele no relatório "
+                      "completo do lote, na pasta dos sigilosos.", regra)
         p4 = passo(4)
         for frase in ("Vale também para o processo principal que a consulta de um recurso "
                       "interno dele no 2º grau (`...0001-50000`) achou em segredo",
                       "a linha “sim” do recurso interno o marca também",
-                      "A exceção é o principal que nunca foi baixado, com a separação ligada",
-                      "baixe de novo o recurso interno no 2º grau: a consulta o apura de novo"):
+                      "no relatório completo, na pasta dos sigilosos",
+                      "o relatório só os devolve ao registro no passo 8",
+                      "o download em outro lote e a transcrição os tratam como públicos",
+                      "não baixe processos nem transcreva audiências antes do passo 8"):
             self.assertIn(frase, p4)
+        for frase in ("A exceção é o principal", "baixe de novo o recurso interno"):
+            self.assertNotIn(frase, p4)
+        self.assertIn("**antes** de baixar processos ou de transcrever audiências", passo(8))
 
     def test_separacao_desligada_seguido_a_letra_continua_publico(self):
         # Os autos e a capa nem saem do acervo: o passo 7 manda apagar a linha
@@ -250,3 +262,130 @@ class TestManualSigiloEngano(BaseMotor):
         self.assertEqual((r.situacao, r.sigiloso), (modelos.JA_BAIXADO, True))
         self.assertTrue((self.sig / f"{A.nome_arquivo}.pdf").is_file())
         self.assertTrue(self.sigilosa())
+
+
+class TestPrincipalApuradoPeloRecursoInterno(BaseGrau):
+    """Achado Y4 da quinta verificação: o principal P que só a consulta do
+    recurso interno P/50000 apurou (motor._principal_apurado) não tem linha
+    própria no relatório, e o passo 4 do manual, seguido para desfazer a
+    marcação de OUTRO processo (A), afastava o download.sigilo.json, o único
+    lugar que o guardava: P voltava ao índice e ao conector. Agora a linha
+    "sim" do recurso interno marca também o principal - a do relatório do
+    lote no acervo ou, com a separação ligada, a do relatório completo, na
+    pasta dos sigilosos -, e o passo 8 (Preparar) o devolve ao registro,
+    antes de qualquer download."""
+
+    def regra(self, n) -> bool:
+        return sigilo.contem(sigilo.chaves_sigilosas(self.tmp / "Sigilosos",
+                                                     self.tmp / "Acervo"), n.nome_arquivo)
+
+    def ler(self, arquivo: Path) -> list[dict]:
+        return list(csv.DictReader(io.StringIO(arquivo.read_bytes().decode("utf-8-sig")),
+                                   delimiter=";"))
+
+    def gravar(self, arquivo: Path, linhas: list[dict]) -> None:
+        with open(arquivo, "w", encoding="utf-8-sig", newline="") as f:
+            escritor = csv.DictWriter(f, fieldnames=list(linhas[0]), delimiter=";",
+                                      lineterminator="\r\n")
+            escritor.writeheader()
+            escritor.writerows(linhas)
+
+    def manual_para_a(self, lote: Path, passo_8: bool = True) -> None:
+        """Os passos 4 a 8 do manual para A, baixada sigilosa no 'lote'
+        (sem o passo 8, se 'passo_8' for falso)."""
+        sigilo.arquivo_do_download().unlink()                          # 4
+        sig = self.tmp / "Sigilosos" / lote.name
+        completo = sig / "_controle" / "relatorio.csv"
+        do_acervo = lote / "_controle" / "relatorio.csv"
+        trocadas = {}
+        if completo.is_file():                                         # 5
+            linhas = self.ler(completo)
+            for linha in linhas:
+                if linha["processo"] == A.formatado:
+                    linha["sigiloso"] = "não"
+                    trocadas[linha["ordem"]] = linha
+            self.gravar(completo, linhas)
+        linhas = self.ler(do_acervo)
+        for linha in linhas:
+            if linha["processo"] == A.formatado:
+                linha["sigiloso"] = "não"
+        self.gravar(do_acervo, [
+            trocadas.get(l["ordem"], l) if l["processo"] == motor.MASCARA_SIGILOSO else l
+            for l in linhas])
+        for pasta in (sig, sig / "_controle", sig / "_controle" / "midias"):   # 6
+            for p in list(pasta.glob(f"{A.nome_arquivo}*")):
+                novo = lote / p.relative_to(sig)
+                novo.parent.mkdir(parents=True, exist_ok=True)
+                p.replace(novo)
+        for p in (lote / "_controle").glob(f"{A.nome_arquivo}*_capa.txt"):   # 7
+            texto = p.read_text(encoding="utf-8").splitlines(keepends=True)
+            p.write_text("".join(l for l in texto if FRASE_DA_CAPA not in l), encoding="utf-8")
+        if passo_8:
+            preparo.atualizar_contexto(self.cfg, extrair_texto=False)    # 8
+            self.assertFalse(self.regra(A))
+
+    def no_indice_ou_no_conector(self, n) -> bool:
+        indice = (self.tmp / "Acervo" / "INDICE.md").read_text(encoding="utf-8")
+        conector = mcp_servidor.Acervo(self.tmp / "Acervo", sigilosos=self.tmp / "Sigilosos")
+        return n.nome_arquivo in indice or n.formatado in conector.listar_acervo()
+
+    def test_separacao_desligada_o_principal_continua_sigiloso(self):
+        self.cfg.definir("download", "separar_sigilosos", False)
+        lote0, lote1, lote2 = (self.tmp / "Acervo" / "Processos" / f"Lote {i}" for i in range(3))
+        r = self.lote([P], destino=lote0, separar_sigilosos=False).itens[0]
+        self.assertEqual((r.situacao, r.sigiloso), (modelos.OK, False))
+        e = self.lote([E], grau="2g", destino=lote1, portal=PortalDoSegredo,
+                      separar_sigilosos=False).itens[0]
+        self.assertTrue(e.sigiloso)
+        self.assertTrue(self.regra(P))
+        a = self.lote([A], destino=lote2, roteiro={A.formatado: ["ok_sigiloso"]},
+                      separar_sigilosos=False).itens[0]
+        self.assertTrue(a.sigiloso)
+        self.manual_para_a(lote2)
+        self.assertTrue(self.regra(P), "o passo 4 tirou o sigilo do principal")
+        self.assertTrue((lote0 / f"{P.nome_arquivo}.pdf").is_file())   # desligada: fica
+        self.assertFalse(self.no_indice_ou_no_conector(P))
+
+    def test_separacao_ligada_o_lote_do_recurso_interno_marca_o_principal(self):
+        lote1, lote2 = (self.tmp / "Acervo" / "Processos" / f"Lote {i}" for i in (1, 2))
+        self.assertTrue(self.lote([E], grau="2g", destino=lote1,
+                                  portal=PortalDoSegredo).itens[0].sigiloso)
+        self.assertTrue(self.lote([A], destino=lote2,
+                                  roteiro={A.formatado: ["ok_sigiloso"]}).itens[0].sigiloso)
+        self.manual_para_a(lote2)
+        r = self.lote([P], destino=lote1).itens[0]       # a página do 1º grau sem o selo
+        self.assertEqual((r.situacao, r.sigiloso), (modelos.OK, True))
+        self.assertTrue((self.tmp / "Sigilosos" / lote1.name / f"{P.nome_arquivo}.pdf").is_file())
+
+    def test_separacao_ligada_noutro_lote_o_passo_8_devolve_o_principal(self):
+        # O principal nunca baixado, com a separação ligada: a linha do
+        # recurso interno no acervo é mascarada, e a do relatório completo,
+        # na pasta dos sigilosos, o devolve ao registro no passo 8 - sem
+        # baixar de novo o recurso interno. Noutro lote, ele nasce sigiloso.
+        lote1, lote2, lote3 = (self.tmp / "Acervo" / "Processos" / f"Lote {i}"
+                               for i in (1, 2, 3))
+        self.lote([E], grau="2g", destino=lote1, portal=PortalDoSegredo)
+        self.lote([A], destino=lote2, roteiro={A.formatado: ["ok_sigiloso"]})
+        self.assertEqual([l["processo"] for l in self.ler(lote1 / "_controle" / "relatorio.csv")],
+                         [motor.MASCARA_SIGILOSO])
+        self.manual_para_a(lote2)
+        self.assertEqual(sigilo.motivo(self.cfg, P), sigilo.MOTIVO_DOWNLOAD)
+        r = self.lote([P], destino=lote3).itens[0]       # a página do 1º grau sem o selo
+        self.assertEqual((r.situacao, r.sigiloso), (modelos.OK, True))
+        self.assertTrue((self.tmp / "Sigilosos" / lote3.name / f"{P.nome_arquivo}.pdf").is_file())
+
+    def test_antes_do_passo_8_o_download_noutro_lote_nao_o_ve(self):
+        # por que o passo 8 vem antes de qualquer download: as consultas de um
+        # número só (o motor fora dos relatórios do lote, a transcrição) só
+        # veem o principal no registro, aonde o passo 8 o devolve
+        lote1, lote2, lote3 = (self.tmp / "Acervo" / "Processos" / f"Lote {i}"
+                               for i in (1, 2, 3))
+        self.lote([E], grau="2g", destino=lote1, portal=PortalDoSegredo)
+        self.lote([A], destino=lote2, roteiro={A.formatado: ["ok_sigiloso"]})
+        self.manual_para_a(lote2, passo_8=False)
+        self.assertEqual(sigilo.motivo(self.cfg, P), "")
+        r = self.lote([P], destino=lote3).itens[0]
+        self.assertEqual((r.situacao, r.sigiloso), (modelos.OK, False))
+        self.assertTrue((lote3 / f"{P.nome_arquivo}.pdf").is_file())
+        # a regra inteira ainda o dá como sigiloso, pelo relatório completo
+        self.assertTrue(self.regra(P))
