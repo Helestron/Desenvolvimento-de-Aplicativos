@@ -48,7 +48,8 @@ O contrário não vale - o principal não fica sigiloso só por causa de um
 incidente (Sigilosas, contem) -, salvo pelo RECURSO INTERNO do 2º grau
 ("...0001-50000": os embargos de declaração, o agravo interno), que corre
 nos mesmos autos do principal: o sigiloso torna sigiloso também o principal
-(com_principais_dos_recursos, nas fontes de chaves_sigilosas).
+(com_principais_dos_recursos, nas fontes de chaves_sigilosas e, pela mesma
+conta, nas consultas de um número só: _como_contem).
 
 É esta regra que o compartilhamento (INDICE.md, CLAUDE.md/AGENTS.md, MCP,
 _ia/texto, pacote, espelho na nuvem), o download e a transcrição consultam:
@@ -128,6 +129,15 @@ MOTIVO_PAUTA_PRINCIPAL = ("é incidente de um processo sigiloso: a pauta de audi
 MOTIVO_DOWNLOAD = "um download anterior apurou que ele corre em segredo de justiça"
 MOTIVO_DOWNLOAD_PRINCIPAL = ("é incidente de um processo sigiloso: um download anterior apurou "
                              "que o principal corre em segredo de justiça")
+# O recurso interno sem autos que só o relatório completo de um lote, na pasta
+# dos sigilosos, ainda dá como sigiloso (recursos_dos_completos)
+MOTIVO_COMPLETO = ("o relatório completo de um lote, na pasta dos sigilosos, o dá como "
+                   "sigiloso")
+# O principal de um recurso interno do 2º grau sigiloso, por qualquer das
+# fontes (com_principais_dos_recursos), e o incidente desse principal
+MOTIVO_RECURSO = "um recurso interno dele no 2º grau é sigiloso"
+MOTIVO_RECURSO_PRINCIPAL = ("é incidente de um processo sigiloso: um recurso interno do "
+                            "principal no 2º grau é sigiloso")
 
 PAUTA_DO_PROGRAMA = object()   # o banco da pauta do programa (caminhos.ARQUIVO_PAUTA)
 VALIDADE_PAUTA_S = 30.0        # releitura forçada, mesmo sem mudança aparente no banco
@@ -226,6 +236,56 @@ class Sigilosas(frozenset):
 
     def __contains__(self, chave) -> bool:
         return contem(self, chave)
+
+
+# Como um processo está entre os sigilosos de uma fonte (_como_contem)
+_PROPRIO, _DO_PRINCIPAL, _DO_RECURSO, _DO_RECURSO_DO_PRINCIPAL = 1, 2, 3, 4
+
+
+def _como_contem(chaves: frozenset, nome: str) -> int:
+    """Como o processo 'nome' (Numero.nome_arquivo) está entre os sigilosos
+    'chaves' de UMA fonte, pela conta da regra única (contem sobre
+    com_principais_dos_recursos, como em chaves_sigilosas): _PROPRIO,
+    _DO_PRINCIPAL (é incidente de um deles), _DO_RECURSO (um recurso interno
+    dele no 2º grau está entre eles), _DO_RECURSO_DO_PRINCIPAL (é incidente
+    do principal de um desses recursos) ou 0 (não está).
+
+    É a conta das consultas de um número só (na_pasta, na_pauta, motivo, o
+    download, a transcrição, a tela da audiência): sem ela, o principal que
+    só um recurso interno torna sigiloso dependia do registro do download, e
+    com o registro perdido o download e a transcrição o davam como público.
+    Só o dependente /5xxxx deriva o principal; sem ele, a conta é a de
+    sempre, sobre as chaves já lidas (nenhuma leitura a mais)."""
+    if frozenset.__contains__(chaves, nome):
+        return _PROPRIO
+    p = principal(nome)
+    if p is not None and frozenset.__contains__(chaves, p):
+        return _DO_PRINCIPAL
+    derivadas = com_principais_dos_recursos(chaves)
+    if frozenset.__contains__(derivadas, nome):
+        return _DO_RECURSO
+    if p is not None and frozenset.__contains__(derivadas, p):
+        return _DO_RECURSO_DO_PRINCIPAL
+    return 0
+
+
+def _motivo(nome: str, fontes) -> str:
+    """O porquê do sigilo de 'nome' pelas 'fontes', cada uma (função que lê
+    as chaves dela, motivo próprio, motivo do incidente), lidas na ordem e só
+    até a resposta. O próprio processo ou o principal dele numa fonte vale
+    antes do recurso interno em qualquer delas (o porquê de sempre não muda);
+    só sem eles vale MOTIVO_RECURSO ou MOTIVO_RECURSO_PRINCIPAL."""
+    pelo_recurso = 0
+    for ler, proprio, do_principal in fontes:
+        como = _como_contem(ler(), nome)
+        if como == _PROPRIO:
+            return proprio
+        if como == _DO_PRINCIPAL:
+            return do_principal
+        pelo_recurso = pelo_recurso or como
+    if pelo_recurso == _DO_RECURSO:
+        return MOTIVO_RECURSO
+    return MOTIVO_RECURSO_PRINCIPAL if pelo_recurso else ""
 
 
 def _nome(numero) -> str | None:
@@ -371,9 +431,21 @@ def chaves_na_pasta(sigilosos, raiz=None) -> Sigilosas:
     return Sigilosas(achados)
 
 
+def _chaves_da_pasta(sigilosos) -> frozenset[str]:
+    """chaves_na_pasta para as consultas de um número só. Nunca levanta."""
+    if not sigilosos:
+        return frozenset()
+    try:
+        return chaves_na_pasta(sigilosos)
+    except (OSError, ValueError, TypeError):
+        return frozenset()
+
+
 def na_pasta(sigilosos, numero, herdar: bool = True) -> bool:
     """O processo tem autos, transcrição, gravação ou diário na pasta dos
-    sigilosos? O incidente também, se o principal tiver ('herdar').
+    sigilosos? Com 'herdar', também o incidente, se o principal tiver, e o
+    principal (ou o incidente dele), se um recurso interno do 2º grau tiver
+    (_como_contem: a conta da regra única).
 
     Confere os mesmos arquivos que chaves_na_pasta, com o número em qualquer
     posição do nome ("Audiência - <número>.docx", "Sentença <número>.pdf",
@@ -382,19 +454,8 @@ def na_pasta(sigilosos, numero, herdar: bool = True) -> bool:
     nome = _nome(numero)
     if not nome or not sigilosos:
         return False
-    do_principal = principal(nome) if herdar else None
-    alvos = {nome, do_principal} - {None}
-    try:
-        candidatos = _candidatos(Path(sigilosos))
-    except (OSError, ValueError, TypeError):
-        return False
-    for p in candidatos:
-        try:
-            if cnj.ler_nome_arquivo(p.name).nome_arquivo in alvos:
-                return True
-        except cnj.NumeroInvalido:
-            continue
-    return False
+    como = _como_contem(_chaves_da_pasta(sigilosos), nome)
+    return como == _PROPRIO or (herdar and bool(como))
 
 
 # ===================================================================== pauta
@@ -661,13 +722,14 @@ def chaves_da_pauta(pauta=PAUTA_DO_PROGRAMA) -> Sigilosas:
 
 
 def na_pauta(numero, pauta=PAUTA_DO_PROGRAMA, herdar: bool = True) -> bool:
-    """A pauta marca este processo sigiloso (ou, se for incidente e
-    'herdar', o principal dele)? Nunca levanta."""
+    """A pauta marca este processo sigiloso? Com 'herdar', também se marca o
+    principal do incidente ou um recurso interno do 2º grau do principal
+    (_como_contem). Nunca levanta."""
     nome = _nome(numero)
     if not nome:
         return False
-    chaves = chaves_da_pauta(pauta)
-    return contem(chaves, nome) if herdar else frozenset.__contains__(chaves, nome)
+    como = _como_contem(chaves_da_pauta(pauta), nome)
+    return como == _PROPRIO or (herdar and bool(como))
 
 
 def esquecer_pauta() -> None:
@@ -814,12 +876,18 @@ def recursos_dos_completos(sigilosos) -> frozenset[str]:
     sigiloso. As outras linhas do completo continuam fora da regra, como
     sempre: os autos desses processos estão na pasta dos sigilosos, e o
     sigilo deles, no registro do download. Nunca levanta."""
+    return com_principais_dos_recursos(_recursos_dos_completos(sigilosos))
+
+
+def _recursos_dos_completos(sigilosos) -> frozenset[str]:
+    """Os recursos internos de recursos_dos_completos, sem os principais:
+    cada relatório completo é relido só quando muda (_do_relatorio)."""
     if not sigilosos:
         return frozenset()
     try:
         with os.scandir(sigilosos) as it:
             entradas = list(it)
-    except OSError:
+    except (OSError, ValueError, TypeError):
         return frozenset()
     lotes = []
     for e in entradas:
@@ -833,7 +901,7 @@ def recursos_dos_completos(sigilosos) -> frozenset[str]:
         for nome in RELATORIOS_DO_LOTE:
             recursos |= {n for n in _do_relatorio(lote / "_controle" / nome)
                          if _principal_do_recurso(n)}
-    return com_principais_dos_recursos(recursos)
+    return frozenset(recursos)
 
 
 # ================================================= capa do originário do 2º grau
@@ -982,8 +1050,10 @@ def chaves_sigilosas(sigilosos, raiz=None, pauta=PAUTA_DO_PROGRAMA) -> Sigilosas
     relatório do lote - o do acervo ou o completo, na pasta dos sigilosos,
     onde a linha não é mascarada (recursos_dos_completos). O que só os autos
     do recurso na pasta, ou só o recurso no registro, dão como sigiloso vai
-    para o registro também: as consultas de um número só (motivo,
-    processo_sigiloso) não fazem essa extensão."""
+    para o registro também (uma vez apurado, fica). As consultas de um número
+    só (motivo, processo_sigiloso) fazem a mesma conta (_como_contem), com o
+    completo; só o relatório do lote no acervo e a capa do originário, que
+    pedem 'raiz', chegam a elas pelo registro."""
     base = chaves_na_pasta(sigilosos, raiz) | chaves_da_pauta(pauta) | apuradas_no_download(pauta)
     sabidas = Sigilosas(com_principais_dos_recursos(base))
     if raiz is None:
@@ -1008,52 +1078,85 @@ def chaves_sigilosas(sigilosos, raiz=None, pauta=PAUTA_DO_PROGRAMA) -> Sigilosas
     return Sigilosas(sabidas | dos_relatorios | das_origens)
 
 
+# As fontes das consultas de um número só, para _motivo: (como ler as chaves,
+# motivo próprio, motivo do incidente)
+def _fonte_da_pasta(sigilosos):
+    return (lambda: _chaves_da_pasta(sigilosos)), MOTIVO_PASTA, MOTIVO_PASTA_PRINCIPAL
+
+
+def _fonte_da_pauta(pauta):
+    return (lambda: chaves_da_pauta(pauta)), MOTIVO_PAUTA, MOTIVO_PAUTA_PRINCIPAL
+
+
+def _fonte_do_download(pauta):
+    return (lambda: apuradas_no_download(pauta)), MOTIVO_DOWNLOAD, MOTIVO_DOWNLOAD_PRINCIPAL
+
+
 def motivo_da_pasta(sigilosos, numero) -> str:
     """MOTIVO_PASTA, MOTIVO_PASTA_PRINCIPAL (o incidente de um processo com
-    autos, transcrição ou gravação na pasta dos sigilosos) ou ""."""
-    if na_pasta(sigilosos, numero, herdar=False):
-        return MOTIVO_PASTA
-    if principal(_nome(numero)) and na_pasta(sigilosos, numero):
-        return MOTIVO_PASTA_PRINCIPAL
-    return ""
+    autos, transcrição ou gravação na pasta dos sigilosos), MOTIVO_RECURSO ou
+    MOTIVO_RECURSO_PRINCIPAL (os de um recurso interno do 2º grau estão lá:
+    _como_contem) ou ""."""
+    nome = _nome(numero)
+    if not nome or not sigilosos:
+        return ""
+    return _motivo(nome, [_fonte_da_pasta(sigilosos)])
 
 
 def motivo_da_pauta(numero, pauta=PAUTA_DO_PROGRAMA) -> str:
     """MOTIVO_PAUTA, MOTIVO_PAUTA_PRINCIPAL (o incidente de um processo que a
-    pauta marca sigiloso) ou ""."""
-    if na_pauta(numero, pauta, herdar=False):
-        return MOTIVO_PAUTA
-    if principal(_nome(numero)) and na_pauta(numero, pauta):
-        return MOTIVO_PAUTA_PRINCIPAL
-    return ""
+    pauta marca sigiloso), MOTIVO_RECURSO ou MOTIVO_RECURSO_PRINCIPAL (a pauta
+    marca um recurso interno do 2º grau: _como_contem) ou ""."""
+    nome = _nome(numero)
+    return _motivo(nome, [_fonte_da_pauta(pauta)]) if nome else ""
 
 
 def motivo_do_download(numero, pauta=PAUTA_DO_PROGRAMA) -> str:
     """MOTIVO_DOWNLOAD, MOTIVO_DOWNLOAD_PRINCIPAL (o incidente de um processo
-    que um download apurou sigiloso) ou ""."""
+    que um download apurou sigiloso), MOTIVO_RECURSO ou
+    MOTIVO_RECURSO_PRINCIPAL (um download apurou um recurso interno do 2º
+    grau: _como_contem) ou ""."""
+    nome = _nome(numero)
+    return _motivo(nome, [_fonte_do_download(pauta)]) if nome else ""
+
+
+def motivo_sabido(sigilosos, numero, pauta=PAUTA_DO_PROGRAMA, com_os_autos: bool = True) -> str:
+    """motivo, com a pasta dos sigilosos dada (a do motor). 'com_os_autos'
+    falso deixa de fora os autos, as transcrições e as gravações da pasta,
+    que quem pergunta já conferiu (a tela da audiência, por na_pasta); o
+    relatório completo conta sempre. Nunca levanta."""
     nome = _nome(numero)
     if not nome:
         return ""
-    chaves = apuradas_no_download(pauta)
-    if frozenset.__contains__(chaves, nome):
-        return MOTIVO_DOWNLOAD
-    return MOTIVO_DOWNLOAD_PRINCIPAL if contem(chaves, nome) else ""
+    # A linha "sim" de um recurso interno sem autos no relatório completo,
+    # na pasta dos sigilosos: por último, porque é a única leitura a mais (e
+    # cada completo só é relido quando muda).
+    completos = ((lambda: _recursos_dos_completos(sigilosos)), MOTIVO_COMPLETO,
+                 MOTIVO_COMPLETO)
+    fontes = [_fonte_da_pauta(pauta), _fonte_do_download(pauta), completos]
+    return _motivo(nome, [_fonte_da_pasta(sigilosos)] + fontes if com_os_autos else fontes)
 
 
 def motivo(cfg, numero, pauta=PAUTA_DO_PROGRAMA) -> str:
     """Por que o programa já sabe que o processo é sigiloso ("" = não sabe):
-    MOTIVO_PASTA, MOTIVO_PAUTA ou MOTIVO_DOWNLOAD (ou, no incidente de um
-    processo sigiloso, MOTIVO_PASTA_PRINCIPAL, MOTIVO_PAUTA_PRINCIPAL ou
-    MOTIVO_DOWNLOAD_PRINCIPAL). Nunca levanta."""
+    MOTIVO_PASTA, MOTIVO_PAUTA, MOTIVO_DOWNLOAD ou MOTIVO_COMPLETO (ou, no
+    incidente de um processo sigiloso, MOTIVO_PASTA_PRINCIPAL,
+    MOTIVO_PAUTA_PRINCIPAL ou MOTIVO_DOWNLOAD_PRINCIPAL), nessa ordem; sem
+    nenhum deles, MOTIVO_RECURSO (o principal de um recurso interno do 2º
+    grau sigiloso por qualquer dessas fontes) ou MOTIVO_RECURSO_PRINCIPAL (o
+    incidente desse principal). É a conta da regra única (chaves_sigilosas):
+    só o relatório de lote no acervo e a capa do originário, que pedem
+    'raiz', ficam de fora, e o que eles dão chega aqui pelo registro do
+    download, da próxima vez que a regra rodar. Nunca levanta."""
     try:
         sigilosos = cfg.pasta_sigilosos
     except Exception:
         sigilosos = None
-    return (motivo_da_pasta(sigilosos, numero) or motivo_da_pauta(numero, pauta)
-            or motivo_do_download(numero, pauta))
+    return motivo_sabido(sigilosos, numero, pauta)
 
 
 def processo_sigiloso(cfg, numero, pauta=PAUTA_DO_PROGRAMA) -> bool:
-    """O processo é sigiloso pela regra única (pasta dos sigilosos, pauta ou
-    o que um download já apurou)?"""
+    """O processo é sigiloso pela regra única (pasta dos sigilosos, pauta, o
+    que um download já apurou, o relatório completo de um recurso interno
+    sem autos e, em todas, o recurso interno do 2º grau: motivo)?"""
     return bool(motivo(cfg, numero, pauta))

@@ -752,6 +752,22 @@ class TestSigiloPelaRegraUnica(Base):
         self.assertTrue(sigilos[pela_pasta])
         self.assertTrue(sigilos[pelo_registro])
 
+    def test_o_principal_herda_do_recurso_interno_no_relatorio_completo(self):
+        # Achado Q4 da sétima verificação: o recurso interno sem autos (a
+        # página dele pedia a senha), com o registro do download perdido, só
+        # tem a linha "sim" do relatório completo, na pasta dos sigilosos - a
+        # que a regra única lê (sigilo.recursos_dos_completos)
+        from testes.test_sigilo import _relatorio
+
+        pelo_completo = ap.numero("0700112")
+        _relatorio(self.amb.sigilosos / "Lote 1" / "_controle",
+                   [(f"{pelo_completo}/50000", "sim")])
+        self.servico.armazem.gravar([self.a(pelo_completo, "17:00", "E x F")],
+                                    "esaj-tjal", None, registrar_novas=False)
+        self.servico._fora_do_banco = (0.0, "", self.servico._fora_do_banco[2])   # relê a pasta
+        sigilos = self.sigilo_por_processo(self.servico.listar(self.D, self.D)["audiencias"])
+        self.assertTrue(sigilos[pelo_completo])
+
     def test_o_que_a_pauta_ja_apurou_vale_com_o_banco_refeito(self):
         from helestron.nucleo import sigilo
 

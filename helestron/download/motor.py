@@ -1580,6 +1580,11 @@ class _Lote:
         self._sigilo_no_acervo: list[str] = []
         self._sigilo_avisos: list[str] = []
         self._sigilo_motivos: dict[str, str] = {}       # arquivo -> por que ficou
+        # O relatório deste lote que o completo preso deixou com o número e
+        # que ficou fora dos avisos porque salvar_relatorio o regrava
+        # (_retirar_do_acervo) -> por que ficou: se ele não puder ser
+        # regravado (aberto no Excel depois do início do lote), vira aviso.
+        self._regravar_pelo_completo: dict[str, str] = {}
         # Sigilosos cujo sigilo não pôde ir para o registro do download
         # (_lembrar_sigilo): por segurança, vão para a pasta de sigilosos
         # mesmo com a separação desligada - lá, a regra única os vê pela pasta.
@@ -1828,6 +1833,7 @@ class _Lote:
             except OSError:
                 pass
             alternativo = self.controle / "relatorio (atualizado).csv"
+            antigo = str(self.relatorio)
             try:
                 tmp = alternativo.with_name(alternativo.name + ".tmp")
                 tmp.write_bytes(dados)
@@ -1837,6 +1843,14 @@ class _Lote:
                     log.warning("O relatório está aberto no Excel; gravei a versão "
                                 "atualizada em %s.", alternativo.name)
                 self.relatorio = alternativo
+                if antigo in self._regravar_pelo_completo and antigo not in self._sigilo_avisos:
+                    # Com o completo preso, ele ficou com o número de um
+                    # sigiloso desta rodada, e não será mais regravado: aviso
+                    # (o fim do lote o lê depois do último salvar_relatorio).
+                    self._sigilo_avisos.append(antigo)
+                    self._sigilo_motivos[antigo] = _juntar(
+                        self._regravar_pelo_completo[antigo],
+                        "ele mesmo também está aberto no Excel?")
             except OSError as erro:
                 try:
                     tmp.unlink()
@@ -1912,11 +1926,13 @@ class _Lote:
     def _motivo_sigilo(self, n: Numero) -> str:
         """Por que o processo já se sabe sigiloso ("" = não se sabe): um
         relatório anterior deste lote ou a capa guardada o deu como sigiloso,
-        ou a regra única do sigilo (nucleo/sigilo.py) - autos, transcrição ou
-        gravação dele na pasta de sigilosos (de qualquer lote), ou a pauta de
-        audiências marcando o segredo de justiça. A página do processo nem
-        sempre mostra o selo (segredo decretado depois, layout que a leitura
-        não pega): o que o programa já sabe vale do mesmo jeito."""
+        ou a regra única do sigilo (nucleo/sigilo.py: motivo_sabido) - autos,
+        transcrição ou gravação dele na pasta de sigilosos (de qualquer lote),
+        a pauta de audiências marcando o segredo de justiça, o registro do
+        download e, no principal, um recurso interno do 2º grau sigiloso por
+        qualquer delas. A página do processo nem sempre mostra o selo
+        (segredo decretado depois, layout que a leitura não pega): o que o
+        programa já sabe vale do mesmo jeito."""
         nome = n.nome_arquivo
         # Apurado agora, pela consulta de um recurso interno dele: não houve
         # download anterior que o dissesse.
@@ -1935,8 +1951,7 @@ class _Lote:
                         return SIGILO_ANTERIOR
             except OSError:
                 pass
-        return (sigilo.motivo_da_pasta(self.raiz_sigilosos, n) or sigilo.motivo_da_pauta(n)
-                or sigilo.motivo_do_download(n))
+        return sigilo.motivo_sabido(self.raiz_sigilosos, n)
 
     def _pelo_recurso_interno(self, n: Numero) -> str:
         """O porquê do sigilo do principal 'n' que um recurso interno dele
@@ -2150,14 +2165,18 @@ class _Lote:
         # relatório completo do lote, na pasta de sigilosos, não pôde ser
         # regravado (_mascarar_relatorios): o que este lote está gravando
         # (self.relatorio), salvar_relatorio o regrava no fim do item
-        # (mascarado, com a separação ligada), e não é aviso; o outro deste
-        # lote (o relatorio.csv aberto no Excel, que deu lugar ao
-        # "(atualizado)", ou um "(atualizado)" antigo) e o de outro lote
-        # ficam com o número até o acervo ser preparado de novo, e vão para
-        # os avisos do lote (o fim do lote, o Início).
+        # (mascarado, com a separação ligada), e não é aviso - salvo se ele
+        # também estiver preso (aberto no Excel depois do início do lote):
+        # salvar_relatorio, ao passar ao "(atualizado)", o avisa
+        # (_regravar_pelo_completo). O outro deste lote (o relatorio.csv
+        # aberto no Excel, que deu lugar ao "(atualizado)", ou um
+        # "(atualizado)" antigo) e o de outro lote ficam com o número até o
+        # acervo ser preparado de novo, e vão para os avisos do lote (o fim
+        # do lote, o Início).
         pelo_completo = [p for presos_dele in ret.completos_presos.values() for p in presos_dele]
-        avisos = [p for p in ret.avisam if p not in ret.transcricoes_presas
-                  and not (p in pelo_completo and _mesma_pasta(p, self.relatorio))]
+        regravar = [p for p in pelo_completo if _mesma_pasta(p, self.relatorio)]
+        self._regravar_pelo_completo.update({str(p): ret.motivos.get(p, "") for p in regravar})
+        avisos = [p for p in ret.avisam if p not in ret.transcricoes_presas and p not in regravar]
         # uma vez só: dois sigilosos da rodada podem deixar o mesmo relatório
         self._sigilo_avisos += [str(p) for p in avisos if str(p) not in self._sigilo_avisos]
         # O completo em si não está no acervo: não há o que mover, só o que
@@ -3091,13 +3110,13 @@ class _Lote:
             self._principal_apurado(r, n)
         elif (r.sigiloso or motivo) and n.e_dependente \
                 and n.principal in sigilo.com_principais_dos_recursos({n.nome_arquivo}) \
-                and not self._motivo_sigilo(cnj.ler(n.principal)):
+                and self._motivo_sigilo(cnj.ler(n.principal)) in ("", sigilo.MOTIVO_RECURSO):
             # O próprio recurso interno do 2º grau é sigiloso (a página dele, ou o
             # que o programa já sabia dele): o principal também (a regra única).
-            # Sem isso, ele só iria para o registro do download quando a regra
-            # única rodasse (o preparo, o conector), e até lá o download noutro
-            # lote e a transcrição o dariam como público. O que herdou o sigilo
-            # do principal não muda nada.
+            # Ele vai agora para o registro do download - uma vez apurado,
+            # fica -, e as cópias públicas dele saem do acervo. Também o que as
+            # fontes só davam por um recurso interno dele (MOTIVO_RECURSO: o
+            # registro perdido). O que herdou o sigilo do principal não muda nada.
             self._principal_apurado(r, n, pela_pagina=False)
         if r.situacao == OK and r.grau == "2g" and not r.sigiloso and not motivo:
             # O originário do 2º grau (HC, MS, AI de órgão 0000) tem número
@@ -3243,18 +3262,28 @@ class _Lote:
         provisorio = ResultadoProcesso(ordem=0, numero=p.formatado, tribunal=r.tribunal,
                                        sistema=r.sistema, grau=r.grau)
         ret = self._retirar_do_acervo(provisorio, p)
+        # Os autos do próprio recurso interno 'n' (incidente do principal, a
+        # retirada os leva junto) são do item dele, como os levaria a retirada
+        # dele, logo depois, que já não os acha: a cópia deste lote passa a
+        # ser o PDF dele (sem PDF novo), e nenhuma conta como "dos incidentes".
+        aqui = ret.autos.get(self.destino / f"{self._nome_dos_autos(n)}.pdf")
+        if aqui is not None and r.arquivo != str(aqui):
+            if r.situacao != OK:
+                r.arquivo = str(aqui)
+            r.detalhe = _juntar(r.detalhe, "levado agora para a pasta de sigilosos")
+        autos = [k for k in ret.autos if chave_do_nome(k.name) != n.nome_arquivo]
         # O que a retirada disse (outros arquivos, transcrições, o que ficou
         # preso); o "levado agora" dos autos deste lote entra na conta abaixo.
         resto = [x for x in provisorio.detalhe.split("; ")
                  if x and x != "levado agora para a pasta de sigilosos"]
-        if not (ret.autos or resto):
+        if not (autos or resto):
             return                       # nada dele havia no acervo
         texto = f"o processo principal {p.formatado} passa a ser tratado como sigiloso"
-        if ret.autos:
+        if autos:
             # Os autos dele (nos dois graus) e, à parte, os dos incidentes
             # dele, que a retirada leva junto
-            proprios = sum(chave_do_nome(k.name) == p.nome_arquivo for k in ret.autos)
-            incidentes = len(ret.autos) - proprios
+            proprios = sum(chave_do_nome(k.name) == p.nome_arquivo for k in autos)
+            incidentes = len(autos) - proprios
             if proprios:
                 texto += (": 1 cópia" if proprios == 1 else f": {proprios} cópias") + \
                     " dos autos dele" + (f" e {incidentes} dos incidentes dele" if incidentes
@@ -3262,7 +3291,7 @@ class _Lote:
             else:
                 texto += (": 1 cópia" if incidentes == 1 else f": {incidentes} cópias") + \
                     " dos autos dos incidentes dele"
-            texto += (" levada" if len(ret.autos) == 1 else " levadas") + \
+            texto += (" levada" if len(autos) == 1 else " levadas") + \
                 " para a pasta de sigilosos"
         if not self.opcoes.separar_sigilosos:
             texto = _juntar(texto, SEM_REGISTRO_DO_SIGILO)

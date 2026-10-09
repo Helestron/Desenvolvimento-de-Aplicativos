@@ -364,8 +364,10 @@ class ServicoPauta:
         (sigilo.chaves_na_pasta: autos, transcrições, gravações e diários, como
         o download grava e como o preparo os leva), pelo registro do que a
         pauta já apurou (sigilo.apuradas_da_pauta - vale mesmo que o banco
-        tenha sido refeito) e pelo do que o download já apurou
-        (sigilo.apuradas_no_download). Lidos uma vez a cada poucos segundos,
+        tenha sido refeito), pelo do que o download já apurou
+        (sigilo.apuradas_no_download) e pela linha "sim" de um recurso interno
+        do 2º grau no relatório completo de um lote, na pasta dos sigilosos
+        (sigilo.recursos_dos_completos). Lidos uma vez a cada poucos segundos,
         e não uma vez por audiência."""
         try:
             pasta = Path(self.cfg.pasta_sigilosos)
@@ -384,7 +386,8 @@ class ServicoPauta:
         nomes = sigilo.Sigilosas(sigilo.com_principais_dos_recursos(
             sigilo.chaves_na_pasta(pasta, acervo)
             | sigilo.apuradas_da_pauta(self.arquivo_banco)
-            | sigilo.apuradas_no_download(self.arquivo_banco)))
+            | sigilo.apuradas_no_download(self.arquivo_banco)
+            | sigilo.recursos_dos_completos(pasta)))
         self._fora_do_banco = (_time.monotonic(), onde, nomes)
         return nomes
 

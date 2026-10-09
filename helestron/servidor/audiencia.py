@@ -463,6 +463,25 @@ MOTIVO_PAUTA_PRINCIPAL = ("Este processo é incidente de um processo sigiloso: a
 MOTIVO_DOWNLOAD = "Um download anterior apurou que este processo corre em segredo de justiça."
 MOTIVO_DOWNLOAD_PRINCIPAL = ("Este processo é incidente de um processo sigiloso: um download "
                              "anterior apurou que o principal corre em segredo de justiça.")
+# O recurso interno do 2º grau (/50000) sigiloso torna sigiloso o principal (a
+# regra única); o sem autos, só o relatório completo do lote ainda o diz
+MOTIVO_RECURSO = "Um recurso interno deste processo no 2º grau é sigiloso."
+MOTIVO_RECURSO_PRINCIPAL = ("Este processo é incidente de um processo sigiloso: um recurso "
+                            "interno do principal no 2º grau é sigiloso.")
+MOTIVO_COMPLETO = ("O relatório completo de um lote, na pasta dos sigilosos, dá este processo "
+                   "como sigiloso.")
+
+
+def _frases(sigilo) -> dict[str, str]:
+    """A frase da tela para cada motivo da regra única (sigilo.motivo)."""
+    return {sigilo.MOTIVO_PASTA: MOTIVO_AUTOS,
+            sigilo.MOTIVO_PASTA_PRINCIPAL: MOTIVO_AUTOS_PRINCIPAL,
+            sigilo.MOTIVO_PAUTA: MOTIVO_PAUTA,
+            sigilo.MOTIVO_PAUTA_PRINCIPAL: MOTIVO_PAUTA_PRINCIPAL,
+            sigilo.MOTIVO_DOWNLOAD: MOTIVO_DOWNLOAD,
+            sigilo.MOTIVO_DOWNLOAD_PRINCIPAL: MOTIVO_DOWNLOAD_PRINCIPAL,
+            sigilo.MOTIVO_COMPLETO: MOTIVO_COMPLETO, sigilo.MOTIVO_RECURSO: MOTIVO_RECURSO,
+            sigilo.MOTIVO_RECURSO_PRINCIPAL: MOTIVO_RECURSO_PRINCIPAL}
 
 
 def sigilo_conhecido(app, numero) -> str:
@@ -470,19 +489,20 @@ def sigilo_conhecido(app, numero) -> str:
 
     Os arquivos na pasta dos sigilosos (autos, transcrição, gravação), a
     pauta (o portal disse "segredo de justiça") ou um download que o apurou
-    - do próprio processo ou, no incidente, do principal. Nunca levanta:
-    pauta indisponível ou ocupada não impede a audiência.
+    - do próprio processo ou, no incidente, do principal -, e o principal de
+    um recurso interno do 2º grau sigiloso: a regra única de um número só
+    (sigilo.motivo). Nunca levanta: pauta indisponível ou ocupada não impede
+    a audiência.
     """
     from ..nucleo import sigilo
 
+    frases = _frases(sigilo)
     if servicos.processo_sigiloso(app.cfg, numero):
         try:
-            if sigilo.principal(numero) and not sigilo.na_pasta(app.cfg.pasta_sigilosos, numero,
-                                                                herdar=False):
-                return MOTIVO_AUTOS_PRINCIPAL
+            motivo = sigilo.motivo_da_pasta(app.cfg.pasta_sigilosos, numero)
         except Exception:
-            pass
-        return MOTIVO_AUTOS
+            motivo = ""
+        return frases.get(motivo, MOTIVO_AUTOS)
     try:
         pauta = app.pauta_ou_none()
         consulta = getattr(pauta, "processo_sigiloso", None) if pauta is not None else None
@@ -495,9 +515,15 @@ def sigilo_conhecido(app, numero) -> str:
         if sigilo.motivo_da_pauta(numero) == sigilo.MOTIVO_PAUTA_PRINCIPAL:
             return MOTIVO_PAUTA_PRINCIPAL
         motivo = sigilo.motivo_do_download(numero)
-        if motivo:
-            return MOTIVO_DOWNLOAD if motivo == sigilo.MOTIVO_DOWNLOAD \
-                else MOTIVO_DOWNLOAD_PRINCIPAL
+        if motivo in (sigilo.MOTIVO_DOWNLOAD, sigilo.MOTIVO_DOWNLOAD_PRINCIPAL):
+            return frases[motivo]
+        # o resto da regra de um número só: o relatório completo e, nele, na
+        # pauta e no registro, o recurso interno do 2º grau (os autos na
+        # pasta, servicos.processo_sigiloso já conferiu)
+        motivo = sigilo.motivo_sabido(app.cfg.pasta_sigilosos, numero, com_os_autos=False)
+        if motivo in (sigilo.MOTIVO_COMPLETO, sigilo.MOTIVO_RECURSO,
+                      sigilo.MOTIVO_RECURSO_PRINCIPAL):
+            return frases[motivo]
     except Exception:              # nunca impede a audiência
         pass
     return ""

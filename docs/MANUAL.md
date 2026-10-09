@@ -913,8 +913,9 @@ Com **Separar os sigilosos** ligado (o padrão):
   indicando segredo de justiça, ou um download anterior que o encontrou em
   segredo de justiça) vai para a pasta dos sigilosos mesmo que a
   página do portal não mostre o selo, e o mesmo vale para os incidentes dele
-  (`...0001-01`); e o que um lote já deu como sigiloso continua sigiloso
-  quando você usa **Tentar de novo**;
+  (`...0001-01`) e, se ele for um recurso interno do 2º grau
+  (`...0001-50000`), para o processo principal; e o que um lote já deu
+  como sigiloso continua sigiloso quando você usa **Tentar de novo**;
 - o sigilo é do **processo**, e vale para os autos **dos dois graus**: se o
   2º grau mostra o processo em segredo de justiça, os autos do 1º grau dele
   que estiverem no acervo (em qualquer lote) também vão para a pasta dos
@@ -1121,7 +1122,12 @@ audiência de um processo que ele já sabe ser sigiloso:
   portal do tribunal;
 - o processo é **incidente** (`...0001-01`) de um processo que se enquadra
   num dos casos acima: a tela diz “Este processo é incidente de um processo
-  sigiloso: …”.
+  sigiloso: …”;
+- um **recurso interno** dele no 2º grau (`...0001-50000`) se enquadra num
+  dos casos acima, ou o relatório completo do lote em que o recurso
+  interno foi baixado, na pasta dos sigilosos, o dá como sigiloso (quando
+  só isso o diz, a tela mostra “Um recurso interno deste processo no 2º
+  grau é sigiloso.”).
 
 É a regra única do Helestron, descrita em [Segredo de
 justiça](#segredo-de-justiça). Nesses casos, o interruptor se liga sozinho
@@ -1896,7 +1902,12 @@ mais esses casos, mas a marcação já gravada continua.
 
 Se o processo é público e você precisa dele no acervo:
 
-1. Confirme no portal que o processo não corre em segredo de justiça.
+1. Confirme no portal que o processo não corre em segredo de justiça —
+   nem, no 2º grau, os recursos internos dele (`<número>/50000`, `/50001`…,
+   os embargos de declaração) que estiverem na pasta dos sigilosos ou com
+   “sim” no relatório do lote. Se um deles corre em segredo, o processo é
+   sigiloso pela regra (o recurso interno sigiloso torna sigiloso também o
+   processo): não o desmarque.
 2. Feche o Helestron (**Ajustes › Sobre e diagnóstico › Encerrar o
    Helestron**) e, se estiverem abertos, o Claude Desktop e o Codex.
 3. Se a marcação pode ter vindo da pauta (o processo tem, ou já teve,
@@ -1925,10 +1936,12 @@ Se o processo é público e você precisa dele no acervo:
    linha própria no relatório: a linha “sim” do recurso interno o marca
    também, no relatório do lote do recurso interno no acervo ou, com a
    separação ligada (em que essa linha, no acervo, diz “(processo
-   sigiloso)”), no relatório completo, na pasta dos sigilosos. Mas o
-   relatório só os devolve ao registro no passo 8: até lá, o download em
-   outro lote e a transcrição os tratam como públicos. Por isso, não baixe
-   processos nem transcreva audiências antes do passo 8.
+   sigiloso)”), no relatório completo, na pasta dos sigilosos. O download e
+   a transcrição já os veem pelos autos na pasta dos sigilosos e pelo
+   relatório completo, mas o relatório do lote no acervo só os devolve ao
+   registro no passo 8: até lá, o download em outro lote e a transcrição
+   tratam como públicos os que só ele marca. Por isso, não baixe processos
+   nem transcreva audiências antes do passo 8.
 5. No relatório de cada lote em que ele foi baixado, troque “sim” por
    “não” na coluna `sigiloso` de todas as linhas dele (o Excel abre o
    arquivo; salve-o no mesmo formato): no
@@ -1938,14 +1951,22 @@ Se o processo é público e você precisa dele no acervo:
    tem uma linha por grau em que foi baixado (coluna `grau`: `1g` e `2g`)
    e pode estar em mais de um lote (o 1º grau num, o 2º noutro, por
    exemplo): basta uma linha com “sim” para ele voltar a ser sigiloso, nos
-   dois graus. O mesmo vale para a linha de um recurso interno dele no 2º
-   grau (`<número>/50000`, `/50001`…, os embargos de declaração): o
-   recurso interno sigiloso torna sigiloso também o processo (veja
-   [Segredo de justiça](#segredo-de-justiça)). Troque também as linhas dos
-   recursos internos dele e, no passo 6, traga de volta os autos deles
-   (`<número>-50000 (2G).pdf`, que já têm o número dele no nome). Com
-   **Separar os processos sigilosos** ligado, as linhas dele (e as dos
-   recursos internos dele) neste último não têm o número: dizem
+   dois graus. O recurso interno sigiloso dele no 2º grau
+   (`<número>/50000`, `/50001`…) torna sigiloso também o processo (veja
+   [Segredo de justiça](#segredo-de-justiça)). Se um recurso interno dele
+   foi baixado enquanto ele estava marcado e só herdou a marcação (a
+   coluna `detalhe` da linha do recurso interno — no relatório completo,
+   com a separação ligada — diz “tratado como sigiloso: é incidente de um
+   processo sigiloso…”), troque também as
+   linhas desse recurso interno e, no passo 6, traga de volta os autos
+   dele (`<número>-50000 (2G).pdf`, que já têm o número do processo no
+   nome). Se a página do próprio recurso interno estava em segredo (a capa
+   dele, `_controle\<número>-50000 (2G)_capa.txt`, traz no começo a linha
+   “SEGREDO DE JUSTIÇA”, a situação na linha dele é `SIGILOSO_SEM_SENHA` —
+   “Sigiloso: falta a senha”, na tela —, ou a linha dele diz “sim” sem
+   dizer que herdou), o processo é sigiloso pela regra: não o desmarque. Com
+   **Separar os processos sigilosos** ligado, as linhas dele (e as desses
+   recursos internos) neste último não têm o número: dizem
    “(processo sigiloso)” e têm, na coluna `ordem`, o mesmo número da linha
    no relatório completo.
    Troque cada uma dessas linhas inteira pela linha de mesma ordem
@@ -1970,20 +1991,20 @@ Se o processo é público e você precisa dele no acervo:
    que mais tiver o número dele no nome (a capa, que o passo 7 confere, e
    o registro do download, em `_controle\`, ou uma minuta em
    `Sigilosos\Produtos\`, por exemplo). Traga do mesmo jeito os autos dos
-   recursos internos dele do passo 5 (`<número>-50000 (2G).pdf`, com a
-   capa e o registro do download, em `_controle\`), da pasta dos
-   sigilosos do lote em que cada um foi baixado: enquanto estiverem lá,
-   também o tornam sigiloso. Leve de volta também o processo
-   originário do 2º grau (o habeas corpus, o mandado de segurança, o
-   agravo de instrumento: `<outro número> (2G).pdf`, com a capa) cuja capa
-   lista esse processo em **Números de 1ª Instância**: ele foi levado
-   junto, por causa dele, e fica sigiloso pela própria pasta enquanto
-   estiver lá. O registro do programa, em `%LOCALAPPDATA%\Helestron\Logs`,
-   diz qual foi (“originário … tratado como sigiloso: o processo de origem
-   … é sigiloso”). Nos relatórios do lote dele, faça com a linha dele o
-   mesmo que no passo 5: o “não” no relatório completo e, com a separação
-   ligada, a linha “(processo sigiloso)” dele no relatório do acervo
-   trocada pela linha dele copiada do completo.
+   recursos internos dele que só herdaram a marcação (passo 5:
+   `<número>-50000 (2G).pdf`, com a capa e o registro do download, em
+   `_controle\`), da pasta dos sigilosos do lote em que cada um foi
+   baixado: enquanto estiverem lá, também o tornam sigiloso. Leve de volta
+   também o processo originário do 2º grau (o habeas corpus, o mandado de
+   segurança, o agravo de instrumento: `<outro número> (2G).pdf`, com a
+   capa) cuja capa lista esse processo em **Números de 1ª Instância**: ele
+   foi levado junto, por causa dele, e fica sigiloso pela própria pasta
+   enquanto estiver lá. O registro do programa, em
+   `%LOCALAPPDATA%\Helestron\Logs`, diz qual foi (“originário … tratado como
+   sigiloso: o processo de origem … é sigiloso”). Nos relatórios do lote
+   dele, faça com a linha dele o mesmo que no passo 5: o “não” no relatório
+   completo e, com a separação ligada, a linha “(processo sigiloso)” dele
+   no relatório do acervo trocada pela linha dele copiada do completo.
 7. Confira a capa dele em cada lote em que ele foi baixado, onde ela
    estiver: em `Acervo\Processos\<nome do lote>\_controle\`, a que você
    trouxe de volta no passo 6 e também a que nem saiu do acervo (com

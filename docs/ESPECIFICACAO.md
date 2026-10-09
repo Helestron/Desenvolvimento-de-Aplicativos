@@ -773,9 +773,10 @@ Combinados na revisão da versão 1.0.0; cada lado tolera a falta do outro
   importado, já fora da pauta), está marcada sigilosa (`Armazem.sigilosas`).
   Ela compara o número exato, sem a herança do incidente: na transcrição, a
   herança vem da regra única (seção 12), que
-  `servidor/audiencia.sigilo_conhecido` consulta por último e que diz quando
-  o sigilo vem do principal (“Este processo é incidente de um processo
-  sigiloso: …”).
+  `servidor/audiencia.sigilo_conhecido` consulta por último (`sigilo.motivo`)
+  e que diz quando o sigilo vem do principal (“Este processo é incidente de
+  um processo sigiloso: …”) ou de um recurso interno do 2º grau (“Um
+  recurso interno deste processo no 2º grau é sigiloso.”).
   Na transcrição (`servidor/audiencia.py`, `sigilo_da_audiencia`), o pedido da
   página só **acrescenta** sigilo: vale `servicos.processo_sigiloso` (autos,
   transcrição, gravação ou diário do processo na pasta dos sigilosos), a
@@ -1997,8 +1998,11 @@ dados ficam com a instalação registrada.
     `sigilo.chaves_sigilosas` dá todos; `sigilo.motivo` diz por quê (“os
     autos, uma transcrição ou uma gravação dele estão na pasta dos
     sigilosos”, “a pauta de audiências indica que ele corre em segredo de
-    justiça” ou “um download anterior apurou que ele corre em segredo de
-    justiça”). O banco da
+    justiça”, “um download anterior apurou que ele corre em segredo de
+    justiça”, “o relatório completo de um lote, na pasta dos sigilosos, o
+    dá como sigiloso” — o recurso interno sem autos — ou, no principal que
+    só um recurso interno dele torna sigiloso, “um recurso interno dele no
+    2º grau é sigiloso”). O banco da
     pauta só é lido se já existir e só para consulta: `chaves_da_pauta` não
     abre o `Armazem`, mas o SQLite em `file:…?mode=ro` (a URI montada à
     mão, com `%XX`, para servir a `C:/` e a `\\servidor`), com `PRAGMA
@@ -2034,7 +2038,8 @@ dados ficam com a instalação registrada.
     e a classe `Sigilosas` (um `frozenset` em que `chave in sigilosas` vale
     também para `<principal>-NN`) fazem a herança; `chaves_sigilosas`,
     `chaves_na_pasta` e `chaves_da_pauta` devolvem `Sigilosas`, e `na_pasta`
-    e `na_pauta` herdam (o parâmetro `herdar=False` desliga). Os motivos
+    e `na_pauta` herdam (o parâmetro `herdar=False` desliga a herança e a
+    extensão do recurso interno, abaixo). Os motivos
     dizem quando o sigilo vem do principal (`motivo_da_pasta`,
     `motivo_da_pauta`, `MOTIVO_PASTA_PRINCIPAL`, `MOTIVO_PAUTA_PRINCIPAL`):
     na tela, “Este processo é incidente de um processo sigiloso: …”; na
@@ -2057,17 +2062,41 @@ dados ficam com a instalação registrada.
     `recursos_dos_completos`) e a herança do originário pela capa — e no
     motor, pelos relatórios anteriores do lote, o do acervo e o completo
     (`_ler_sigilos_anteriores`). As consultas de um número só
-    (`sigilo.motivo`, `processo_sigiloso`, `motivo_do_download`,
-    `na_pasta`: o motor, fora dos relatórios do lote, e a transcrição) não
-    fazem essa extensão: veem o principal só pelo que é dele — os autos na
-    pasta, a pauta e o registro do download, onde `_principal_apurado` o
-    põe (no download do recurso interno sigiloso, salvo o que herdou o
-    sigilo do principal já sabido) e `chaves_sigilosas` o devolve
-    (o preparo, o conector, a nuvem), também quando só a linha “sim”, os
-    autos na pasta ou o registro do recurso interno o dão. A pauta
-    (`ServicoPauta._sigilosas_fora_do_banco`) faz a extensão sobre a pasta
-    e os registros que lê. Os incidentes comuns (`-01`) continuam sem fazer
-    o principal sigiloso.
+    (`sigilo.motivo`, `motivo_sabido`, `processo_sigiloso`,
+    `motivo_da_pasta`, `motivo_da_pauta`, `motivo_do_download`, `na_pasta`,
+    `na_pauta`: o motor, fora dos relatórios do lote, a transcrição e a
+    tela da audiência) fazem a mesma extensão, pela mesma conta
+    (`_como_contem`: `com_principais_dos_recursos` sobre as chaves de cada
+    fonte, já lidas; sem dependente `/5xxxx`, nenhuma leitura a mais), e
+    leem também a linha “sim” do recurso interno no relatório completo
+    (`_recursos_dos_completos`, a última fonte, com cada completo relido só
+    quando muda): o principal é sigiloso se um recurso interno dele o é
+    pelos autos na pasta, pela pauta, pelo registro do download ou pelo
+    completo, sem depender do registro do principal, que se perde com as
+    configurações apagadas na desinstalação ou com o acervo levado a outro
+    computador. O motivo do próprio processo (ou o do principal, no
+    incidente) vem antes, em qualquer fonte; só sem ele valem
+    `MOTIVO_RECURSO` (“um recurso interno dele no 2º grau é sigiloso”) e,
+    no incidente desse principal, `MOTIVO_RECURSO_PRINCIPAL`; o recurso
+    interno que só o completo dá diz `MOTIVO_COMPLETO` (na tela da
+    audiência, “Um recurso interno deste processo no 2º grau é sigiloso.”,
+    com as frases do incidente e do completo; ela confere os autos na pasta
+    antes, por `na_pasta`, e pede o resto a `motivo_sabido` com
+    `com_os_autos=False`). Só o relatório do lote no acervo e a capa do
+    originário, que pedem a raiz (o acervo), ficam fora delas: o que eles
+    dão chega às consultas de um número só pelo registro do download, aonde
+    `chaves_sigilosas` o leva (o preparo, o conector, a nuvem) — o teste
+    de invariante `TestCoerenciaDaRegra` (testes/test_sigilo.py) confere a
+    concordância, fonte a fonte, com essas duas exceções. O registro
+    continua guardando o principal: `_principal_apurado` o põe nele no
+    download do recurso interno sigiloso (salvo o que herdou o sigilo do
+    principal já sabido), também quando só a extensão o dava
+    (`MOTIVO_RECURSO`), e `chaves_sigilosas` o devolve, também quando só a
+    linha “sim”, os autos na pasta ou o registro do recurso interno o dão.
+    A pauta (`ServicoPauta._sigilosas_fora_do_banco`) faz a extensão sobre
+    a pasta, os registros e o completo que lê. Os incidentes comuns (`-01`)
+    continuam sem fazer o principal sigiloso, e o 1º grau, sem `/5xxxx`, não
+    muda.
   * **O sigilo vale nos dois graus** (1.1.0). A regra continua por
     processo, sem grau: `sigilo.contem` normaliza a chave dos autos
     (`X (2G)`, `X-01 (2G)`, um `Numero` ou um nome de arquivo) para a do
@@ -2241,21 +2270,30 @@ dados ficam com a instalação registrada.
     justiça: não”) continua valendo. Não há comando nem botão “não é
     sigiloso” (mexeria na interface, na pasta dos sigilosos, no download e
     no preparo). O manual (Segredo de justiça › Se um processo foi marcado
-    como sigiloso por engano) dá o caminho manual: fechar o programa,
-    afastar o `pauta.sqlite3` **e o `pauta.sigilo.json`** (o registro do
+    como sigiloso por engano) dá o caminho manual: conferir no portal o
+    processo e, no 2º grau, os recursos internos dele marcados (um recurso
+    interno em segredo torna sigiloso o principal: aí não se desmarca),
+    fechar o programa, afastar o `pauta.sqlite3` **e o
+    `pauta.sigilo.json`** (o registro do
     apurado, que sozinho manteria o processo sigiloso; a pauta recomeça: é
     preciso cadastrar as fontes, sincronizar e importar de novo antes de
     baixar ou transcrever), o `download.sigilo.json` se o sigilo veio de um
     download, trocar “sim” por “não” em todas as linhas dele (uma por grau,
     coluna `grau`) — e nas dos recursos internos dele do 2º grau
-    (`…/50000`), que `com_principais_dos_recursos` faz marcar o principal —
+    (`…/50000`) que só herdaram a marcação (o detalhe da linha diz “tratado
+    como sigiloso: é incidente de um processo sigiloso…”), que
+    `com_principais_dos_recursos` faz marcar o principal; o recurso interno
+    sigiloso pela própria página (a capa com “SEGREDO DE JUSTIÇA”, a
+    situação `SIGILOSO_SEM_SENHA`, a linha “sim” sem a herança) mantém o
+    principal sigiloso pela regra, e o manual manda não desmarcá-lo —
     no relatório de cada lote em que foi baixado (fonte 5, e “uma vez
     sigiloso, sempre sigiloso” do motor: uma linha com “sim” basta para
     refazer a marcação, nos dois graus) e trazer os arquivos de volta da
     pasta dos sigilosos para o acervo — os autos dos dois graus, de cada
-    `Sigilosos\<lote>` em que estiverem, os dos recursos internos dele
-    (`<número>-50000 (2G).pdf`), que também o marcam pela pasta, e também
-    o originário do 2º grau levado pela capa (fonte 6), que fica sigiloso
+    `Sigilosos\<lote>` em que estiverem, os dos recursos internos dele que
+    só herdaram a marcação (`<número>-50000 (2G).pdf`), que também o marcam
+    pela pasta, e também o originário do 2º grau levado pela capa (fonte
+    6), que fica sigiloso
     pela própria pasta, com o “sim” da linha dele no relatório completo.
     A capa (`_controle\<número>_capa.txt` e `<número> (2G)_capa.txt`) perde a
     linha “SEGREDO DE JUSTIÇA” que o download grava no começo da capa do
@@ -2287,13 +2325,13 @@ dados ficam com a instalação registrada.
     com a separação ligada (a linha no acervo é mascarada), no completo, na
     pasta dos sigilosos (`recursos_dos_completos`), também com o principal
     nunca baixado — ou pelos autos do recurso interno na pasta dos
-    sigilosos. Mas o que só o relatório ou os autos do recurso interno
-    marcam volta ao registro apenas quando `chaves_sigilosas` roda — no
-    manual, o “Preparar acervo para a IA” do último passo: até lá, as
-    consultas de um número só não o veem, e o download noutro lote (sem o
-    relatório do lote do recurso) e a transcrição o tratam como público.
-    Por isso o manual manda preparar o acervo antes de baixar ou
-    transcrever.
+    sigilosos. As consultas de um número só já o veem pelos autos do
+    recurso interno na pasta e pelo completo (`_como_contem`), mas o que só
+    o relatório do lote no acervo marca volta ao registro apenas quando
+    `chaves_sigilosas` roda — no manual, o “Preparar acervo para a IA” do
+    último passo: até lá, o download noutro lote (sem o relatório do lote
+    do recurso) e a transcrição o tratam como público. Por isso o manual
+    manda preparar o acervo antes de baixar ou transcrever.
   * **Download.** O processo que o programa já sabe sigiloso pela regra
     única vai para a pasta dos sigilosos mesmo que a página do portal não
     mostre o selo (segredo decretado depois, leiaute que a leitura não
@@ -3189,12 +3227,17 @@ fora nesta versão: o PDF traz os eventos do próprio processo no 2º grau.
   (`_Lote.relatorio`) não vira aviso: `salvar_relatorio` o regrava no fim
   do item (mascarado, com a separação ligada), e, se só ele ficou com o
   número, o detalhe diz “Feche-o: o próximo download do lote o regrava”.
-  O outro, isto é, o `relatorio.csv` aberto no Excel, que deu lugar ao
-  `(atualizado)`, ou um `(atualizado)` antigo, é aviso como o de outro
-  lote, com o mesmo detalhe. O grau vazio (CSV de versão anterior) é
-  `cnj.grau_do_numero(n) or "1g"` (`_grau_da_linha`): a 1.0.2 procurava o
-  HC de órgão `0000` no 1º grau e gravava a linha sem grau, e lida como 1º
-  grau ela nunca seria substituída pela nova nem retomada.
+  Se ele, aberto depois do início do lote, também não puder ser regravado,
+  ele vira aviso: `_retirar_do_acervo` o guarda em
+  `_regravar_pelo_completo`, com o porquê, e `salvar_relatorio`, ao passar
+  ao `(atualizado)`, o põe em `sigilosos_avisos` (“…; ele mesmo também
+  está aberto no Excel?”), que o fim do lote lê depois da última gravação.
+  O outro, isto é, o `relatorio.csv` aberto no Excel,
+  que deu lugar ao `(atualizado)`, ou um `(atualizado)` antigo, é aviso
+  como o de outro lote, com o mesmo detalhe. O grau vazio (CSV de versão
+  anterior) é `cnj.grau_do_numero(n) or "1g"` (`_grau_da_linha`): a 1.0.2
+  procurava o HC de órgão `0000` no 1º grau e gravava a linha sem grau, e
+  lida como 1º grau ela nunca seria substituída pela nova nem retomada.
 * **Registros**: `_meta.json`, `consultas[]`, `essencial_da_paginacao` e os
   eventos do motor (`grupo_inicio`, `navegador_ocupado`, `login_falhou`,
   `sessao_caiu`) levam `grau: "2g"` só no 2º grau (`_do_grau`).

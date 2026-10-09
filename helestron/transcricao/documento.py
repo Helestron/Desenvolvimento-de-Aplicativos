@@ -193,8 +193,9 @@ def processo_sigiloso(cfg, numero) -> bool:
     continua sigilosa - na retranscrição, no envio da gravação pela página
     (que perde a pasta de origem) e numa nova audiência do mesmo processo. O
     que vale para os autos vale para a transcrição, a gravação e o diário.
-    (É a parte "pasta" da regra única do sigilo, nucleo/sigilo.py; a pauta é
-    a outra.)
+    O incidente herda do principal, e o principal, de um recurso interno do
+    2º grau com autos lá. (É a parte "pasta" da regra única do sigilo,
+    nucleo/sigilo.py; a pauta é a outra.)
     """
     try:
         pasta = cfg.pasta_sigilosos

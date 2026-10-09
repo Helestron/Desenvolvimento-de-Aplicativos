@@ -176,7 +176,10 @@ class TestManualSigiloEngano(BaseMotor):
         # download.sigilo.json. Desde a correção, a linha "sim" do recurso
         # interno marca também o principal, no relatório do acervo ou no
         # completo; mas só o passo 8 o devolve ao registro, e o passo diz
-        # para não baixar nem transcrever antes dele.
+        # para não baixar nem transcrever antes dele. Achado Q4 da sétima: o
+        # download e a transcrição já o veem pelos autos do recurso interno
+        # na pasta e pelo completo; o relatório do lote no acervo, só depois
+        # do passo 8.
         regra = re.sub(r"\s+", " ", MANUAL.read_text(encoding="utf-8"))
         self.assertIn("o recurso interno sigiloso, por qualquer das situações acima, torna "
                       "sigiloso também o processo principal", regra)
@@ -187,8 +190,11 @@ class TestManualSigiloEngano(BaseMotor):
                       "interno dele no 2º grau (`...0001-50000`) achou em segredo",
                       "a linha “sim” do recurso interno o marca também",
                       "no relatório completo, na pasta dos sigilosos",
-                      "o relatório só os devolve ao registro no passo 8",
-                      "o download em outro lote e a transcrição os tratam como públicos",
+                      "O download e a transcrição já os veem pelos autos na pasta dos "
+                      "sigilosos e pelo relatório completo",
+                      "o relatório do lote no acervo só os devolve ao registro no passo 8",
+                      "o download em outro lote e a transcrição tratam como públicos os que "
+                      "só ele marca",
                       "não baixe processos nem transcreva audiências antes do passo 8"):
             self.assertIn(frase, p4)
         for frase in ("A exceção é o principal", "baixe de novo o recurso interno"):
@@ -374,21 +380,48 @@ class TestPrincipalApuradoPeloRecursoInterno(BaseGrau):
         self.assertEqual((r.situacao, r.sigiloso), (modelos.OK, True))
         self.assertTrue((self.tmp / "Sigilosos" / lote3.name / f"{P.nome_arquivo}.pdf").is_file())
 
-    def test_antes_do_passo_8_o_download_noutro_lote_nao_o_ve(self):
-        # por que o passo 8 vem antes de qualquer download: as consultas de um
-        # número só (o motor fora dos relatórios do lote, a transcrição) só
-        # veem o principal no registro, aonde o passo 8 o devolve
+    def test_antes_do_passo_8_o_download_noutro_lote_ja_o_ve_pelo_completo(self):
+        """Achado Q4 da sétima verificação (era a limitação que este teste
+        fixava): as consultas de um número só (o motor fora dos relatórios do
+        lote, a transcrição) viam o principal só pelo registro do download,
+        aonde o passo 8 o devolve, e o baixavam público antes dele. Agora
+        fazem a conta da regra única (sigilo._como_contem): a linha "sim" do
+        recurso interno no relatório completo, na pasta dos sigilosos, já o
+        marca, antes do passo 8 e sem o registro."""
         lote1, lote2, lote3 = (self.tmp / "Acervo" / "Processos" / f"Lote {i}"
                                for i in (1, 2, 3))
         self.lote([E], grau="2g", destino=lote1, portal=PortalDoSegredo)
         self.lote([A], destino=lote2, roteiro={A.formatado: ["ok_sigiloso"]})
         self.manual_para_a(lote2, passo_8=False)
-        self.assertEqual(sigilo.motivo(self.cfg, P), "")
+        self.assertEqual(sigilo.motivo(self.cfg, P), sigilo.MOTIVO_RECURSO)
         r = self.lote([P], destino=lote3).itens[0]
-        self.assertEqual((r.situacao, r.sigiloso), (modelos.OK, False))
-        self.assertTrue((lote3 / f"{P.nome_arquivo}.pdf").is_file())
-        # a regra inteira ainda o dá como sigiloso, pelo relatório completo
+        self.assertEqual((r.situacao, r.sigiloso), (modelos.OK, True))
+        self.assertIn(f"tratado como sigiloso: {sigilo.MOTIVO_RECURSO}", r.detalhe)
+        self.assertTrue((self.tmp / "Sigilosos" / lote3.name / f"{P.nome_arquivo}.pdf").is_file())
+        self.assertFalse((lote3 / f"{P.nome_arquivo}.pdf").exists())
         self.assertTrue(self.regra(P))
+
+    def test_antes_do_passo_8_o_relatorio_do_acervo_ainda_nao_conta(self):
+        """Por que o passo 8 continua antes de qualquer download: com a
+        separação desligada, só o relatório do lote no acervo diz que o
+        recurso interno é sigiloso, e ele é fonte só da regra com o acervo
+        (chaves_sigilosas com 'raiz'): as consultas de um número só veem o
+        principal pelo registro, aonde o passo 8 o devolve."""
+        self.cfg.definir("download", "separar_sigilosos", False)
+        lote1, lote2, lote3 = (self.tmp / "Acervo" / "Processos" / f"Lote {i}"
+                               for i in (1, 2, 3))
+        self.lote([E], grau="2g", destino=lote1, portal=PortalDoSegredo,
+                  separar_sigilosos=False)
+        self.lote([A], destino=lote2, roteiro={A.formatado: ["ok_sigiloso"]},
+                  separar_sigilosos=False)
+        self.manual_para_a(lote2, passo_8=False)
+        self.assertEqual(sigilo.motivo(self.cfg, P), "")
+        r = self.lote([P], destino=lote3, separar_sigilosos=False).itens[0]
+        self.assertEqual((r.situacao, r.sigiloso), (modelos.OK, False))
+        # a regra inteira o dá como sigiloso, pelo relatório do lote no acervo,
+        # e o devolve ao registro: daí em diante, as consultas de um número só
+        self.assertTrue(self.regra(P))
+        self.assertEqual(sigilo.motivo(self.cfg, P), sigilo.MOTIVO_DOWNLOAD)
 
 
 class TestDesfazerPrincipalComRecursoInterno(BaseGrau):
@@ -399,7 +432,18 @@ class TestDesfazerPrincipalComRecursoInterno(BaseGrau):
     sigiloso também o principal, o manual seguido só com as linhas e os
     autos de P não desfaz a marcação: o passo 8 leva os autos dele de volta
     para a pasta dos sigilosos. Os passos 5 e 6 mandam agora tratar também
-    as linhas e os autos dos recursos internos dele."""
+    as linhas e os autos dos recursos internos dele.
+
+    Achado Q2 da sétima verificação: só os que HERDARAM a marcação (a linha
+    do recurso interno diz "tratado como sigiloso: é incidente de um
+    processo sigiloso"). O recurso interno sigiloso pela própria página é
+    sigiloso de verdade e torna sigiloso o principal: desmarcá-lo levaria
+    autos em segredo ao acervo, ao INDICE e ao conector. O passo 1 manda
+    conferir no portal também os recursos internos, e o 5, não desmarcar."""
+
+    # O detalhe que o motor grava na linha do recurso interno que só herdou
+    # o sigilo do principal (a frase que o passo 5 manda procurar)
+    HERDOU = "tratado como sigiloso: é incidente de um processo sigiloso"
 
     regra = TestPrincipalApuradoPeloRecursoInterno.regra
     ler = TestPrincipalApuradoPeloRecursoInterno.ler
@@ -411,6 +455,11 @@ class TestDesfazerPrincipalComRecursoInterno(BaseGrau):
         self.lote1, self.lote2 = (self.tmp / "Acervo" / "Processos" / f"Lote {i}"
                                   for i in (1, 2))
 
+    def linha_de_e(self) -> dict:
+        """A linha de E no relatório completo do Lote 2."""
+        completo = self.tmp / "Sigilosos" / self.lote2.name / "_controle" / "relatorio.csv"
+        return next(l for l in self.ler(completo) if l["processo"] == E.formatado)
+
     def desfazer(self, com_o_recurso: bool):
         """P sigiloso no Lote 1, E herdando no Lote 2, e os passos 4 a 8 do
         manual para P - com as linhas e os autos de E também, se
@@ -421,8 +470,15 @@ class TestDesfazerPrincipalComRecursoInterno(BaseGrau):
         self.assertTrue(e.sigiloso, "herda de P")
         self.assertTrue((self.tmp / "Sigilosos" / self.lote2.name /
                          f"{cnj.nome_dos_autos(E, '2g')}.pdf").is_file())
-        sigilo.arquivo_do_download().unlink()                          # 4
+        # o que o passo 5 manda procurar para tratar E junto: a linha diz que herdou
+        self.assertIn(self.HERDOU, self.linha_de_e()["detalhe"])
         alvos = [(self.lote1, P)] + ([(self.lote2, E)] if com_o_recurso else [])
+        return self.passos_4_a_8(alvos)
+
+    def passos_4_a_8(self, alvos):
+        """Os passos 4 a 8 do manual: as linhas e os autos de cada (lote,
+        número) de 'alvos'. Devolve o relatório do preparo do passo 8."""
+        sigilo.arquivo_do_download().unlink()                          # 4
         for lote, n in alvos:
             sig = self.tmp / "Sigilosos" / lote.name
             completo = sig / "_controle" / "relatorio.csv"
@@ -446,15 +502,61 @@ class TestDesfazerPrincipalComRecursoInterno(BaseGrau):
         return preparo.atualizar_contexto(self.cfg, extrair_texto=False)    # 8
 
     def test_o_manual_fala_dos_recursos_internos_do_principal(self):
-        p5, p6 = passo(5), passo(6)
-        for frase in ("O mesmo vale para a linha de um recurso interno dele no 2º grau "
-                      "(`<número>/50000`, `/50001`…, os embargos de declaração): o recurso "
-                      "interno sigiloso torna sigiloso também o processo",
-                      "Troque também as linhas dos recursos internos dele e, no passo 6, "
-                      "traga de volta os autos deles (`<número>-50000 (2G).pdf`"):
+        p1, p5, p6 = passo(1), passo(5), passo(6)
+        self.assertIn("nem, no 2º grau, os recursos internos dele (`<número>/50000`, "
+                      "`/50001`…, os embargos de declaração) que estiverem na pasta dos "
+                      "sigilosos ou com “sim” no relatório do lote. Se um deles corre em "
+                      "segredo, o processo é sigiloso pela regra", p1)
+        self.assertIn("não o desmarque", p1)
+        for frase in ("O recurso interno sigiloso dele no 2º grau (`<número>/50000`, "
+                      "`/50001`…) torna sigiloso também o processo",
+                      "Se um recurso interno dele foi baixado enquanto ele estava marcado e "
+                      "só herdou a marcação (a coluna `detalhe` da linha do recurso interno "
+                      "— no relatório completo, com a separação ligada — "
+                      f"diz “{self.HERDOU}…”), troque também as linhas desse recurso "
+                      "interno e, no passo 6, traga de volta os autos dele "
+                      "(`<número>-50000 (2G).pdf`",
+                      "Se a página do próprio recurso interno estava em segredo",
+                      "o processo é sigiloso pela regra: não o desmarque"):
             self.assertIn(frase, p5)
-        self.assertIn("os autos dos recursos internos dele do passo 5 "
-                      "(`<número>-50000 (2G).pdf`", p6)
+        self.assertIn("os autos dos recursos internos dele que só herdaram a marcação "
+                      "(passo 5: `<número>-50000 (2G).pdf`", p6)
+
+    def test_recurso_interno_sigiloso_pela_propria_pagina_nao_se_desmarca(self):
+        """Achado Q2: P baixado público no 1º grau (Lote 1); E, no 2º grau
+        (Lote 2), sigiloso pela PRÓPRIA página (com a senha). Pela regra, E
+        torna P sigiloso, e o motor leva os autos de P para a pasta dos
+        sigilosos. A linha de E não diz que herdou e a capa dele traz o
+        segredo: o passo 5 não manda desmarcá-lo. Seguidos os passos 4 a 8
+        para P assim mesmo (contra o passo 1), P continua sigiloso, e os
+        autos de E não chegam ao acervo, ao INDICE nem ao conector."""
+        p = self.lote([P], destino=self.lote1).itens[0]          # a página de P, pública
+        self.assertEqual((p.situacao, p.sigiloso), (modelos.OK, False))
+        e = self.lote([E], grau="2g", destino=self.lote2,
+                      roteiro={E.formatado: ["ok_sigiloso"]}).itens[0]
+        self.assertEqual((e.situacao, e.sigiloso), (modelos.OK, True))
+        sig2 = self.tmp / "Sigilosos" / self.lote2.name
+        autos_e = sig2 / f"{cnj.nome_dos_autos(E, '2g')}.pdf"
+        self.assertTrue(autos_e.is_file())
+        self.assertTrue(self.regra(P))
+        # a capa de E como o e-SAJ a grava quando a página dele mostra o segredo
+        capa = sig2 / "_controle" / f"{cnj.nome_dos_autos(E, '2g')}_capa.txt"
+        capa.write_text(esaj.formatar_capa({}, E, "TJAL", True, grau="2g"), encoding="utf-8")
+        self.assertIn(FRASE_DA_CAPA, capa.read_text(encoding="utf-8")[:300])
+        # o critério do passo 5: a linha de E não diz que herdou
+        self.assertEqual(self.linha_de_e()["sigiloso"], "sim")
+        self.assertNotIn(self.HERDOU, self.linha_de_e()["detalhe"])
+        alvos = [(self.lote1, P)] + ([(self.lote2, E)]
+                                     if self.HERDOU in self.linha_de_e()["detalhe"] else [])
+        rel = self.passos_4_a_8(alvos)
+        self.assertEqual(rel.sigilosos_levados, 1, "os autos de P voltam à pasta dos sigilosos")
+        self.assertTrue(self.regra(P))
+        self.assertTrue(self.regra(E))
+        self.assertTrue(autos_e.is_file())
+        self.assertFalse((self.lote2 / autos_e.name).exists())
+        self.assertFalse((self.lote1 / f"{P.nome_arquivo}.pdf").exists())
+        self.assertFalse(self.no_indice_ou_no_conector(E))
+        self.assertFalse(self.no_indice_ou_no_conector(P))
 
     def test_so_as_linhas_do_principal_o_deixam_sigiloso(self):
         # por que os passos 5 e 6 mandam tratar também o recurso interno

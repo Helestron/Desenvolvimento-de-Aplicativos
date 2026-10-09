@@ -769,6 +769,152 @@ class TestUmaSoResposta(Base):
         self.assertEqual(documento.pasta_das_transcricoes(cfg, outro), cfg.pasta_transcricoes)
 
 
+class TestCoerenciaDaRegra(Base):
+    """Achado Q4 da sétima verificação do 2º grau: a regra única
+    (chaves_sigilosas) dava como sigiloso o principal de um recurso interno
+    do 2º grau (/50000) sigiloso por qualquer fonte, mas as consultas de um
+    número só (processo_sigiloso, motivo: o download fora do lote, a
+    transcrição, a tela da audiência) só viam o principal pelo registro do
+    download. Perdido o registro (as configurações apagadas na
+    desinstalação, o acervo levado a outro computador), o "baixar" da skill
+    devolvia o principal público, e a transcrição dele ia para o acervo.
+
+    O invariante: para cada fonte e cada tipo de número marcado, a consulta
+    de um número só e a regra concordam, número a número. As exceções
+    legítimas são as fontes que só a regra com 'raiz' (o acervo) lê - o
+    relatório do lote no acervo e a capa do originário -: nelas, a consulta
+    de um número só nunca diz sigiloso o que a regra diz público, e passa a
+    concordar com ela depois que a regra roda uma vez (ela leva ao registro
+    do download o que só essas fontes dão)."""
+
+    P = cnj.ler("0706265-50.2017.8.02.0001")
+    P01 = cnj.ler("0706265-50.2017.8.02.0001/01")             # incidente comum
+    E = cnj.ler("0706265-50.2017.8.02.0001/50000")            # recurso interno
+    E2 = cnj.ler("0706265-50.2017.8.02.0001/50001")           # outro recurso interno
+    H = _originario("0803061")                                 # HC, órgão 0000
+    HE = cnj.ler(f"{_originario('0803061').formatado}/50000")  # recurso interno do HC
+    A = _numero("0700991")                                     # a origem do HC na capa
+    NUMEROS = (P, P01, E, E2, H, HE)
+    FONTES = ("pasta", "pauta", "registro", "relatório do acervo", "completo",
+              "capa do originário")
+    SO_COM_RAIZ = {"relatório do acervo", "capa do originário"}
+
+    def esperado(self, fonte: str, marcado: cnj.Numero) -> set[str]:
+        """O que a regra deve dar: o marcado, os incidentes dele (o recurso
+        interno é incidente do principal) e, se for recurso interno, o
+        principal. Do completo, só a linha de recurso interno conta; da capa,
+        só a do originário."""
+        P, P01, E, E2, H, HE = self.NUMEROS
+        if fonte == "completo" and marcado not in (E, E2, HE):
+            return set()
+        if fonte == "capa do originário" and marcado not in (H, HE):
+            return set()
+        familia = {P: {P, P01, E, E2}, P01: {P01}, E: {P, P01, E, E2}, E2: {P, P01, E, E2},
+                   H: {H, HE}, HE: {H, HE}}[marcado]
+        return {n.nome_arquivo for n in familia}
+
+    def marcar(self, fonte: str, n: cnj.Numero, base: Path, pauta: Path) -> None:
+        sig, lote = base / "Sigilosos", base / "Acervo" / "Processos" / "Lote Z"
+        if fonte == "pasta":
+            arquivo = sig / "Lote Z" / f"{cnj.nome_dos_autos(n, cnj.grau_do_numero(n))}.pdf"
+            arquivo.parent.mkdir(parents=True, exist_ok=True)
+            arquivo.write_bytes(b"x")
+        elif fonte == "pauta":
+            pauta_com_sigiloso(pauta, n)
+        elif fonte == "registro":
+            self.assertTrue(sigilo.lembrar_do_download([n], pauta))
+        elif fonte == "relatório do acervo":
+            _relatorio(lote / "_controle", [(n.formatado, "sim")])
+        elif fonte == "completo":
+            _relatorio(sig / "Lote Z" / "_controle", [(n.formatado, "sim")])
+        else:       # a capa lista a origem A, cujos autos estão na pasta dos sigilosos
+            _capa_2g(lote / "_controle", n, self.A)
+            (sig / "Lote A").mkdir(parents=True)
+            (sig / "Lote A" / f"{self.A.nome_arquivo}.pdf").write_bytes(b"x")
+
+    def test_a_consulta_de_um_numero_so_concorda_com_a_regra(self):
+        casos = [(fonte, n) for fonte in self.FONTES for n in self.NUMEROS]
+        for i, (fonte, marcado) in enumerate(casos):
+            with self.subTest(fonte=fonte, marcado=marcado.formatado):
+                base = self.tmp / f"caso {i}"
+                pauta = base / "local" / "pauta.sqlite3"
+                pauta.parent.mkdir(parents=True)
+                self.marcar(fonte, marcado, base, pauta)
+                cfg = mock.Mock(pasta_sigilosos=base / "Sigilosos")
+
+                def um_so():
+                    return {n.nome_arquivo for n in self.NUMEROS
+                            if sigilo.processo_sigiloso(cfg, n, pauta)}
+
+                antes = um_so()                   # antes de a regra rodar
+                chaves = sigilo.chaves_sigilosas(base / "Sigilosos", raiz=base / "Acervo",
+                                                 pauta=pauta)
+                regra = {n.nome_arquivo for n in self.NUMEROS
+                         if sigilo.contem(chaves, n.nome_arquivo)}
+                self.assertEqual(regra, self.esperado(fonte, marcado))
+                if fonte in self.SO_COM_RAIZ:
+                    self.assertLessEqual(antes, regra, "mais sigiloso que a regra")
+                else:
+                    self.assertEqual(antes, regra)
+                self.assertEqual(um_so(), regra, "depois de a regra rodar")
+
+    def test_o_motivo_diz_que_veio_do_recurso_interno(self):
+        """O porquê do principal que só um recurso interno torna sigiloso, em
+        cada fonte que as consultas de um número só leem; o do próprio
+        processo, se houver, vem antes (o porquê de sempre não muda)."""
+        P, P01, E = self.P, self.P01, self.E
+        for fonte in ("pasta", "pauta", "registro", "completo"):
+            with self.subTest(fonte=fonte):
+                base = self.tmp / fonte
+                pauta = base / "local" / "pauta.sqlite3"
+                pauta.parent.mkdir(parents=True)
+                self.marcar(fonte, E, base, pauta)
+                cfg = mock.Mock(pasta_sigilosos=base / "Sigilosos")
+                self.assertEqual(sigilo.motivo(cfg, P, pauta), sigilo.MOTIVO_RECURSO)
+                self.assertEqual(sigilo.motivo(cfg, P01, pauta), sigilo.MOTIVO_RECURSO_PRINCIPAL)
+                self.assertTrue(sigilo.motivo(cfg, E, pauta))
+                if fonte == "completo":
+                    self.assertEqual(sigilo.motivo(cfg, E, pauta), sigilo.MOTIVO_COMPLETO)
+                # o principal no registro do download (o fluxo normal): vale o dele
+                sigilo.lembrar_do_download([P], pauta)
+                self.assertEqual(sigilo.motivo(cfg, P, pauta), sigilo.MOTIVO_DOWNLOAD)
+        # as consultas de uma fonte só fazem a mesma conta
+        base = self.tmp / "pasta"
+        self.assertTrue(sigilo.na_pasta(base / "Sigilosos", P))
+        self.assertFalse(sigilo.na_pasta(base / "Sigilosos", P, herdar=False))
+        self.assertEqual(sigilo.motivo_da_pasta(base / "Sigilosos", P), sigilo.MOTIVO_RECURSO)
+        self.assertTrue(sigilo.na_pauta(P, self.tmp / "pauta" / "local" / "pauta.sqlite3"))
+        self.assertEqual(sigilo.motivo_do_download(P01, self.tmp / "registro" / "local" /
+                                                   "pauta.sqlite3"),
+                         sigilo.MOTIVO_DOWNLOAD_PRINCIPAL)
+
+    def test_o_incidente_comum_e_o_primeiro_grau_nao_mudam(self):
+        """Só o dependente /5xxxx deriva o principal: o incidente comum
+        sigiloso (P/01), em qualquer fonte, deixa o principal público."""
+        for fonte in ("pasta", "pauta", "registro", "completo"):
+            with self.subTest(fonte=fonte):
+                base = self.tmp / fonte
+                pauta = base / "local" / "pauta.sqlite3"
+                pauta.parent.mkdir(parents=True)
+                self.marcar(fonte, self.P01, base, pauta)
+                cfg = mock.Mock(pasta_sigilosos=base / "Sigilosos")
+                self.assertEqual(sigilo.motivo(cfg, self.P, pauta), "")
+                self.assertEqual(sigilo.motivo(cfg, self.E, pauta), "")
+
+    def test_o_completo_so_e_relido_quando_muda(self):
+        """O relatório completo é a única leitura a mais das consultas de um
+        número só: cada um é relido só quando muda (como o do acervo)."""
+        completo = _relatorio(self.sigilosos / "Lote Z" / "_controle", [(self.E.formatado, "sim")])
+        with mock.patch.object(sigilo, "_sigilosos_do_csv",
+                               wraps=sigilo._sigilosos_do_csv) as lido:
+            for _ in range(3):
+                self.assertEqual(sigilo.motivo(self.cfg, self.P), sigilo.MOTIVO_RECURSO)
+            self.assertEqual(lido.call_count, 1)
+            _relatorio(completo.parent, [(self.E.formatado, "não"), (self.P01.formatado, "sim")])
+            self.assertEqual(sigilo.motivo(self.cfg, self.P), "")
+            self.assertEqual(lido.call_count, 2)
+
+
 class TestPreparoESigiloDuravel(unittest.TestCase):
     """Ponta a ponta (achados 11 e 16): o processo que só a pauta dava como
     sigiloso, levado pelo preparo para uma subpasta da pasta dos sigilosos,

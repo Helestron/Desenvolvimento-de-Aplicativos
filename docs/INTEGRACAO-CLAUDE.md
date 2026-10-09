@@ -653,9 +653,15 @@ processo, e o apurado num grau vale para os autos do outro (`X.pdf` e
 o sigilo ao principal: o recurso interno sigiloso torna sigiloso o
 processo principal (no e-SAJ, a consulta dele abre a página do principal
 em segredo), e o item do principal vem com `sigiloso: true` mesmo que a
-página dele, no grau do lote, não mostre o selo; o incidente comum
-(`…-01`) continua sem fazer o principal sigiloso. O originário do 2º
-grau (órgão `0000`) cuja ação de origem (`numeros_1a_instancia` da capa)
+página dele, no grau do lote, não mostre o selo — também noutro lote ou
+noutra pasta de trabalho, e mesmo sem o registro do download (as
+configurações apagadas na desinstalação, o acervo levado a outro
+computador): basta que os autos do recurso interno estejam na pasta dos
+sigilosos ou que o relatório completo do lote dele o dê como sigiloso (o
+`detalhe` diz então “tratado como sigiloso: um recurso interno dele no 2º
+grau é sigiloso”); o incidente comum (`…-01`) continua sem fazer o
+principal sigiloso. O originário do 2º grau (órgão `0000`) cuja ação de
+origem (`numeros_1a_instancia` da capa)
 já se sabe sigilosa também vem com
 `sigiloso: true`, e o `detalhe` diz “tratado como sigiloso: o processo de
 origem … é sigiloso” — também quando a origem vem depois dele na relação
