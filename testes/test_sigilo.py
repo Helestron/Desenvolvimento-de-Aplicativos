@@ -26,6 +26,7 @@ import os
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -387,6 +388,58 @@ class TestRelatorioDoLote(Base):
         self.assertIn(da_pauta.nome_arquivo,
                       sigilo.chaves_sigilosas(self.sigilosos, self.acervo, pauta=None))
         self.assertFalse(sigilo.arquivo_do_download().exists())
+
+    def test_recurso_interno_sigiloso_torna_sigiloso_o_principal(self):
+        """Achado Y4: o recurso interno do 2º grau (/50000, /50001) corre nos
+        mesmos autos do principal. A linha "sim" dele no relatório do lote dá
+        como sigiloso também o principal, que volta ao registro do download
+        (o principal que só a consulta do recurso apurou não tem linha
+        própria); e o mesmo vale nas outras fontes. O incidente comum (/01)
+        continua sem tornar o principal sigiloso."""
+        p, e = _numero("0700991"), _numero("0700991", dependente="50000")
+        q, q01 = _numero("0700992"), _numero("0700992", dependente="01")
+        _relatorio(self.lote / "_controle", [(e.formatado, "sim"), (q01.formatado, "sim")])
+        chaves = sigilo.chaves_sigilosas(self.sigilosos, self.acervo)
+        self.assertIn(p.nome_arquivo, chaves)
+        self.assertIn(q01.nome_arquivo, chaves)
+        self.assertNotIn(q.nome_arquivo, chaves, "o principal não herda do incidente comum")
+        self.assertEqual(set(sigilo.apuradas_no_download()),
+                         {p.nome_arquivo, e.nome_arquivo, q01.nome_arquivo})
+        # o registro do download e a pasta dos sigilosos, sem o relatório
+        sigilo.arquivo_do_download().unlink()
+        (self.lote / "_controle" / "relatorio.csv").unlink()
+        r, e2 = _numero("0700993"), _numero("0700993", dependente="50001")
+        sigilo.lembrar_do_download([e2])
+        hc = _originario("0803091")
+        self.arquivo(f"Lote 1/{cnj.nome_dos_autos(replace(hc, dependente='50000'), '2g')}.pdf")
+        self.arquivo(f"Lote 1/{q01.nome_arquivo}.pdf")
+        chaves = sigilo.chaves_sigilosas(self.sigilosos, self.acervo)
+        self.assertIn(r.nome_arquivo, chaves)
+        self.assertIn(hc.nome_arquivo, chaves, "o recurso interno do HC (órgão 0000)")
+        self.assertNotIn(q.nome_arquivo, chaves)
+        self.assertEqual(sigilo.com_principais_dos_recursos([q01.nome_arquivo]),
+                         {q01.nome_arquivo})
+
+    def test_recurso_interno_do_relatorio_completo(self):
+        """Achado Y4, com a separação ligada: a linha do recurso interno no
+        relatório do lote no acervo sai mascarada, e ele não tem autos. O
+        relatório completo, na pasta dos sigilosos, ainda o diz sigiloso -
+        e, por ele, o principal, que volta ao registro. Do completo, só as
+        linhas dos recursos internos contam (as outras, como antes, não)."""
+        p, e = _numero("0700994"), _numero("0700994", dependente="50000")
+        s = _numero("0700995")                       # sigiloso do 1º grau, sem autos na pasta
+        completo = _relatorio(self.sigilosos / "Lote 1" / "_controle",
+                              [(e.formatado, "sim"), (s.formatado, "sim")])
+        _relatorio(self.lote / "_controle", [("(processo sigiloso)", "sim")] * 2)
+        self.assertEqual(sigilo.recursos_dos_completos(self.sigilosos),
+                         {e.nome_arquivo, p.nome_arquivo})
+        self.assertEqual(sigilo.chaves_sigilosas(self.sigilosos), set(), "só com o acervo")
+        chaves = sigilo.chaves_sigilosas(self.sigilosos, self.acervo)
+        self.assertEqual(set(chaves), {e.nome_arquivo, p.nome_arquivo})
+        self.assertEqual(set(sigilo.apuradas_no_download()), {e.nome_arquivo, p.nome_arquivo})
+        completo.unlink()
+        self.assertEqual(sigilo.recursos_dos_completos(self.sigilosos), set())
+        self.assertEqual(sigilo.recursos_dos_completos(self.tmp / "não existe"), set())
 
     def test_onde_o_relatorio_e_procurado(self):
         na_raiz, solto, fundo, longe, cache, oculto = (_numero(f"07009{i}") for i in range(40, 46))

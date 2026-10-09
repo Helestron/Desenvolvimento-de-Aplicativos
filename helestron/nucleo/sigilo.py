@@ -21,8 +21,11 @@ fontes, e qualquer uma basta:
    sigilosos_dos_relatorios). É o que cobre o lote baixado com a separação
    desligada antes de existir o registro do download (versão anterior), ou
    depois de ele se perder (a pasta LOCAL apagada, o acervo levado para
-   outro computador). chaves_sigilosas, ao dar com um processo que só o
-   relatório conhece, o acrescenta ao registro do download;
+   outro computador). Do relatório completo, na pasta dos sigilosos
+   (<sigilosos>/<lote>/_controle), contam só as linhas dos recursos
+   internos do 2º grau, que não têm autos (recursos_dos_completos).
+   chaves_sigilosas, ao dar com um processo que só o relatório conhece, o
+   acrescenta ao registro do download;
 6. a CAPA do 2º grau de um ORIGINÁRIO (o HC, o MS, o AI de órgão 0000, o
    originário de turma recursal, 9xxx: número próprio) guardada num lote
    dentro do acervo (<lote>/_controle/<número> (2G)_capa.json) lista, em
@@ -42,7 +45,10 @@ do cofre de senhas: cofre_senhas.travado e gravar_privado).
 O INCIDENTE (o dependente "...0001-01", o cumprimento de sentença, por
 exemplo) herda o sigilo do principal: as partes e o conteúdo são os mesmos.
 O contrário não vale - o principal não fica sigiloso só por causa de um
-incidente (Sigilosas, contem).
+incidente (Sigilosas, contem) -, salvo pelo RECURSO INTERNO do 2º grau
+("...0001-50000": os embargos de declaração, o agravo interno), que corre
+nos mesmos autos do principal: o sigiloso torna sigiloso também o principal
+(com_principais_dos_recursos, nas fontes de chaves_sigilosas).
 
 É esta regra que o compartilhamento (INDICE.md, CLAUDE.md/AGENTS.md, MCP,
 _ia/texto, pacote, espelho na nuvem), o download e a transcrição consultam:
@@ -157,6 +163,34 @@ def principal(nome) -> str | None:
     except cnj.NumeroInvalido:
         return None
     return n.principal if n.dependente else None
+
+
+def _principal_do_recurso(nome: str) -> str | None:
+    """O principal (Numero.nome_arquivo) de 'nome' se ele for um recurso
+    interno do 2º grau - o dependente que, sozinho, faz cnj.grau_do_numero
+    dizer 2º grau ("...0001-50000", "...0001-50001") -; None se não for."""
+    p = principal(nome)
+    if p is None:
+        return None                      # nem é incidente: quase todo nome
+    try:
+        n = cnj.ler_nome_arquivo(nome)
+    except cnj.NumeroInvalido:
+        return None
+    # Sem o órgão (o 0000 do HC também diria 2º grau), só o dependente decide.
+    return p if cnj.grau_do_numero(replace(n, origem="")) == "2g" else None
+
+
+def com_principais_dos_recursos(nomes) -> frozenset[str]:
+    """'nomes' (Numero.nome_arquivo) com o principal de cada recurso interno
+    do 2º grau entre eles (_principal_do_recurso). O recurso interno corre
+    nos mesmos autos do principal, e o portal apura os dois juntos
+    (esaj.achar_codigo_2g): o sigiloso torna sigiloso também o principal. Sem
+    isso, o principal que só a consulta do recurso apurou (sem linha nem
+    autos dele) perdia o sigilo com o registro do download. O incidente
+    comum ("-01", "-02") não muda nada: o principal não herda dele."""
+    nomes = frozenset(nomes)
+    principais = {p for p in map(_principal_do_recurso, nomes) if p}
+    return nomes | principais if principais else nomes
 
 
 # A chave do processo como a regra a guarda (Numero.nome_arquivo): o principal
@@ -751,8 +785,10 @@ def sigilosos_dos_relatorios(raiz) -> Sigilosas:
     (RELATORIOS_DO_LOTE) de cada <lote>/_controle até PROFUNDIDADE_LOTES.
     Com a separação dos sigilosos desligada, o relatório do lote fica no
     acervo sem máscara, e é o que diz o sigilo do lote baixado antes do
-    registro do download (ou depois de ele se perder). Cada relatório é lido
-    de novo só quando muda. Nunca levanta."""
+    registro do download (ou depois de ele se perder). A linha de um recurso
+    interno do 2º grau dá como sigiloso também o principal
+    (com_principais_dos_recursos). Cada relatório é lido de novo só quando
+    muda. Nunca levanta."""
     if raiz is None:
         return Sigilosas()
     nomes: set[str] = set()
@@ -762,7 +798,42 @@ def sigilosos_dos_relatorios(raiz) -> Sigilosas:
                 nomes |= _do_relatorio(controle / nome)
     except (OSError, ValueError, TypeError) as erro:
         log.warning("não consegui ler os relatórios dos lotes do acervo (%s)", str(erro)[:160])
-    return Sigilosas(nomes)
+    return Sigilosas(com_principais_dos_recursos(nomes))
+
+
+def recursos_dos_completos(sigilosos) -> frozenset[str]:
+    """Os recursos internos do 2º grau que o relatório completo de algum
+    lote, na pasta dos sigilosos (<sigilosos>/<lote>/_controle, onde o
+    download o grava), dá como sigilosos - com o principal de cada um
+    (com_principais_dos_recursos).
+
+    O recurso interno de processo em segredo não tem autos (o Helestron não
+    o baixa) e, com a separação ligada, a linha dele no relatório do lote no
+    acervo sai mascarada: sem o registro do download, só o completo ainda
+    diz que ele - e, por ele, o principal que só a consulta dele apurou - é
+    sigiloso. As outras linhas do completo continuam fora da regra, como
+    sempre: os autos desses processos estão na pasta dos sigilosos, e o
+    sigilo deles, no registro do download. Nunca levanta."""
+    if not sigilosos:
+        return frozenset()
+    try:
+        with os.scandir(sigilosos) as it:
+            entradas = list(it)
+    except OSError:
+        return frozenset()
+    lotes = []
+    for e in entradas:
+        try:
+            if e.is_dir() and not _e_ligacao(e):
+                lotes.append(Path(e.path))
+        except OSError:
+            continue
+    recursos: set[str] = set()
+    for lote in lotes:
+        for nome in RELATORIOS_DO_LOTE:
+            recursos |= {n for n in _do_relatorio(lote / "_controle" / nome)
+                         if _principal_do_recurso(n)}
+    return com_principais_dos_recursos(recursos)
 
 
 # ================================================= capa do originário do 2º grau
@@ -903,14 +974,21 @@ def chaves_sigilosas(sigilosos, raiz=None, pauta=PAUTA_DO_PROGRAMA) -> Sigilosas
     sigiloso por elas, e o registro do download diria que o portal o apurou.
     O originário entra nele com um aviso no registro do programa (a origem
     e a capa, como o detalhe do item no download), uma vez: depois, o
-    registro já o conhece."""
-    sabidas = Sigilosas(chaves_na_pasta(sigilosos, raiz) | chaves_da_pauta(pauta)
-                        | apuradas_no_download(pauta))
+    registro já o conhece.
+
+    Em todas as fontes, o recurso interno do 2º grau sigiloso torna sigiloso
+    também o principal (com_principais_dos_recursos): o principal que só a
+    consulta do recurso apurou volta ao registro pela linha do recurso no
+    relatório do lote - o do acervo ou o completo, na pasta dos sigilosos,
+    onde a linha não é mascarada (recursos_dos_completos)."""
+    sabidas = Sigilosas(com_principais_dos_recursos(
+        chaves_na_pasta(sigilosos, raiz) | chaves_da_pauta(pauta) | apuradas_no_download(pauta)))
     if raiz is None:
         return sabidas
-    dos_relatorios = sigilosos_dos_relatorios(raiz)
+    # já com os principais dos recursos internos
+    dos_relatorios = sigilosos_dos_relatorios(raiz) | recursos_dos_completos(sigilosos)
     origens = origens_herdadas(raiz, Sigilosas(sabidas | dos_relatorios))
-    das_origens = frozenset(origens)
+    das_origens = com_principais_dos_recursos(origens)
     novas = sorted(n for n in dos_relatorios | das_origens if n not in sabidas)
     for nome in novas:
         if nome in origens:

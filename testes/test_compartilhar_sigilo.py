@@ -422,9 +422,52 @@ class TestRestosDoSigiloso(BaseSigilo):
                       "traz o número dele (o relatório completo do lote, na pasta dos sigilosos, "
                       "não pôde ser atualizado: está aberto em outro programa?)", frase)
         self.assertNotIn(str(self.sig), frase)
-        # o "Tentar de novo" (api_compartilhar) registra o que a retirada avisa
-        self.assertEqual(ret.avisam, [])
+        # o "Tentar de novo" (api_compartilhar) registra o que a retirada
+        # avisa: o relatório do lote no acervo, com o porquê - não o completo
+        # (achado Y1)
+        self.assertEqual(ret.avisam, [do_acervo])
+        self.assertEqual(ret.motivos[do_acervo], "o relatório completo do lote, na pasta dos "
+                         "sigilosos, não pôde ser atualizado: está aberto em outro programa?")
         self.assertEqual(ret.completos_presos, {completo: [do_acervo]})
+
+    def test_tentar_de_novo_avisa_o_relatorio_do_lote_com_o_completo_preso(self):
+        """Achado Y1: o "Tentar de novo" da tela Compartilhar (antes do Claude
+        Desktop, do pacote e do espelho) leva os autos de X, que estavam
+        presos no acervo, mas o relatório completo do lote está aberto no
+        Excel: o relatório do lote, no acervo, continua com o número de X e
+        passa a ser pendência (o Início), com o porquê - como na 1.0.2."""
+        from types import SimpleNamespace
+
+        from helestron.download import motor
+        from helestron.servidor import api_compartilhar
+
+        controle = self.lote / "_controle"
+        controle.mkdir(parents=True)
+        do_acervo = controle / "relatorio.csv"
+        do_acervo.write_text(
+            "﻿" + ";".join(motor.COLUNAS) + "\r\n"
+            f"1;{X};TJAL;esaj;OK;2;1;{X}.pdf;não;;;2026-10-01 10:00\r\n", encoding="utf-8")
+        pdf = _pdf(self.lote / f"{X}.pdf", ["Petição inicial do sigiloso"])
+        completo = self.sig / "Lote 1" / "_controle" / "relatorio.csv"
+        original = motor._gravar_relatorio
+
+        def excel(arquivo, linhas):
+            if Path(arquivo) == completo:
+                raise PermissionError(13, "aberto no Excel", str(arquivo))
+            return original(arquivo, linhas)
+
+        self.marcar_na_pauta(X)
+        app = SimpleNamespace(cfg=self.cfg, sigilosos_presos=[pdf], sigilosos_avisos=[],
+                              sigilosos_motivos={pdf: "está aberto em outro programa?"})
+        with mock.patch.object(motor, "_gravar_relatorio", excel):
+            api_compartilhar.exigir_sem_sigiloso(app)      # os autos saíram agora
+        self.assertFalse(pdf.exists())
+        self.assertEqual(app.sigilosos_presos, [])
+        self.assertIn(X, do_acervo.read_text(encoding="utf-8-sig"), "o número ficou no acervo")
+        self.assertEqual(app.sigilosos_avisos, [do_acervo])
+        self.assertEqual(app.sigilosos_motivos[do_acervo], "o relatório completo do lote, na "
+                         "pasta dos sigilosos, não pôde ser atualizado: está aberto em outro "
+                         "programa?")
 
 
 class TestSeparacaoDesligada(BaseSigilo):

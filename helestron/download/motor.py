@@ -750,7 +750,8 @@ class Retirada:
     relatorios: list[Path] = field(default_factory=list)
     # O relatório completo (na pasta dos sigilosos, fora do acervo) que não
     # pôde ser regravado -> os relatórios do lote no acervo que, por isso,
-    # continuam com o número. Não entra em 'presos': não ficou no acervo.
+    # continuam com o número. O completo não entra em 'presos' (não ficou no
+    # acervo); esses relatórios do lote entram, em 'outros_presos'.
     completos_presos: dict[Path, list[Path]] = field(default_factory=dict)
     motivos: dict[Path, str] = field(default_factory=dict)  # arquivo preso -> por quê
 
@@ -920,9 +921,16 @@ def _mascarar_relatorios(ret: Retirada, lotes: list[Path], raiz_sigilosos: Path,
                 _gravar_relatorio(completo_arq, [_valores_da_linha(l) for l in novo_completo])
             except OSError as erro:
                 # Sem a linha completa guardada, o número não sai do relatório
+                # do lote no acervo: ele fica entre os avisos (Retirada.avisam:
+                # o fim do lote, o Início, o "Tentar de novo" da tela
+                # Compartilhar), com o porquê.
                 log.warning("não consegui gravar o relatório da pasta de sigilosos (%s)", erro)
                 ret.completos_presos.setdefault(completo_arq, []).append(arquivo)
                 ret.motivos[completo_arq] = _motivo_do_erro(erro)
+                if arquivo not in ret.outros_presos:
+                    ret.outros_presos.append(arquivo)
+                ret.motivos[arquivo] = ("o relatório completo do lote, na pasta dos sigilosos, "
+                                        f"não pôde ser atualizado: {_motivo_do_erro(erro)}")
                 continue
             mascaradas = []
             for l in linhas:
@@ -1864,7 +1872,9 @@ class _Lote:
 
     def _ler_sigilos_anteriores(self) -> set[str]:
         """Os processos que relatórios anteriores deste lote deram como
-        sigilosos - inclusive os que falharam (ERRO com sigilo apurado)."""
+        sigilosos - inclusive os que falharam (ERRO com sigilo apurado) e o
+        principal de um recurso interno do 2º grau sigiloso (a regra única:
+        sigilo.com_principais_dos_recursos)."""
         sabidos: set[str] = set()
         for controle in (self.controle, self.pasta_sigilosos / "_controle"):
             for nome in ("relatorio.csv", "relatorio (atualizado).csv"):
@@ -1886,7 +1896,7 @@ class _Lote:
                             continue
                 except (csv.Error, ValueError, AttributeError):
                     continue
-        return sabidos
+        return set(sigilo.com_principais_dos_recursos(sabidos))
 
     def _ja_baixado(self, n: Numero) -> Path | None:
         """O PDF dos autos de 'n' que já está na pasta do lote (ou na de
@@ -1930,11 +1940,17 @@ class _Lote:
     def _pelo_recurso_interno(self, n: Numero) -> str:
         """O porquê do sigilo do principal 'n' que a consulta de um recurso
         interno dele abriu em segredo de justiça nesta rodada
-        (_principal_apurado), ou ""."""
+        (_principal_apurado) - ou, se 'n' é incidente desse principal (o /01
+        pedido depois do /50000), o do principal dele -, ou ""."""
         recurso = self._apurados_pelo_recurso.get(n.nome_arquivo)
+        if recurso:
+            return (f"a consulta do recurso interno {recurso} abriu a página dele em segredo de "
+                    "justiça")
+        recurso = self._apurados_pelo_recurso.get(n.principal) if n.e_dependente else None
         if not recurso:
             return ""
-        return f"a consulta do recurso interno {recurso} abriu a página dele em segredo de justiça"
+        return (f"a consulta do recurso interno {recurso} abriu a página do processo principal "
+                f"{n.principal} em segredo de justiça")
 
     def _sigilo_so_do_relatorio(self, n: Numero, motivo: str) -> bool:
         """O sigilo vem só de um relatório anterior deste lote (ou da capa)?
@@ -1943,8 +1959,12 @@ class _Lote:
         TRATOU como sigiloso porque a pasta dos sigilosos ou a pauta o
         indicava: esse não vai para o registro do download, que diria, sem
         ser verdade, que o portal o apurou (e desfazer a marcação errada da
-        pauta deixaria de bastar)."""
-        return motivo == SIGILO_ANTERIOR and not (
+        pauta deixaria de bastar). O incidente do principal que o recurso
+        interno apurou nesta rodada conta do mesmo jeito: é o que o lote já
+        sabe do principal, agora com o porquê de verdade."""
+        anterior = motivo == SIGILO_ANTERIOR or (
+            n.e_dependente and bool(motivo) and motivo == self._pelo_recurso_interno(n))
+        return anterior and not (
             sigilo.motivo_da_pasta(self.raiz_sigilosos, n) or sigilo.motivo_da_pauta(n))
 
     def _lembrar_sigilo(self, n: Numero) -> bool:
@@ -2118,18 +2138,27 @@ class _Lote:
                             for p in presos)
                 + (". Feche-a e mova-a" if uma else ". Feche-as e mova-as")
                 + " à mão antes de compartilhar o acervo")
-        avisos = [p for p in ret.avisam if p not in ret.transcricoes_presas]
-        self._sigilo_avisos += [str(p) for p in avisos]
-        # O relatório completo da pasta de sigilosos que não pôde ser regravado
-        # (_mascarar_relatorios) não está no acervo: não há o que mover, só o
-        # que fechar - o download seguinte do lote o regrava. Fica no detalhe
-        # e no registro, fora dos avisos do lote (o fim do lote, o Início e a
-        # tela Compartilhar diriam que ele "ficou no acervo").
+        # O relatório do lote no acervo que ficou com o número porque o
+        # relatório completo do lote, na pasta de sigilosos, não pôde ser
+        # regravado (_mascarar_relatorios): o deste lote, salvar_relatorio o
+        # regrava no fim do item (mascarado, com a separação ligada), e não
+        # é aviso; o de outro lote fica com o número até o acervo ser
+        # preparado de novo, e vai para os avisos do lote (o fim do lote, o
+        # Início).
+        pelo_completo = [p for presos_dele in ret.completos_presos.values() for p in presos_dele]
+        avisos = [p for p in ret.avisam if p not in ret.transcricoes_presas
+                  and not (p in pelo_completo and _dentro(p, self.controle))]
+        # uma vez só: dois sigilosos da rodada podem deixar o mesmo relatório
+        self._sigilo_avisos += [str(p) for p in avisos if str(p) not in self._sigilo_avisos]
+        # O completo em si não está no acervo: não há o que mover, só o que
+        # fechar. Fica no detalhe e no registro, fora dos avisos do lote (que
+        # diriam que ele "ficou no acervo").
         completos = list(ret.completos_presos)
         if completos:
             log.warning("o relatório completo da pasta de sigilosos não pôde ser atualizado: %s",
                         ", ".join(str(p) for p in completos))
             um = len(completos) == 1
+            de_outro_lote = any(not _dentro(p, self.controle) for p in pelo_completo)
             r.detalhe = _juntar(
                 r.detalhe, "atenção: "
                 + ("o relatório completo da pasta de sigilosos não pôde ser atualizado" if um
@@ -2137,18 +2166,23 @@ class _Lote:
                         "puderam ser atualizados")
                 + ": " + ", ".join(f"{_relativo(p, self.raiz_sigilosos)} "
                                    f"({ret.motivos.get(p, 'aberto?')})" for p in completos[:5])
-                + (". Feche-o: o próximo download do lote o regrava" if um
-                   else ". Feche-os: o próximo download de cada lote os regrava"))
-        if avisos:
+                + (". Feche-o: o próximo download do lote o regrava" if not de_outro_lote
+                   else ". Feche-o e prepare o acervo para a IA de novo: até lá, o relatório do "
+                        "lote no acervo continua com o número dele" if um
+                   else ". Feche-os e prepare o acervo para a IA de novo: até lá, os relatórios "
+                        "dos outros lotes, no acervo, continuam com o número dele"))
+        # Os relatórios presos pelo completo já estão ditos acima: não se movem.
+        soltos = [p for p in avisos if p not in pelo_completo]
+        if soltos:
             log.warning("%s é sigiloso; estes arquivos dele ficaram no acervo: %s",
-                        n.formatado, ", ".join(str(p) for p in avisos))
-            um = len(avisos) == 1
+                        n.formatado, ", ".join(str(p) for p in soltos))
+            um = len(soltos) == 1
             r.detalhe = _juntar(
                 r.detalhe, "atenção: "
                 + ("1 arquivo do processo sigiloso ficou no acervo" if um
-                   else f"{len(avisos)} arquivos do processo sigiloso ficaram no acervo")
+                   else f"{len(soltos)} arquivos do processo sigiloso ficaram no acervo")
                 + ": " + ", ".join(f"{_relativo(p, acervo)} ({ret.motivos.get(p, 'aberto?')})"
-                                   for p in avisos[:5])
+                                   for p in soltos[:5])
                 + (". Feche-o e mova-o" if um else ". Feche-os e mova-os")
                 + " para a pasta de sigilosos")
         return ret
