@@ -673,12 +673,17 @@ class TestRegistroDoConector(unittest.TestCase):
     virar sigilosa, o aviso "originário … tratado como sigiloso", dado uma vez
     só, nunca chegava a %LOCALAPPDATA%\\Helestron\\Logs, onde o manual manda
     procurá-lo para desfazer uma marcação por engano. Agora vai também para
-    Logs, e o stdout, o canal do protocolo, continua só com o JSON-RPC."""
+    Logs, e o stdout, o canal do protocolo, continua só com o JSON-RPC.
 
-    def test_aviso_do_originario_vai_para_logs_e_o_stdout_so_tem_o_protocolo(self):
+    Achados X9 e X12 da quarta verificação: o arquivo de Logs ficava aberto
+    enquanto o Claude Desktop mantinha o conector vivo, e o desinstalador que
+    apaga as configurações não conseguia apagá-lo no Windows. Agora o
+    conector o abre e fecha a cada registro."""
+
+    def cenario(self):
+        """O HC no acervo, com a origem sigilosa pela pasta: o conector o tira
+        do acervo e avisa uma vez (env, acervo, Logs, aviso, mensagens)."""
         import os
-        import subprocess
-        import sys
 
         from testes.test_sigilo import _capa_2g, _originario
 
@@ -687,9 +692,9 @@ class TestRegistroDoConector(unittest.TestCase):
         casa = Path(tmp.name)
         local, dados = casa / "local", casa / "dados"
         acervo, lote = dados / "Acervo", dados / "Acervo" / "Processos" / "Gabinete"
-        origem, hc = cnj.ler(X), _originario("0803001")
-        _pdf(lote / f"{cnj.nome_dos_autos(hc, '2g')}.pdf", ["Habeas corpus"])
-        _capa_2g(lote / "_controle", hc, origem)
+        origem, self.hc = cnj.ler(X), _originario("0803001")
+        _pdf(lote / f"{cnj.nome_dos_autos(self.hc, '2g')}.pdf", ["Habeas corpus"])
+        _capa_2g(lote / "_controle", self.hc, origem)
         _pdf(dados / "Sigilosos" / "Outro lote" / f"{origem.nome_arquivo}.pdf", ["Em segredo"])
         env = dict(os.environ, HELESTRON_LOCAL=str(local), HELESTRON_DADOS=str(dados),
                    HOME=str(casa), APPDATA=str(casa), LOCALAPPDATA=str(casa))
@@ -700,6 +705,16 @@ class TestRegistroDoConector(unittest.TestCase):
             {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
              "params": {"name": "listar_acervo", "arguments": {}}},
         ]
+        aviso = (f"originário {self.hc.nome_arquivo} tratado como sigiloso: o processo de "
+                 f"origem {origem.nome_arquivo} é sigiloso")
+        return env, acervo, local / "Logs", aviso, mensagens
+
+    def test_aviso_do_originario_vai_para_logs_e_o_stdout_so_tem_o_protocolo(self):
+        import subprocess
+        import sys
+
+        env, acervo, logs, aviso, mensagens = self.cenario()
+        hc = self.hc
         r = subprocess.run(
             [sys.executable, "-m", "helestron", "mcp", "--pasta", str(acervo)],
             input="".join(json.dumps(m) + "\n" for m in mensagens).encode(),
@@ -713,13 +728,100 @@ class TestRegistroDoConector(unittest.TestCase):
         self.assertEqual([(x["jsonrpc"], x["id"]) for x in respostas], [("2.0", 1), ("2.0", 2)])
         self.assertIn("result", respostas[1], erros)
         self.assertNotIn(hc.nome_arquivo, saida, "o HC saiu do acervo do conector")
-        aviso = (f"originário {hc.nome_arquivo} tratado como sigiloso: o processo de origem "
-                 f"{origem.nome_arquivo} é sigiloso")
         self.assertIn(aviso, erros)
         # e o aviso também no registro do programa, em Logs
-        registros = sorted((local / "Logs").glob("*.log"))
+        registros = sorted(logs.glob("*.log"))
         self.assertEqual(len(registros), 1, erros)
         self.assertIn(aviso, registros[0].read_text(encoding="utf-8"))
+
+    def test_logs_nao_fica_aberto_enquanto_o_conector_espera(self):
+        # O conector de verdade, vivo como o Claude Desktop o deixa: depois do
+        # aviso, à espera da próxima mensagem, não segura nenhum arquivo de
+        # Logs (no Linux, os abertos estão em /proc/<pid>/fd).
+        import os
+        import subprocess
+        import sys
+        import threading
+
+        if not Path(f"/proc/{os.getpid()}/fd").is_dir():
+            self.skipTest("sem /proc para ver os arquivos abertos pelo conector")
+        env, acervo, logs, aviso, mensagens = self.cenario()
+        erros = logs.parent.parent / "stderr.txt"
+        with open(erros, "wb") as stderr:
+            conector = subprocess.Popen(
+                [sys.executable, "-m", "helestron", "mcp", "--pasta", str(acervo)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr,
+                cwd=str(Path(__file__).resolve().parents[1]), env=env)
+        relogio = threading.Timer(120, conector.kill)
+        relogio.start()
+        try:
+            conector.stdin.write("".join(json.dumps(m) + "\n" for m in mensagens).encode())
+            conector.stdin.flush()
+            respostas = [json.loads(conector.stdout.readline()) for _ in range(2)]
+            abertos = []
+            for fd in Path(f"/proc/{conector.pid}/fd").iterdir():
+                try:
+                    abertos.append(os.readlink(fd))
+                except OSError:
+                    pass
+        finally:
+            relogio.cancel()
+            conector.stdin.close()
+            conector.stdout.close()
+            conector.wait(timeout=60)
+        texto = erros.read_text(encoding="utf-8", errors="replace")
+        self.assertEqual([x["id"] for x in respostas], [1, 2], texto)
+        self.assertEqual(conector.returncode, 0, texto)
+        registros = sorted(logs.glob("*.log"))
+        self.assertEqual(len(registros), 1, texto)
+        self.assertIn(aviso, registros[0].read_text(encoding="utf-8"))
+        pasta = os.path.realpath(logs)
+        self.assertEqual([a for a in abertos if a.startswith(pasta)], [],
+                         "o conector segura o registro do programa")
+
+    def test_registro_do_conector_fecha_o_arquivo_e_censura(self):
+        # O mesmo no processo do teste (vale também no Windows): depois de cada
+        # registro, nenhum arquivo aberto; o formato e o filtro dos segredos de
+        # registro.py; e o mês de cada registro, não o da partida.
+        import logging
+        from datetime import datetime
+
+        raiz = logging.getLogger()
+        antes, nivel = list(raiz.handlers), raiz.level
+
+        def restaurar():
+            for h in raiz.handlers:
+                if h not in antes:
+                    h.close()
+            raiz.handlers[:] = antes
+            raiz.setLevel(nivel)
+        self.addCleanup(restaurar)
+        raiz.handlers[:] = []          # o conector liga o registro só se não houver
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        logs = Path(tmp.name) / "Logs"
+        abertos = []
+
+        def servir(pasta, saida=None):
+            for mes in (1, 2):
+                agora = mock.Mock(now=lambda mes=mes: datetime(2001, mes, 28, 23, 59))
+                with mock.patch.object(mcp_servidor, "datetime", agora, create=True):
+                    logging.getLogger("mcp").warning(
+                        "aviso %d: https://portal/abrir?ticket=ST-SEGREDO", mes)
+                abertos.append([h.stream for h in raiz.handlers
+                                if getattr(h, "_helestron", False)])
+
+        with mock.patch.object(caminhos, "LOGS", logs), \
+                mock.patch.object(mcp_servidor, "servir", side_effect=servir), \
+                mock.patch.object(mcp_servidor.os, "dup2"), \
+                mock.patch.object(mcp_servidor.sys, "stdout", io.StringIO()), \
+                mock.patch.object(mcp_servidor.sys, "stderr", io.StringIO()):
+            self.assertEqual(mcp_servidor.main(["--pasta", tmp.name]), 0)
+        self.assertEqual(abertos, [[None], [None]])
+        for mes in (1, 2):
+            texto = (logs / f"2001-{mes:02d}.log").read_text(encoding="utf-8")
+            self.assertRegex(texto, rf"^\S+ \S+  WARNING  mcp  aviso {mes}: "
+                                    r"https://portal/abrir\?ticket=\*\*\*\n$")
 
 
 if __name__ == "__main__":
