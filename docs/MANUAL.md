@@ -920,7 +920,9 @@ Com **Separar os sigilosos** ligado (o padrão):
   que estiverem no acervo (em qualquer lote) também vão para a pasta dos
   sigilosos, com a capa, e os textos dos dois graus saem de `_ia\texto`; e
   o contrário também vale. O recurso interno do 2º grau (`...0001-50000`)
-  herda o sigilo do processo, como o incidente;
+  herda o sigilo do processo, como o incidente, e, ao contrário do
+  incidente, o recurso interno sigiloso torna sigiloso também o processo
+  principal;
 - o processo originário do 2º grau (o habeas corpus, o mandado de
   segurança ou o agravo de instrumento, que têm número próprio, com órgão
   `0000`) é tratado como sigiloso quando o processo de origem, que a capa
@@ -967,9 +969,11 @@ A regra completa está em [Segredo de justiça](#segredo-de-justiça).
   linha, sigilosa, aparece no relatório do acervo como “(processo
   sigiloso)”. O processo principal, que a consulta mostrou em segredo,
   também fica sigiloso: o sigilo dos dois fica guardado no registro à parte
-  (o `download.sigilo.json`) e, com **Separar os sigilosos** ligado, os
-  autos do principal que estiverem no acervo, dos dois graus e em qualquer
-  lote, vão para a pasta dos sigilosos.
+  (o `download.sigilo.json`) e na linha do recurso interno no relatório do
+  lote (“sim” na coluna `sigiloso`), que marca também o principal (veja
+  [Segredo de justiça](#segredo-de-justiça)); e, com **Separar os
+  sigilosos** ligado, os autos do principal que estiverem no acervo, dos
+  dois graus e em qualquer lote, vão para a pasta dos sigilosos.
 - **Órgão começando por 9.** O número com órgão começando por `9`
   (plantão do 2º grau, turma recursal) é procurado sempre no 2º grau. Onde
   a turma recursal estiver no eProc do 1º grau (na Justiça Federal, por
@@ -1791,8 +1795,13 @@ Basta uma destas situações:
 O **incidente** de um processo sigiloso (o `...0001-01`, como o cumprimento
 de sentença) também é sigiloso: as partes e o conteúdo são os mesmos. O
 contrário não vale: o processo principal não fica sigiloso só por causa de
-um incidente. O mesmo vale para o recurso interno do 2º grau
-(`...0001-50000`, os embargos de declaração, por exemplo).
+um incidente. O **recurso interno do 2º grau** (`...0001-50000`,
+`...0001-50001`…, os embargos de declaração ou o agravo interno) também
+herda o sigilo do processo, mas nele o contrário vale: ele corre nos autos
+do próprio processo no 2º grau (no portal, a consulta do recurso interno
+de um processo em segredo abre a página do principal em segredo), e por
+isso o recurso interno sigiloso, por qualquer das situações acima, torna
+sigiloso também o processo principal.
 
 O sigilo é do **processo**, nos **dois graus**: apurado no 1º ou no 2º
 grau, ele vale para os autos dos dois (`<número>.pdf` e
@@ -1909,7 +1918,15 @@ Se o processo é público e você precisa dele no acervo:
    em segredo de justiça continuam sigilosos: pelos autos na pasta dos
    sigilosos ou, os que ficaram no acervo (com **Separar os processos
    sigilosos** desligado), pelo relatório do lote deles, que os devolve ao
-   registro.
+   registro. Vale também para o processo principal que a consulta de um
+   recurso interno dele no 2º grau (`...0001-50000`) achou em segredo, sem
+   linha própria no relatório: a linha “sim” do recurso interno o marca
+   também. A exceção é o principal que nunca foi baixado, com a separação
+   ligada: no acervo, a linha do recurso interno diz “(processo
+   sigiloso)”, e só o relatório completo, na pasta dos sigilosos, o marca
+   de novo, e só nos downloads daquele lote. Antes de baixar esse
+   principal (o número do recurso interno sem o `/50000`) em outro lote,
+   baixe de novo o recurso interno no 2º grau: a consulta o apura de novo.
 5. No relatório de cada lote em que ele foi baixado, troque “sim” por
    “não” na coluna `sigiloso` de todas as linhas dele (o Excel abre o
    arquivo; salve-o no mesmo formato): no
@@ -1941,26 +1958,30 @@ Se o processo é público e você precisa dele no acervo:
    `Acervo\Processos\<nome do lote>\` de mesmo nome; as transcrições, de
    `Sigilosos\Transcricoes\` para `Acervo\Transcricoes\` (e as gravações, de
    `Sigilosos\Transcricoes\_audio\` para `Acervo\Transcricoes\_audio\`); e o
-   que mais tiver o número dele no nome (a capa e o registro do download,
-   em `_controle\`, ou uma minuta em `Sigilosos\Produtos\`, por exemplo).
-   Quando o download o achou sigiloso, a capa dele
-   (`_controle\<número>_capa.txt` e `_controle\<número> (2G)_capa.txt`)
-   traz no começo a linha “SEGREDO DE JUSTIÇA - processo sigiloso. Não
-   compartilhe.”, e o Helestron relê a capa: antes de levá-la de volta,
-   apague essa linha (no Bloco de Notas) ou a capa inteira; sem isso, o
-   próximo download dele no lote o marca de novo. Leve de volta também o
-   processo originário do 2º grau (o habeas corpus, o mandado de
-   segurança, o agravo de instrumento: `<outro número> (2G).pdf`, com a
-   capa, conferida do mesmo jeito) cuja capa lista esse processo em
-   **Números de 1ª Instância**: ele foi levado junto, por causa dele, e
-   fica sigiloso pela própria pasta enquanto estiver lá. O registro do
-   programa, em `%LOCALAPPDATA%\Helestron\Logs`, diz qual foi
-   (“originário … tratado como sigiloso: o processo de origem … é
-   sigiloso”). Nos relatórios do lote dele, faça com a linha dele o mesmo
-   que no passo 5: o “não” no relatório completo e, com a separação
+   que mais tiver o número dele no nome (a capa, que o passo 7 confere, e
+   o registro do download, em `_controle\`, ou uma minuta em
+   `Sigilosos\Produtos\`, por exemplo). Leve de volta também o processo
+   originário do 2º grau (o habeas corpus, o mandado de segurança, o
+   agravo de instrumento: `<outro número> (2G).pdf`, com a capa) cuja capa
+   lista esse processo em **Números de 1ª Instância**: ele foi levado
+   junto, por causa dele, e fica sigiloso pela própria pasta enquanto
+   estiver lá. O registro do programa, em `%LOCALAPPDATA%\Helestron\Logs`,
+   diz qual foi (“originário … tratado como sigiloso: o processo de origem
+   … é sigiloso”). Nos relatórios do lote dele, faça com a linha dele o
+   mesmo que no passo 5: o “não” no relatório completo e, com a separação
    ligada, a linha “(processo sigiloso)” dele no relatório do acervo
    trocada pela linha dele copiada do completo.
-7. Abra o Helestron e, na tela Compartilhar, clique em **Preparar acervo
+7. Confira a capa dele em cada lote em que ele foi baixado, onde ela
+   estiver: em `Acervo\Processos\<nome do lote>\_controle\`, a que você
+   trouxe de volta no passo 6 e também a que nem saiu do acervo (com
+   **Separar os processos sigilosos** desligado, os autos e a capa ficam no
+   acervo). Quando o download o achou sigiloso, a capa dele
+   (`_controle\<número>_capa.txt` e `_controle\<número> (2G)_capa.txt`)
+   traz no começo a linha “SEGREDO DE JUSTIÇA - processo sigiloso. Não
+   compartilhe.”, e o Helestron relê a capa: apague essa linha (no Bloco
+   de Notas) ou a capa inteira; sem isso, o próximo download dele no lote
+   o marca de novo. Confira do mesmo jeito a capa do originário do passo 6.
+8. Abra o Helestron e, na tela Compartilhar, clique em **Preparar acervo
    para a IA**.
 
 Na dúvida, não faça nada: um processo público marcado por engano só fica
@@ -2094,9 +2115,10 @@ Depois, ele **pergunta** se você quer apagar também as configurações e as
 senhas guardadas (`%LOCALAPPDATA%\Helestron`: configurações, registros,
 senhas dos portais e a pauta monitorada). A resposta já vem em **Não**, que
 é o que convém se você pretende instalar o Helestron de novo. Se algo
-nessa pasta estiver em uso (pelo conector do acervo, com o Claude Desktop
-ou o Codex abertos), o desinstalador avisa no detalhe, e a pasta pode ser
-apagada depois de fechá-los.
+nessa pasta estiver em uso (por um navegador aberto por um download, pelo
+Helestron da linha de comando ou pelo conector do acervo, com o Claude
+Desktop ou o Codex abertos), o desinstalador avisa no detalhe, e a pasta
+pode ser apagada depois de fechá-los.
 
 Se você desinstalar uma cópia do Helestron que não é a registrada (de uma
 pasta antiga, por exemplo), só os arquivos dela saem (e as sessões dos

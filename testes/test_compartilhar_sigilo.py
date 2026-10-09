@@ -718,7 +718,11 @@ class TestRegistroDoConector(unittest.TestCase):
     Achados X9 e X12 da quarta verificação: o arquivo de Logs ficava aberto
     enquanto o Claude Desktop mantinha o conector vivo, e o desinstalador que
     apaga as configurações não conseguia apagá-lo no Windows. Agora o
-    conector o abre e fecha a cada registro."""
+    conector o abre e fecha a cada registro.
+
+    Achado Y3 da quinta verificação: com o disco cheio, o erro do fechamento
+    saía do log.warning, e a regra do sigilo dava a pasta dos sigilosos por
+    vazia."""
 
     def cenario(self):
         """O HC no acervo, com a origem sigilosa pela pasta: o conector o tira
@@ -862,6 +866,47 @@ class TestRegistroDoConector(unittest.TestCase):
             texto = (logs / f"2001-{mes:02d}.log").read_text(encoding="utf-8")
             self.assertRegex(texto, rf"^\S+ \S+  WARNING  mcp  aviso {mes}: "
                                     r"https://portal/abrir\?ticket=\*\*\*\n$")
+
+    def test_disco_cheio_nao_faz_o_aviso_levantar_nem_esvaziar_os_sigilosos(self):
+        # O disco cheio: o flush do registro falha, e o close() o refaz. A
+        # pasta dos sigilosos grande dá o aviso "pastas demais" e a origem do
+        # HC, o do originário; os dois avisos não levantam, e o sigiloso só
+        # pela pasta (a cópia no acervo, o HC que herda dele) continua sigiloso.
+        import errno
+        import logging
+
+        from testes.test_sigilo import _capa_2g, _originario
+
+        class Cheio(io.StringIO):
+            def flush(self):
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        sig, lote = base / "Sigilosos", base / "Acervo" / "Processos" / "Lote 2"
+        hc = _originario("0803001")
+        _pdf(sig / "Lote X" / f"{X}.pdf", ["Em segredo"])
+        _pdf(lote / f"{X}.pdf", ["A cópia que a separação deixou"])
+        _pdf(lote / f"{cnj.nome_dos_autos(hc, '2g')}.pdf", ["Habeas corpus"])
+        _capa_2g(lote / "_controle", hc, cnj.ler(X))
+        for i in range(sigilo.MAX_PASTAS + 1):
+            (sig / "Arquivo antigo" / f"{i // 50:02d}" / f"{i % 50:02d}").mkdir(parents=True)
+        registro = mcp_servidor._RegistroAvulso(base / "Logs")
+        raiz = logging.getLogger()
+        self.addCleanup(raiz.setLevel, raiz.level)
+        raiz.setLevel(logging.WARNING)            # o nível do conector
+        raiz.addHandler(registro)
+        self.addCleanup(raiz.removeHandler, registro)
+        with mock.patch.object(registro, "_open", side_effect=Cheio), \
+                mock.patch.object(sigilo, "_avisou_pasta_grande", set()), \
+                mock.patch("sys.stderr", io.StringIO()) as erros:
+            chaves = mcp_servidor.chaves_sigilosas(sig, base / "Acervo", pauta=None)
+        self.assertIn(X, chaves)
+        self.assertIn(hc.nome_arquivo, chaves)
+        self.assertIn("pastas demais", erros.getvalue())
+        self.assertIn("originário", erros.getvalue())
+        self.assertIsNone(registro.stream)      # o próximo registro reabre o arquivo
 
 
 if __name__ == "__main__":
