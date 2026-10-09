@@ -3043,19 +3043,35 @@ fora nesta versão: o PDF traz os eventos do próprio processo no 2º grau.
   sigilosos)”. O originário do 2º grau baixado nesta rodada antes de a
   ação de origem se apurar sigilosa herda o sigilo na mesma retirada
   (seção 12) e, com a separação desligada, também, sem sair do lote
-  (`_herdar_originarios`). O recurso interno cuja consulta abre a página
-  do principal em segredo (o e-SAJ põe o principal também em
-  `sigilosos_apurados`) apura o principal (`_principal_apurado`): ele vai
-  para o registro do download e para o que o lote já sabe (a linha dele sai
-  mascarada), os autos dele, nos dois graus e em qualquer lote, saem do
-  acervo, e o item dele nesta rodada passa a sigiloso com o detalhe
-  “tratado como sigiloso: a consulta do recurso interno … abriu a página
-  dele em segredo de justiça” (sem item, o detalhe do recurso interno diz o
-  que saiu). O relatório completo que a retirada não pôde regravar (aberto
-  no Excel) não ficou no acervo e tem aviso próprio: “o relatório completo
-  da pasta de sigilosos não pôde ser atualizado: … Feche-o: o próximo
-  download do lote o regrava”. O grau vazio (CSV de
-  versão anterior) é
+  (`_herdar_originarios`). Nos três caminhos em que o download dá ao
+  originário o sigilo da origem (baixado depois dela, antes dela na mesma
+  rodada, ou já na pasta), o registro do programa (Logs) recebe a linha do
+  preparo: “originário … tratado como sigiloso: o processo de origem … é
+  sigiloso”. O recurso interno cuja consulta abre a página do principal em
+  segredo (o e-SAJ põe o principal também em `sigilosos_apurados`) apura o
+  principal (`_principal_apurado`): ele vai para o registro do download e
+  para o que o lote já sabe (a linha dele sai mascarada), os autos dele,
+  nos dois graus e em qualquer lote, saem do acervo, e o item dele nesta
+  rodada passa a sigiloso com o detalhe “tratado como sigiloso: a consulta
+  do recurso interno … abriu a página dele em segredo de justiça” — o que
+  já terminou, mesmo sem os autos (falha, sem acesso), e o que vem depois
+  na relação, para o qual `_motivo_sigilo` dá esse porquê antes do “assim
+  constava de download anterior”. Sem o item dele com os autos no lote, o
+  detalhe do recurso interno diz o que saiu, com os autos dele contados à
+  parte dos autos dos incidentes dele (“1 cópia dos autos dele e 1 dos
+  incidentes dele levadas para a pasta de sigilosos”). Com a separação
+  desligada, os autos do principal só saem se o sigilo dele não pôde ir
+  para o registro (`_separar`), e o detalhe diz `SEM_REGISTRO_DO_SIGILO`.
+  O relatório completo que a retirada não pôde regravar (aberto no Excel)
+  não ficou no acervo e tem aviso próprio, só no detalhe do item e no
+  registro do programa: “o relatório completo da pasta de sigilosos não
+  pôde ser atualizado: … Feche-o: o próximo download do lote o regrava”.
+  Ele fica fora de `Retirada.presos` e de `sigilosos_avisos` (em
+  `completos_presos`, com o relatório do lote no acervo que, por isso,
+  continua com o número); o preparo avisa esse relatório do lote, que está
+  no acervo e traz o número (“o relatório completo do lote, na pasta dos
+  sigilosos, não pôde ser atualizado: …”). O grau vazio (CSV de versão
+  anterior) é
   `cnj.grau_do_numero(n) or "1g"` (`_grau_da_linha`): a 1.0.2 procurava o
   HC de órgão `0000` no 1º grau e gravava a linha sem grau, e lida como 1º
   grau ela nunca seria substituída pela nova nem retomada.

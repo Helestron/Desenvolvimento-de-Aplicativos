@@ -386,6 +386,46 @@ class TestRestosDoSigiloso(BaseSigilo):
         frase = " ".join(rel.avisos)
         self.assertIn("que ainda traz o número dele (está aberto no Excel?)", frase)
 
+    def test_completo_aberto_no_excel_avisa_o_relatorio_do_acervo(self):
+        """Achado X10: com o relatório COMPLETO do lote (o da pasta dos
+        sigilosos) aberto no Excel, o número não sai do relatório do lote no
+        acervo. O aviso nomeia esse, que está no acervo e traz o número - não
+        o completo, que fica fora dele e não é pendência do acervo (nem no
+        preparo, nem no "Tentar de novo" da tela Compartilhar)."""
+        from helestron.download import motor
+
+        controle = self.lote / "_controle"
+        controle.mkdir(parents=True)
+        do_acervo = controle / "relatorio.csv"
+        do_acervo.write_text(
+            "﻿" + ";".join(motor.COLUNAS) + "\r\n"
+            f"1;{X};TJAL;esaj;OK;2;1;{X}.pdf;não;;;2026-10-01 10:00\r\n", encoding="utf-8")
+        completo = self.sig / "Lote 1" / "_controle" / "relatorio.csv"
+        completo.parent.mkdir(parents=True)
+        completo.write_text("﻿" + ";".join(motor.COLUNAS) + "\r\n", encoding="utf-8")
+        original = motor._gravar_relatorio
+
+        def excel(arquivo, linhas):
+            if Path(arquivo) == completo:
+                raise PermissionError(13, "aberto no Excel", str(arquivo))
+            return original(arquivo, linhas)
+
+        self.marcar_na_pauta(X)
+        with mock.patch.object(motor, "_gravar_relatorio", excel), \
+                self.assertLogs("compartilhar", "WARNING"):
+            rel = self.preparar()
+            ret = motor.retirar_do_acervo(self.cfg, X)
+        self.assertIn(X, do_acervo.read_text(encoding="utf-8-sig"), "o número ficou no acervo")
+        self.assertEqual(rel.sigilosos_avisos, [do_acervo])
+        frase = " ".join(rel.avisos)
+        self.assertIn(f"{Path('Processos', 'Lote 1', '_controle', 'relatorio.csv')}, que ainda "
+                      "traz o número dele (o relatório completo do lote, na pasta dos sigilosos, "
+                      "não pôde ser atualizado: está aberto em outro programa?)", frase)
+        self.assertNotIn(str(self.sig), frase)
+        # o "Tentar de novo" (api_compartilhar) registra o que a retirada avisa
+        self.assertEqual(ret.avisam, [])
+        self.assertEqual(ret.completos_presos, {completo: [do_acervo]})
+
 
 class TestSeparacaoDesligada(BaseSigilo):
     """Achado R19: com a separação dos sigilosos desligada, o processo que o

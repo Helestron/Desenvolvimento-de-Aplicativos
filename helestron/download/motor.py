@@ -748,6 +748,10 @@ class Retirada:
     outros_presos: list[Path] = field(default_factory=list)
     # Relatórios de lote do acervo que tinham o número e foram mascarados
     relatorios: list[Path] = field(default_factory=list)
+    # O relatório completo (na pasta dos sigilosos, fora do acervo) que não
+    # pôde ser regravado -> os relatórios do lote no acervo que, por isso,
+    # continuam com o número. Não entra em 'presos': não ficou no acervo.
+    completos_presos: dict[Path, list[Path]] = field(default_factory=dict)
     motivos: dict[Path, str] = field(default_factory=dict)  # arquivo preso -> por quê
 
     @property
@@ -917,7 +921,8 @@ def _mascarar_relatorios(ret: Retirada, lotes: list[Path], raiz_sigilosos: Path,
             except OSError as erro:
                 # Sem a linha completa guardada, o número não sai do relatório
                 log.warning("não consegui gravar o relatório da pasta de sigilosos (%s)", erro)
-                ret._preso(ret.outros_presos, completo_arq, erro)
+                ret.completos_presos.setdefault(completo_arq, []).append(arquivo)
+                ret.motivos[completo_arq] = _motivo_do_erro(erro)
                 continue
             mascaradas = []
             for l in linhas:
@@ -1576,6 +1581,10 @@ class _Lote:
         # Uma vez sigiloso, sempre sigiloso: o que relatórios anteriores
         # deste lote já apuraram (a página nem sempre repete o aviso).
         self._sigilosos_sabidos = self._ler_sigilos_anteriores()
+        # Principal -> o recurso interno cuja consulta, nesta rodada, abriu a
+        # página dele em segredo de justiça (_principal_apurado): o porquê
+        # que o item dele diz, se vier depois na relação.
+        self._apurados_pelo_recurso: dict[str, str] = {}
         # Itens reabertos para o sistema alternativo: já contavam como feitos
         # e continuam contando, para a barra de progresso não andar para trás.
         self._reabertos: set[int] = set()
@@ -1898,6 +1907,11 @@ class _Lote:
         sempre mostra o selo (segredo decretado depois, layout que a leitura
         não pega): o que o programa já sabe vale do mesmo jeito."""
         nome = n.nome_arquivo
+        # Apurado agora, pela consulta de um recurso interno dele: não houve
+        # download anterior que o dissesse.
+        pelo_recurso = self._pelo_recurso_interno(n)
+        if pelo_recurso:
+            return pelo_recurso
         # O incidente herda o sigilo do principal (a regra única).
         if sigilo.contem(self._sigilosos_sabidos, nome):
             return SIGILO_ANTERIOR
@@ -1912,6 +1926,15 @@ class _Lote:
                 pass
         return (sigilo.motivo_da_pasta(self.raiz_sigilosos, n) or sigilo.motivo_da_pauta(n)
                 or sigilo.motivo_do_download(n))
+
+    def _pelo_recurso_interno(self, n: Numero) -> str:
+        """O porquê do sigilo do principal 'n' que a consulta de um recurso
+        interno dele abriu em segredo de justiça nesta rodada
+        (_principal_apurado), ou ""."""
+        recurso = self._apurados_pelo_recurso.get(n.nome_arquivo)
+        if not recurso:
+            return ""
+        return f"a consulta do recurso interno {recurso} abriu a página dele em segredo de justiça"
 
     def _sigilo_so_do_relatorio(self, n: Numero, motivo: str) -> bool:
         """O sigilo vem só de um relatório anterior deste lote (ou da capa)?
@@ -2099,9 +2122,10 @@ class _Lote:
         self._sigilo_avisos += [str(p) for p in avisos]
         # O relatório completo da pasta de sigilosos que não pôde ser regravado
         # (_mascarar_relatorios) não está no acervo: não há o que mover, só o
-        # que fechar - o download seguinte do lote o regrava.
-        completos = [p for p in avisos if _dentro(p, self.raiz_sigilosos)]
-        avisos = [p for p in avisos if p not in completos]
+        # que fechar - o download seguinte do lote o regrava. Fica no detalhe
+        # e no registro, fora dos avisos do lote (o fim do lote, o Início e a
+        # tela Compartilhar diriam que ele "ficou no acervo").
+        completos = list(ret.completos_presos)
         if completos:
             log.warning("o relatório completo da pasta de sigilosos não pôde ser atualizado: %s",
                         ", ".join(str(p) for p in completos))
@@ -2152,6 +2176,10 @@ class _Lote:
             outro.sigiloso = True
             outro.detalhe = _juntar(outro.detalhe, f"tratado como sigiloso: o processo de origem "
                                                    f"{n.formatado} é sigiloso")
+            # o rastro do porquê em Logs, com a frase da regra do preparo
+            # (sigilo.chaves_sigilosas): o manual manda procurá-lo lá
+            log.warning("originário %s tratado como sigiloso: o processo de origem %s é "
+                        "sigiloso", numero.formatado, n.formatado)
             self._lembrar_sigilo(numero)
             if levar or self._separar(numero):
                 self._retirar_do_acervo(outro, numero)
@@ -2809,6 +2837,10 @@ class _Lote:
         # r.detalhe: o que _item já disse do sigilo (o originário que herda da origem)
         r.detalhe = _juntar(JA_ESTAVA, reg["detalhe"], SEM_REGISTRO if sem_registro else "",
                             r.detalhe)
+        if motivo and motivo == self._pelo_recurso_interno(n) \
+                and f"tratado como sigiloso: {motivo}" not in r.detalhe:
+            # o principal apurado nesta rodada pelo recurso interno dele
+            r.detalhe = _juntar(r.detalhe, f"tratado como sigiloso: {motivo}")
         if r.sigiloso and self._separar(n):
             # sigiloso que ficou no acervo (separação que falhou numa
             # versão anterior, ou cópia de quando era público; com a
@@ -2867,6 +2899,8 @@ class _Lote:
                         if origem:
                             motivo = f"o processo de origem {origem} é sigiloso"
                             r.detalhe = _juntar(r.detalhe, f"tratado como sigiloso: {motivo}")
+                            log.warning("originário %s tratado como sigiloso: o processo de "
+                                        "origem %s é sigiloso", n.formatado, origem)
                             self._lembrar_sigilo(n)
                     self._ja_estava(r, n, existente, reg, motivo)
                     return False, False
@@ -3021,6 +3055,8 @@ class _Lote:
                 r.sigiloso = True
                 r.detalhe = _juntar(r.detalhe, f"tratado como sigiloso: o processo de origem "
                                                f"{origem} é sigiloso")
+                log.warning("originário %s tratado como sigiloso: o processo de origem %s é "
+                            "sigiloso", n.formatado, origem)
         if r.sigiloso or self._sigilo_so_do_relatorio(n, motivo):
             # O sigilo que o portal mostrou (agora ou numa rodada anterior
             # deste lote) passa a valer na regra única ANTES de o PDF ir para
@@ -3111,9 +3147,9 @@ class _Lote:
         como os de qualquer sigiloso - pelo recurso interno, a retirada não os
         alcança (o principal não herda do incidente). O sigilo vai para o
         registro do download e para o que o lote já sabe (a linha dele sai
-        mascarada; pedido depois, ele nasce sigiloso). O item dele nesta
-        rodada passa a dizê-lo; sem item, o detalhe de 'r' diz o que saiu e
-        o que ficou."""
+        mascarada; pedido depois, ele nasce sigiloso, com esse porquê). O
+        item dele nesta rodada passa a dizê-lo; sem item, o detalhe de 'r'
+        diz o que saiu e o que ficou."""
         p = cnj.ler(n.principal)
         dele = next((o for o, m in zip(self.itens, self.numeros)
                      if cnj.chave(m) == cnj.chave(p)), None)
@@ -3121,18 +3157,28 @@ class _Lote:
             return                       # o item dele já se apurou sigiloso
         self._lembrar_sigilo(p)
         self._sigilosos_sabidos.add(p.nome_arquivo)
+        self._apurados_pelo_recurso.setdefault(p.nome_arquivo, n.formatado)
+        porque = f"tratado como sigiloso: {self._pelo_recurso_interno(p)}"
         if dele is not None and dele.situacao in (OK, JA_BAIXADO) and dele.arquivo \
                 and _dentro(dele.arquivo, self.destino):
             dele.sigiloso = True
-            dele.detalhe = _juntar(dele.detalhe, f"tratado como sigiloso: a consulta do recurso "
-                                                 f"interno {n.formatado} abriu a página dele em "
-                                                 "segredo de justiça")
+            dele.detalhe = _juntar(dele.detalhe, porque)
             if self._separar(p):
                 self._retirar_do_acervo(dele, p)
+                if not self.opcoes.separar_sigilosos:
+                    dele.detalhe = _juntar(dele.detalhe, SEM_REGISTRO_DO_SIGILO)
             else:
                 self._herdar_originarios(dele, p, levar=False)
             self._publicar(dele)
             return
+        if dele is not None and dele.situacao:
+            # O item dele já terminou sem PDF no lote (falha, sem acesso):
+            # passa a sigiloso também - o JSON do lote não pode dizer
+            # público o que o registro e o relatório já dão como sigiloso.
+            # As cópias de rodadas anteriores saem abaixo.
+            dele.sigiloso = True
+            dele.detalhe = _juntar(dele.detalhe, porque)
+            self._publicar(dele)
         if not self._separar(p):
             self._herdar_originarios(r, p, levar=False)
             return
@@ -3147,10 +3193,21 @@ class _Lote:
             return                       # nada dele havia no acervo
         texto = f"o processo principal {p.formatado} passa a ser tratado como sigiloso"
         if ret.autos:
-            um = len(ret.autos) == 1
-            texto += (": 1 cópia dos autos dele levada" if um else
-                      f": {len(ret.autos)} cópias dos autos dele levadas") + \
+            # Os autos dele (nos dois graus) e, à parte, os dos incidentes
+            # dele, que a retirada leva junto
+            proprios = sum(chave_do_nome(k.name) == p.nome_arquivo for k in ret.autos)
+            incidentes = len(ret.autos) - proprios
+            if proprios:
+                texto += (": 1 cópia" if proprios == 1 else f": {proprios} cópias") + \
+                    " dos autos dele" + (f" e {incidentes} dos incidentes dele" if incidentes
+                                         else "")
+            else:
+                texto += (": 1 cópia" if incidentes == 1 else f": {incidentes} cópias") + \
+                    " dos autos dos incidentes dele"
+            texto += (" levada" if len(ret.autos) == 1 else " levadas") + \
                 " para a pasta de sigilosos"
+        if not self.opcoes.separar_sigilosos:
+            texto = _juntar(texto, SEM_REGISTRO_DO_SIGILO)
         r.detalhe = _juntar(r.detalhe, texto, *resto)
 
     @staticmethod

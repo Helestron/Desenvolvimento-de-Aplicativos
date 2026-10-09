@@ -1113,6 +1113,15 @@ def _retirar_sigilosos(cfg, acervo: Acervo, sigilosas) -> _Retiradas:
         saida.presos += ret.bloqueiam
         saida.pendentes += ret.avisam
         saida.motivos.update(ret.motivos)
+        # O relatório completo preso fica na pasta dos sigilosos, fora do
+        # acervo: o que ficou no acervo, e é avisado, é o relatório do lote,
+        # que continua com o número até o completo poder ser regravado.
+        for completo, relatorios in ret.completos_presos.items():
+            for relatorio in relatorios:
+                saida.pendentes.append(relatorio)
+                saida.motivos[relatorio] = (
+                    "o relatório completo do lote, na pasta dos sigilosos, não pôde ser "
+                    f"atualizado: {ret.motivos.get(completo) or 'está aberto no Excel?'}")
         for origem, destino in ret.outros.items():
             saida.avisos.append(
                 f"Processo {chave}, em segredo de justiça: "

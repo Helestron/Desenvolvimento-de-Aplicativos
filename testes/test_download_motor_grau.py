@@ -102,8 +102,10 @@ class BaseGrau(BaseMotor):
              falha_entrar=None, portal=None, **opcoes):
         fp, fn = apoio.fabricas(roteiro, falha_entrar, capas=capas)
         if portal is not None:             # outro dublê do portal (PortalDoSegredo)
+            rot = {k: list(v) for k, v in (roteiro or {}).items()}
+
             def com_portal(nav, tribunal, opcoes_, ctx, credenciais):
-                return portal(nav, tribunal, opcoes_, ctx, credenciais, capas=capas)
+                return portal(nav, tribunal, opcoes_, ctx, credenciais, rot, capas=capas)
             fp = com_portal
         self.opcoes = apoio.opcoes_de_teste(self.tmp, grau=grau, **opcoes)
         return motor.executar(numeros, destino or self.destino, self.opcoes, self.ctx,
@@ -570,7 +572,11 @@ class TestRelatorioPorGrau(BaseGrau):
         with mock.patch.object(motor.os, "replace", preso):
             resumo = self.lote([A], grau="2g", roteiro={A.formatado: ["ok_sigiloso"]})
         self.assertTrue(resumo.itens[0].sigiloso)
-        self.assertEqual(resumo.sigilosos_avisos, [str(completo)])
+        # o aviso, no detalhe do item; fora do acervo, não entra nos avisos do lote
+        self.assertIn("o relatório completo da pasta de sigilosos não pôde ser atualizado: "
+                      f"{Path(self.destino.name) / '_controle' / 'relatorio.csv'}",
+                      resumo.itens[0].detalhe)
+        self.assertEqual(resumo.sigilosos_avisos, [])
         self.assertEqual([(l["processo"], l["sigiloso"]) for l in self.relatorio(completo)],
                          [(S.formatado, "sim"), (A.formatado, "não")],
                          "o completo ficou como estava, desatualizado")
@@ -590,10 +596,12 @@ class TestRelatorioPorGrau(BaseGrau):
                          "o completo regravado passa a dizer que A é sigiloso")
 
     def test_aviso_do_completo_preso_nao_manda_mover_nada(self):
-        """Achado W7: o relatório completo preso fica na pasta de sigilosos,
-        fora do acervo. O aviso não diz que algo "ficou no acervo" nem manda
-        movê-lo para a pasta de sigilosos, onde ele já está: diz qual é e que
-        basta fechá-lo."""
+        """Achados W7 e X2: o relatório completo preso fica na pasta de
+        sigilosos, fora do acervo. O aviso não diz que algo "ficou no acervo"
+        nem manda movê-lo para a pasta de sigilosos, onde ele já está: diz
+        qual é e que basta fechá-lo. E ele não entra nos avisos do lote
+        (sigilosos_avisos), de onde o fim do lote, o Início e a tela
+        Compartilhar diriam "Arquivo de processo sigiloso no acervo"."""
         self.lote([S], grau="1g", roteiro={S.formatado: ["ok_sigiloso"]})   # o completo já existe
         self.lote([A], grau="1g")
         completo = self.tmp / "Sigilosos" / self.destino.name / "_controle" / "relatorio.csv"
@@ -607,7 +615,8 @@ class TestRelatorioPorGrau(BaseGrau):
         with mock.patch.object(motor.os, "replace", preso):
             resumo = self.lote([A], grau="2g", roteiro={A.formatado: ["ok_sigiloso"]})
         r = resumo.itens[0]
-        self.assertEqual(resumo.sigilosos_avisos, [str(completo)])
+        self.assertEqual(resumo.sigilosos_avisos, [])
+        self.assertEqual(self.ctx.avisos, [])
         self.assertNotIn("ficou no acervo", r.detalhe)
         self.assertNotIn("mova-o", r.detalhe)
         self.assertIn("atenção: o relatório completo da pasta de sigilosos não pôde ser "
@@ -982,6 +991,134 @@ class TestSigiloNosDoisGraus(BaseGrau):
         r = self.lote([P], grau="2g").itens[0]
         self.assertEqual((r.situacao, r.sigiloso), (modelos.OK, True))
         self.assertTrue((sig / self.destino.name / f"{P.nome_arquivo} (2G).pdf").is_file())
+
+    PORQUE_DE_P = (f"tratado como sigiloso: a consulta do recurso interno {E.formatado} abriu "
+                   "a página dele em segredo de justiça")
+
+    def test_principal_pedido_depois_do_recurso_interno_diz_o_porque(self):
+        """Achado X1: num lote do 1º grau [E, P], E vai ao 2º grau e a
+        consulta dele abre a página de P em segredo; P, público no 1º grau,
+        é baixado depois na mesma rodada. Ele sai sigiloso com o porquê de
+        verdade - não "assim constava de download anterior", que não houve."""
+        e, p = self.lote([E, P], grau="1g", portal=PortalDoSegredo).itens
+        self.assertEqual((e.grau, e.situacao, e.sigiloso), ("2g", modelos.NAO_SUPORTADO, True))
+        self.assertEqual((p.grau, p.situacao, p.sigiloso), ("1g", modelos.OK, True))
+        self.assertIn(self.PORQUE_DE_P, p.detalhe)
+        self.assertNotIn(motor.SIGILO_ANTERIOR, p.detalhe)
+        pdf = self.tmp / "Sigilosos" / self.destino.name / f"{P.nome_arquivo}.pdf"
+        self.assertEqual(p.arquivo, str(pdf))
+        self.assertTrue(pdf.is_file())
+        self.assertNotIn(P.nome_arquivo, (self.destino / "_controle" / "relatorio.csv")
+                         .read_bytes().decode("utf-8-sig"))
+
+    def test_principal_ja_baixado_depois_do_recurso_interno_diz_o_porque(self):
+        """Achado X3 (a): P baixado público numa rodada; depois [E, P]. A
+        consulta de E apura P e leva os autos dele; P, já na pasta de
+        sigilosos (JA_BAIXADO), diz por que é sigiloso."""
+        self.lote([P], grau="2g")
+        e, p = self.lote([E, P], grau="2g", portal=PortalDoSegredo).itens
+        pdf = self.tmp / "Sigilosos" / self.destino.name / f"{P.nome_arquivo} (2G).pdf"
+        self.assertEqual((p.situacao, p.sigiloso, p.arquivo), (modelos.JA_BAIXADO, True, str(pdf)))
+        self.assertIn(self.PORQUE_DE_P, p.detalhe)
+        self.assertEqual(p.detalhe.count(self.PORQUE_DE_P), 1)
+        self.assertIn(f"o processo principal {P.formatado} passa a ser tratado como sigiloso: "
+                      "1 cópia dos autos dele levada para a pasta de sigilosos", e.detalhe)
+        self.assertEqual(processo_json(p)["sigiloso"], True)
+
+    def principal_que_falhou(self, acao: list, situacao: str) -> None:
+        """Achados X3 (b) e X11: [P, E] com P que falha (ERRO ou SEM_ACESSO)
+        antes de a consulta de E abrir a página dele em segredo. O registro
+        do download e o relatório já o dão como sigiloso: o item (o JSON do
+        lote) também, com o porquê, e a cópia de uma rodada anterior sai do
+        acervo."""
+        self.lote([P], grau="2g")
+        self.ctx = ContextoComEventos()
+        p, e = self.lote([P, E], grau="2g", portal=PortalDoSegredo,
+                         roteiro={P.formatado: acao}, rebaixar_incompletos=True).itens
+        self.assertEqual((p.situacao, p.sigiloso), (situacao, True))
+        self.assertIn(self.PORQUE_DE_P, p.detalhe)
+        self.assertEqual(processo_json(p)["sigiloso"], True)
+        self.assertEqual(self.ctx.itens.count((P.formatado, situacao)), 2,
+                         "o item de P é publicado de novo, já sigiloso")
+        self.assertEqual(list(self.destino.glob("*.pdf")), [])
+        self.assertIn("1 cópia dos autos dele levada para a pasta de sigilosos", e.detalhe)
+        self.assertTrue(sigilo.motivo_do_download(P))
+
+    def test_principal_que_falhou_antes_do_recurso_interno_passa_a_sigiloso(self):
+        self.principal_que_falhou(["erro", "erro"], modelos.ERRO)
+
+    def test_principal_sem_acesso_antes_do_recurso_interno_passa_a_sigiloso(self):
+        self.principal_que_falhou(["sem_acesso"], modelos.SEM_ACESSO)
+
+    def test_detalhe_do_recurso_interno_nao_inventa_copias_do_principal(self):
+        """Achado X4: a retirada pelo principal leva também os autos dos
+        incidentes dele. Com só o incidente P/01 no acervo, o detalhe de E
+        não diz que levou "cópia dos autos dele"."""
+        P01 = cnj.ler(f"{P.formatado}/01")
+        self.lote([P01], grau="1g")
+        e = self.lote([E], grau="2g", portal=PortalDoSegredo).itens[0]
+        self.assertIn(f"o processo principal {P.formatado} passa a ser tratado como sigiloso: "
+                      "1 cópia dos autos dos incidentes dele levada para a pasta de sigilosos",
+                      e.detalhe)
+        self.assertNotIn("cópia dos autos dele", e.detalhe)
+        self.assertTrue((self.tmp / "Sigilosos" / self.destino.name /
+                         f"{P01.nome_arquivo}.pdf").is_file())
+
+    def test_detalhe_do_recurso_interno_conta_a_parte_os_autos_dos_incidentes(self):
+        # Achado X4: com os autos dele e os do incidente, cada um na sua conta
+        P01 = cnj.ler(f"{P.formatado}/01")
+        self.lote([P, P01], grau="1g")
+        e = self.lote([E], grau="2g", portal=PortalDoSegredo).itens[0]
+        self.assertIn(f"o processo principal {P.formatado} passa a ser tratado como sigiloso: "
+                      "1 cópia dos autos dele e 1 dos incidentes dele levadas para a pasta de "
+                      "sigilosos", e.detalhe)
+
+    def principal_sem_registro(self, relacao: list) -> None:
+        """Achado X5: com a separação dos sigilosos desligada e o registro do
+        download sem poder ser gravado, os autos do principal apurado pelo
+        recurso interno vão para a pasta de sigilosos (o lado seguro), e o
+        detalhe diz por quê - no item dele e, sem item, no do recurso."""
+        self.lote([P], grau="2g", separar_sigilosos=False)
+        with mock.patch.object(sigilo, "lembrar_do_download", lambda *a, **k: False):
+            quem = self.lote(relacao, grau="2g", portal=PortalDoSegredo,
+                             separar_sigilosos=False).itens[0]       # P, ou E sem o de P
+        self.assertIn(motor.SEM_REGISTRO_DO_SIGILO, quem.detalhe)
+        self.assertTrue((self.tmp / "Sigilosos" / self.destino.name /
+                         f"{P.nome_arquivo} (2G).pdf").is_file())
+        self.assertEqual(list(self.destino.glob(f"{P.nome_arquivo}*.pdf")), [])
+
+    def test_separacao_desligada_e_o_registro_do_principal_que_falha(self):
+        self.principal_sem_registro([P, E])
+
+    def test_separacao_desligada_e_o_registro_do_principal_sem_item_que_falha(self):
+        self.principal_sem_registro([E])
+
+    def originario_vai_para_logs(self, rodadas: list) -> None:
+        """Achado X6: nos três caminhos do download em que o originário herda
+        o sigilo da origem (baixado depois dela, baixado antes dela na mesma
+        rodada, já na pasta), o registro do programa (Logs) diz qual foi, com
+        a frase do preparo (sigilo.chaves_sigilosas) - o passo 6 do manual o
+        procura lá."""
+        frase = (f"originário {H.formatado} tratado como sigiloso: o processo de origem "
+                 f"{A.formatado} é sigiloso")
+        h = None
+        with self.assertLogs("download.motor", "WARNING") as logs:
+            for relacao, roteiro in rodadas:
+                itens = self.lote(relacao, grau="2g", capas={H.formatado: self.CAPA_DO_HC},
+                                  roteiro=roteiro).itens
+                h = next((r for r in itens if r.numero == H.formatado), h)
+        self.assertTrue(h.sigiloso)
+        self.assertEqual(sum(frase in linha for linha in logs.output), 1, logs.output)
+
+    def test_originario_baixado_depois_da_origem_vai_para_logs(self):
+        self.originario_vai_para_logs([([A], {A.formatado: ["ok_sigiloso"]}), ([H], None)])
+
+    def test_originario_baixado_antes_da_origem_vai_para_logs(self):
+        self.originario_vai_para_logs([([H, A], {A.formatado: ["ok_sigiloso"]})])
+
+    def test_originario_ja_baixado_vai_para_logs(self):
+        self.originario_vai_para_logs([([H], None), ([A], {A.formatado: ["ok_sigiloso"]}),
+                                       ([H], None)])
 
 
 # =================================================================== eProc
