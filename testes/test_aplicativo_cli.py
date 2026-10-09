@@ -648,6 +648,31 @@ class TestComandosParaAutomacao(unittest.TestCase):
         with mock.patch.object(helestron, "__version__", "9.9.9"):
             self.assertEqual(json.loads(self.rodar("caminhos", "--json")[1])["versao"], "9.9.9")
 
+    def test_documentacao_manda_retomar_com_o_grau_do_lote(self):
+        """Onde a INTEGRACAO e o MANUAL mandam rodar o --retomar, mandam com o
+        mesmo --grau do lote: sem ele vale 1g (cli._grau_dos_argumentos) e, num
+        lote do 2º grau, nada é retomado (as linhas vão para
+        ignorados_por_retomar, e o código é 0, que a skill lê como "nada a
+        refazer")."""
+        import re
+
+        integracao = (RAIZ / "docs" / "INTEGRACAO-CLAUDE.md").read_text(encoding="utf-8")
+        # um trecho é um parágrafo ou um item de lista, numa linha só
+        trechos = [re.sub(r"\s+", " ", t)
+                   for t in re.split(r"\n\s*\n|\n(?=\s*(?:\d+\.|-) )", integracao)]
+        for ancora in ("veja o `log` e use `--retomar`", "rode uma vez `baixar",
+                       "Baixe de novo com `--retomar", "refaz exatamente esses processos",
+                       "decidir pela `causa` e rodar `--retomar`"):
+            with self.subTest(ancora):
+                trecho = [t for t in trechos if ancora in t]
+                self.assertEqual(len(trecho), 1, ancora)
+                self.assertIn("`--grau`", trecho[0])
+        manual = (RAIZ / "docs" / "MANUAL.md").read_text(encoding="utf-8")
+        linha = [l for l in manual.splitlines() if l.startswith("| `--retomar` |")]
+        self.assertEqual(len(linha), 1)
+        self.assertIn("`--grau`", linha[0])
+        self.assertIn("do 2º grau: para retomá-la, use --grau 2g", linha[0])
+
     def test_preparar_pasta_no_acervo_pula_sigiloso_e_inclui_os_do_lote(self):
         lote = self.acervo / "Processos" / "Lote 1"
         publico, sigiloso = "0700001-27.2024.8.02.0001", "0700002-02.2024.8.02.0001"

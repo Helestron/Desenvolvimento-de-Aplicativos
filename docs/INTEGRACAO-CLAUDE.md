@@ -261,7 +261,7 @@ Para um ou dois processos, dá para rodar sem `--desanexar`, com
    `resumo` e cada processo.
 5. Se `concluido` continua `false` e o processo `pid` já não existe
    (`Get-Process -Id <pid>` falha), o lote morreu: veja o `log` e use
-   `--retomar`.
+   `--retomar`, com o mesmo `--grau`.
 
 ```powershell
 do {
@@ -418,9 +418,12 @@ que não veio tem, no lugar, uma **página de aviso**, cuja primeira linha é
 **A página de aviso não é prova.** Não tire dela fato nenhum; se a folha
 importar para a minuta, diga que “a fl. N não está disponível no e-SAJ” e
 avise o magistrado. As demais folhas continuam no lugar: nada se desloca.
-Com `B`, `I` ou `C`, rode uma vez `baixar --destino <lote> --retomar --rebaixar-incompletos`
+Com `B`, `I` ou `C`, rode uma vez
+`baixar --destino <lote> --grau <o mesmo da chamada original> --retomar --rebaixar-incompletos`
 (ele baixa de novo o que tem folhas ausentes, além do que pede nova
-tentativa); `N` e `S` não mudam com uma nova tentativa.
+tentativa; sem `--grau`, o `--retomar` fica no 1º grau e, num lote do 2º
+grau, não retoma nada: as linhas vão para `ignorados_por_retomar`, e o
+código é 0); `N` e `S` não mudam com uma nova tentativa.
 
 **eProc: não há folhas.** Cada documento conserva a paginação própria,
 igual à do eProc. Cite **“evento N, RÓTULO, p. Y”** (por exemplo, “evento
@@ -438,7 +441,7 @@ evento e o documento que a página ou o marcador indicarem.
 (PDF baixado por versão anterior à 1.0.2, ou alterado depois do download:
 o manifesto não descreve mais o arquivo), a página do PDF pode não ser a
 folha. Baixe de novo com `--retomar --rebaixar-incompletos` (na mesma
-`--destino`) antes de citar; se não
+`--destino` e com o mesmo `--grau`) antes de citar; se não
 der, cite a folha carimbada na própria página ou o documento, e avise o
 magistrado. No eProc, nunca “fl.” (nem o carimbo “fls. N” de documento
 vindo de outro sistema): cite o evento e o documento, sem a página.
@@ -759,7 +762,7 @@ e `<sigilosos do lote>\_controle\<número>_capa.json` (e `_capa.txt`,
 
 A `situacao` diz o que houve; a `causa`, por quê. `refazer: true` quer
 dizer que uma nova rodada pode mudar o desfecho: `--retomar` (com a mesma
-`--destino`) refaz exatamente esses processos.
+`--destino` e o mesmo `--grau`) refaz exatamente esses processos.
 
 | Causa | O que houve | O que fazer |
 |---|---|---|
@@ -818,7 +821,7 @@ tem uma linha de cada.
    “fl. N dos autos de origem”, e o carimbo divergente não se cita
    (seção 14).
 8. Para o que tem `refazer: true`, decidir pela `causa` e rodar
-   `--retomar`.
+   `--retomar`, com o mesmo `--grau` do passo 4.
 9. Sigilosos (seção 11): trabalhados os públicos, pedir numa linha só, uma
    vez por lote, a autorização dos pendentes, pelas posições (ou seguir a
    que veio com a lista). Autorizados, trabalhá-los só dentro de
