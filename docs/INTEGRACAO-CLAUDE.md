@@ -662,7 +662,9 @@ preparo (ele sai do índice, do conector, do pacote e da nuvem, e o
 `preparar --pasta` o dá como `sigiloso: true`). O registro do download
 (`download.sigilo.json`) guarda então o originário herdado pela capa, e
 não pelo selo do portal; o porquê não está nele, e sim no registro do
-programa, que avisa uma vez de que origem e de que capa veio o sigilo.
+programa (`%LOCALAPPDATA%\Helestron\Logs`, também quando quem aplica a
+regra primeiro é o conector MCP), que avisa uma vez de que origem e de que
+capa veio o sigilo.
 
 ### A autorização
 

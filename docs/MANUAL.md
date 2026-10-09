@@ -1906,11 +1906,21 @@ Se o processo é público e você precisa dele no acervo:
    registro.
 5. No relatório do lote em que ele foi baixado, troque “sim” por “não” na
    coluna `sigiloso` da linha dele (o Excel abre o arquivo; salve-o no
-   mesmo formato): no `Sigilosos\<nome do lote>\_controle\relatorio.csv`,
-   se existir, e, com **Separar os processos sigilosos** desligado, no
-   `Acervo\Processos\<nome do lote>\_controle\relatorio.csv`; faça o mesmo
-   no `relatorio (atualizado).csv`, se houver. Sem isso, o relatório o
-   marca de novo (e o devolve ao `download.sigilo.json`).
+   mesmo formato): no `Sigilosos\<nome do lote>\_controle\relatorio.csv`
+   (o relatório completo), se existir, e no
+   `Acervo\Processos\<nome do lote>\_controle\relatorio.csv`. Com
+   **Separar os processos sigilosos** ligado, a linha dele neste último
+   não tem o número: diz “(processo sigiloso)” e tem, na coluna `ordem`, o
+   mesmo número da linha dele no relatório completo. Troque essa linha
+   inteira pela linha dele copiada do relatório completo (já com “não”):
+   desde a versão 1.1.0, a linha “(processo sigiloso)” vale “sim” mesmo
+   que o relatório completo diga “não” (para que um relatório completo
+   desatualizado, que estava aberto no Excel, não devolva o número ao
+   acervo). Faça o mesmo no `relatorio (atualizado).csv`, se houver. Sem
+   isso, o relatório o marca de novo (e o devolve ao
+   `download.sigilo.json`); com a separação ligada, o próximo download do
+   lote devolve o “sim” ao relatório completo, e o primeiro que o tiver na
+   relação leva os autos de volta para a pasta dos sigilosos.
 6. Leve de volta para o acervo o que o Helestron pôs na pasta dos sigilosos:
    os autos, de `Sigilosos\<nome do lote>\` para
    `Acervo\Processos\<nome do lote>\`; as transcrições, de
@@ -1924,8 +1934,10 @@ Se o processo é público e você precisa dele no acervo:
    causa dele, e fica sigiloso pela própria pasta enquanto estiver lá. O
    registro do programa, em `%LOCALAPPDATA%\Helestron\Logs`, diz qual foi
    (“originário … tratado como sigiloso: o processo de origem … é
-   sigiloso”). No relatório completo do lote dele (passo 5), troque o “sim”
-   da linha dele também.
+   sigiloso”). Nos relatórios do lote dele, faça com a linha dele o mesmo
+   que no passo 5: o “não” no relatório completo e, com a separação
+   ligada, a linha “(processo sigiloso)” dele no relatório do acervo
+   trocada pela linha dele copiada do completo.
 7. Abra o Helestron e, na tela Compartilhar, clique em **Preparar acervo
    para a IA**.
 

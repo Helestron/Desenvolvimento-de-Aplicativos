@@ -666,5 +666,61 @@ class TestRestosDaVersaoAnterior(unittest.TestCase):
         self.assertIn("assessor_integrado", self.toml.read_text(encoding="utf-8"))
 
 
+class TestRegistroDoConector(unittest.TestCase):
+    """Achado W9 da terceira verificação do 2º grau: o conector MCP só mandava
+    o registro para o stderr, que o Claude Desktop guarda à parte. Quando era
+    ele o primeiro a aplicar a regra do sigilo depois de a origem de um HC
+    virar sigilosa, o aviso "originário … tratado como sigiloso", dado uma vez
+    só, nunca chegava a %LOCALAPPDATA%\\Helestron\\Logs, onde o manual manda
+    procurá-lo para desfazer uma marcação por engano. Agora vai também para
+    Logs, e o stdout, o canal do protocolo, continua só com o JSON-RPC."""
+
+    def test_aviso_do_originario_vai_para_logs_e_o_stdout_so_tem_o_protocolo(self):
+        import os
+        import subprocess
+        import sys
+
+        from testes.test_sigilo import _capa_2g, _originario
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        casa = Path(tmp.name)
+        local, dados = casa / "local", casa / "dados"
+        acervo, lote = dados / "Acervo", dados / "Acervo" / "Processos" / "Gabinete"
+        origem, hc = cnj.ler(X), _originario("0803001")
+        _pdf(lote / f"{cnj.nome_dos_autos(hc, '2g')}.pdf", ["Habeas corpus"])
+        _capa_2g(lote / "_controle", hc, origem)
+        _pdf(dados / "Sigilosos" / "Outro lote" / f"{origem.nome_arquivo}.pdf", ["Em segredo"])
+        env = dict(os.environ, HELESTRON_LOCAL=str(local), HELESTRON_DADOS=str(dados),
+                   HOME=str(casa), APPDATA=str(casa), LOCALAPPDATA=str(casa))
+        mensagens = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": "2025-06-18", "capabilities": {}}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "listar_acervo", "arguments": {}}},
+        ]
+        r = subprocess.run(
+            [sys.executable, "-m", "helestron", "mcp", "--pasta", str(acervo)],
+            input="".join(json.dumps(m) + "\n" for m in mensagens).encode(),
+            capture_output=True, cwd=str(Path(__file__).resolve().parents[1]), env=env,
+            timeout=120)
+        erros = r.stderr.decode("utf-8", "replace")
+        self.assertEqual(r.returncode, 0, erros)
+        # o stdout: só as respostas, uma por linha, todas JSON-RPC
+        saida = r.stdout.decode("utf-8")
+        respostas = [json.loads(linha) for linha in saida.splitlines()]
+        self.assertEqual([(x["jsonrpc"], x["id"]) for x in respostas], [("2.0", 1), ("2.0", 2)])
+        self.assertIn("result", respostas[1], erros)
+        self.assertNotIn(hc.nome_arquivo, saida, "o HC saiu do acervo do conector")
+        aviso = (f"originário {hc.nome_arquivo} tratado como sigiloso: o processo de origem "
+                 f"{origem.nome_arquivo} é sigiloso")
+        self.assertIn(aviso, erros)
+        # e o aviso também no registro do programa, em Logs
+        registros = sorted((local / "Logs").glob("*.log"))
+        self.assertEqual(len(registros), 1, erros)
+        self.assertIn(aviso, registros[0].read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()
