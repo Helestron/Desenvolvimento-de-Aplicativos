@@ -2796,12 +2796,16 @@ autos no 2º grau).
   escolha é sempre pelo **número exato** (`escolher_processo_2g(candidatos,
   numero)`: os 20 dígitos e o dependente; sem dependente, o principal; com
   `/50000`, a opção “50000 - …”): devolve o código, `None` se nenhuma opção
-  é do número pedido, e `RuntimeError` se mais de uma é (“o 2º grau do
-  e-SAJ tem mais de um processo com este número (…); não baixei, para não
-  gravar autos trocados”). A página em segredo que vem sem número, só com o
-  código e o pedido de senha, vale só para o pedido do principal, com um
-  candidato único (`_pagina_com_senha_2g`). O incidente `/01` do 1º grau não
-  existe no 2º: sem opção exata, `ProcessoNaoEncontrado`.
+  é do número pedido, e `_Ambiguo` se mais de uma é (“o 2º grau do e-SAJ
+  tem mais de um processo com este número (…); não baixei, para não gravar
+  autos trocados”); `achar_codigo_2g` o levanta também quando a consulta
+  devolve processos e nenhum traz exatamente o número. Em `baixar`, a recusa
+  é definitiva, como a guarda da numeração abaixo: `NAO_SUPORTADO`, sem
+  `causa`, `refazer` falso (repetir daria as mesmas opções; baixe pelo
+  portal). A página em segredo que vem sem número, só com o código e o
+  pedido de senha, vale só para o pedido do principal, com um candidato
+  único (`_pagina_com_senha_2g`). O incidente `/01` do 1º grau não existe no
+  2º: sem opção exata, `ProcessoNaoEncontrado`.
 * **Página do processo**: `show.do?processo.codigo=<cd>`, só com o código (o
   foro interno do 2º grau não é o OOOO do número). `conferir_pagina_2g`
   confere os 20 dígitos, o código e, no recurso interno, que a página se

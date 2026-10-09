@@ -328,7 +328,7 @@ def escolher_processo_2g(candidatos, numero: Numero) -> str | None:
     apelação e embargos têm o mesmo número-base.
 
     Devolve o código, None se nenhuma opção é do número pedido, e levanta
-    RuntimeError se mais de uma é (não se chuta: seriam autos trocados).
+    _Ambiguo se mais de uma é (não se chuta: seriam autos trocados).
     """
     queria = _dependente_normal(numero.dependente)
     achados: list[str] = []
@@ -353,7 +353,7 @@ def escolher_processo_2g(candidatos, numero: Numero) -> str | None:
         if dependente == queria and codigo not in achados:
             achados.append(codigo)
     if len(achados) > 1:
-        raise RuntimeError(
+        raise _Ambiguo(
             f"o 2º grau do e-SAJ tem mais de um processo com este número ({numero.formatado}); "
             "não baixei, para não gravar autos trocados")
     return achados[0] if achados else None
@@ -2210,9 +2210,10 @@ class PortalESAJ:
         except SigilosoSemSenha as erro:
             r.situacao, r.detalhe, r.sigiloso = SIGILOSO_SEM_SENHA, str(erro), True
             self.limpar_estado()
-        except _FolhasEmDuplicidade as erro:
-            # Definitivo: a mesma Pasta Digital daria o mesmo plano. Sem causa
-            # (não é falha passageira) e sem "Tentar de novo".
+        except (_FolhasEmDuplicidade, _Ambiguo) as erro:
+            # Definitivo: a mesma Pasta Digital daria o mesmo plano, a mesma
+            # consulta as mesmas opções. Sem causa (não é falha passageira) e
+            # sem "Tentar de novo".
             r.situacao, r.detalhe = NAO_SUPORTADO, str(erro)
             self.limpar_estado()
         except SessaoPerdida:
@@ -2643,9 +2644,9 @@ class PortalESAJ:
             do_numero = any(self._mesmo_numero(c, numero) for c in candidatos)
             texto = str(resposta.get("texto") or "") or self._texto_da_pagina()
             if candidatos and not do_numero:
-                raise RuntimeError("a consulta de 2º grau devolveu processos e nenhum traz "
-                                   "exatamente este número; não baixei, para não gravar autos "
-                                   "trocados")
+                raise _Ambiguo("a consulta de 2º grau devolveu processos e nenhum traz "
+                               "exatamente este número; não baixei, para não gravar autos "
+                               "trocados")
             if not do_numero and re.search(r"m[úu]ltiplas\s+consultas", texto, re.I):
                 log.info("    o e-SAJ recusou (consultas simultâneas); repetindo %d/3", tentativa)
                 self._dormir(2)
@@ -3236,3 +3237,9 @@ class _CamposNaoApareceram(PortalIndisponivel):
 class _FolhasEmDuplicidade(RuntimeError):
     """A Pasta Digital do 2º grau numera a mesma folha em peças diferentes:
     os autos não são gravados (NAO_SUPORTADO, definitivo)."""
+
+
+class _Ambiguo(RuntimeError):
+    """A consulta de 2º grau não aponta um processo só do número pedido (mais
+    de um com o número exato, ou nenhum entre os devolvidos): os autos não
+    são gravados, para não serem trocados (NAO_SUPORTADO, definitivo)."""

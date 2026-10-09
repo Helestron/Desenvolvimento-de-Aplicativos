@@ -209,8 +209,9 @@ class _ComMotor(_PortaisDeMentira, apoio.PastaTemporaria):
     def lote(self, nome: str) -> Path:
         return self.acervo / "Processos" / nome
 
-    def baixar(self, numeros, destino: Path, grau: str = "1g", senhas=None, **mudar):
-        opcoes = apoio.opcoes_de_teste(self.tmp, grau=grau, tentativas=1, espera_s=20,
+    def baixar(self, numeros, destino: Path, grau: str = "1g", senhas=None, tentativas=1,
+               **mudar):
+        opcoes = apoio.opcoes_de_teste(self.tmp, grau=grau, tentativas=tentativas, espera_s=20,
                                        espera_tela_codigo_s=15, espera_login_min=1,
                                        pasta_provisoria=self.tmp / "local" / "baixando",
                                        **mudar)
@@ -498,6 +499,31 @@ class TestMotorNosDoisGraus(_ComMotor):
             self.assertFalse([l for l in outro.localizadores.values() if l["grau"] == "2g"])
         self.assertEqual((r.situacao, r.causa, r.refazer), (modelos.NAO_SUPORTADO, "", False))
         self.assertIn("numera folhas em duplicidade", r.detalhe)
+        self.assertFalse(list(lote.glob("*.pdf")))
+        self.assertEqual(self.eproc_neutro, [], "não suportado não vai ao eProc")
+        linha = ler_csv(lote / "_controle" / "relatorio.csv")[0]
+        self.assertEqual((linha["situacao"], linha["grau"], linha["causa"]),
+                         (modelos.NAO_SUPORTADO, "2g", ""))
+
+    def test_mais_de_um_processo_do_mesmo_numero_nao_e_suportado(self):
+        """Achado da revisão: o modal com dois principais do mesmo número saía
+        como ERRO passageiro (causa "falha", "Tentar de novo", busca repetida
+        no mesmo lote). É definitivo, como a pasta em duplicidade."""
+        with falso.servidor_esaj(("A",)) as outro:
+            a = outro.processos_2g[falso.COD_A_2G]
+            outro.processos_2g["P0000BBBB0000"] = dict(a, dependentes=[], arvore=list(a["arvore"]))
+            outro.respostas_2g[A.principal] = ("modal", [falso.COD_A_2G, "P0000BBBB0000"])
+            self.apontar_para(outro)
+            lote = self.lote("Ambiguo")
+            resumo = self.baixar([A], lote, "2g", tentativas=2)
+            self.assertEqual(len(outro.pedidos_de("/cposg5/search.do")), 1,
+                             "repetir a busca daria o mesmo modal")
+            self.assertFalse([l for l in outro.localizadores.values() if l["grau"] == "2g"])
+        r = resumo.itens[0]
+        self.assertEqual((r.situacao, r.causa, r.refazer), (modelos.NAO_SUPORTADO, "", False))
+        self.assertEqual(r.detalhe, "o 2º grau do e-SAJ tem mais de um processo com este número "
+                                    f"({A.formatado}); não baixei, para não gravar autos trocados")
+        self.assertEqual(resumo.a_refazer(), [], "não entra em Tentar de novo")
         self.assertFalse(list(lote.glob("*.pdf")))
         self.assertEqual(self.eproc_neutro, [], "não suportado não vai ao eProc")
         linha = ler_csv(lote / "_controle" / "relatorio.csv")[0]
