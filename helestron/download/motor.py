@@ -1662,10 +1662,20 @@ class _Lote:
         que não foram refeitos continuam como estavam, e os novos vêm no fim.
         As linhas se casam pela chave dos AUTOS (processo e grau): o mesmo
         número no 1º e no 2º grau são duas linhas.
+
+        O sigilo é do processo, e vale pela regra, não só pelo que a linha
+        diz: a linha do processo baixado quando ainda era público (A no 1º
+        grau antes de o 2º apurar o segredo, no mesmo lote; o incidente antes
+        do principal, na mesma rodada) sai mascarada também - a retirada já
+        levou os autos dele, e o número não pode voltar por ela.
         """
         saida = io.StringIO()
         w = csv.writer(saida, delimiter=";", lineterminator="\r\n")
         w.writerow(COLUNAS)
+        # Os processos que o lote já sabe sigilosos: os dos relatórios
+        # anteriores e os desta rodada (o incidente herda do principal).
+        sigilosos = set(self._sigilosos_sabidos)
+        sigilosos.update(n.nome_arquivo for n, r in zip(self.numeros, self.itens) if r.sigiloso)
         atuais = {}
         for autos, r in zip(self.autos, self.itens):
             atuais.setdefault(autos, r)
@@ -1684,16 +1694,25 @@ class _Lote:
                 linhas.append((autos, r))
         for ordem, (chave, item) in enumerate(linhas, 1):
             if isinstance(item, dict):
+                if sigilo.contem(sigilosos, _chave_relatorio(item.get("processo"))):
+                    # a linha completa diz que é sigiloso e, se a retirada
+                    # já levou os autos, onde eles estão (como _mascarar_relatorios)
+                    item = dict(item, sigiloso="sim")
+                    if item["arquivo"] and "(na pasta de sigilosos)" not in item["arquivo"] \
+                            and (self.pasta_sigilosos / f"{chave}.pdf").exists() \
+                            and not (self.destino / f"{chave}.pdf").exists():
+                        item["arquivo"] += " (na pasta de sigilosos)"
                 w.writerow(self._linha_antiga(item, ordem, mascarar))
                 continue
             r = item
-            if mascarar and r.sigiloso:
+            sigiloso = r.sigiloso or sigilo.contem(sigilosos, chave)
+            if mascarar and sigiloso:
                 w.writerow([ordem, MASCARA_SIGILOSO, r.tribunal, r.sistema,
                             r.situacao or "PENDENTE", "", "", "", "sim", "", DETALHE_MASCARA,
                             r.data_hora, r.causa, r.grau])
                 continue
             arquivo = Path(r.arquivo).name if r.arquivo else ""
-            if r.arquivo and r.sigiloso and r.situacao in (OK, JA_BAIXADO) \
+            if r.arquivo and sigiloso and r.situacao in (OK, JA_BAIXADO) \
                     and not str(r.arquivo).startswith(str(self.destino)):
                 arquivo += " (na pasta de sigilosos)"
             documentos, incompleto, detalhe = r.documentos or "", r.incompleto, r.detalhe
@@ -1709,7 +1728,7 @@ class _Lote:
                 detalhe = _juntar(detalhe, fica[2])
             w.writerow([ordem, r.numero, r.tribunal, r.sistema, r.situacao or "PENDENTE",
                         r.paginas or "", documentos, arquivo,
-                        "sim" if r.sigiloso else "não", incompleto, detalhe, r.data_hora,
+                        "sim" if sigiloso else "não", incompleto, detalhe, r.data_hora,
                         r.causa, r.grau])
         return saida.getvalue()
 
@@ -2009,6 +2028,22 @@ class _Lote:
         if novo is not None:
             r.arquivo = str(novo)
             r.detalhe = _juntar(r.detalhe, "levado agora para a pasta de sigilosos")
+        # O incidente dele baixado nesta rodada, quando o sigilo ainda não se
+        # sabia, saiu junto (herda o sigilo): o item passa a dizê-lo, com o
+        # PDF e as gravações onde estão agora - o relatório e o JSON do lote
+        # não podem contradizer a pasta.
+        for outro in self.itens:
+            levado = ret.autos.get(Path(outro.arquivo)) if outro.arquivo else None
+            if outro is r or levado is None:
+                continue
+            outro.sigiloso, outro.arquivo = True, str(levado)
+            outro.detalhe = _juntar(outro.detalhe, "levado agora para a pasta de sigilosos")
+            if outro.midias:
+                velho_midias = self.destino / "_controle" / "midias" / levado.stem
+                novo_midias = levado.parent / "_controle" / "midias" / levado.stem
+                outro.midias = [m.replace(str(velho_midias), str(novo_midias), 1)
+                                for m in outro.midias]
+            self._publicar(outro)
         if ret.outros:
             um = len(ret.outros) == 1
             r.detalhe = _juntar(r.detalhe, (

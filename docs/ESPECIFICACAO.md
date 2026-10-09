@@ -2943,7 +2943,18 @@ fora nesta versão: o PDF traz os eventos do próprio processo no 2º grau.
   `_linhas_csv`, `_pdf_que_fica`, `_linha_anterior`,
   `ler_relatorio_do_lote` (que devolve pares de chave dos autos, ou `None`,
   e linha) e na deduplicação do `_mascarar_relatorios`; `_chave_relatorio`
-  continua a do processo. O grau vazio (CSV de versão anterior) é
+  continua a do processo. O sigilo é do processo e vale pela regra, não só
+  pelo que a linha diz: em `_linhas_csv`, a linha de um processo que o lote
+  já sabe sigiloso (pelos relatórios anteriores ou por um item desta
+  rodada; o incidente herda do principal) sai mascarada no acervo e com
+  sigiloso “sim” no completo mesmo que dissesse “não” — é A baixado
+  público no 1º grau antes de o 2º apurar o segredo, no mesmo lote, ou o
+  incidente baixado antes do principal, na mesma rodada; a retirada já
+  levou os autos, e o `salvar_relatorio` seguinte não os devolve pela
+  linha antiga. O item desta rodada cujo PDF a retirada levou passa a
+  sigiloso, com o PDF e as gravações onde estão (`_retirar_do_acervo`),
+  para o JSON do lote não contradizer o relatório. O grau vazio (CSV de
+  versão anterior) é
   `cnj.grau_do_numero(n) or "1g"` (`_grau_da_linha`): a 1.0.2 procurava o
   HC de órgão `0000` no 1º grau e gravava a linha sem grau, e lida como 1º
   grau ela nunca seria substituída pela nova nem retomada.

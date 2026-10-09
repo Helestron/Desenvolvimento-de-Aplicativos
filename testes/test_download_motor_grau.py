@@ -420,6 +420,68 @@ class TestRelatorioPorGrau(BaseGrau):
         self.assertTrue((sig / f"{A.nome_arquivo}.pdf").is_file())
         self.assertTrue((sig / f"{A.nome_arquivo} (2G).pdf").is_file())
 
+    def test_a_publico_no_1o_grau_e_sigiloso_no_2o_no_mesmo_lote(self):
+        """Achado C1: A baixado público no 1º grau numa rodada anterior do
+        MESMO lote; a rodada seguinte, no 2º grau, apura o segredo. A
+        retirada leva os autos dos dois graus e mascara o relatório no disco,
+        e o salvar_relatorio que vem logo depois (regravado a partir das
+        linhas lidas no início da rodada) não pode devolver o número de A
+        pela linha antiga do 1º grau, que ainda diz "não"."""
+        r = self.lote([A], grau="1g").itens[0]
+        self.assertEqual((r.situacao, r.sigiloso), (modelos.OK, False))
+        r = self.lote([A], grau="2g", roteiro={A.formatado: ["ok_sigiloso"]}).itens[0]
+        self.assertEqual((r.situacao, r.sigiloso), (modelos.OK, True))
+        sig = self.tmp / "Sigilosos" / self.destino.name
+        self.assertEqual(list(self.destino.glob("*.pdf")), [])
+        self.assertTrue((sig / f"{A.nome_arquivo}.pdf").is_file())
+        self.assertTrue((sig / f"{A.nome_arquivo} (2G).pdf").is_file())
+        # as duas linhas mascaradas no relatório do acervo...
+        self.assertEqual([(l["processo"], l["sigiloso"], l["arquivo"], l["grau"])
+                          for l in self.relatorio()],
+                         [(motor.MASCARA_SIGILOSO, "sim", "", "1g"),
+                          (motor.MASCARA_SIGILOSO, "sim", "", "2g")])
+        self.assertNotIn(A.nome_arquivo, (self.destino / "_controle" / "relatorio.csv")
+                         .read_bytes().decode("utf-8-sig"))
+        # ... e completas, com sigiloso "sim", na pasta de sigilosos
+        completo = sig / "_controle" / "relatorio.csv"
+        self.assertEqual([(l["processo"], l["sigiloso"], l["arquivo"], l["grau"])
+                          for l in self.relatorio(completo)],
+                         [(A.formatado, "sim", f"{A.nome_arquivo}.pdf (na pasta de sigilosos)",
+                           "1g"),
+                          (A.formatado, "sim",
+                           f"{A.nome_arquivo} (2G).pdf (na pasta de sigilosos)", "2g")])
+        # a rodada seguinte no lote, com outro processo, mantém as duas mascaradas
+        self.lote([A2], grau="1g")
+        self.assertEqual([(l["processo"], l["sigiloso"]) for l in self.relatorio()],
+                         [(motor.MASCARA_SIGILOSO, "sim"), (motor.MASCARA_SIGILOSO, "sim"),
+                          (A2.formatado, "não")])
+        self.assertEqual([(l["processo"], l["sigiloso"]) for l in self.relatorio(completo)],
+                         [(A.formatado, "sim"), (A.formatado, "sim"), (A2.formatado, "não")])
+
+    def test_incidente_baixado_antes_do_principal_sigiloso_na_mesma_rodada(self):
+        """O incidente I vem antes de A na relação e é baixado público; A
+        então se apura sigiloso, e a retirada leva I junto (herda o sigilo).
+        A linha de I sai mascarada, e o item dele (o JSON do lote) diz que é
+        sigiloso e onde o PDF está."""
+        i, a = self.lote([I, A], grau="1g", roteiro={A.formatado: ["ok_sigiloso"]}).itens
+        self.assertEqual((a.situacao, a.sigiloso), (modelos.OK, True))
+        sig = self.tmp / "Sigilosos" / self.destino.name
+        self.assertEqual(list(self.destino.glob("*.pdf")), [])
+        self.assertTrue((sig / f"{I.nome_arquivo}.pdf").is_file())
+        self.assertEqual((i.situacao, i.sigiloso, i.arquivo),
+                         (modelos.OK, True, str(sig / f"{I.nome_arquivo}.pdf")))
+        self.assertIn("levado agora para a pasta de sigilosos", i.detalhe)
+        self.assertEqual((processo_json(i)["sigiloso"], processo_json(i)["pdf"]),
+                         (True, str(sig / f"{I.nome_arquivo}.pdf")))
+        self.assertEqual([(l["processo"], l["sigiloso"], l["arquivo"], l["grau"])
+                          for l in self.relatorio()],
+                         [(motor.MASCARA_SIGILOSO, "sim", "", "1g"),
+                          (motor.MASCARA_SIGILOSO, "sim", "", "1g")])
+        self.assertEqual([(l["processo"], l["sigiloso"], l["arquivo"])
+                          for l in self.relatorio(sig / "_controle" / "relatorio.csv")],
+                         [(I.formatado, "sim", f"{I.nome_arquivo}.pdf (na pasta de sigilosos)"),
+                          (A.formatado, "sim", f"{A.nome_arquivo}.pdf (na pasta de sigilosos)")])
+
 
 # ================================================================== sigilo
 class TestSigiloNosDoisGraus(BaseGrau):
