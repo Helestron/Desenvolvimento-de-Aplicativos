@@ -2847,19 +2847,28 @@ autos no 2º grau).
   `/50000` nessa página, com o modal à vista, `_Ambiguo` com a frase
   própria (“a consulta de 2º grau abriu a página do processo principal em
   segredo de justiça, sem o número; o recurso interno … de processo em
-  segredo não é escolhido pelo Helestron: baixe-o pelo portal do tribunal”)
-  e o número entra em `sigilosos_apurados`: o resultado nasce sigiloso, e a
-  linha do relatório do acervo é mascarada. Sem o modal à vista, a página
-  não se reconhece e o erro é passageiro (`RuntimeError` comum: “a página
-  aberta pela consulta de 2º grau não traz o número do processo (sem
-  acesso, ou sessão expirada?)”), nunca `_Ambiguo`. O incidente `/01` do 1º
-  grau não existe no 2º: sem opção exata, `ProcessoNaoEncontrado`.
+  segredo não é escolhido pelo Helestron: baixe-o pelo portal do tribunal”),
+  mesmo com a senha do processo na relação: a página em segredo não lista
+  as opções, e a senha só serve ao pedido do principal (`achar_codigo_2g`
+  não a recebe). O número e o principal entram em `sigilosos_apurados`: o
+  resultado nasce sigiloso, a linha do relatório do acervo é mascarada, e o
+  principal também fica sigiloso — o motor o põe no registro do download
+  com o `/50000` e, com a separação ligada, leva os autos dele no acervo
+  (dos dois graus, de qualquer lote) para a pasta dos sigilosos. Sem o
+  modal à vista, a página não se reconhece e o erro é passageiro
+  (`RuntimeError` comum: “a página aberta pela consulta de 2º grau não traz
+  o número do processo (sem acesso, ou sessão expirada?)”), nunca
+  `_Ambiguo`. O incidente `/01` do 1º grau não existe no 2º: sem opção
+  exata, `ProcessoNaoEncontrado`.
 * **Página do processo**: `show.do?processo.codigo=<cd>`, só com o código (o
   foro interno do 2º grau não é o OOOO do número). `conferir_pagina_2g`
   confere os 20 dígitos, o código e, no recurso interno, que a página se
   declara ele (pelo número, pelo título ou, sem eles, pelo código do 2º
   grau, cujos quatro últimos caracteres são o dependente em base 36); para
-  o principal, que ela não é a de um recurso interno. No 2º grau não se usa
+  o principal, que ela não é a de um recurso interno. A página aberta sem o
+  número é olhada de novo (`precisa_senha`): com o modal à vista, é a do
+  processo em segredo, e a conferência fica para depois da senha
+  (`_liberar`); a que traz o número não espera nada. No 2º grau não se usa
   a aritmética do incidente do 1º grau (`codigo_incidente`,
   `marca_do_incidente`).
 * **Pasta Digital**: `verificarAcessoPastaDigital.do?cdProcesso=<cd>&_=<ms>`

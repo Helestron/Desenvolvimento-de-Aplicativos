@@ -817,6 +817,35 @@ class TestConsulta2g(unittest.TestCase):
         self.assertEqual(p.achar_codigo_2g(A), "P0000SSSS0000")
         self.assertEqual(olhadas, [], "duas olhadas")
 
+    def test_a_pagina_aberta_sem_o_numero_espera_o_pedido_de_senha(self):
+        """Achado da 3ª verificação: achado o código, a página em segredo era
+        olhada uma vez só e, com o modal ainda fechado, lida sem o número
+        (“não traz este número… autos trocados”, ERRO que se repetia a cada
+        tentativa). Sem o número, olha-se de novo (precisa_senha), e a
+        conferência fica para depois da senha; com o número, nada se espera."""
+        p = portal()
+        esperas = []
+        p.nav.pagina.wait_for_timeout = esperas.append
+        p.nav.pagina.evaluate = lambda js: {"numero": "", "cabecalho": "",
+                                            "cd": "P0000SSSS0000", "texto": ""}
+        olhadas = [False, False, True]
+        p.modal_senha_visivel = lambda: olhadas.pop(0)
+        p._conferir_pagina_2g(A, "P0000SSSS0000")
+        self.assertEqual((olhadas, esperas), ([], [600]))
+        # sem o pedido de senha, a página sem o número continua recusada
+        p.modal_senha_visivel = lambda: False
+        with self.assertRaises(RuntimeError) as caso:
+            p._conferir_pagina_2g(A, "P0000SSSS0000")
+        self.assertIn("não traz este número", str(caso.exception))
+        # o caminho comum, com o número: uma olhada só, sem espera
+        esperas.clear()
+        olhadas = [False]
+        p.modal_senha_visivel = lambda: olhadas.pop(0)
+        p.nav.pagina.evaluate = lambda js: {"numero": A.formatado, "cabecalho": "",
+                                            "cd": "P0000AAAA0000", "texto": ""}
+        p._conferir_pagina_2g(A, "P0000AAAA0000")
+        self.assertEqual((olhadas, esperas), ([], []))
+
     def test_nao_encontrado_do_1o_grau_com_a_dica(self):
         p = tde.PortalDeConsulta(html="<p>Não existem informações disponíveis para os "
                                       "parâmetros informados.</p>",

@@ -592,6 +592,36 @@ class TestMotorNosDoisGraus(_ComMotor):
         self.assertTrue(sigilo.contem(sigilo.chaves_sigilosas(self.sigilosos, raiz=self.acervo),
                                       S.nome_arquivo))
 
+    def test_principal_em_segredo_com_o_pedido_de_senha_aberto_depois(self):
+        """Achado da 3ª verificação: o pedido de senha é aberto pelo script da
+        página. Achado o código, a página em segredo era olhada uma vez só e,
+        com o modal ainda fechado, lida sem o número: “não traz este número…
+        autos trocados”, ERRO que se repetia a cada tentativa. Com o modal
+        aberto 300 ms depois da carga, S com a senha vem, sigiloso."""
+        tela = falso.Atendente._tela_senha_2g
+
+        def tela_tardia(atendente, cd):
+            pagina = tela(atendente, cd).replace("display:block;width:420px;height:220px",
+                                                 "display:none", 1)
+            abrir = ("<script>setTimeout(() => {document.getElementById('popupSenhaProcesso')"
+                     ".style.cssText = 'display:block;width:420px;height:220px';}, 300);"
+                     "</script>")
+            return pagina.replace("</body>", abrir + "</body>", 1)
+
+        with falso.servidor_esaj(("S",)) as outro, \
+                mock.patch.object(falso.Atendente, "_tela_senha_2g", tela_tardia):
+            self.apontar_para(outro)
+            lote = self.lote("Segredo tardio")
+            resumo = self.baixar([S], lote, "2g", senhas={S.formatado: SENHA_S_2G},
+                                 tentativas=2)
+            buscas = len(outro.pedidos_de("/cposg5/search.do"))
+        r = resumo.itens[0]
+        self.assertEqual((r.situacao, r.grau, r.sigiloso), (modelos.OK, "2g", True), r.detalhe)
+        self.assertEqual(buscas, 1, "de primeira, sem Tentar de novo")
+        self.assertTrue((self.sigilosos / "Segredo tardio" / f"{S.nome_arquivo} (2G).pdf")
+                        .is_file())
+        self.assertFalse(list(lote.glob("*.pdf")))
+
     def test_tribunal_sem_o_2o_grau_nao_manda_escolher_o_2o_grau(self):
         """Achado da integração: o "não encontrado" do 1º grau mandava todo
         tribunal escolher “2º grau” nas Opções do lote - e o lote do 2º grau

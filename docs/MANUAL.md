@@ -959,11 +959,17 @@ A regra completa está em [Segredo de justiça](#segredo-de-justiça).
   este número (…); não baixei, para não gravar autos trocados”, e não entra
   em **Tentar de novo**: baixe pelo portal. O mesmo vale para o recurso
   interno (`...0001-50000`) de processo em segredo de justiça: a consulta
-  abre a página do processo principal em segredo, sem o número nem as
-  opções, e o Helestron não o escolhe; o detalhe diz “… o recurso interno …
-  de processo em segredo não é escolhido pelo Helestron: baixe-o pelo portal
-  do tribunal”, e a linha, sigilosa, aparece no relatório do acervo como
-  “(processo sigiloso)”.
+  abre a página do processo principal em segredo, sem o número, e o
+  Helestron não o escolhe, mesmo com a senha do processo na relação: a
+  página em segredo não lista as opções, e a senha só serve ao pedido do
+  principal. O detalhe diz “… o recurso interno … de processo em segredo
+  não é escolhido pelo Helestron: baixe-o pelo portal do tribunal”, e a
+  linha, sigilosa, aparece no relatório do acervo como “(processo
+  sigiloso)”. O processo principal, que a consulta mostrou em segredo,
+  também fica sigiloso: o sigilo dos dois fica guardado no registro à parte
+  (o `download.sigilo.json`) e, com **Separar os sigilosos** ligado, os
+  autos do principal que estiverem no acervo, dos dois graus e em qualquer
+  lote, vão para a pasta dos sigilosos.
 - **Órgão começando por 9.** O número com órgão começando por `9`
   (plantão do 2º grau, turma recursal) é procurado sempre no 2º grau. Onde
   a turma recursal estiver no eProc do 1º grau (na Justiça Federal, por
