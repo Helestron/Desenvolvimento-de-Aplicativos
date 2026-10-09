@@ -2214,22 +2214,33 @@ dados ficam com a instalação registrada.
     apurado, que sozinho manteria o processo sigiloso; a pauta recomeça: é
     preciso cadastrar as fontes, sincronizar e importar de novo antes de
     baixar ou transcrever), o `download.sigilo.json` se o sigilo veio de um
-    download, trocar “sim” por “não” na linha dele no relatório do lote
-    (fonte 5, e “uma vez sigiloso, sempre sigiloso” do motor) e trazer os
-    arquivos de volta da pasta dos sigilosos para o acervo — também o
-    originário do 2º grau levado pela capa (fonte 6), que fica sigiloso
-    pela própria pasta, com o “sim” da linha dele no relatório completo.
-    Com a separação dos sigilosos ligada, o “não” vai no relatório
-    completo, e a linha mascarada “(processo sigiloso)” de mesma ordem, no
-    relatório do acervo (e no “(atualizado)”), é trocada pela linha copiada
-    do completo (a do processo e a do originário levado junto): desde a
-    1.1.0 (contrato C9, seção 6.6), a linha mascarada vale “sim” mesmo que
-    o completo diga “não”, para o completo desatualizado (preso no Excel na
-    rodada que apurou o sigilo) não devolver o número ao acervo, e não há
-    como distinguir dele o completo editado. Sem a troca, a rodada seguinte
-    do lote regrava o “sim” no completo, e a primeira que tiver o processo
-    na relação leva os autos de volta para a pasta dos sigilosos (uma vez
-    sigiloso, sempre sigiloso).
+    download, trocar “sim” por “não” em todas as linhas dele (uma por grau,
+    coluna `grau`) no relatório de cada lote em que foi baixado (fonte 5, e
+    “uma vez sigiloso, sempre sigiloso” do motor: uma linha com “sim”
+    basta para refazer a marcação, nos dois graus) e trazer os arquivos de
+    volta da pasta dos sigilosos para o acervo — os autos dos dois graus,
+    de cada `Sigilosos\<lote>` em que estiverem, e também o originário do
+    2º grau levado pela capa (fonte 6), que fica sigiloso pela própria
+    pasta, com o “sim” da linha dele no relatório completo. A capa
+    (`_controle\<número>_capa.txt` e `<número> (2G)_capa.txt`) volta sem a
+    linha “SEGREDO DE JUSTIÇA” que o download grava no começo da capa do
+    processo que achou sigiloso (ou é apagada): o motor a procura nos
+    primeiros 2000 caracteres das capas dos dois graus do lote
+    (`_motivo_sigilo`), e o próximo download do processo no lote refaria a
+    marcação. Com a separação dos sigilosos ligada, o “não” vai no
+    relatório completo, e cada linha mascarada “(processo sigiloso)” de
+    mesma ordem, no relatório do acervo (e no “(atualizado)”), é trocada
+    pela linha copiada do completo (as do processo, uma por grau, e a do
+    originário levado junto); o manual lembra que o Excel pode não abrir
+    ao mesmo tempo os dois `relatorio.csv` (copiar a linha, fechar um e
+    abrir o outro). Desde a 1.1.0 (contrato C9, seção 6.6), a linha
+    mascarada vale “sim” mesmo que o completo diga “não”, para o completo
+    desatualizado (preso no Excel na rodada que apurou o sigilo) não
+    devolver o número ao acervo, e não há como distinguir dele o completo
+    editado. Sem a troca, a rodada seguinte do lote regrava o “sim” no
+    completo, e a primeira que tiver o processo na relação leva os autos
+    de volta para a pasta dos sigilosos (uma vez sigiloso, sempre
+    sigiloso).
   * **Download.** O processo que o programa já sabe sigiloso pela regra
     única vai para a pasta dos sigilosos mesmo que a página do portal não
     mostre o selo (segredo decretado depois, leiaute que a leitura não
@@ -2672,9 +2683,15 @@ resposta que repete um texto sem forma em UTF-8 (o escape `\ud800` no
 `id` ou no `termo`) vai com escapes `\uXXXX`; a que não vira JSON vira
 `-32603`. O stdout é só do protocolo: o registro do conector (avisos e
 erros) vai para o stderr e, como o da janela e o da linha de comando, para
-`Logs` (`registro.configurar(console=False)`), onde fica, por exemplo, o
-aviso do originário herdado pela capa quando é o conector que aplica a
-regra primeiro (seção 12).
+`Logs` (o formato e o filtro dos segredos de `registro.configurar`), onde
+fica, por exemplo, o aviso do originário herdado pela capa quando é o
+conector que aplica a regra primeiro (seção 12). O `Logs\AAAA-MM.log` é
+aberto e fechado a cada registro, com o mês de cada um (`_RegistroAvulso`):
+o Claude Desktop e o Codex mantêm o conector vivo a sessão inteira, e o
+arquivo aberto não se apaga no Windows — o desinstalador que apaga as
+configurações o deixaria para trás. Se algo ainda ficar em
+`%LOCALAPPDATA%\Helestron` depois do `RMDir /r`, o desinstalador avisa no
+detalhe, como nos perfis.
 
 ### 13.7 Arquivos de contexto, índice e pacote (`compartilhar/preparo.py`, `compartilhar/chatgpt.py`)
 

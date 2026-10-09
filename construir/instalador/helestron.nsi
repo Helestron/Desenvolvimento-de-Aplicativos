@@ -1033,6 +1033,11 @@ Section "Uninstall"
     MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Apagar também as configurações e as senhas guardadas do Helestron?$\r$\n$\r$\nElas ficam em $LOCALAPPDATA\Helestron (configurações, registros, senhas dos portais e a pauta monitorada). Se você pretende instalar o Helestron de novo, responda Não.$\r$\n$\r$\nAs sessões dos portais e os perfis do navegador já foram apagados. Os processos, as transcrições e a pauta exportada (Documentos\Helestron) não são apagados em nenhum caso." /SD IDNO IDNO manter
       DetailPrint "Apagando as configurações e as senhas..."
       RMDir /r "$LOCALAPPDATA\Helestron"
+      ; o conector do acervo segue vivo enquanto o Claude Desktop ou o Codex
+      ; estiver aberto (nada é encerrado), e o arquivo que ele usa não se apaga
+      ${If} ${FileExists} "$LOCALAPPDATA\Helestron\*.*"
+        DetailPrint "Parte dos registros estava em uso pelo conector do acervo (Claude Desktop ou Codex abertos) e ficou em $LOCALAPPDATA\Helestron: feche-os e apague essa pasta depois."
+      ${EndIf}
     manter:
   ${EndIf}
 SectionEnd

@@ -1910,35 +1910,51 @@ Se o processo é público e você precisa dele no acervo:
    sigilosos ou, os que ficaram no acervo (com **Separar os processos
    sigilosos** desligado), pelo relatório do lote deles, que os devolve ao
    registro.
-5. No relatório do lote em que ele foi baixado, troque “sim” por “não” na
-   coluna `sigiloso` da linha dele (o Excel abre o arquivo; salve-o no
-   mesmo formato): no `Sigilosos\<nome do lote>\_controle\relatorio.csv`
-   (o relatório completo), se existir, e no
-   `Acervo\Processos\<nome do lote>\_controle\relatorio.csv`. Com
-   **Separar os processos sigilosos** ligado, a linha dele neste último
-   não tem o número: diz “(processo sigiloso)” e tem, na coluna `ordem`, o
-   mesmo número da linha dele no relatório completo. Troque essa linha
-   inteira pela linha dele copiada do relatório completo (já com “não”):
-   desde a versão 1.1.0, a linha “(processo sigiloso)” vale “sim” mesmo
-   que o relatório completo diga “não” (para que um relatório completo
-   desatualizado, que estava aberto no Excel, não devolva o número ao
-   acervo). Faça o mesmo no `relatorio (atualizado).csv`, se houver. Sem
-   isso, o relatório o marca de novo (e o devolve ao
-   `download.sigilo.json`); com a separação ligada, o próximo download do
-   lote devolve o “sim” ao relatório completo, e o primeiro que o tiver na
-   relação leva os autos de volta para a pasta dos sigilosos.
+5. No relatório de cada lote em que ele foi baixado, troque “sim” por
+   “não” na coluna `sigiloso` de todas as linhas dele (o Excel abre o
+   arquivo; salve-o no mesmo formato): no
+   `Sigilosos\<nome do lote>\_controle\relatorio.csv` (o relatório
+   completo), se existir, e no
+   `Acervo\Processos\<nome do lote>\_controle\relatorio.csv`. O processo
+   tem uma linha por grau em que foi baixado (coluna `grau`: `1g` e `2g`)
+   e pode estar em mais de um lote (o 1º grau num, o 2º noutro, por
+   exemplo): basta uma linha com “sim” para ele voltar a ser sigiloso, nos
+   dois graus. Com **Separar os processos sigilosos** ligado, as linhas
+   dele neste último não têm o número: dizem “(processo sigiloso)” e têm,
+   na coluna `ordem`, o mesmo número da linha dele no relatório completo.
+   Troque cada uma dessas linhas inteira pela linha de mesma ordem
+   copiada do relatório completo (já com “não”): desde a versão 1.1.0, a
+   linha “(processo sigiloso)” vale “sim” mesmo que o relatório completo
+   diga “não” (para que um relatório completo desatualizado, que estava
+   aberto no Excel, não devolva o número ao acervo). Os dois arquivos se
+   chamam `relatorio.csv`, e o Excel pode não abrir ao mesmo tempo dois
+   arquivos com o mesmo nome: copie a linha no relatório completo, feche-o
+   e abra o do acervo para colá-la. Faça o mesmo no
+   `relatorio (atualizado).csv`, se houver. Sem isso, o relatório o marca
+   de novo (e o devolve ao `download.sigilo.json`); com a separação
+   ligada, o próximo download do lote devolve o “sim” ao relatório
+   completo, e o primeiro que o tiver na relação leva os autos de volta
+   para a pasta dos sigilosos.
 6. Leve de volta para o acervo o que o Helestron pôs na pasta dos sigilosos:
-   os autos, de `Sigilosos\<nome do lote>\` para
-   `Acervo\Processos\<nome do lote>\`; as transcrições, de
+   os autos dos dois graus (`<número>.pdf` e `<número> (2G).pdf`), de cada
+   `Sigilosos\<nome do lote>\` em que estiverem, para o
+   `Acervo\Processos\<nome do lote>\` de mesmo nome; as transcrições, de
    `Sigilosos\Transcricoes\` para `Acervo\Transcricoes\` (e as gravações, de
    `Sigilosos\Transcricoes\_audio\` para `Acervo\Transcricoes\_audio\`); e o
-   que mais tiver o número dele no nome (uma minuta em
-   `Sigilosos\Produtos\`, por exemplo). Leve de volta também o processo
-   originário do 2º grau (o habeas corpus, o mandado de segurança, o agravo
-   de instrumento: `<outro número> (2G).pdf`, com a capa) cuja capa lista
-   esse processo em **Números de 1ª Instância**: ele foi levado junto, por
-   causa dele, e fica sigiloso pela própria pasta enquanto estiver lá. O
-   registro do programa, em `%LOCALAPPDATA%\Helestron\Logs`, diz qual foi
+   que mais tiver o número dele no nome (a capa e o registro do download,
+   em `_controle\`, ou uma minuta em `Sigilosos\Produtos\`, por exemplo).
+   Quando o download o achou sigiloso, a capa dele
+   (`_controle\<número>_capa.txt` e `_controle\<número> (2G)_capa.txt`)
+   traz no começo a linha “SEGREDO DE JUSTIÇA - processo sigiloso. Não
+   compartilhe.”, e o Helestron relê a capa: antes de levá-la de volta,
+   apague essa linha (no Bloco de Notas) ou a capa inteira; sem isso, o
+   próximo download dele no lote o marca de novo. Leve de volta também o
+   processo originário do 2º grau (o habeas corpus, o mandado de
+   segurança, o agravo de instrumento: `<outro número> (2G).pdf`, com a
+   capa, conferida do mesmo jeito) cuja capa lista esse processo em
+   **Números de 1ª Instância**: ele foi levado junto, por causa dele, e
+   fica sigiloso pela própria pasta enquanto estiver lá. O registro do
+   programa, em `%LOCALAPPDATA%\Helestron\Logs`, diz qual foi
    (“originário … tratado como sigiloso: o processo de origem … é
    sigiloso”). Nos relatórios do lote dele, faça com a linha dele o mesmo
    que no passo 5: o “não” no relatório completo e, com a separação
@@ -2077,7 +2093,10 @@ desinstalador avisa no detalhe, e a pasta pode ser apagada depois.
 Depois, ele **pergunta** se você quer apagar também as configurações e as
 senhas guardadas (`%LOCALAPPDATA%\Helestron`: configurações, registros,
 senhas dos portais e a pauta monitorada). A resposta já vem em **Não**, que
-é o que convém se você pretende instalar o Helestron de novo.
+é o que convém se você pretende instalar o Helestron de novo. Se algo
+nessa pasta estiver em uso (pelo conector do acervo, com o Claude Desktop
+ou o Codex abertos), o desinstalador avisa no detalhe, e a pasta pode ser
+apagada depois de fechá-los.
 
 Se você desinstalar uma cópia do Helestron que não é a registrada (de uma
 pasta antiga, por exemplo), só os arquivos dela saem (e as sessões dos

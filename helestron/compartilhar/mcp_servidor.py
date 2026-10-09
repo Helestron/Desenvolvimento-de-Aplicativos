@@ -31,6 +31,7 @@ import logging
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from .. import __version__
@@ -994,6 +995,46 @@ def _tratar_sem_cair(servidor: Servidor, msg) -> dict | None:
                 "error": {"code": -32603, "message": "erro interno"}}
 
 
+class _RegistroAvulso(logging.FileHandler):
+    """Logs\\AAAA-MM.log aberto só enquanto grava cada registro. O Claude
+    Desktop e o Codex mantêm o conector vivo a sessão inteira, e o arquivo
+    aberto não se apaga no Windows: o desinstalador que apaga as
+    configurações o deixaria para trás, sem aviso. O conector só registra
+    avisos e erros, coisa rara; o mês sai do relógio a cada registro."""
+
+    def __init__(self, pasta: Path):
+        self.pasta = pasta
+        super().__init__(self._do_mes(), encoding="utf-8", delay=True)
+
+    def _do_mes(self) -> Path:
+        return self.pasta / f"{datetime.now():%Y-%m}.log"
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.baseFilename = os.path.abspath(self._do_mes())
+            super().emit(record)
+        except Exception:  # noqa: BLE001 - o registro não derruba a conversa
+            self.handleError(record)
+        finally:
+            self.close()
+
+
+def _registro_avulso() -> None:
+    """Troca o arquivo que registro.configurar deixa aberto até o fim do
+    processo pelo _RegistroAvulso, com o mesmo formato e os mesmos filtros
+    (o dos segredos)."""
+    raiz = logging.getLogger()
+    for velho in list(raiz.handlers):
+        if getattr(velho, "_helestron", False) and isinstance(velho, logging.FileHandler):
+            novo = _RegistroAvulso(Path(velho.baseFilename).parent)
+            novo.setFormatter(velho.formatter)
+            novo.filters = list(velho.filters)
+            novo._helestron = True  # type: ignore[attr-defined]
+            raiz.removeHandler(velho)
+            velho.close()
+            raiz.addHandler(novo)
+
+
 def main(argv: list[str] | None = None) -> int:
     p = ArgumentParser(prog="python -m helestron mcp",
                        description="Servidor MCP (só de leitura) do acervo, para o Claude "
@@ -1016,11 +1057,13 @@ def main(argv: list[str] | None = None) -> int:
     # linha de comando, sem console: o aviso que a regra do sigilo dá uma vez
     # só (o originário herdado da origem) pode sair justamente aqui, e o
     # manual diz que ele fica em Logs, fora do acervo. Sem Logs, fica o stderr.
+    # O arquivo só fica aberto enquanto grava (_RegistroAvulso).
     if not any(getattr(h, "_helestron", False) for h in logging.getLogger().handlers):
         try:
             from ..nucleo import registro
 
             registro.configurar(console=False, nivel=logging.WARNING)
+            _registro_avulso()
         except Exception:
             pass
     # Biblioteca que imprima aviso com print() não pode sujar o canal do

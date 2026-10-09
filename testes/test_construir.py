@@ -1080,6 +1080,20 @@ class TestScriptNsis(unittest.TestCase):
         self.assertNotIn("claude, chatgpt", desinstalar)
         self.assertIn('RMDir "$INSTDIR"', desinstalar)       # só se ficou vazia
 
+    def test_desinstalador_avisa_do_que_o_conector_segurou(self):
+        """Achado X9: o conector do acervo segue vivo com o Claude Desktop ou
+        o Codex abertos, e o que ele segurasse em %LOCALAPPDATA%\\Helestron
+        ficava lá, em silêncio, depois do sim à pergunta. Como nos perfis, o
+        detalhe avisa."""
+        desinstalar = self.secao("Uninstall")
+        apagar = desinstalar.index('RMDir /r "$LOCALAPPDATA\\Helestron"\n')
+        depois = desinstalar[apagar:desinstalar.index("manter:")]
+        self.assertRegex(depois, r'\$\{If\} \$\{FileExists\} "\$LOCALAPPDATA\\Helestron\\\*\.\*"\n'
+                                 r'\s+DetailPrint "Parte dos registros estava em uso pelo '
+                                 r'conector do acervo \(Claude Desktop ou Codex abertos\) e ficou '
+                                 r'em \$LOCALAPPDATA\\Helestron: feche-os e apague essa pasta '
+                                 r'depois\."\n\s+\$\{EndIf\}')
+
     def test_audiencia_em_andamento_nao_e_cortada(self):
         funcao = self.script[self.script.index("Function ${UN}FecharHelestron"):]
         funcao = funcao[:funcao.index("FunctionEnd")]
