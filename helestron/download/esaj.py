@@ -2647,8 +2647,9 @@ class PortalESAJ:
                 # A página em segredo do principal (sem número), que
                 # _pagina_com_senha_2g não aceitou: não são "outros processos".
                 if numero.e_dependente and self.precisa_senha():
-                    # o recurso interno não está entre opções: só o portal o abre
-                    self.sigilosos_apurados.add(numero.nome_arquivo)
+                    # o recurso interno não está entre opções: só o portal o abre.
+                    # A página em segredo é a do principal: ele também fica apurado.
+                    self.sigilosos_apurados.update((numero.nome_arquivo, numero.principal))
                     raise _Ambiguo(
                         "a consulta de 2º grau abriu a página do processo principal em "
                         f"segredo de justiça, sem o número; o recurso interno {numero.formatado} "
