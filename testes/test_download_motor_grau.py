@@ -794,6 +794,45 @@ class TestRelatorioPorGrau(BaseGrau):
         [(titulo, _frase)] = self.ctx.avisos
         self.assertEqual(titulo, "Arquivo de processo sigiloso no acervo")
 
+    def test_completo_preso_com_o_relatorio_aberto_depois_de_mascarado_nao_avisa(self):
+        """Achado R2 da oitava verificação: o completo preso desde o início e
+        o relatorio.csv do lote aberto no Excel só DEPOIS de o fim do item de
+        A o regravar mascarado (o número de A já saiu dele). A gravação do
+        item de B passa ao "(atualizado)", e salvar_relatorio, que ainda o
+        tinha entre os que o completo preso deixou com o número, o punha nos
+        avisos ("ainda traz o número dele"), sem ser verdade. O relatório
+        regravado mascarado sai dessa conta."""
+        lote_x = self.tmp / "Acervo" / "Processos" / "Lote X"
+        do_lote = lote_x / "_controle" / "relatorio.csv"
+        atualizado = lote_x / "_controle" / "relatorio (atualizado).csv"
+        completo = self.tmp / "Sigilosos" / "Lote X" / "_controle" / "relatorio.csv"
+        self.lote([S], roteiro={S.formatado: ["ok_sigiloso"]}, destino=lote_x)
+        self.lote([A], destino=lote_x)                   # A pública, no relatorio.csv
+        aberto = []
+        original = os.replace
+
+        def preso(origem, destino, *a, **k):
+            if Path(destino) == completo or (Path(destino) == do_lote and aberto):
+                raise PermissionError(13, "O arquivo está sendo usado por outro processo",
+                                      str(destino))
+            mascarado = Path(destino) == do_lote \
+                and A.formatado not in Path(origem).read_bytes().decode("utf-8-sig")
+            original(origem, destino, *a, **k)
+            if mascarado:
+                aberto.append(True)      # aberto no Excel logo depois de regravado
+        self.ctx = ContextoComEventos()
+        with mock.patch.object(motor.os, "replace", preso):
+            resumo = self.lote([A, A2], grau="2g", roteiro={A.formatado: ["ok_sigiloso"]},
+                               destino=lote_x)
+        self.assertEqual([(r.grau, r.sigiloso) for r in resumo.itens],
+                         [("2g", True), ("2g", False)])
+        self.assertTrue(aberto, "o relatorio.csv regravado mascarado no fim do item de A")
+        self.assertTrue(atualizado.is_file(), "a gravação do item de B foi ao \"(atualizado)\"")
+        for arquivo in (do_lote, atualizado):
+            self.assertNotIn(A.formatado, arquivo.read_bytes().decode("utf-8-sig"), arquivo)
+        self.assertEqual(resumo.sigilosos_avisos, [])
+        self.assertEqual(self.ctx.avisos, [])
+
     def test_marcado_por_engano_e_desfeito_pelo_manual_continua_publico(self):
         """Achados W8 e W10: desde a correção V3, a linha "(processo sigiloso)"
         do relatório do acervo vale "sim" mesmo que o completo diga "não". O
@@ -1374,6 +1413,46 @@ class TestSigiloNosDoisGraus(BaseGrau):
                       "sigilosos", e.detalhe)
         self.assertEqual(e.arquivo, str(self.tmp / "Sigilosos" / self.destino.name /
                                         f"{autos(E, '2g')}.pdf"))
+
+    def recurso_de_novo_com_o_principal_no_lote(self, situacao: str, portal=None,
+                                                **opcoes) -> None:
+        """Achado R3 da oitava verificação: o Q1 com o principal P na mesma
+        relação de E (P e E baixados públicos e, de novo no mesmo lote, E
+        sigiloso). A retirada de P pelo item dele levava junto a cópia antiga
+        de E sem dá-la ao item de E, que ficava sem arquivo (o JSON com o pdf
+        vazio, o completo sem a coluna arquivo), embora o PDF estivesse na
+        pasta dos sigilosos. Agora o item de E aponta o PDF dele onde ele foi
+        parar, como sem P na relação."""
+        self.lote([P, E])
+        p, e = self.lote([P, E], portal=portal, **opcoes).itens
+        sig = self.tmp / "Sigilosos" / self.destino.name
+        pdf = sig / f"{autos(E, '2g')}.pdf"
+        self.assertEqual((p.sigiloso, p.arquivo), (True, str(sig / f"{P.nome_arquivo}.pdf")))
+        self.assertEqual((e.situacao, e.sigiloso, e.arquivo), (situacao, True, str(pdf)))
+        self.assertTrue(pdf.is_file())
+        self.assertEqual(list(self.destino.glob("*.pdf")), [])
+        self.assertIn("levado agora para a pasta de sigilosos", e.detalhe)
+        self.assertNotIn("incidentes dele", e.detalhe)
+        self.assertEqual((processo_json(e)["sigiloso"], processo_json(e)["pdf"]),
+                         (True, str(pdf)))
+        completo = sig / "_controle" / "relatorio.csv"
+        na_pasta = " (na pasta de sigilosos)" if situacao == modelos.OK else ""
+        self.assertEqual([(l["processo"], l["arquivo"]) for l in self.relatorio(completo)],
+                         [(P.formatado, f"{P.nome_arquivo}.pdf (na pasta de sigilosos)"),
+                          (E.formatado, pdf.name + na_pasta)])
+
+    def test_recurso_de_novo_sem_a_senha_com_o_principal_no_lote_aponta_o_pdf(self):
+        self.recurso_de_novo_com_o_principal_no_lote(
+            modelos.SIGILOSO_SEM_SENHA, roteiro={E.formatado: ["sigiloso_sem_senha"]},
+            pular_baixados=False)
+
+    def test_recurso_rebaixado_com_erro_e_o_principal_no_lote_aponta_o_pdf(self):
+        self.recurso_de_novo_com_o_principal_no_lote(
+            modelos.ERRO, portal=PortalErroApurado, rebaixar_incompletos=True, tentativas=1)
+
+    def test_recurso_de_novo_sigiloso_com_o_principal_no_lote_aponta_o_pdf(self):
+        self.recurso_de_novo_com_o_principal_no_lote(
+            modelos.OK, roteiro={E.formatado: ["ok_sigiloso"]}, pular_baixados=False)
 
     PORQUE_DO_RECURSO = f"tratado como sigiloso: o recurso interno {E.formatado} é sigiloso"
 

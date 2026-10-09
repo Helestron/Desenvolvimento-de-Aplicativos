@@ -1824,6 +1824,10 @@ class _Lote:
             self.controle.mkdir(parents=True, exist_ok=True)
             tmp.write_bytes(dados)
             os.replace(tmp, self.relatorio)
+            if mascarar:
+                # regravado mascarado: o número saiu dele, e não é mais aviso
+                # se ele ficar preso depois (aberto no Excel no meio do lote)
+                self._regravar_pelo_completo.pop(str(self.relatorio), None)
             return
         except PermissionError:
             # relatório aberto no Excel: o Windows não deixa trocar o arquivo.
@@ -3241,7 +3245,7 @@ class _Lote:
             dele.sigiloso = True
             dele.detalhe = _juntar(dele.detalhe, porque)
             if self._separar(p):
-                self._retirar_do_acervo(dele, p)
+                self._proprio_levado(r, n, self._retirar_do_acervo(dele, p))
                 if not self.opcoes.separar_sigilosos:
                     dele.detalhe = _juntar(dele.detalhe, SEM_REGISTRO_DO_SIGILO)
             else:
@@ -3262,15 +3266,9 @@ class _Lote:
         provisorio = ResultadoProcesso(ordem=0, numero=p.formatado, tribunal=r.tribunal,
                                        sistema=r.sistema, grau=r.grau)
         ret = self._retirar_do_acervo(provisorio, p)
-        # Os autos do próprio recurso interno 'n' (incidente do principal, a
-        # retirada os leva junto) são do item dele, como os levaria a retirada
-        # dele, logo depois, que já não os acha: a cópia deste lote passa a
-        # ser o PDF dele (sem PDF novo), e nenhuma conta como "dos incidentes".
-        aqui = ret.autos.get(self.destino / f"{self._nome_dos_autos(n)}.pdf")
-        if aqui is not None and r.arquivo != str(aqui):
-            if r.situacao != OK:
-                r.arquivo = str(aqui)
-            r.detalhe = _juntar(r.detalhe, "levado agora para a pasta de sigilosos")
+        # Nenhuma cópia dos autos do próprio recurso interno conta como "dos
+        # incidentes" (_proprio_levado: são do item dele).
+        self._proprio_levado(r, n, ret)
         autos = [k for k in ret.autos if chave_do_nome(k.name) != n.nome_arquivo]
         # O que a retirada disse (outros arquivos, transcrições, o que ficou
         # preso); o "levado agora" dos autos deste lote entra na conta abaixo.
@@ -3296,6 +3294,18 @@ class _Lote:
         if not self.opcoes.separar_sigilosos:
             texto = _juntar(texto, SEM_REGISTRO_DO_SIGILO)
         r.detalhe = _juntar(r.detalhe, texto, *resto)
+
+    def _proprio_levado(self, r: ResultadoProcesso, n: Numero, ret: Retirada) -> None:
+        """Os autos do próprio recurso interno 'n' (incidente do principal: a
+        retirada do principal, com o item dele na relação ou não, os leva
+        junto) são do item dele, como os levaria a retirada dele, logo depois,
+        que já não os acha: a cópia deste lote passa a ser o PDF dele (sem PDF
+        novo), e o item diz que ela foi levada."""
+        aqui = ret.autos.get(self.destino / f"{self._nome_dos_autos(n)}.pdf")
+        if aqui is not None and r.arquivo != str(aqui):
+            if r.situacao != OK:
+                r.arquivo = str(aqui)
+            r.detalhe = _juntar(r.detalhe, "levado agora para a pasta de sigilosos")
 
     @staticmethod
     def _definitivo(r: ResultadoProcesso, situacao: str, erro: Exception) -> ResultadoProcesso:

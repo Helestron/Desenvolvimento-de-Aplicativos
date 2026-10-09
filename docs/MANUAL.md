@@ -1902,12 +1902,20 @@ mais esses casos, mas a marcação já gravada continua.
 
 Se o processo é público e você precisa dele no acervo:
 
-1. Confirme no portal que o processo não corre em segredo de justiça —
-   nem, no 2º grau, os recursos internos dele (`<número>/50000`, `/50001`…,
-   os embargos de declaração) que estiverem na pasta dos sigilosos ou com
-   “sim” no relatório do lote. Se um deles corre em segredo, o processo é
-   sigiloso pela regra (o recurso interno sigiloso torna sigiloso também o
-   processo): não o desmarque.
+1. Confirme no portal que o processo não corre em segredo de justiça. No
+   2º grau, confira também cada recurso interno dele (`<número>/50000`,
+   `/50001`…, os embargos de declaração) que estiver na pasta dos
+   sigilosos ou com “sim” no relatório do lote: é essa conferência, e não
+   o relatório, que diz se ele só herdou a marcação. Se a página do
+   recurso interno está em segredo de justiça, se a linha dele no
+   relatório diz que a consulta abriu a página do processo principal em
+   segredo de justiça (situação `NAO_SUPORTADO`; na tela, “Tribunal não
+   suportado”) ou se há outro sinal de que a página estava em segredo no
+   download dele (veja o passo 5), o processo é sigiloso pela regra (o
+   recurso interno sigiloso torna sigiloso também o processo): não o
+   desmarque. Sem nada disso, se o portal mostra pública a página do
+   recurso interno, ele só herdou a marcação do processo e é desmarcado
+   junto com ele (passos 5 e 6).
 2. Feche o Helestron (**Ajustes › Sobre e diagnóstico › Encerrar o
    Helestron**) e, se estiverem abertos, o Claude Desktop e o Codex.
 3. Se a marcação pode ter vindo da pauta (o processo tem, ou já teve,
@@ -1953,20 +1961,33 @@ Se o processo é público e você precisa dele no acervo:
    exemplo): basta uma linha com “sim” para ele voltar a ser sigiloso, nos
    dois graus. O recurso interno sigiloso dele no 2º grau
    (`<número>/50000`, `/50001`…) torna sigiloso também o processo (veja
-   [Segredo de justiça](#segredo-de-justiça)). Se um recurso interno dele
-   foi baixado enquanto ele estava marcado e só herdou a marcação (a
-   coluna `detalhe` da linha do recurso interno — no relatório completo,
-   com a separação ligada — diz “tratado como sigiloso: é incidente de um
-   processo sigiloso…”), troque também as
-   linhas desse recurso interno e, no passo 6, traga de volta os autos
-   dele (`<número>-50000 (2G).pdf`, que já têm o número do processo no
-   nome). Se a página do próprio recurso interno estava em segredo (a capa
-   dele, `_controle\<número>-50000 (2G)_capa.txt`, traz no começo a linha
-   “SEGREDO DE JUSTIÇA”, a situação na linha dele é `SIGILOSO_SEM_SENHA` —
-   “Sigiloso: falta a senha”, na tela —, ou a linha dele diz “sim” sem
-   dizer que herdou), o processo é sigiloso pela regra: não o desmarque. Com
-   **Separar os processos sigilosos** ligado, as linhas dele (e as desses
-   recursos internos) neste último não têm o número: dizem
+   [Segredo de justiça](#segredo-de-justiça)). Por isso, troque também as
+   linhas de cada recurso interno dele que, pelo passo 1, só herdou a
+   marcação e, no passo 6, traga de volta os autos dele
+   (`<número>-50000 (2G).pdf`, que já têm o número do processo no nome).
+   A coluna `detalhe` da linha do recurso interno (no relatório completo,
+   com a separação ligada) dá pistas, mas não basta para saber se ele só
+   herdou: quem decide é a conferência no portal (passo 1). Ela diz
+   “tratado como sigiloso: é incidente de um processo sigiloso…” quando o
+   download dele deu certo e nenhum download anterior do lote tinha
+   deixado no relatório a linha dele ou a do processo com “sim”. Nos
+   outros casos, ela não diz que ele herdou, mesmo quando ele só herdou:
+   se o download dele falhou ou ele não foi encontrado, ela diz só isso
+   (“o portal demorou demais”, por exemplo); se ele já estava na pasta do
+   lote, “já estava na pasta (não baixei de novo)”; e se um download
+   anterior do lote tinha deixado a linha dele ou a do processo com “sim”
+   (quando ele é baixado de novo, com **Tentar de novo**, por exemplo, ou
+   num lote em que o processo já tinha sido baixado como sigiloso),
+   “tratado como sigiloso: assim constava de download anterior”. Já estes
+   sinais mostram que a página estava em segredo no download dele: a
+   capa dele (`_controle\<número>-50000 (2G)_capa.txt`) com a linha
+   “SEGREDO DE JUSTIÇA” no começo, a situação `SIGILOSO_SEM_SENHA` na
+   linha dele (na tela, “Sigiloso: falta a senha”) e a linha que diz que a
+   consulta abriu a página do processo principal em segredo de justiça
+   (`NAO_SUPORTADO`). Com qualquer deles, o processo é sigiloso pela
+   regra: não o desmarque.
+   Com **Separar os processos sigilosos** ligado, as linhas dele (e as
+   desses recursos internos) neste último não têm o número: dizem
    “(processo sigiloso)” e têm, na coluna `ordem`, o mesmo número da linha
    no relatório completo.
    Troque cada uma dessas linhas inteira pela linha de mesma ordem

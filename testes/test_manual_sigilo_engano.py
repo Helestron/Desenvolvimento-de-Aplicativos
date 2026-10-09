@@ -434,15 +434,27 @@ class TestDesfazerPrincipalComRecursoInterno(BaseGrau):
     para a pasta dos sigilosos. Os passos 5 e 6 mandam agora tratar também
     as linhas e os autos dos recursos internos dele.
 
-    Achado Q2 da sétima verificação: só os que HERDARAM a marcação (a linha
-    do recurso interno diz "tratado como sigiloso: é incidente de um
-    processo sigiloso"). O recurso interno sigiloso pela própria página é
-    sigiloso de verdade e torna sigiloso o principal: desmarcá-lo levaria
-    autos em segredo ao acervo, ao INDICE e ao conector. O passo 1 manda
-    conferir no portal também os recursos internos, e o 5, não desmarcar."""
+    Achado Q2 da sétima verificação: só os que HERDARAM a marcação. O
+    recurso interno sigiloso pela própria página é sigiloso de verdade e
+    torna sigiloso o principal: desmarcá-lo levaria autos em segredo ao
+    acervo, ao INDICE e ao conector. O passo 1 manda conferir no portal
+    também os recursos internos, e o 5, não desmarcar.
+
+    Achado R1 da oitava verificação: o passo 5 separava os dois pela frase
+    da herança na linha do recurso interno ("tratado como sigiloso: é
+    incidente de um processo sigiloso"), que o motor só grava no download
+    que deu certo sem linha "sim" dele ou do principal deixada por um
+    download anterior do lote. Depois de uma falha e do "Tentar de novo"
+    (ou baixado de novo, ou já na pasta), a linha do que só herdou não a
+    traz, e o manual mandava não desmarcá-lo: o principal público ficava
+    sigiloso sem remédio. Agora quem decide é o portal (passo 1); as frases
+    ficam como pistas, e os sinais da página em segredo (a capa, a situação
+    SIGILOSO_SEM_SENHA, o NAO_SUPORTADO do principal em segredo) como razão
+    para não desmarcar."""
 
     # O detalhe que o motor grava na linha do recurso interno que só herdou
-    # o sigilo do principal (a frase que o passo 5 manda procurar)
+    # o sigilo do principal, no download que deu certo sem linha "sim" de
+    # download anterior do lote (uma das pistas do passo 5)
     HERDOU = "tratado como sigiloso: é incidente de um processo sigiloso"
 
     regra = TestPrincipalApuradoPeloRecursoInterno.regra
@@ -470,7 +482,8 @@ class TestDesfazerPrincipalComRecursoInterno(BaseGrau):
         self.assertTrue(e.sigiloso, "herda de P")
         self.assertTrue((self.tmp / "Sigilosos" / self.lote2.name /
                          f"{cnj.nome_dos_autos(E, '2g')}.pdf").is_file())
-        # o que o passo 5 manda procurar para tratar E junto: a linha diz que herdou
+        # a pista do passo 5 (o primeiro download dele no lote deu certo): a
+        # linha diz que herdou
         self.assertIn(self.HERDOU, self.linha_de_e()["detalhe"])
         alvos = [(self.lote1, P)] + ([(self.lote2, E)] if com_o_recurso else [])
         return self.passos_4_a_8(alvos)
@@ -503,22 +516,49 @@ class TestDesfazerPrincipalComRecursoInterno(BaseGrau):
 
     def test_o_manual_fala_dos_recursos_internos_do_principal(self):
         p1, p5, p6 = passo(1), passo(5), passo(6)
-        self.assertIn("nem, no 2º grau, os recursos internos dele (`<número>/50000`, "
-                      "`/50001`…, os embargos de declaração) que estiverem na pasta dos "
-                      "sigilosos ou com “sim” no relatório do lote. Se um deles corre em "
-                      "segredo, o processo é sigiloso pela regra", p1)
-        self.assertIn("não o desmarque", p1)
+        # Achado R1: o critério é o portal (passo 1), não a frase da linha
+        for frase in ("No 2º grau, confira também cada recurso interno dele "
+                      "(`<número>/50000`, `/50001`…, os embargos de declaração) que estiver "
+                      "na pasta dos sigilosos ou com “sim” no relatório do lote: é essa "
+                      "conferência, e não o relatório, que diz se ele só herdou a marcação.",
+                      "Se a página do recurso interno está em segredo de justiça, se a linha "
+                      "dele no relatório diz que a consulta abriu a página do processo "
+                      "principal em segredo de justiça (situação `NAO_SUPORTADO`; na tela, "
+                      "“Tribunal não suportado”) ou se há outro sinal de que a página "
+                      "estava em segredo no download dele (veja o passo 5), o processo é "
+                      "sigiloso pela regra",
+                      "não o desmarque. Sem nada disso, se o portal mostra pública a página "
+                      "do recurso interno, ele só herdou a marcação do processo e é "
+                      "desmarcado junto com ele (passos 5 e 6)."):
+            self.assertIn(frase, p1)
         for frase in ("O recurso interno sigiloso dele no 2º grau (`<número>/50000`, "
                       "`/50001`…) torna sigiloso também o processo",
-                      "Se um recurso interno dele foi baixado enquanto ele estava marcado e "
-                      "só herdou a marcação (a coluna `detalhe` da linha do recurso interno "
-                      "— no relatório completo, com a separação ligada — "
-                      f"diz “{self.HERDOU}…”), troque também as linhas desse recurso "
-                      "interno e, no passo 6, traga de volta os autos dele "
+                      "troque também as linhas de cada recurso interno dele que, pelo passo "
+                      "1, só herdou a marcação e, no passo 6, traga de volta os autos dele "
                       "(`<número>-50000 (2G).pdf`",
-                      "Se a página do próprio recurso interno estava em segredo",
-                      "o processo é sigiloso pela regra: não o desmarque"):
+                      "dá pistas, mas não basta para saber se ele só herdou: quem decide é a "
+                      "conferência no portal (passo 1)",
+                      f"Ela diz “{self.HERDOU}…” quando o download dele deu certo e nenhum "
+                      "download anterior do lote tinha deixado no relatório a linha dele ou "
+                      "a do processo com “sim”.",
+                      # os casos em que a linha do que só herdou não diz que herdou
+                      "Nos outros casos, ela não diz que ele herdou, mesmo quando ele só "
+                      "herdou: se o download dele falhou ou ele não foi encontrado, ela diz "
+                      "só isso",
+                      "se ele já estava na pasta do lote, “já estava na pasta (não baixei de "
+                      "novo)”",
+                      "(quando ele é baixado de novo, com **Tentar de novo**, por exemplo, ou "
+                      "num lote em que o processo já tinha sido baixado como sigiloso), "
+                      f"“tratado como sigiloso: {motor.SIGILO_ANTERIOR}”",
+                      # os sinais da página em segredo
+                      "Já estes sinais mostram que a página estava em segredo no download "
+                      "dele: a capa dele (`_controle\\<número>-50000 (2G)_capa.txt`) com a "
+                      "linha “SEGREDO DE JUSTIÇA” no começo, a situação `SIGILOSO_SEM_SENHA`",
+                      "a linha que diz que a consulta abriu a página do processo principal em "
+                      "segredo de justiça (`NAO_SUPORTADO`). Com qualquer deles, o processo é "
+                      "sigiloso pela regra: não o desmarque."):
             self.assertIn(frase, p5)
+        self.assertNotIn("sem dizer que herdou", p5)
         self.assertIn("os autos dos recursos internos dele que só herdaram a marcação "
                       "(passo 5: `<número>-50000 (2G).pdf`", p6)
 
@@ -526,10 +566,11 @@ class TestDesfazerPrincipalComRecursoInterno(BaseGrau):
         """Achado Q2: P baixado público no 1º grau (Lote 1); E, no 2º grau
         (Lote 2), sigiloso pela PRÓPRIA página (com a senha). Pela regra, E
         torna P sigiloso, e o motor leva os autos de P para a pasta dos
-        sigilosos. A linha de E não diz que herdou e a capa dele traz o
-        segredo: o passo 5 não manda desmarcá-lo. Seguidos os passos 4 a 8
-        para P assim mesmo (contra o passo 1), P continua sigiloso, e os
-        autos de E não chegam ao acervo, ao INDICE nem ao conector."""
+        sigilosos. A página de E está em segredo no portal (passo 1), e a
+        capa dele traz o segredo (um sinal do passo 5): E não se desmarca.
+        Seguidos os passos 4 a 8 para P assim mesmo (contra o passo 1), P
+        continua sigiloso, e os autos de E não chegam ao acervo, ao INDICE
+        nem ao conector."""
         p = self.lote([P], destino=self.lote1).itens[0]          # a página de P, pública
         self.assertEqual((p.situacao, p.sigiloso), (modelos.OK, False))
         e = self.lote([E], grau="2g", destino=self.lote2,
@@ -543,12 +584,10 @@ class TestDesfazerPrincipalComRecursoInterno(BaseGrau):
         capa = sig2 / "_controle" / f"{cnj.nome_dos_autos(E, '2g')}_capa.txt"
         capa.write_text(esaj.formatar_capa({}, E, "TJAL", True, grau="2g"), encoding="utf-8")
         self.assertIn(FRASE_DA_CAPA, capa.read_text(encoding="utf-8")[:300])
-        # o critério do passo 5: a linha de E não diz que herdou
+        # a linha de E diz "sim" e não diz que herdou; com a capa, E fica de fora
         self.assertEqual(self.linha_de_e()["sigiloso"], "sim")
         self.assertNotIn(self.HERDOU, self.linha_de_e()["detalhe"])
-        alvos = [(self.lote1, P)] + ([(self.lote2, E)]
-                                     if self.HERDOU in self.linha_de_e()["detalhe"] else [])
-        rel = self.passos_4_a_8(alvos)
+        rel = self.passos_4_a_8([(self.lote1, P)])
         self.assertEqual(rel.sigilosos_levados, 1, "os autos de P voltam à pasta dos sigilosos")
         self.assertTrue(self.regra(P))
         self.assertTrue(self.regra(E))
@@ -586,3 +625,58 @@ class TestDesfazerPrincipalComRecursoInterno(BaseGrau):
         self.assertFalse(self.regra(P))
         self.assertTrue(pdf.is_file())
         self.assertNotIn(P.nome_arquivo, sigilo.apuradas_no_download())
+
+    def herdou_sem_a_frase(self) -> None:
+        """Achado R1: P marcado (baixado sigiloso) e E = P/50000 na mesma
+        relação do 2º grau, no Lote 1; o download de E falha nas duas
+        tentativas, e o "Tentar de novo" o baixa, com a página dele pública
+        (o portal de mentira não mostra o segredo de E). E herdou de P, mas
+        a linha dele não traz a frase da herança."""
+        p, e = self.lote([P, E], grau="2g", destino=self.lote1,
+                         roteiro={P.formatado: ["ok_sigiloso"],
+                                  E.formatado: ["erro", "erro"]}).itens
+        self.assertEqual((p.situacao, p.sigiloso), (modelos.OK, True))
+        self.assertEqual((e.situacao, e.sigiloso), (modelos.ERRO, True), "herda de P")
+        e = self.lote([E], grau="2g", destino=self.lote1).itens[0]      # Tentar de novo
+        self.assertEqual((e.situacao, e.sigiloso), (modelos.OK, True))
+        completo = self.tmp / "Sigilosos" / self.lote1.name / "_controle" / "relatorio.csv"
+        linha = next(l for l in self.ler(completo) if l["processo"] == E.formatado)
+        # a linha que o passo 5 descreve para esse caso, sem a frase da herança...
+        self.assertEqual((linha["situacao"], linha["sigiloso"]), (modelos.OK, "sim"))
+        self.assertIn(f"tratado como sigiloso: {motor.SIGILO_ANTERIOR}", linha["detalhe"])
+        self.assertIn(motor.SIGILO_ANTERIOR, e.detalhe)
+        self.assertNotIn(self.HERDOU, linha["detalhe"])
+        # ... e nenhum dos sinais da página em segredo
+        capa = (self.tmp / "Sigilosos" / self.lote1.name / "_controle" /
+                f"{cnj.nome_dos_autos(E, '2g')}_capa.txt")
+        self.assertNotIn(FRASE_DA_CAPA, capa.read_text(encoding="utf-8")[:2000])
+        self.assertNotIn("abriu a página do processo principal", linha["detalhe"])
+
+    def test_recurso_interno_que_herdou_sem_a_frase_se_desmarca_pelo_portal(self):
+        """Achado R1: o passo 5 mandava não desmarcar a linha "sim" sem a
+        frase da herança, e P, público, ficava sigiloso sem remédio. Pelo
+        passo 1 (a página de E pública no portal, nenhum sinal de segredo),
+        E só herdou: seguidos os passos 4 a 8 também para E, P fica
+        público."""
+        self.herdou_sem_a_frase()
+        rel = self.passos_4_a_8([(self.lote1, P), (self.lote1, E)])
+        self.assertEqual(rel.sigilosos_levados, 0)
+        self.assertFalse(self.regra(P))
+        self.assertFalse(self.regra(E))
+        for n in (P, E):
+            self.assertTrue((self.lote1 / f"{cnj.nome_dos_autos(n, '2g')}.pdf").is_file())
+        self.assertTrue(self.no_indice_ou_no_conector(P))
+        # a rodada seguinte do lote, com os dois, não o marca de novo
+        p, e = self.lote([P, E], grau="2g", destino=self.lote1).itens
+        self.assertEqual([(r.situacao, r.sigiloso) for r in (p, e)],
+                         [(modelos.JA_BAIXADO, False)] * 2)
+        self.assertFalse(self.regra(P))
+
+    def test_so_as_linhas_do_principal_com_o_que_herdou_sem_a_frase_o_deixam_sigiloso(self):
+        # por que o passo 5 manda tratar também esse E, embora a linha dele
+        # não diga que herdou
+        self.herdou_sem_a_frase()
+        rel = self.passos_4_a_8([(self.lote1, P)])
+        self.assertEqual(rel.sigilosos_levados, 1)
+        self.assertTrue(self.regra(P))
+        self.assertFalse(self.no_indice_ou_no_conector(P))

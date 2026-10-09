@@ -2280,12 +2280,8 @@ dados ficam com a instalação registrada.
     baixar ou transcrever), o `download.sigilo.json` se o sigilo veio de um
     download, trocar “sim” por “não” em todas as linhas dele (uma por grau,
     coluna `grau`) — e nas dos recursos internos dele do 2º grau
-    (`…/50000`) que só herdaram a marcação (o detalhe da linha diz “tratado
-    como sigiloso: é incidente de um processo sigiloso…”), que
-    `com_principais_dos_recursos` faz marcar o principal; o recurso interno
-    sigiloso pela própria página (a capa com “SEGREDO DE JUSTIÇA”, a
-    situação `SIGILOSO_SEM_SENHA`, a linha “sim” sem a herança) mantém o
-    principal sigiloso pela regra, e o manual manda não desmarcá-lo —
+    (`…/50000`) que só herdaram a marcação (abaixo), que
+    `com_principais_dos_recursos` faz marcar o principal —
     no relatório de cada lote em que foi baixado (fonte 5, e “uma vez
     sigiloso, sempre sigiloso” do motor: uma linha com “sim” basta para
     refazer a marcação, nos dois graus) e trazer os arquivos de volta da
@@ -2295,6 +2291,26 @@ dados ficam com a instalação registrada.
     pela pasta, e também o originário do 2º grau levado pela capa (fonte
     6), que fica sigiloso
     pela própria pasta, com o “sim” da linha dele no relatório completo.
+    Quem separa o recurso interno que só herdou é a conferência no portal
+    (passo 1): com a página dele pública, ele só herdou e se desmarca
+    junto; com a página dele em segredo, ou com a linha que diz que a
+    consulta abriu a página do principal em segredo de justiça
+    (`NAO_SUPORTADO`, de `esaj.achar_codigo_2g`), o principal é sigiloso
+    pela regra, e o manual manda não desmarcá-lo. A linha do relatório não
+    basta: o motor só grava a herança no detalhe (“tratado como sigiloso: é
+    incidente de um processo sigiloso…”, o motivo de `motivo_sabido`) no
+    download OK, com a página dele sem o segredo, em que o `_motivo_sigilo`
+    do recurso interno não vem dos relatórios anteriores do lote nem da
+    capa. Na falha (`ERRO`,
+    `NAO_ENCONTRADO`: só a falha, a mesma linha do recurso interno com a
+    página em segredo que falhou, pelos `sigilosos_apurados`), no
+    `JA_BAIXADO` (“já estava na pasta (não baixei de novo)”) e no baixado de
+    novo ou no lote que já tinha a linha dele ou a do principal com “sim”
+    (`SIGILO_ANTERIOR`, “assim constava de download anterior”), a linha do
+    que só herdou não diz que herdou. O manual dá essas frases como pistas,
+    com os casos, e os sinais da página em segredo (a capa com “SEGREDO DE
+    JUSTIÇA”, a situação `SIGILOSO_SEM_SENHA`, o `NAO_SUPORTADO` do
+    principal em segredo) como razão para não desmarcar.
     A capa (`_controle\<número>_capa.txt` e `<número> (2G)_capa.txt`) perde a
     linha “SEGREDO DE JUSTIÇA” que o download grava no começo da capa do
     processo que achou sigiloso (ou é apagada), num passo próprio do
@@ -3192,7 +3208,13 @@ fora nesta versão: o PDF traz os eventos do próprio processo no 2º grau.
   Sem o item dele com os autos no lote, o detalhe do recurso interno diz o
   que saiu, com os autos dele contados à
   parte dos autos dos incidentes dele (“1 cópia dos autos dele e 1 dos
-  incidentes dele levadas para a pasta de sigilosos”). Com a separação
+  incidentes dele levadas para a pasta de sigilosos”). Com o item do
+  principal no lote ou sem ele, a cópia dos autos do próprio recurso
+  interno que a retirada do principal leva junto (ele é incidente do
+  principal) é do item do recurso interno (`_proprio_levado`), não “dos
+  incidentes dele”: o detalhe dele diz “levado agora para a pasta de
+  sigilosos” e, sem PDF novo (`SIGILOSO_SEM_SENHA`, a falha com o sigilo
+  apurado), o item passa a apontá-la. Com a separação
   desligada, os autos do principal só saem se o sigilo dele não pôde ir
   para o registro (`_separar`), e o detalhe diz `SEM_REGISTRO_DO_SIGILO`.
   O principal não tem linha própria no relatório (só o item dele, quando
@@ -3232,6 +3254,8 @@ fora nesta versão: o PDF traz os eventos do próprio processo no 2º grau.
   `_regravar_pelo_completo`, com o porquê, e `salvar_relatorio`, ao passar
   ao `(atualizado)`, o põe em `sigilosos_avisos` (“…; ele mesmo também
   está aberto no Excel?”), que o fim do lote lê depois da última gravação.
+  A gravação mascarada que dá certo o tira de `_regravar_pelo_completo`
+  (o número saiu dele): aberto no Excel só depois dela, ele não é aviso.
   O outro, isto é, o `relatorio.csv` aberto no Excel,
   que deu lugar ao `(atualizado)`, ou um `(atualizado)` antigo, é aviso
   como o de outro lote, com o mesmo detalhe. O grau vazio (CSV de versão
