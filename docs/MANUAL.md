@@ -1645,7 +1645,8 @@ que valem também para quem redige:
   origem”.
 - **No conector**, a listagem mostra os autos do 2º grau com “(2G)” e
   “2º grau” na linha. Com os autos dos dois graus do mesmo processo no
-  acervo, `ler_processo` pede o grau (ou a chave da listagem, `X (2G)`), e
+  acervo, `ler_processo` pede o grau (ou o número com ele: `X (1º grau)`
+  ou `X (2G)`), e
   a resposta sobre os autos do 1º grau avisa que eles são os autos de
   origem; `buscar` diz de que autos saiu cada trecho (“X (2G), fl. 12” ou
   “X (1º grau), fl. 12”).

@@ -973,7 +973,8 @@ segue também nas minutas:
   documento?, grau?}`: `numero` aceita a chave da listagem (`X (2G)`), o
   número (`X`, `X/50000`) e, com `grau` (`"1g"` ou `"2g"`), o grau. Com os
   autos dos dois graus do processo no acervo e sem grau, a resposta é um
-  erro que pede o `grau` (ou a chave da listagem). A primeira linha da
+  erro que pede o `grau` — ou o número com o grau: `X (1º grau)` ou
+  `X (2G)`. A primeira linha da
   resposta diz o grau (“Processo X — e-SAJ, 2º grau: …”); a dos autos do
   1º grau, quando o acervo tem também os do 2º, diz que são os autos de
   origem e que, no 2º grau, se citam como “fl. N dos autos de origem”.

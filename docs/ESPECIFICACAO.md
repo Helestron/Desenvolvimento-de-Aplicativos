@@ -2025,8 +2025,8 @@ dados ficam com a instalação registrada.
     incidente fora do 1º nível das pastas de lote). O originário do 2º grau
     (órgão `0000`, e o originário de turma recursal, `9xxx`), que tem número
     próprio, herda o sigilo da ação de origem: com o item OK no 2º grau e
-    antes de os autos irem para o lote, o motor lê
-    `capa.numeros_1a_instancia` (ou `numeros_1a_instancia`) do `_capa.json`
+    antes de os autos irem para o lote, o motor lê a lista
+    `numeros_1a_instancia` do nível de cima do `_capa.json`
     do 2º grau (só o e-SAJ a traz) e, se algum desses números já se sabe
     sigiloso pela regra única, marca o item (`r.sigiloso`, “tratado como
     sigiloso: o processo de origem X é sigiloso”) e o registra
@@ -2839,9 +2839,9 @@ autos no 2º grau).
   no 2º grau, `grau: "2g"`; em `capa`, também `secao`, `orgao_julgador`,
   `relator` e `origem` (`CHAVES_CAPA`); as listas `numeros_1a_instancia`
   (`[{numero, foro, vara, juiz, obs, principal}]`, com o `numero` no
-  formato CNJ, ou `""` sem número legível; repetida em
-  `capa.numeros_1a_instancia`, onde o motor procura a ação de origem para o
-  sigilo), `composicao` (`[{papel, nome}]`), `julgamentos` (`[{data,
+  formato CNJ, ou `""` sem número legível; é nela, no nível de cima do
+  `_capa.json`, que o motor procura a ação de origem para o sigilo — o
+  objeto `capa` traz só rótulo e texto), `composicao` (`[{papel, nome}]`), `julgamentos` (`[{data,
   situacao, decisao}]`) e `subprocessos` (as linhas de “Incidentes, ações
   incidentais, recursos…”, as mesmas de `incidentes`). O `_capa.txt`
   começa por “Processo X - TJAL (e-SAJ, 2º grau)”, diz em “== Arquivo ==”
@@ -2919,7 +2919,12 @@ fora nesta versão: o PDF traz os eventos do próprio processo no 2º grau.
   primeira aparição), com o Tribunal do grupo já `no_grau(grau)`. Se o
   sistema **principal** não tem o grau (`not t.tem_grau(grau)`: o e-SAJ do
   TJSP), `NAO_SUPORTADO`, sem causa: “o 2º grau do e-SAJ do TJSP ainda não
-  é baixado pelo Helestron; baixe-o pelo portal do tribunal”. O
+  é baixado pelo Helestron; baixe-o pelo portal do tribunal”. Nesses
+  tribunais, o “não encontrado” do 1º grau não manda escolher o 2º grau
+  nas Opções do lote: a dica é `modelos.DICA_SEM_2G` (“se o processo
+  estiver no 2º grau, baixe-o pelo portal do tribunal...”), escolhida por
+  `tribunais.baixa_o_2o_grau(t)` e passada a `modelos.dica_de_grau(...,
+  com_o_2o_grau=False)` pelo e-SAJ e pelo eProc. O
   alternativo do 2º grau é o eProc do 2º grau, se houver. O nome do grupo
   diz o grau (“e-SAJ do TJAL (2º grau)”), e a frase de quando nenhum dos
   dois sistemas achou o processo no 2º grau é “não encontrado no e-SAJ nem
@@ -3007,8 +3012,8 @@ fora nesta versão: o PDF traz os eventos do próprio processo no 2º grau.
   `numero` aceita a chave da listagem (`X (2G)`), o número (`X`,
   `X/50000`), `X (1º grau)` e, com `grau` (`"1g"`/`"2g"`), o grau; com os
   dois graus no acervo e sem grau, erro: “o processo X tem autos dos dois
-  graus no acervo (X e X (2G)): informe grau="1g" ou grau="2g" (ou use a
-  chave da listagem)”; com um grau só, serve-o. O cabeçalho do 2º grau diz
+  graus no acervo (X e X (2G)): informe grau="1g" ou grau="2g" (ou peça
+  "X (1º grau)" ou "X (2G)")”; com um grau só, serve-o. O cabeçalho do 2º grau diz
   “Processo X — e-SAJ, 2º grau: …” e que a página N é a folha N da Pasta
   Digital do 2º grau, e que o carimbo “fls.” diferente da marca é de outros
   autos; o dos autos do 1º grau, quando o acervo tem também os do 2º, diz

@@ -16,10 +16,10 @@
       passos: [
         "Abra Processos e arraste a relação para a tela — ou clique em Escolher arquivo, Colar lista ou Link.",
         "Confira a revisão: o tribunal e o sistema saem do próprio número; números com dígito errado ou corrompidos pelo Excel aparecem à parte.",
-        "Dê um nome ao lote (vira o nome da pasta) e confira as opções.",
+        "Dê um nome ao lote (vira o nome da pasta) e confira as opções — entre elas o Grau: 1º grau (o padrão) ou 2º grau. HC, mandado de segurança e agravo de instrumento (foro 0000) e os embargos de declaração do 2º grau (número com /50000) vão sempre ao 2º grau.",
         "Clique em Baixar. Se o portal pedir o código de verificação, uma janela pede que você o digite.",
       ],
-      nota: "Sai um PDF por processo, com o número como nome, em Acervo\\Processos\\<nome do lote>. O relatório fica em _controle\\relatorio.csv.",
+      nota: "Sai um PDF por processo, com o número como nome, em Acervo\\Processos\\<nome do lote>; os autos do 2º grau levam (2G) no fim do nome. O relatório fica em _controle\\relatorio.csv.",
     },
     {
       id: "transcrever", icone: "microfone", cor: "azul", titulo: "Transcrever uma audiência", rota: "audiencias",
@@ -74,7 +74,7 @@
   const PERGUNTAS = [
     { p: "O portal pediu um código. Onde eu digito?", r: ["Numa janela do próprio Helestron, que aparece sozinha: o código enviado por e-mail, no e-SAJ, ou o código do aplicativo autenticador, no eProc. Se você estiver em outro programa, o Helestron pisca na barra de tarefas; aberto no Edge ou no navegador, o título da aba alterna até você responder. No e-SAJ, se o código não chegar, use “Pedir novo código”."] },
     { p: "Posso fechar a janela durante o download?", r: ["Melhor não: fechar a janela encerra o Helestron e interrompe o download. O que já foi baixado fica na pasta; o que faltou é baixado quando você usar a mesma relação de novo — o que já existe é pulado."] },
-    { p: "O download parou num processo. E agora?", r: ["Confira a situação na lista do andamento: “Sem acesso” e “Não encontrado” costumam ser senha errada ou processo de outro sistema. Se o portal mudou, o Helestron guarda uma imagem e o HTML da tela em Logs\\diagnostico — envie-os ao suporte.", "Senha trocada no portal? Atualize em Ajustes › Acessos aos portais."] },
+    { p: "O download parou num processo. E agora?", r: ["Confira a situação na lista do andamento: “Sem acesso” e “Não encontrado” costumam ser senha errada, processo de outro sistema ou de outro grau (uma apelação tem o mesmo número no 1º e no 2º grau: escolha o grau certo nas Opções do lote). Se o portal mudou, o Helestron guarda uma imagem e o HTML da tela em Logs\\diagnostico — envie-os ao suporte.", "Senha trocada no portal? Atualize em Ajustes › Acessos aos portais."] },
     { p: "O que acontece com os processos em segredo de justiça?", r: ["Ficam na pasta dos sigilosos, fora do acervo. Nunca vão para a IA, para o pacote do ChatGPT, para o espelho na nuvem nem para o índice. A transcrição de audiência sigilosa também vai para lá, com a gravação."] },
     { p: "O medidor do microfone não se mexe.", r: ["Clique em Testar e fale perto do microfone. Se as barras continuarem paradas, confira se o microfone certo está escolhido e se o Windows permite o acesso: Configurações › Privacidade e segurança › Microfone › “Permitir que aplicativos da área de trabalho acessem o microfone”."] },
     { p: "A transcrição está atrasada em relação à fala.", r: ["Nada se perde: o áudio é gravado e a fila é transcrita. Para a próxima audiência, escolha o modelo “base” em Ajustes › Transcrição, ou feche programas pesados durante a audiência."] },
