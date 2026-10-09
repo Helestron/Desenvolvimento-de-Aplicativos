@@ -1974,8 +1974,14 @@ dados ficam com a instalação registrada.
     a data ou o tamanho). O motor já trata o originário como sigiloso no
     download, se a origem já se sabe sigilosa; esta fonte cobre a origem
     que vira sigilosa depois. `chaves_sigilosas` acrescenta o originário ao
-    registro do download, e o `preparar --pasta` soma as capas da própria
-    pasta.
+    registro do download — herdado pela capa, não pelo selo do portal: o
+    registro não guarda o porquê (`sigilo.motivo` o dá como apurado por um
+    download), e por isso `chaves_sigilosas` avisa no registro do programa,
+    uma vez por originário novo, “originário X tratado como sigiloso: o
+    processo de origem A é sigiloso (capa do 2º grau em …)”
+    (`sigilo.origens_herdadas` devolve a origem e a capa de cada um;
+    `herdadas_das_origens`, só os nomes) —, e o `preparar --pasta` soma as
+    capas da própria pasta.
     `sigilo.chaves_sigilosas` dá todos; `sigilo.motivo` diz por quê (“os
     autos, uma transcrição ou uma gravação dele estão na pasta dos
     sigilosos”, “a pauta de audiências indica que ele corre em segredo de
@@ -2199,7 +2205,9 @@ dados ficam com a instalação registrada.
     baixar ou transcrever), o `download.sigilo.json` se o sigilo veio de um
     download, trocar “sim” por “não” na linha dele no relatório do lote
     (fonte 5, e “uma vez sigiloso, sempre sigiloso” do motor) e trazer os
-    arquivos de volta da pasta dos sigilosos para o acervo.
+    arquivos de volta da pasta dos sigilosos para o acervo — também o
+    originário do 2º grau levado pela capa (fonte 6), que fica sigiloso
+    pela própria pasta, com o “sim” da linha dele no relatório completo.
   * **Download.** O processo que o programa já sabe sigiloso pela regra
     única vai para a pasta dos sigilosos mesmo que a página do portal não
     mostre o selo (segredo decretado depois, leiaute que a leitura não

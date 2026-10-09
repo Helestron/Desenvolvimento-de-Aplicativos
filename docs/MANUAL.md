@@ -1781,7 +1781,14 @@ download e depois dele: a capa fica guardada em `_controle` do lote, e o
 programa a relê sempre que aplica a regra; o processo de origem que só se
 revela sigiloso mais tarde leva o originário à pasta dos sigilosos na
 próxima atualização do acervo para a IA, e ele sai do índice, do conector,
-do pacote e da nuvem. Uma vez apurado, fica.
+do pacote e da nuvem. Uma vez apurado, fica: o originário levado assim
+entra no registro do item 4 (o `download.sigilo.json`) e, na pasta dos
+sigilosos, fica sigiloso também pelo item 1; o porquê fica anotado no
+registro do programa, na pasta `%LOCALAPPDATA%\Helestron\Logs` (“originário
+… tratado como sigiloso: o processo de origem … é sigiloso”). Se o processo
+de origem foi marcado por engano, leve o originário de volta junto com ele
+(veja [Se um processo foi marcado como sigiloso por
+engano](#se-um-processo-foi-marcado-como-sigiloso-por-engano)).
 
 > **Cada computador sabe o que viu.** O sigilo apurado por um download, os
 > autos na pasta dos sigilosos e a pauta ficam no computador em que foram
@@ -1893,7 +1900,15 @@ Se o processo é público e você precisa dele no acervo:
    `Sigilosos\Transcricoes\` para `Acervo\Transcricoes\` (e as gravações, de
    `Sigilosos\Transcricoes\_audio\` para `Acervo\Transcricoes\_audio\`); e o
    que mais tiver o número dele no nome (uma minuta em
-   `Sigilosos\Produtos\`, por exemplo).
+   `Sigilosos\Produtos\`, por exemplo). Leve de volta também o processo
+   originário do 2º grau (o habeas corpus, o mandado de segurança, o agravo
+   de instrumento: `<outro número> (2G).pdf`, com a capa) cuja capa lista
+   esse processo em **Números de 1ª Instância**: ele foi levado junto, por
+   causa dele, e fica sigiloso pela própria pasta enquanto estiver lá. O
+   registro do programa, em `%LOCALAPPDATA%\Helestron\Logs`, diz qual foi
+   (“originário … tratado como sigiloso: o processo de origem … é
+   sigiloso”). No relatório completo do lote dele (passo 5), troque o “sim”
+   da linha dele também.
 7. Abra o Helestron e, na tela Compartilhar, clique em **Preparar acervo
    para a IA**.
 

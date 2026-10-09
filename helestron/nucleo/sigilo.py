@@ -30,7 +30,9 @@ fontes, e qualquer uma basta:
    fontes acima (herdadas_das_origens). A petição traz cópia da origem; o
    motor já trata o originário como sigiloso no download, se a origem já se
    sabe sigilosa, e por aqui a origem que vira sigilosa DEPOIS o alcança
-   também. chaves_sigilosas o acrescenta ao registro do download.
+   também. chaves_sigilosas o acrescenta ao registro do download e avisa,
+   no registro do programa, de que origem e de que capa veio o sigilo (uma
+   vez por originário: o registro do download não guarda o porquê).
 
 A gravação dos registros (4 e o da pauta) passa uma de cada vez também
 entre processos (a janela, o "baixar" da linha de comando e o conector) e
@@ -840,11 +842,13 @@ def _capas_de_originarios(controle: Path):
             yield n.nome_arquivo, Path(e.path)
 
 
-def herdadas_das_origens(raiz, sabidas) -> frozenset[str]:
+def origens_herdadas(raiz, sabidas) -> dict[str, tuple[str, Path]]:
     """Os originários do 2º grau (Numero.nome_arquivo) com capa guardada na
     _controle de algum lote dentro de 'raiz' (o acervo) cuja ação de origem
     - a lista "numeros_1a_instancia" da capa, sem o próprio processo - está
-    em 'sabidas' (contem: o incidente herda do principal).
+    em 'sabidas' (contem: o incidente herda do principal), cada um com a
+    origem sigilosa (a primeira, em ordem) e a capa que a lista: o porquê,
+    que chaves_sigilosas põe no registro do programa.
 
     O HC, o MS e o AI de órgão 0000 (e o originário de turma recursal, 9xxx)
     têm número próprio, mas a petição traz cópia da ação de origem: o motor
@@ -857,18 +861,25 @@ def herdadas_das_origens(raiz, sabidas) -> frozenset[str]:
     "<número> (2G)_capa.json" de originários são abertas, cada uma relida
     só quando muda. Nunca levanta."""
     if raiz is None or not sabidas:
-        return frozenset()
-    nomes: set[str] = set()
+        return {}
+    nomes: dict[str, tuple[str, Path]] = {}
     try:
         for controle in _pastas_de_controle(Path(raiz)):
             for nome, capa in _capas_de_originarios(controle):
-                if any(origem != nome and contem(sabidas, origem)
-                       for origem in _da_capa(capa)):
-                    nomes.add(nome)
+                sigilosas = sorted(origem for origem in _da_capa(capa)
+                                   if origem != nome and contem(sabidas, origem))
+                if sigilosas:
+                    nomes.setdefault(nome, (sigilosas[0], capa))
     except (OSError, ValueError, TypeError) as erro:
         log.warning("não consegui ler as capas do 2º grau dos lotes do acervo (%s)",
                     str(erro)[:160])
-    return frozenset(nomes)
+    return nomes
+
+
+def herdadas_das_origens(raiz, sabidas) -> frozenset[str]:
+    """Só os originários de origens_herdadas (Numero.nome_arquivo), sem o
+    porquê."""
+    return frozenset(origens_herdadas(raiz, sabidas))
 
 
 # ===================================================================== regra
@@ -889,14 +900,25 @@ def chaves_sigilosas(sigilosos, raiz=None, pauta=PAUTA_DO_PROGRAMA) -> Sigilosas
     resto do programa (a transcrição, a tela da audiência, o próximo
     download): uma vez apurado, fica. O que a pasta ou a pauta já dão não
     vai para ele: o relatório marca também o que o lote só TRATOU como
-    sigiloso por elas, e o registro do download diria que o portal o apurou."""
+    sigiloso por elas, e o registro do download diria que o portal o apurou.
+    O originário entra nele com um aviso no registro do programa (a origem
+    e a capa, como o detalhe do item no download), uma vez: depois, o
+    registro já o conhece."""
     sabidas = Sigilosas(chaves_na_pasta(sigilosos, raiz) | chaves_da_pauta(pauta)
                         | apuradas_no_download(pauta))
     if raiz is None:
         return sabidas
     dos_relatorios = sigilosos_dos_relatorios(raiz)
-    das_origens = herdadas_das_origens(raiz, Sigilosas(sabidas | dos_relatorios))
+    origens = origens_herdadas(raiz, Sigilosas(sabidas | dos_relatorios))
+    das_origens = frozenset(origens)
     novas = sorted(n for n in dos_relatorios | das_origens if n not in sabidas)
+    for nome in novas:
+        if nome in origens:
+            # O rastro do porquê: no registro do download, o originário não
+            # se distingue do que o portal apurou.
+            origem, capa = origens[nome]
+            log.warning("originário %s tratado como sigiloso: o processo de origem %s é "
+                        "sigiloso (capa do 2º grau em %s)", nome, origem, capa)
     if novas:
         lembrar_do_download(novas, pauta)
     return Sigilosas(sabidas | dos_relatorios | das_origens)
