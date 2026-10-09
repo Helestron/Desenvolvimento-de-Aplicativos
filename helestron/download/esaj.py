@@ -2643,6 +2643,20 @@ class PortalESAJ:
                 return cd
             do_numero = any(self._mesmo_numero(c, numero) for c in candidatos)
             texto = str(resposta.get("texto") or "") or self._texto_da_pagina()
+            if self._so_a_pagina_sem_numero(candidatos):
+                # A página em segredo do principal (sem número), que
+                # _pagina_com_senha_2g não aceitou: não são "outros processos".
+                if numero.e_dependente and self.precisa_senha():
+                    # o recurso interno não está entre opções: só o portal o abre
+                    self.sigilosos_apurados.add(numero.nome_arquivo)
+                    raise _Ambiguo(
+                        "a consulta de 2º grau abriu a página do processo principal em "
+                        f"segredo de justiça, sem o número; o recurso interno {numero.formatado} "
+                        "de processo em segredo não é escolhido pelo Helestron: baixe-o pelo "
+                        "portal do tribunal")
+                # sem o pedido de senha à vista, a página não se reconhece: passageiro
+                raise RuntimeError("a página aberta pela consulta de 2º grau não traz o número "
+                                   "do processo (sem acesso, ou sessão expirada?)")
             if candidatos and not do_numero:
                 raise _Ambiguo("a consulta de 2º grau devolveu processos e nenhum traz "
                                "exatamente este número; não baixei, para não gravar autos "
@@ -2661,23 +2675,31 @@ class PortalESAJ:
         raise RuntimeError("não consegui identificar o processo na consulta de 2º grau "
                            "(sem acesso, ou sessão expirada?)")
 
+    @staticmethod
+    def _so_a_pagina_sem_numero(candidatos: list) -> bool:
+        """A consulta devolveu um candidato só, a própria página, sem o número:
+        é como vem a página do processo em segredo de justiça (só o código e
+        o pedido de senha)."""
+        if len(candidatos or []) != 1 or not isinstance(candidatos[0], dict):
+            return False
+        c = candidatos[0]
+        return c.get("origem") == "pagina" and not str(c.get("numero") or "").strip() \
+            and bool(str(c.get("codigo") or "").strip())
+
     def _pagina_com_senha_2g(self, candidatos: list, numero: Numero) -> str | None:
         """A busca pelo número caiu direto na página de um processo em segredo
         de justiça: ela vem SEM os dados (nem o número), só com o código e o
         pedido de senha. A consulta foi pelo número exato e devolveu um
         processo só: é o principal dele. Vale só para o pedido do principal
         (o /50000 tem de ser achado entre as opções), e a página é conferida
-        depois da senha (_liberar)."""
-        if numero.e_dependente or len(candidatos or []) != 1:
+        depois da senha (_liberar). O modal é aberto pelo script da página:
+        olha-se duas vezes (precisa_senha), como no 1º grau."""
+        if numero.e_dependente or not self._so_a_pagina_sem_numero(candidatos):
             return None
-        c = candidatos[0] if isinstance(candidatos[0], dict) else {}
-        if c.get("origem") != "pagina" or str(c.get("numero") or "").strip() \
-                or not str(c.get("codigo") or "").strip():
-            return None
-        if not self.modal_senha_visivel():
+        if not self.precisa_senha():
             return None
         log.info("    a consulta de 2º grau abriu a página de um processo em segredo de justiça")
-        return str(c["codigo"]).strip()
+        return str(candidatos[0]["codigo"]).strip()
 
     @staticmethod
     def _mesmo_numero(candidato, numero: Numero) -> bool:
@@ -3241,5 +3263,6 @@ class _FolhasEmDuplicidade(RuntimeError):
 
 class _Ambiguo(RuntimeError):
     """A consulta de 2º grau não aponta um processo só do número pedido (mais
-    de um com o número exato, ou nenhum entre os devolvidos): os autos não
+    de um com o número exato, nenhum entre os devolvidos, ou só a página em
+    segredo do principal quando se pede o recurso interno): os autos não
     são gravados, para não serem trocados (NAO_SUPORTADO, definitivo)."""

@@ -530,6 +530,40 @@ class TestMotorNosDoisGraus(_ComMotor):
         self.assertEqual((linha["situacao"], linha["grau"], linha["causa"]),
                          (modelos.NAO_SUPORTADO, "2g", ""))
 
+    def test_recurso_interno_de_processo_em_segredo_nao_e_suportado(self):
+        """Achado da verificação: a busca pelo /50000 de S cai na página em
+        segredo do principal (sem número) e saía como "devolveu processos e
+        nenhum traz exatamente este número", falso. É recusa definitiva, com
+        a frase certa, e a linha nasce sigilosa: o número fica fora do
+        relatório do acervo."""
+        s50 = cnj.ler(S.principal + "/50000")
+        with falso.servidor_esaj(("S",)) as outro:
+            self.apontar_para(outro)
+            lote = self.lote("Segredo 50000")
+            resumo = self.baixar([s50], lote, "2g", senhas={s50.formatado: SENHA_S_2G},
+                                 tentativas=2)
+            self.assertEqual(len(outro.pedidos_de("/cposg5/search.do")), 1,
+                             "repetir a busca abriria a mesma página")
+            self.assertFalse([l for l in outro.localizadores.values() if l["grau"] == "2g"])
+        r = resumo.itens[0]
+        self.assertEqual((r.situacao, r.causa, r.refazer, r.grau, r.sigiloso),
+                         (modelos.NAO_SUPORTADO, "", False, "2g", True), r.detalhe)
+        self.assertEqual(r.detalhe, "a consulta de 2º grau abriu a página do processo principal "
+                                    f"em segredo de justiça, sem o número; o recurso interno "
+                                    f"{s50.formatado} de processo em segredo não é escolhido pelo "
+                                    "Helestron: baixe-o pelo portal do tribunal")
+        self.assertEqual(resumo.a_refazer(), [], "não entra em Tentar de novo")
+        self.assertFalse(list(lote.glob("*.pdf")))
+        self.assertEqual(self.eproc_neutro, [], "não suportado não vai ao eProc")
+        acervo = lote / "_controle" / "relatorio.csv"
+        self.assertNotIn(S.principal, acervo.read_text(encoding="utf-8-sig"))
+        linha = ler_csv(acervo)[0]
+        self.assertEqual((linha["processo"], linha["situacao"], linha["sigiloso"], linha["grau"]),
+                         (motor.MASCARA_SIGILOSO, modelos.NAO_SUPORTADO, "sim", "2g"))
+        completo = ler_csv(self.sigilosos / "Segredo 50000" / "_controle" / "relatorio.csv")
+        self.assertEqual([(l["processo"], l["situacao"]) for l in completo],
+                         [(s50.formatado, modelos.NAO_SUPORTADO)])
+
     def test_tribunal_sem_o_2o_grau_nao_manda_escolher_o_2o_grau(self):
         """Achado da integração: o "não encontrado" do 1º grau mandava todo
         tribunal escolher “2º grau” nas Opções do lote - e o lote do 2º grau

@@ -842,8 +842,10 @@ citação feita a partir dele seja a mesma do portal.
   diz “Tribunal não suportado”, com o detalhe “a Pasta Digital do 2º grau
   numera folhas em duplicidade (…); não gravei os autos, para não perder
   peças: baixe-os pelo portal do tribunal” (ele não entra em **Tentar de
-  novo**: repetir daria o mesmo). Veja
-  como citar em [Os autos do 2º grau na IA](#os-autos-do-2º-grau-na-ia).
+  novo**: repetir daria o mesmo). Pelo mesmo motivo, a consulta de 2º grau
+  que mostra mais de um processo com o mesmo número não é baixada (veja
+  [O que o 2º grau ainda não faz](#o-que-o-2º-grau-ainda-não-faz-limites)).
+  Veja como citar em [Os autos do 2º grau na IA](#os-autos-do-2º-grau-na-ia).
 
 O PDF leva dentro dele um registro dessa numeração (o “manifesto de
 paginação”), que o acompanha para onde for e que o texto para a IA usa
@@ -947,6 +949,18 @@ A regra completa está em [Segredo de justiça](#segredo-de-justiça).
   folha em peças diferentes não vira PDF (veja [As páginas do
   PDF](#as-páginas-do-pdf-folhas-e-eventos)): baixe esses autos pelo
   portal.
+- **Mais de um processo com o mesmo número.** Se a consulta de 2º grau
+  mostrar mais de um processo com exatamente o número pedido, o Helestron
+  não escolhe (seriam autos trocados): a linha diz “Tribunal não
+  suportado”, com o detalhe “o 2º grau do e-SAJ tem mais de um processo com
+  este número (…); não baixei, para não gravar autos trocados”, e não entra
+  em **Tentar de novo**: baixe pelo portal. O mesmo vale para o recurso
+  interno (`...0001-50000`) de processo em segredo de justiça: a consulta
+  abre a página do processo principal em segredo, sem o número nem as
+  opções, e o Helestron não o escolhe; o detalhe diz “… o recurso interno …
+  de processo em segredo não é escolhido pelo Helestron: baixe-o pelo portal
+  do tribunal”, e a linha, sigilosa, aparece no relatório do acervo como
+  “(processo sigiloso)”.
 - **Órgão começando por 9.** O número com órgão começando por `9`
   (plantão do 2º grau, turma recursal) é procurado sempre no 2º grau. Onde
   a turma recursal estiver no eProc do 1º grau (na Justiça Federal, por
