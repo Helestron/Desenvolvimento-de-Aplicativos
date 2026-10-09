@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 
 from . import caminhos
-from .cnj import Numero
+from .cnj import Numero, normalizar_grau
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,11 @@ ARQUIVO = caminhos.DADOS / "tribunais.json"
 ARQUIVO_LOCAL = caminhos.LOCAL / "enderecos-locais.json"
 SUPORTADOS = ("esaj", "eproc")
 NOMES_SISTEMA = {"esaj": "e-SAJ", "eproc": "eProc", "outro": "não suportado"}
+# A chave de um portal (Tribunal.portal): 'esaj:TJAL' (e-SAJ, 1º e 2º grau: o
+# mesmo login), 'eproc:TJAL' (eProc, 1º grau) e 'eproc2g:TJAL' (eProc, 2º grau:
+# outra instalação, com login, cofre, perfil do navegador e sessão próprios).
+PREFIXO_EPROC_2G = "eproc2g"
+RE_PORTAL = re.compile(r"^(esaj|eproc|eproc2g):([A-Za-z0-9]{2,12})$")
 
 
 @dataclass(frozen=True)
@@ -41,6 +47,10 @@ class Tribunal:
     observacao: str = ""
     # Segundo sistema do tribunal em transição (TJAL e TJSP: e-SAJ -> eProc).
     alternativo: "Tribunal | None" = field(default=None, hash=False, compare=False)
+    # O grau em que o portal é usado: "1g" (o catálogo) ou "2g" (no_grau("2g")).
+    # Viaja dentro do Tribunal até as fábricas do motor, os portais, o cofre e
+    # o perfil do navegador - nenhuma assinatura muda.
+    grau: str = "1g"
 
     @property
     def suportado(self) -> bool:
@@ -52,23 +62,70 @@ class Tribunal:
 
     @property
     def portal(self) -> str:
-        """Chave do cofre de senhas e do perfil do navegador: 'esaj:TJAL'."""
+        """Chave do cofre de senhas, do perfil do navegador e da sessão
+        guardada: 'esaj:TJAL' (os dois graus do e-SAJ), 'eproc:TJAL' (eProc, 1º
+        grau) e 'eproc2g:TJAL' (eProc, 2º grau)."""
+        if self.sistema == "eproc" and self.grau == "2g":
+            return f"{PREFIXO_EPROC_2G}:{self.sigla}"
         return f"{self.sistema}:{self.sigla}"
 
-    def urls_para(self, numero: Numero | None = None, grau: str = "1g") -> list[str]:
+    @property
+    def portal_do_sistema(self) -> str:
+        """'esaj:TJAL' ou 'eproc:TJAL', sem o grau: a chave dos endereços
+        corrigidos (enderecos-locais.json: {portal: {grau: url}})."""
+        return f"{self.sistema}:{self.sigla}"
+
+    @property
+    def perfil(self) -> str:
+        """A pasta do navegador do portal, dentro de caminhos.PERFIS:
+        'esaj-TJAL', 'eproc-TJAL', 'eproc2g-TJAL' (a do certificado é a mesma
+        com '-certificado')."""
+        return nome_do_perfil(self.portal)
+
+    @property
+    def rotulo(self) -> str:
+        """'TJAL · e-SAJ'; no 2º grau, 'TJAL · e-SAJ (2º grau)'."""
+        return f"{self.sigla} · {self.nome_sistema}" + (" (2º grau)" if self.grau == "2g" else "")
+
+    def tem_grau(self, grau: str) -> bool:
+        """O Helestron baixa deste sistema neste grau? e-SAJ: 1º grau com
+        'base', 2º grau com 'urls["2g"]' (a consulta de 2º grau); eProc: com o
+        endereço do grau (urls_para, estrito no 2º grau)."""
+        if not self.suportado:
+            return False
+        return bool(self.urls_para(None, normalizar_grau(grau) or "1g"))
+
+    def no_grau(self, grau: str) -> "Tribunal":
+        """Este tribunal no grau pedido, com o alternativo no mesmo grau (ou
+        sem alternativo, se ele não tiver o grau). Chame-o no Tribunal do
+        catálogo (por_numero, por_sigla), que é do 1º grau: no_grau("1g")
+        devolve ele mesmo."""
+        g = normalizar_grau(grau) or "1g"
+        if g == self.grau:
+            return self
+        alt = self.alternativo
+        if alt is not None:
+            alt = alt.no_grau(g) if alt.tem_grau(g) else None
+        return replace(self, grau=g, alternativo=alt)
+
+    def urls_para(self, numero: Numero | None = None, grau: str | None = None) -> list[str]:
         """Endereços candidatos do portal, na ordem de tentativa.
 
-        e-SAJ: 'base'. eProc: por grau e, na Justiça Federal, pela seção
-        judiciária (dois primeiros dígitos da origem). Um valor do catálogo
-        pode ser uma lista - endereço ainda não confirmado, com reservas.
+        e-SAJ: 'base' no 1º grau; no 2º, 'urls["2g"]' (a consulta de 2º grau,
+        ex. https://www2.tjal.jus.br/cposg5). eProc: por grau e, na Justiça
+        Federal, pela seção judiciária (dois primeiros dígitos da origem). Um
+        valor do catálogo pode ser uma lista - endereço ainda não confirmado,
+        com reservas. 'grau' ausente: o do próprio Tribunal. No 2º grau é
+        estrito: sem endereço do 2º grau, [] (nunca o do 1º grau).
         """
         def lista(valor) -> list[str]:
             if isinstance(valor, str):
                 return [valor] if valor else []
             return [v for v in (valor or []) if v]
 
+        grau = normalizar_grau(grau) or self.grau
         if self.sistema == "esaj":
-            return lista(self.urls.get("base"))
+            return lista(self.urls.get("base" if grau == "1g" else grau))
         if numero is not None:
             secao = f"{grau}_{numero.origem[:2]}"
             if secao in self.urls:
@@ -78,9 +135,11 @@ class Tribunal:
         for chave, valor in self.urls.items():
             if chave.startswith(grau):
                 return lista(valor)
+        if grau != "1g":
+            return []
         return lista(next(iter(self.urls.values()), ""))
 
-    def url_para(self, numero: Numero | None = None, grau: str = "1g") -> str:
+    def url_para(self, numero: Numero | None = None, grau: str | None = None) -> str:
         candidatos = self.urls_para(numero, grau)
         return candidatos[0] if candidatos else ""
 
@@ -219,12 +278,10 @@ def problema_locais() -> str:
 
 def _com_locais(t: Tribunal, locais: dict) -> Tribunal:
     """Aplica {'eproc:TJAL': {'1g': 'https://...'}} sobre o catálogo."""
-    from dataclasses import replace
-
     alt = t.alternativo
-    if alt is not None and alt.portal in locais:
-        alt = replace(alt, urls={**alt.urls, **locais[alt.portal]})
-    urls = {**t.urls, **locais.get(t.portal, {})}
+    if alt is not None and alt.portal_do_sistema in locais:
+        alt = replace(alt, urls={**alt.urls, **locais[alt.portal_do_sistema]})
+    urls = {**t.urls, **locais.get(t.portal_do_sistema, {})}
     return replace(t, urls=urls, alternativo=alt)
 
 
@@ -240,8 +297,11 @@ def carregar(arquivo: Path | None = None) -> tuple[Tribunal, ...]:
 def definir_endereco(portal: str, grau: str, url: str) -> None:
     """Grava o endereço corrigido pelo usuário ('eproc:TJAL', '1g', url).
 
-    Endereço em branco apaga a correção (volta o do catálogo).
+    Endereço em branco apaga a correção (volta o do catálogo). O endereço do
+    eProc do 2º grau fica sob 'eproc:TJAL', grau '2g' ('eproc2g:TJAL' é aceito
+    e gravado assim).
     """
+    portal = _portal_do_sistema(portal)
     locais = _ler_locais()
     if _DESCARTADOS:
         log.warning("A gravação do endereço corrigido retira de %s o que estava fora do "
@@ -276,8 +336,49 @@ def rotulo_do_grau(grau: str) -> str:
     return texto
 
 
+def nome_do_perfil(portal: str) -> str:
+    """'eproc2g:TJAL' -> 'eproc2g-TJAL': a pasta do navegador do portal em
+    caminhos.PERFIS (a mesma regra de download/navegador.pastas_do_portal)."""
+    prefixo, _, sigla = (portal or "").strip().partition(":")
+    return f"{prefixo}-{sigla.upper()}"
+
+
+def _portal_do_sistema(portal: str) -> str:
+    """'eproc2g:TJAL' -> 'eproc:TJAL' (os endereços são por sistema)."""
+    prefixo, sep, sigla = (portal or "").strip().partition(":")
+    return f"eproc{sep}{sigla}" if prefixo == PREFIXO_EPROC_2G else (portal or "").strip()
+
+
+def por_portal(portal: str) -> Tribunal | None:
+    """'esaj:TJAL', 'eproc:TJAL' ou 'eproc2g:TJAL' -> o Tribunal desse portal
+    (o do eProc 2º grau já no_grau("2g")); None se a chave não for de portal
+    suportado ou o tribunal não tiver aquele sistema (ou o 2º grau dele)."""
+    m = RE_PORTAL.match((portal or "").strip())
+    if not m:
+        return None
+    alvo = _do_portal(carregar(), f"{m.group(1)}:{m.group(2)}")
+    if alvo is None or not alvo.suportado:
+        return None
+    if m.group(1) == PREFIXO_EPROC_2G:
+        return alvo.no_grau("2g") if alvo.tem_grau("2g") else None
+    return alvo
+
+
+def baixa_o_2o_grau(tribunal) -> bool:
+    """O Helestron baixa o 2º grau deste tribunal? Só se o sistema PRINCIPAL
+    dele (o do catálogo, pela chave) tem o endereço do 2º grau - a mesma regra
+    com que o motor recusa (não suportado) o 2º grau dos demais, ainda que o
+    alternativo o tenha (o eProc do TJSP). 'tribunal': o do portal, em
+    qualquer grau e sistema; um dublê fora do catálogo vale pelo que diz."""
+    principal = por_chave(getattr(tribunal, "chave", "") or "")
+    if principal is None:
+        tem = getattr(tribunal, "tem_grau", None)
+        return bool(tem("2g")) if callable(tem) else True
+    return principal.tem_grau("2g")
+
+
 def _do_portal(lista: tuple[Tribunal, ...], portal: str) -> Tribunal | None:
-    sistema, _, sigla = (portal or "").partition(":")
+    sistema, _, sigla = _portal_do_sistema(portal).partition(":")
     for t in lista:
         if t.sigla.upper() == sigla.upper():
             for alvo in (t, t.alternativo):
@@ -293,7 +394,7 @@ def enderecos(portal: str) -> list[dict]:
     base = _do_portal(_carregar(str(ARQUIVO), _mtime(ARQUIVO)), portal)
     if base is None:
         raise KeyError(portal)
-    locais = _ler_locais().get(base.portal, {})
+    locais = _ler_locais().get(base.portal_do_sistema, {})
     saida = []
     for grau in list(base.urls) + [g for g in locais if g not in base.urls]:
         valor = base.urls.get(grau, "")

@@ -1080,6 +1080,22 @@ class TestScriptNsis(unittest.TestCase):
         self.assertNotIn("claude, chatgpt", desinstalar)
         self.assertIn('RMDir "$INSTDIR"', desinstalar)       # só se ficou vazia
 
+    def test_desinstalador_avisa_do_que_ficou_em_uso(self):
+        """Achado X9: o que estivesse em uso em %LOCALAPPDATA%\\Helestron
+        ficava lá, em silêncio, depois do sim à pergunta. Como nos perfis, o
+        detalhe avisa. Achado Y6: o aviso culpava o conector do acervo, que
+        já não segura nada entre um registro e outro; agora não culpa ninguém
+        e diz quem pode estar segurando a pasta."""
+        desinstalar = self.secao("Uninstall")
+        apagar = desinstalar.index('RMDir /r "$LOCALAPPDATA\\Helestron"\n')
+        depois = desinstalar[apagar:desinstalar.index("manter:")]
+        self.assertRegex(depois, r'\$\{If\} \$\{FileExists\} "\$LOCALAPPDATA\\Helestron\\\*\.\*"\n'
+                                 r'\s+DetailPrint "Parte de \$LOCALAPPDATA\\Helestron estava em '
+                                 r'uso e ficou lá \(um navegador aberto por um download, o '
+                                 r'Helestron da linha de comando ou o conector do acervo\): '
+                                 r'feche-os e apague essa pasta depois\."\n\s+\$\{EndIf\}')
+        self.assertNotIn("Parte dos registros", depois)
+
     def test_audiencia_em_andamento_nao_e_cortada(self):
         funcao = self.script[self.script.index("Function ${UN}FecharHelestron"):]
         funcao = funcao[:funcao.index("FunctionEnd")]

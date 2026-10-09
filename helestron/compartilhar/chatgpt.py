@@ -327,7 +327,11 @@ NOTA_PASTAS_DO_PACOTE = (
     "as transcrições de audiência (`Transcricoes/`) em `audiencias/`. Os nomes dos "
     "arquivos são os mesmos.\n\n")
 PREFIXO_PACOTE = "Pacote para o ChatGPT"
-_RE_NUMERO_CNJ = re.compile(r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}(?:-\d{2})?")
+# O número como o programa o escreve nos nomes e no índice (Numero.nome_arquivo):
+# o principal e o dependente "-NN" - de 2 a 5 dígitos, até o "-50000" do recurso
+# interno do 2º grau. Com 2 dígitos só, "...0001-50000" era lido "...0001-50", e a
+# linha dos embargos sigilosos ficava no índice de um pacote antigo.
+_RE_NUMERO_CNJ = re.compile(r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}(?:-\d{2,5})?(?!\d)")
 
 
 class Pacote(tuple):
@@ -372,10 +376,12 @@ def gerar_pacote(acervo: Path, destino: Path, numeros: list[str] | None = None,
     audiência, quando houver (audiencias/), o índice (só do que foi
     empacotado, com os caminhos do pacote) e as instruções.
 
-    'numeros' restringe aos processos indicados (padrão: o acervo inteiro);
-    o que foi pedido e não está no acervo (ou é sigiloso) volta em
-    'faltaram', com um aviso. 'incluir_texto' em branco segue a configuração
-    ([compartilhar] incluir_texto). Devolve o Pacote, que desempacota como
+    'numeros' restringe aos processos indicados (padrão: o acervo inteiro):
+    o número leva os autos dos dois graus do processo, e o número com o
+    sufixo do 2º grau ("X (2G)", a chave do índice), só os do 2º; o que foi
+    pedido e não está no acervo (ou é sigiloso) volta em 'faltaram', com um
+    aviso. Os arquivos levam a chave dos autos: autos/X.pdf, autos/X (2G).pdf.
+    'incluir_texto' em branco segue a configuração ([compartilhar] incluir_texto). Devolve o Pacote, que desempacota como
     (pasta, zip); 'avisos' traz o que a tela deve mostrar (número que
     faltou, arquivo ou .zip acima do limite do ChatGPT, pacote antigo que
     não pôde perder o sigiloso). Os textos são atualizados antes (preparo),
@@ -402,12 +408,7 @@ def gerar_pacote(acervo: Path, destino: Path, numeros: list[str] | None = None,
     avisos = retirar_sigilosos_dos_pacotes(Path(destino), sigilosas)
     faltaram: list[str] = []
     if numeros:
-        escolhidos: dict[str, str] = {}
-        for n in numeros:
-            escolhidos.setdefault(cnj.ler_nome_arquivo(n).nome_arquivo, str(n))
-        faltaram = [n for k, n in escolhidos.items() if k not in pdfs and k not in trans]
-        pdfs = {k: v for k, v in pdfs.items() if k in escolhidos}
-        trans = {k: v for k, v in trans.items() if k in escolhidos}
+        pdfs, trans, faltaram = _escolher(numeros, pdfs, trans)
     if not pdfs and not trans:
         raise LookupError("não há processo nem transcrição no acervo para empacotar"
                           + (f" (pedidos e não encontrados: {', '.join(faltaram)})"
@@ -474,6 +475,34 @@ def gerar_pacote(acervo: Path, destino: Path, numeros: list[str] | None = None,
     log.info("Pacote para o ChatGPT: %s (%d arquivo(s)). Leva %s.", pasta, total + 1,
              conteudo_do_pacote(pdfs, trans, incluir_pdf, incluir_texto))
     return Pacote(pasta, arquivo_zip, faltaram, avisos, tamanho)
+
+
+def _escolher(numeros, pdfs: dict, trans: dict) -> tuple[dict, dict, list[str]]:
+    """(autos, transcrições, faltaram) dos números pedidos. 'pdfs' é por
+    chave dos autos e 'trans' por chave do processo (Acervo). O número
+    sozinho leva os autos dos dois graus do processo (e as transcrições
+    dele); com o sufixo do 2º grau ("X (2G)"), só os autos do 2º grau (e as
+    transcrições do processo). Faltou o pedido sem nada no acervo - o
+    número sem autos nem transcrição; o "X (2G)" sem os autos do 2º grau."""
+    pedidos: dict[tuple[str, str], str] = {}     # (processo, grau ou "") -> como veio
+    for n in numeros:
+        processo = cnj.ler_nome_arquivo(str(n)).nome_arquivo
+        grau = "2g" if cnj.grau_do_nome(str(n)) == "2g" else ""
+        pedidos.setdefault((processo, grau), str(n))
+    dos_autos: dict[str, list[str]] = {}         # processo -> chaves dos autos no acervo
+    for chave in pdfs:
+        dos_autos.setdefault(cnj.ler_nome_arquivo(chave).nome_arquivo, []).append(chave)
+    levar: set[str] = set()
+    faltaram: list[str] = []
+    for (processo, grau), como in pedidos.items():
+        autos = [k for k in dos_autos.get(processo, [])
+                 if not grau or cnj.grau_do_nome(k) == grau]
+        levar.update(autos)
+        if not autos and (grau or processo not in trans):
+            faltaram.append(como)
+    processos = {p for p, _g in pedidos}
+    return ({k: v for k, v in pdfs.items() if k in levar},
+            {k: v for k, v in trans.items() if k in processos}, faltaram)
 
 
 def _indice_do_pacote(ac: Acervo, pdfs: dict, trans: dict, incluir_pdf: bool,
@@ -601,7 +630,19 @@ def conteudo_do_pacote(pdfs: dict, trans: dict, incluir_pdf: bool = True,
         leva = " e ".join(o for o, sim in (("autos", incluir_pdf),
                                            ("texto com a marca de citação de cada página",
                                             incluir_texto)) if sim)
-        itens.append(_contar(len(pdfs), "processo", "processos") + (f" ({leva})" if leva else ""))
+        # Processos, e não arquivos: os autos do 1º e do 2º grau do mesmo
+        # número são um processo (e a frase diz quantos levam os dois)
+        graus: dict[str, set[str]] = {}
+        for chave in pdfs:
+            try:
+                graus.setdefault(cnj.ler_nome_arquivo(chave).nome_arquivo, set()).add(
+                    cnj.grau_do_nome(chave))
+            except cnj.NumeroInvalido:
+                graus.setdefault(str(chave), set()).add("1g")
+        dois = sum(1 for v in graus.values() if len(v) > 1)
+        if dois:
+            leva = "; ".join(x for x in (leva, f"{dois} com os autos dos dois graus") if x)
+        itens.append(_contar(len(graus), "processo", "processos") + (f" ({leva})" if leva else ""))
     n = sum(len(v) for v in trans.values())
     if n:
         itens.append(_contar(n, "transcrição de audiência", "transcrições de audiência"))

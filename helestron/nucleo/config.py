@@ -72,6 +72,14 @@ ESQUEMA: list[tuple[str, str, str, str]] = [
     ("download", "salvar_diagnostico", "true",
      "Guardar print e HTML da tela quando algo der errado (Logs\\diagnostico,\n"
      "na pasta de dados do programa)."),
+    ("download", "grau", "1g",
+     "Grau em que o download da tela procura os autos quando o número não diz: 1g\n"
+     "(1º grau: as varas) ou 2g (2º grau: os recursos e as ações originárias do\n"
+     "tribunal). Dá para trocar em cada lote. A linha de comando não lê este\n"
+     "valor: usa --grau (sem ele, 1g). Vão sempre ao 2º grau o número de\n"
+     "competência originária do tribunal (órgão 0000), o do plantão do 2º grau\n"
+     "e da turma recursal (órgão começando por 9) e o recurso interno do 2º\n"
+     "grau (/50000)."),
 
     ("esaj", "login", "senha", "Como entrar no e-SAJ: senha, certificado ou manual."),
     ("eproc", "login", "senha", "Como entrar no eProc: senha ou manual."),

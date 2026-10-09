@@ -44,6 +44,8 @@ PREFIXO_CHAVES = "helestron"
 
 ESAJ, EPROC = "esaj", "eproc"
 FOLHAS, DOCUMENTO = "folhas", "documento"
+# O manifesto dos autos do 2º grau leva "grau": "2g"; sem o campo, 1º grau.
+SEGUNDO_GRAU = "2g"
 
 # Motivo de cada folha com página de aviso no lugar (e-SAJ). O código vai
 # para o manifesto; o texto, para a página de aviso e para o texto dos autos.
@@ -101,17 +103,20 @@ def _programa() -> str:
 
 
 def manifesto_esaj(processo: str, ultima: int, ausentes: dict[int, str] | None = None,
-                   origem: str = "", tribunal: str = "", notas: Iterable[str] = ()) -> dict:
+                   origem: str = "", tribunal: str = "", notas: Iterable[str] = (),
+                   grau: str = "1g") -> dict:
     """Manifesto do PDF do e-SAJ: página N = folha N, de 1 a ``ultima``.
 
     ``ausentes``: folha -> código do motivo (MOTIVOS) das folhas que têm
     página de aviso no lugar. ``origem``: "servidor" (o PDF único da Pasta
-    Digital) ou "peca_a_peca".
+    Digital) ou "peca_a_peca". ``grau``: "2g" para os autos do 2º grau (a
+    folha N é a da Pasta Digital do 2º grau); no 1º grau, o campo não vai
+    (ausente = 1º grau, como em tudo o que a 1.0.2 gravou).
     """
     por_motivo: dict[str, list[int]] = {}
     for folha, codigo in sorted((ausentes or {}).items()):
         por_motivo.setdefault(codigo if codigo in MOTIVOS else "N", []).append(int(folha))
-    return {
+    m = {
         "formato": FORMATO,
         "programa": _programa(),
         "sistema": ESAJ,
@@ -124,10 +129,13 @@ def manifesto_esaj(processo: str, ultima: int, ausentes: dict[int, str] | None =
         "notas": [str(n) for n in notas if str(n).strip()],
         "gerado_em": datetime.now().isoformat(timespec="seconds"),
     }
+    if grau == SEGUNDO_GRAU:
+        m["grau"] = SEGUNDO_GRAU
+    return m
 
 
 def manifesto_eproc(processo: str, documentos: list[dict], modo: str = "documentos",
-                    tribunal: str = "", **extras) -> dict:
+                    tribunal: str = "", grau: str = "1g", **extras) -> dict:
     """Manifesto do PDF do eProc: a paginação é a de cada documento.
 
     Cada item de ``documentos``: evento, rotulo, descricao, data, origem
@@ -146,8 +154,16 @@ def manifesto_eproc(processo: str, documentos: list[dict], modo: str = "document
         "documentos": list(documentos or []),
         "gerado_em": datetime.now().isoformat(timespec="seconds"),
     }
+    if grau == SEGUNDO_GRAU:
+        base["grau"] = SEGUNDO_GRAU
     base.update({k: v for k, v in extras.items() if k not in base})
     return base
+
+
+def grau(m: dict | None) -> str:
+    """O grau dos autos do manifesto: "2g" se ele o diz; "1g" se não diz
+    (PDF do 1º grau, ou de versão anterior à 1.1.0)."""
+    return SEGUNDO_GRAU if isinstance(m, dict) and m.get("grau") == SEGUNDO_GRAU else "1g"
 
 
 def palavras_chave(m: dict) -> str:
@@ -162,6 +178,8 @@ def palavras_chave(m: dict) -> str:
                                                  for c, v in aus.items()))
     elif m.get("modo"):
         partes.append(f"modo={m['modo']}")
+    if grau(m) == SEGUNDO_GRAU:
+        partes.append(f"grau={SEGUNDO_GRAU}")
     return ";".join(partes)
 
 

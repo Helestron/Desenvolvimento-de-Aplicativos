@@ -90,6 +90,9 @@ class Contexto:
 #   login_falhou      sistema, tribunal, detalhe
 #   sessao_caiu       sistema, tribunal, ordem
 #   fim               total, baixados, ja_baixados, falhas, pendentes, sigilosos
+# No 2º grau, os eventos de grupo e de login (grupo_inicio, navegador_ocupado,
+# login_aguardando, acao_na_janela, login_concluido, login_falhou, sessao_caiu)
+# levam também grau="2g"; no 1º grau o campo não vai (ausente = 1º grau).
 EVENTOS = ("lote_inicio", "grupo_inicio", "navegador_ocupado", "login_aguardando",
            "acao_na_janela", "login_concluido", "login_falhou", "sessao_caiu", "fim")
 PREFIXO_EVENTO = "HELESTRON-EVENTO "

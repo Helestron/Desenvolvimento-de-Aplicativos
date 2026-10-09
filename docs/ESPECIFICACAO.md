@@ -1,4 +1,4 @@
-# Helestron — especificação técnica (versão 1.0.2)
+# Helestron — especificação técnica (versão 1.1.0)
 
 Documento de referência para a reconstrução do antigo “Assessor Integrado” como
 **Helestron**. Tudo o que for dúvida de comportamento se decide aqui; o que não
@@ -31,7 +31,7 @@ compartilhamento), que foi testado e deve ser preservado.
 
 | Problema | Causa | Solução no Helestron |
 |---|---|---|
-| Instalação por `INSTALAR.bat` + PowerShell, baixando ~800 MB na hora | rede do tribunal (proxy, bloqueio de PyPI/Hugging Face), GPO que bloqueia scripts, janela de console | **Um só `Helestron-Setup-1.0.2.exe`** (NSIS, assistente gráfico em português), **offline**: Python, bibliotecas e modelo de transcrição vão dentro. Sem PowerShell, sem console, sem administrador. |
+| Instalação por `INSTALAR.bat` + PowerShell, baixando ~800 MB na hora | rede do tribunal (proxy, bloqueio de PyPI/Hugging Face), GPO que bloqueia scripts, janela de console | **Um só `Helestron-Setup-1.1.0.exe`** (NSIS, assistente gráfico em português), **offline**: Python, bibliotecas e modelo de transcrição vão dentro. Sem PowerShell, sem console, sem administrador. |
 | `No module named 'app.interface.pagina_config'` | um arquivo do programa sumiu depois da extração (antivírus que põe em quarentena arquivo que lida com senhas, extração parcial) e as telas eram importadas por nome em tempo de execução (`importlib`) | (a) interface em HTML: não há mais módulo Python por tela; (b) **imports estáticos** em todo o pacote; (c) **manifesto de integridade** conferido na abertura, com mensagem clara e botão “Reparar” (procura o `Helestron-Setup-X.Y.Z.exe` na pasta Downloads registrada no Windows, confere que é o instalador do Helestron e o abre só com a confirmação do usuário — o instalador não deixa cópia de si —, ou explica como baixá-lo de novo; seção 3.4); (d) o instalador roda `Helestron.exe --verificar-instalacao` ao final e avisa se algo faltar; (e) Python isolado (`-I`): variáveis `PYTHONPATH`/`PYTHONHOME` da máquina não interferem; (f) o lançador confere, antes de iniciar o Python, os arquivos sem os quais nem a tela de erro abre e diz qual falta (seção 10, etapa 6). |
 | Janela Tkinter datada | limitação do Tk | Interface web local (HTML/CSS/JS) numa janela nativa (WebView2), com vidro translúcido e componentes no estilo iOS. |
 
@@ -124,7 +124,7 @@ Dados do usuário (nunca apagados pela desinstalação sem perguntar, salvo
 
 | O quê | Onde |
 |---|---|
-| configuração `config.ini`, `Logs\` (com `execucoes\`, os registros do `baixar --json`), `perfis\` (só as sessões dos portais, cifradas pela DPAPI, e, no modo certificado, a cópia do Web Signer: seção 12), `credenciais.json` (DPAPI), `pauta.sqlite3`, `pauta.sigilo.json` (o sigilo que a pauta já apurou, fora do banco: seção 12), `instancia.json`, `modelos\` baixados depois, `temp\`, `webview\` e `edge-app\` (perfis da janela), e as correções locais que a atualização não apaga: `enderecos-locais.json`, `seletores.json` e `seletores-eproc.json` (valem por cima do que vem em `dados\`, que fica de reserva) | `%LOCALAPPDATA%\Helestron\` |
+| configuração `config.ini`, `Logs\` (com `execucoes\`, os registros do `baixar --json`), `perfis\` (só as sessões dos portais, cifradas pela DPAPI, e, no modo certificado, a cópia do Web Signer: seção 12; uma pasta por portal, `Tribunal.perfil`: `esaj-TJAL`, `eproc-TJAL`, `eproc2g-TJAL`, seção 14), `credenciais.json` (DPAPI), `pauta.sqlite3`, `pauta.sigilo.json` (o sigilo que a pauta já apurou, fora do banco: seção 12), `instancia.json`, `modelos\` baixados depois, `temp\`, `webview\` e `edge-app\` (perfis da janela), e as correções locais que a atualização não apaga: `enderecos-locais.json`, `seletores.json` e `seletores-eproc.json` (valem por cima do que vem em `dados\`, que fica de reserva) | `%LOCALAPPDATA%\Helestron\` |
 | Acervo (processos, transcrições) — compartilhado com a IA | `Documentos\Helestron\Acervo\` (`Processos\`, `Transcricoes\`) |
 | Sigilosos (segredo de justiça) — nunca compartilhado | `Documentos\Helestron\Sigilosos\` |
 | Pauta exportada (Excel) — **fora do acervo** (traz partes de processos sigilosos) | `Documentos\Helestron\Pauta\` |
@@ -269,7 +269,7 @@ que o download de um teste registra não vale para o seguinte.
 | `--encerrar` | pede à instância aberta que feche e espera ela sair (usado pelo instalador e pelo desinstalador antes de mexer nos arquivos). Antes, consulta `GET /api/transcricao/estado` da instância: com a audiência em `iniciando`, `gravando` ou `pausada`, **não fecha nada** e sai com **10**. Enquanto a instância responder que está fechando (a fila da audiência recém-encerrada sendo transcrita), espera até `ESPERA_FECHANDO_S` = 18 min. Código 0 = fechou (ou não havia nenhuma aberta), 1 = continua aberta, 10 = audiência em andamento. Atende também a tela de erro da integridade. |
 | `mcp [--pasta ACERVO]` | servidor MCP do acervo (stdio), como hoje. A cada pedido (`tools/call`), a listagem do acervo, a pasta dos sigilosos e a regra do sigilo são apuradas uma vez só (`Acervo.pedido()`; fora de um pedido, nada fica guardado), e `buscar` lista os PDFs uma vez: no acervo inteiro, com 3.000 PDFs, leva cerca de 0,3 s |
 | `--version` (ou `--versao`) | imprime `Helestron <versão>` e sai com 0 |
-| `baixar ...` | o download pela linha de comando, com o mesmo motor e os mesmos ajustes da janela, e as opções para automação (seção 5.1) |
+| `baixar ...` | o download pela linha de comando, com o mesmo motor e os mesmos ajustes da janela (salvo o grau: sem `--grau`, 1º grau), e as opções para automação (seção 5.1; o 2º grau, seção 14) |
 | `caminhos [--json]` | onde o programa guarda cada coisa e o que esta versão oferece (seção 5.2); não cria nada |
 | `preparar [--sem-texto] [--json]` e `preparar --pasta PASTA [--texto-em DIR] [--incluir-sigilosos] [--json]` | o preparo do acervo para a IA, ou só o texto dos autos de uma pasta de lote (seção 5.2) |
 | `transcrever ARQUIVO [--processo N] [--destino DESTINO] ...` | transcreve uma gravação. `--processo` aceita o dependente como `/01` ou `-01` (`cnj.ler_nome_arquivo`). `--destino` pode ser uma pasta (existente ou terminada em separador: o DOCX vai como `<pasta>/<número>.docx`, com nome livre) ou um arquivo (sem extensão, ganha `.docx`); um pai que é arquivo, ou uma pasta sem número do processo, é erro de uso (2). Se gravar no destino falhar (`OSError`), o documento vai para a pasta das transcrições (a dos sigilosos, se for sigiloso), e a saída diz onde ficou; outro `OSError` sai com 1 e a frase, sem rastro de pilha |
@@ -320,18 +320,19 @@ se acrescentam.
 
 ```
 python -m helestron baixar [NÚMEROS...] [--lista ARQ|URL] [--destino PASTA] [--completar J.TR.OOOO]
-       [--login senha|certificado|manual] [--sem-cofre] [--visivel] [--rebaixar] [--rebaixar-incompletos]
-       [--midias] [--sem-ia] [--texto] [--retomar] [--esperar-navegador MIN]
+       [--login senha|certificado|manual] [--grau 1g|2g] [--sem-cofre] [--visivel] [--rebaixar]
+       [--rebaixar-incompletos] [--midias] [--sem-ia] [--texto] [--retomar] [--esperar-navegador MIN]
        [--json ARQ] [--eventos] [--log ARQ] [--desanexar]
 ```
 
 | Opção | Efeito |
 |---|---|
 | `--completar J.TR.OOOO` | completa os números curtos da linha de comando (`NNNNNNN-DD.AAAA`, com ou sem `/NN`) com segmento, tribunal e foro. Argumento que não dá número nenhum não some em silêncio: vai para `ignorados` (`{argumento, motivo}`) e é impresso como “ignorado” |
+| `--grau 1g\|2g` | o grau do lote (`cli._grau`: `cnj.normalizar_grau`, que aceita também `1`, `2`, `1º` e `2º`; outro valor é erro de uso do argparse, código 2: “'3' não é grau: use 1g (1º grau) ou 2g (2º grau)”). Depois do `OpcoesDownload.de_config`, `opcoes.grau = --grau` ou, sem ele, `1g` (`cli._grau_dos_argumentos`): a linha de comando **não** lê `[download] grau`, que vale só para a janela (seção 14.1). Os grupos para as credenciais (`_pedir_credenciais`) são os Tribunais no grau (`t.no_grau(cnj.grau_do_processo(n, opcoes.grau))`): o eProc do 2º grau pergunta por `eproc2g:<SIGLA>` (“Acesso ao eProc do TJAL (2º grau)”), e o e-SAJ dos dois graus é uma pergunta só (`esaj:<SIGLA>`) |
 | `--sem-cofre` | não usa o cofre (`OpcoesDownload.usar_cofre = False`) nem pergunta senha: no modo `senha`, o grupo entra como `manual` (`motor._opcoes_do_grupo`), com o navegador visível na tela de entrada |
 | `--rebaixar-incompletos` | baixa de novo o PDF que já está na pasta só se ele tem `incompleto`, não tem o manifesto de paginação ou tem um que não o descreve, porque foi alterado depois do download (seção 13) |
 | `--texto` | depois do lote, `textos.garantir_texto` de cada PDF OK ou JA_BAIXADO: fora do acervo, em `<pasta do PDF>/_texto/<nome>.txt` (o do sigiloso fica na própria pasta de sigilosos); dentro do acervo, em `<acervo>/_ia/texto`. Autos de sigiloso presos no acervo não viram texto (`sigiloso_ignorado`). `textos.analisar` dá as páginas sem texto extraível de cada um (`paginas_sem_texto`, impressas e no JSON) |
-| `--retomar` | com a relação, ou só com `--destino`: baixa os números da relação que o relatório da pasta do lote (`motor.ler_relatorio_do_lote`, que lê também o relatório completo da pasta de sigilosos) não tem ou cuja linha `pede_nova_tentativa`, o `SIGILOSO_SEM_SENHA` cuja senha a relação agora traz e as linhas do relatório que pedem nova tentativa. Da linha OK ou JA_BAIXADO, volta o que o motor baixaria de novo (`cli._baixado_que_volta`, com as mesmas regras de `_registro_anterior` e `_baixar_de_novo`): o PDF que já não está na pasta do lote nem na de sigilosos dele; com `--rebaixar-incompletos`, o que tem `incompleto`, não tem o manifesto ou tem a paginação não garantida; e o do e-SAJ de versão anterior com sinal de numeração deslocada. O que fica de fora é impresso e vai para `ignorados_por_retomar`, com o porquê (o que só `--rebaixar-incompletos` refaria diz isso); sem nada a retomar, sai com 0. Só com `--destino` e sem o relatório de um lote em `_controle` (caminho errado), sai com 2 (`causa_erro` `sem_processos`) |
+| `--retomar` | com a relação, ou só com `--destino`: baixa os números da relação que o relatório da pasta do lote (`motor.ler_relatorio_do_lote`, que lê também o relatório completo da pasta de sigilosos) não tem ou cuja linha `pede_nova_tentativa`, o `SIGILOSO_SEM_SENHA` cuja senha a relação agora traz e as linhas do relatório que pedem nova tentativa. Da linha OK ou JA_BAIXADO, volta o que o motor baixaria de novo (`cli._baixado_que_volta`, com as mesmas regras de `_registro_anterior` e `_baixar_de_novo`): o PDF que já não está na pasta do lote nem na de sigilosos dele; com `--rebaixar-incompletos`, o que tem `incompleto`, não tem o manifesto ou tem a paginação não garantida; o do e-SAJ de versão anterior com sinal de numeração deslocada; e o PDF cujo manifesto é de outro grau. Tudo pela chave dos autos (`cnj.nome_dos_autos`): a linha só é retomada se o grau dela (`motor._grau_da_linha`) for o que a regra dá ao número nesta chamada (`cnj.grau_do_processo` com o `--grau`); a de outro grau vai para `ignorados_por_retomar`, com o `--grau` que a retoma (“do 2º grau: para retomá-la, use --grau 2g”) ou, para o número que só é procurado num grau, “nenhum --grau a retoma” (`cli._fora_do_grau`). O que fica de fora é impresso e vai para `ignorados_por_retomar`, com o porquê (o que só `--rebaixar-incompletos` refaria diz isso); sem nada a retomar, sai com 0. Só com `--destino` e sem o relatório de um lote em `_controle` (caminho errado), sai com 2 (`causa_erro` `sem_processos`) |
 | `--esperar-navegador MIN` | o `NavegadorOcupado` (outro download usa o perfil do navegador do portal; ou a subclasse `CopiaAntigaPresa`, do modo certificado: a cópia antiga do perfil inteiro do Chrome ainda não pôde ser apagada) antes de o grupo começar: tenta de novo a cada `ESPERA_NAVEGADOR_S` (30 s) até o prazo, com o evento `navegador_ocupado` e o aviso do motivo real (`motivo` `outro_download` ou `copia_antiga_presa`: “ocupado por outro download”, ou a cópia antiga e o que fechar); sem a opção, o grupo termina em ERRO com a causa `navegador_ocupado`, e o detalhe diz qual dos dois. MIN é finito, de 0 a 1440 (`MAX_ESPERA_NAVEGADOR_MIN`, um dia); fora disso, erro de uso |
 | `--json ARQ` | o acompanhamento em JSON (abaixo) |
 | `--eventos` | cada evento numa linha `HELESTRON-EVENTO {json}` da saída padrão (`contexto.linha_de_evento`) |
@@ -393,7 +394,11 @@ inválida, sem processos, destino, pastas em conflito, lote em andamento,
 Ctrl+C, erro inesperado), com `erro` e `causa_erro` (`uso`, `relacao_invalida`,
 `sem_processos`, `destino`, `pastas_em_conflito`, `lote_em_andamento`,
 `interrompido`, `inesperado`). No topo: `formato`, `versao`, `pid`, `inicio`,
-`atualizado_em`, `concluido`, `codigo_saida`, `erro`, `causa_erro`,
+`atualizado_em`, `concluido`, `codigo_saida`, `erro`, `causa_erro`, `grau`
+(o do lote, `1g` ou `2g`, desde o primeiro JSON gravado: o construtor do
+`Acompanhamento` começa com `1g`, e a CLI passa o do lote a todo
+acompanhamento que cria, inclusive o primeiro do `--desanexar`, o da saída
+sem relação e o do registro inacessível),
 `destino`, `sigilosos_do_lote`, `relatorio`, `relatorio_completo`, `log`,
 `status`, `navegador_visivel`, `progresso` (`feitos`, `total`,
 `em_curso`), `aguardando` (o evento que espera o usuário, ou `null`),
@@ -401,7 +406,9 @@ Ctrl+C, erro inesperado), com `erro` e `causa_erro` (`uso`, `relacao_invalida`,
 `sigilosos_no_acervo`, `resumo` (`total`, `baixados`, `ja_baixados`,
 `falhas`, `pendentes`, `sigilosos`, `a_refazer`) e `processos`, na ordem da
 relação. Cada processo: `ordem`, `numero` (o real, mesmo sigiloso),
-`nome_arquivo`, `tribunal`, `sistema`, `situacao` (`OK`, `JA_BAIXADO`,
+`nome_arquivo` (o nome dos autos, sem extensão: o do PDF ou, sem PDF,
+`cnj.nome_dos_autos`; no 2º grau, com ` (2G)`), `tribunal`, `sistema`,
+`grau` (o dos autos, `1g` ou `2g`, sempre), `situacao` (`OK`, `JA_BAIXADO`,
 `ERRO`, `NAO_ENCONTRADO`, `SEM_ACESSO`, `SIGILOSO_SEM_SENHA`,
 `NAO_SUPORTADO`, `CANCELADO`, `PENDENTE`), `rotulo`, `sigiloso`, `pdf`,
 `capa`, `capa_json`, `meta`, `texto`, `texto_situacao` (`novo`, `em_dia`,
@@ -412,8 +419,9 @@ do manifesto, `motor.essencial_da_paginacao`: `sistema`, `paginacao`,
 `resumo`, `ultima` e `ausentes` e, no e-SAJ, `folhas_ausentes` e `origem`;
 no eProc, `modo`, `documentos` e, no modo completo, `partes`; sem o
 manifesto, ou com um que não descreve o PDF, `garantida` é `false`, com o
-`resumo` e o resto `null`), `causa`,
-`refazer`, `consultas`, `detalhe`, `midias`, `segundos` e `data_hora`.
+`resumo` e o resto `null`; no 2º grau, também `grau: "2g"`), `causa`,
+`refazer`, `consultas` (no 2º grau, cada uma com `grau: "2g"`),
+`detalhe`, `midias`, `segundos` e `data_hora`.
 
 **Eventos** (`contexto.EVENTOS`; `Contexto.evento()` não faz nada na base e
 nunca levanta; o `ContextoTerminal` os imprime com `--eventos` e os repassa
@@ -431,17 +439,25 @@ ao acompanhamento, cuja falha nunca derruba o lote):
 | `sessao_caiu` | `sistema`, `tribunal`, `ordem` |
 | `fim` | `total`, `baixados`, `ja_baixados`, `falhas`, `pendentes`, `sigilosos`, `sigilosos_no_acervo` |
 
-Cada linha leva também `tipo` e `momento`. `aguardando` (no JSON) é
+Cada linha leva também `tipo` e `momento` e, nos grupos do 2º grau, os
+eventos `grupo_inicio`, `navegador_ocupado`, `login_aguardando`,
+`acao_na_janela`, `login_concluido`, `login_falhou` e `sessao_caiu` levam
+`grau: "2g"` (no 1º grau, o campo não vai; os dos portais o acrescentam
+no `_evento` do `PortalESAJ` e do `PortalEProc`). `aguardando` (no JSON) é
 preenchido em `login_aguardando`, `acao_na_janela` e `navegador_ocupado` e
 limpo em `login_concluido`, `login_falhou`, `grupo_inicio`, `fim` ou quando
 um item termina.
 
 **O relatório e as causas.** `relatorio.csv` tem as colunas `ordem`,
 `processo`, `tribunal`, `sistema`, `situacao`, `paginas`, `documentos`,
-`arquivo`, `sigiloso`, `incompleto`, `detalhe`, `data_hora` e, no fim,
-`causa` (também nas linhas mascaradas; o CSV antigo, sem ela, continua
-lido e mesclado). A situação diz o que houve; a causa (`modelos.CAUSAS`),
-por quê:
+`arquivo`, `sigiloso`, `incompleto`, `detalhe`, `data_hora`, `causa`
+(também nas linhas mascaradas; o CSV antigo, sem ela, continua lido e
+mesclado) e, no fim, `grau` (1.1.0: `1g` ou `2g`, também na linha
+mascarada; vazia no CSV de versão anterior, vale `cnj.grau_do_numero(n)
+or "1g"`, `motor._grau_da_linha`, e a linha regravada a ganha). As linhas
+se casam pela chave dos autos (`motor._chave_da_linha`: o processo e o
+grau): o mesmo número no 1º e no 2º grau são duas linhas (seção 14.5). A
+situação diz o que houve; a causa (`modelos.CAUSAS`), por quê:
 
 | Causa | Quando |
 |---|---|
@@ -469,7 +485,9 @@ alimenta “Tentar de novo” na janela, continua com a regra de antes.)
 **O registro do download (`_controle/<número>_meta.json`).** Depois de
 cada OK, `motor.gravar_meta` grava, ao lado do PDF final, `{formato:
 "helestron.meta/1", versao, numero, sistema, tribunal, paginas, documentos,
-incompleto, detalhe, paginacao, sigiloso, consultas, baixado_em}`. O
+incompleto, detalhe, paginacao, sigiloso, consultas, baixado_em}` (e
+`grau: "2g"`, só nos autos do 2º grau, gravados como
+`_controle/<número> (2G)_meta.json`). O
 processo que já está na pasta (JA_BAIXADO) conserva o registro, das três
 fontes, da menos para a mais confiável: a linha anterior do relatório, o
 `_meta.json` e o manifesto do PDF (`paginacao.ler_do_pdf`, a fonte primária
@@ -503,10 +521,13 @@ deu certo. `SUFIXOS_CONTROLE` (`_capa.txt`, `_capa.json`,
   `instalacao`, `instalado`, `config`, `config_existe`, `logs`, `acervo`,
   `processos`, `transcricoes`, `sigilosos`, `pauta`, `separar_sigilosos`,
   `login` (`{esaj, eproc}`: `senha`, `certificado` ou `manual`, como o
-  download lê), `espera_login_min` e `conflito_de_pastas` (a frase de
+  download lê), `espera_login_min`, `conflito_de_pastas` (a frase de
   `servicos.problema_nas_pastas`, a mesma com que o `baixar` recusa
-  começar, ou vazio). Não expõe `PERFIS`, o cofre, a sessão nem a pasta
-  `LOCAL`.
+  começar, ou vazio), `comando` (o `helestron.cmd` da pasta do programa,
+  ou vazio) e `grau` (1.1.0: `cnj.normalizar_grau([download] grau)` ou
+  `1g`, o grau padrão **da janela**; o `baixar` sem `--grau` usa `1g`, e a
+  ajuda do `caminhos` o diz). Não expõe `PERFIS`, o cofre, a sessão nem a
+  pasta `LOCAL`.
   `recursos` (`__main__.RECURSOS`) diz o que esta versão oferece a quem a
   automatiza; recurso novo vai no fim, e nenhum sai nem muda de sentido:
   `versao`, `caminhos`, `baixar.json`, `baixar.eventos`, `baixar.log`,
@@ -515,7 +536,12 @@ deu certo. `SUFIXOS_CONTROLE` (`_capa.txt`, `_capa.json`,
   `baixar.sem-cofre`, `baixar.desanexar`, `relatorio.causa`,
   `relatorio.meta`, `paginacao.manifesto`, `preparar.pasta`,
   `preparar.json`, `folhas.fieis`, `texto.v2`, `capa.v2`,
-  `texto.paginas-sem-texto` e `baixar.codigo-na-janela`.
+  `texto.paginas-sem-texto`, `baixar.codigo-na-janela`,
+  `baixar.pastas-em-conflito`, `comando.cmd`, `registro.hkcu` e, na 1.1.0,
+  `baixar.grau` (o `--grau`, os campos `grau` do JSON, do CSV e do
+  `caminhos`, os autos `<número> (2G).pdf`), `esaj.2g` (o 2º grau do e-SAJ,
+  com o acesso do 1º) e `eproc.2g` (o eProc do 2º grau, com acesso
+  próprio, `eproc2g:<SIGLA>`).
 * **`--version`** (ou `--versao`): `Helestron <versão>`, código 0.
 * **`preparar [--sem-texto] [--json]`**: `preparo.atualizar_contexto`. Os
   erros vão para a saída de erro (inclusive a frase dos sigilosos presos), e
@@ -534,7 +560,9 @@ deu certo. `SUFIXOS_CONTROLE` (`_capa.txt`, `_capa.json`,
   o texto é gerado, e o item diz `sigiloso: true`. `--incluir-sigilosos`
   inclui os PDFs da pasta de sigilosos do lote, com o texto em
   `<sigilosos do lote>/_texto` (ou na subpasta relativa de `--texto-em`
-  que fique dentro dela; nunca no acervo). Cada item: `pdf`, `texto`, `situacao`, `erro`,
+  que fique dentro dela; nunca no acervo). Cada item: `pdf`, `grau` (1.1.0:
+  `paginacao.grau` do manifesto do PDF e, sem manifesto válido,
+  `cnj.grau_do_nome`), `texto`, `situacao`, `erro`,
   `sigiloso`, `paginas`, `paginacao` (sempre com `garantida`, que é
   `false`, com o `resumo`, sem o manifesto ou com um que não descreve o
   PDF: a mesma conferência do texto, `textos.manifesto_confere`),
@@ -592,9 +620,9 @@ Sucesso: `{"ok": true, "dados": ...}`. Erro: `{"ok": false, "erro": {"codigo":
 * `GET /api/estado` → `{nome, versao, modo: "janela"|"edge"|"navegador", pastas: {acervo, processos, transcricoes, sigilosos, pauta, logs}, pendencias: [{chave, titulo, mensagem, acao: "ajustes#acessos"|...}], resumo: {processos, transcricoes, ultimos_lotes: [{nome, quando, total, baixados, falhas, pasta}], transcricoes_recentes: [{numero, arquivo, quando}], pauta: {hoje, semana, proxima: Audiencia|null, ultima_sincronizacao, alteracoes_nao_vistas, fontes, configurada}}, tarefas: [Tarefa]}` (`semana` = de hoje a hoje + 6; `fontes` = quantas fontes cadastradas; `configurada`: contrato C5, seção 6.6). A `acao` de cada pendência é uma rota da interface (`pauta`, `ajustes#<grupo>`, com o grupo existente em Ajustes: a “Instalação incompleta” leva a `ajustes#sobre`); a pendência da pauta (`chave` `pauta_login`) é a do monitoramento (seção 8.7). As pendências do sigilo (seção 12) levam à tela Compartilhar (`acao` `compartilhar`) e trazem a lista `arquivos`: `sigilo` (“Processo sigiloso no acervo”, ou “Processos sigilosos no acervo”: autos presos, que travam o compartilhamento) e `sigilo-arquivos` (“Arquivo de processo sigiloso no acervo”, ou “Arquivos de processos sigilosos no acervo”: os outros arquivos presos, que só avisam). A pendência `nuvem` (“Pasta da nuvem em conflito”) traz a frase de `config.conflito_com_a_nuvem` (a pasta dos sigilosos ou a da pauta dentro da pasta da nuvem, igual a ela ou contendo-a; `acao` `ajustes#pastas`, ou `ajustes#compartilhar` quando é a nuvem que está dentro delas) ou a de `servicos.conflito_da_nuvem` (a nuvem dentro do acervo ou contendo-o: o espelho não roda).
 * `GET /api/config` → `{valores: {secao: {chave: valor}}, esquema: [{secao, chave, tipo: "texto"|"flag"|"inteiro"|"pasta"|"escolha", rotulo, ajuda, opcoes?}]}`
 * `POST /api/config` `{secao, chave, valor}` → `{valor}` (valida; pastas conflitantes → erro com a frase de `problema_nas_pastas`; a pasta da nuvem dentro do acervo ou contendo-o, e o acervo movido para dentro da nuvem já escolhida → 400 `pastas_em_conflito`, com a frase de `servicos.conflito_da_nuvem`; a pasta dos sigilosos ou a da pauta dentro da pasta da nuvem, igual a ela ou contendo-a, ou a nuvem dentro delas → 400 `pastas_em_conflito`, com a frase de `config.conflito_com_a_nuvem` — cada chave confere só a sua pasta. A pasta em branco é conferida como a pasta padrão que ela passa a valer, `caminhos.resolver(valor, "Acervo"|"Sigilosos"|"Pauta", base)`; a `pasta_nuvem` em branco continua sendo “não espelhar”. Número `inf`, `nan` ou `1e999` → 400 `valor_invalido`, e o `GET` com um desses no `config.ini` devolve o padrão)
-* `GET /api/tribunais` → `[{sigla, nome, sistema, alternativo}]`
-* `GET /api/acessos` → `[{portal, tribunal, sistema, rotulo, usuario, tem_senha, guardada, so_agora, modo}]` (`so_agora`: a senha foi digitada com “Lembrar neste computador” desligado e vale até fechar o programa, para o download e para a pauta); `POST /api/acessos` `{portal, usuario, senha, lembrar?, modo?}`; `DELETE /api/acessos/{portal}`; `POST /api/acessos/testar` `{tribunal, sistema?}` → `{tarefa}` (tipo `teste_login`; testa exatamente o portal pedido, contrato C1). Apagar o acesso, ou gravá-lo com outro usuário, apaga também a sessão guardada e os perfis do navegador do portal (`navegador.esquecer_portal`; o navegador aberto antes disso, também o de outro processo, não regrava a sessão ao fechar). Com o cofre preso ou em uso por outro processo (`cofre_senhas.CofreIndisponivel`), a resposta é 409 `arquivo_preso`, com a frase
-* `GET /api/tribunais/enderecos` → `[{portal, grau, rotulo, url, rotulo_portal}]` (só os endereços corrigidos pelo usuário); `GET /api/tribunais/enderecos/{portal}` → `{portal, rotulo, enderecos: [{grau, rotulo, url, padrao, corrigido}]}`; `POST /api/tribunais/enderecos` `{portal, grau, url}` → o mesmo (url em branco volta ao catálogo). É o “Endereço do portal” de Ajustes › Acessos aos portais: a correção fica em `LOCAL/enderecos-locais.json` e vale por cima de `dados/tribunais.json`, para o download e a pauta; as mensagens do motor sobre endereço mudado apontam para ela.
+* `GET /api/tribunais` → `[{sigla, nome, sistema, nome_sistema, suportado, alternativo, chave, graus, graus_alternativo}]` (`graus`: os graus em que o Helestron baixa do sistema principal, `["1g", "2g"]` onde `Tribunal.tem_grau("2g")`, senão `["1g"]`; `graus_alternativo`: os do sistema alternativo, só entre os do principal, porque o motor recusa o grau que o principal não tem: no TJSP, `["1g"]`. A tela os usa no “Adicionar acesso”, que oferece o eProc do 2º grau só onde o Helestron o baixa)
+* `GET /api/acessos` → `[{portal, tribunal, sistema, grau, graus, rotulo, usuario, tem_senha, guardada, so_agora, modo}]` (`so_agora`: a senha foi digitada com “Lembrar neste computador” desligado e vale até fechar o programa, para o download e para a pauta; `portal` é `esaj:TJAL`, `eproc:TJAL` ou `eproc2g:TJAL`, a chave de `tribunais.RE_PORTAL`; `sistema`, `esaj` ou `eproc`, também na linha `eproc2g`; `grau`, o da credencial; `graus`, os que o “Testar” da linha testa: `esaj:TJAL` → `["1g", "2g"]`, `eproc:TJAL` → `["1g"]`, `eproc2g:TJAL` → `["2g"]`; `rotulo`, `Tribunal.rotulo`, como “TJAL · eProc (2º grau)”; `modo`, o de `[esaj] login` ou `[eproc] login`, que vale para os dois graus do sistema. A lista traz os portais do tribunal da unidade, os do 2º grau dele quando ele o tem e os do cofre: seção 14.4); `POST /api/acessos` `{portal, usuario, senha, lembrar?, modo?}` (aceita `eproc2g:<SIGLA>`; o tribunal sem o eProc do 2º grau dá 400 “O TJAM não tem o eProc do 2º grau no Helestron.”); `DELETE /api/acessos/{portal}` (o de `eproc2g:TJAL` apaga só o cofre, a sessão e os perfis do 2º grau); `POST /api/acessos/testar` `{tribunal, sistema?, grau?}` → `{tarefa}` (tipo `teste_login`; testa exatamente o portal pedido, no grau pedido, contrato C1: `grau` ausente é o 1º grau, e o corpo do 1º grau continua `{tribunal, sistema}`; grau inválido dá 400 `valor_invalido`, “Grau inválido (use 1g ou 2g).”, e o grau que o portal não tem, 400 `valor_invalido`, “O TJSP · e-SAJ não tem o 2º grau no Helestron.”; as credenciais são as de `Tribunal.portal` no grau: `esaj:TJAL` nos dois graus do e-SAJ, `eproc2g:TJAL` no eProc do 2º grau). Apagar o acesso, ou gravá-lo com outro usuário, apaga também a sessão guardada e os perfis do navegador do portal (`navegador.esquecer_portal`; o navegador aberto antes disso, também o de outro processo, não regrava a sessão ao fechar). Com o cofre preso ou em uso por outro processo (`cofre_senhas.CofreIndisponivel`), a resposta é 409 `arquivo_preso`, com a frase
+* `GET /api/tribunais/enderecos` → `[{portal, grau, rotulo, url, rotulo_portal}]` (só os endereços corrigidos pelo usuário); `GET /api/tribunais/enderecos/{portal}` → `{portal, rotulo, enderecos: [{grau, rotulo, url, padrao, corrigido}]}`; `POST /api/tribunais/enderecos` `{portal, grau, url}` → o mesmo (url em branco volta ao catálogo). Os endereços são do sistema (`Tribunal.portal_do_sistema`): a linha `eproc2g:TJAL` abre os do eProc do TJAL (o `portal` da resposta é `eproc:TJAL`), e a correção sem `grau` feita por ela vale para o `2g`; o e-SAJ do TJAL lista, depois da `base`, o endereço da consulta de 2º grau (`2g`). É o “Endereço do portal” de Ajustes › Acessos aos portais: a correção fica em `LOCAL/enderecos-locais.json` e vale por cima de `dados/tribunais.json`, para o download e a pauta; as mensagens do motor sobre endereço mudado apontam para ela.
 * `POST /api/dialogo/arquivo` `{titulo, tipos: ["Planilhas|*.xlsx;*.xls", ...]}` e `POST /api/dialogo/pasta` `{titulo, inicial}` → `{caminho|null}` (o de arquivo também `tamanho`, em bytes, ou `null`; diálogo nativo pela pywebview; fora dela → erro `sem_dialogo`, e a interface usa `<input type=file>`)
 * `POST /api/abrir` `{tipo: "pasta"|"arquivo"|"url", alvo}`
 * `GET /api/verificacao` → `[{nome, situacao: "ok"|"aviso"|"falha", detalhe, acao}]`; `POST /api/verificacao/completa` → `{tarefa}`
@@ -606,9 +634,9 @@ Sucesso: `{"ok": true, "dados": ...}`. Erro: `{"ok": false, "erro": {"codigo":
 * `POST /api/perguntas/{id}/responder` `{valor}`; `POST /api/perguntas/{id}/cancelar`
 
 **Processos (download)**
-* `POST /api/relacao/arquivo` — corpo `multipart/form-data` (campo `arquivo`) **ou** JSON `{caminho}` → `Leitura = {formato, origem, processos: [{numero, tribunal, sistema, tem_senha}], avisos: [], corrompidos: [], sem_suporte: [{numero, motivo}]}`
+* `POST /api/relacao/arquivo` — corpo `multipart/form-data` (campo `arquivo`) **ou** JSON `{caminho}` → `Leitura = {formato, origem, processos: [{numero, tribunal, sistema, alternativo, descricao, tem_senha, digito_confere, dependente, grau_fixo, graus}], avisos: [], corrompidos: [], sem_suporte: [{numero, motivo}]}` (`grau_fixo`: `"2g"` quando o próprio número impõe o 2º grau, `cnj.grau_do_numero`, senão `null`; `graus`: os graus que o Helestron baixa do sistema principal do processo)
 * `POST /api/relacao/texto` `{texto}` → `Leitura`; `POST /api/relacao/link` `{url}` → `Leitura`
-* `POST /api/download/iniciar` `{processos: [numero], senhas?: {numero: senha}, nome_lote, opcoes: {separar_sigilosos, rebaixar, navegador_visivel}}` → `{tarefa}` (eventos `item` por processo). Enquanto a pasta dos sigilosos ou a da pauta estiver dentro do acervo (ou o acervo dentro dela), recusa com 409 `pastas_em_conflito` (`api_processos.exigir_pastas_separadas`, com a frase de `servicos.problema_nas_pastas` e “Corrija em Ajustes › Pastas antes de baixar os processos.”); vale também para `POST /api/pauta/baixar-autos`, que passa por `iniciar_lote`. Cada item (`item_json`) traz também `causa` e `refazer`, os mesmos do relatório e do JSON da linha de comando (seção 5.1)
+* `POST /api/download/iniciar` `{processos: [numero], senhas?: {numero: senha}, nome_lote, opcoes: {separar_sigilosos, rebaixar, navegador_visivel, grau}}` → `{tarefa}` (eventos `item` por processo). `opcoes.grau` é o grau do lote (`api_processos.grau_do_pedido`: `1g`, `2g`, `1`, `2`, `1º`, `2º`…); ausente ou em branco, vale o `[download] grau` dos Ajustes; outro valor dá 400 `valor_invalido`, “Grau inválido (use 1g ou 2g).”, antes de abrir a tarefa. A tela manda sempre o `grau` (também no “Tentar de novo”, contrato C9), e o `resultado` da tarefa traz `grau` (o do lote). Enquanto a pasta dos sigilosos ou a da pauta estiver dentro do acervo (ou o acervo dentro dela), recusa com 409 `pastas_em_conflito` (`api_processos.exigir_pastas_separadas`, com a frase de `servicos.problema_nas_pastas` e “Corrija em Ajustes › Pastas antes de baixar os processos.”); vale também para `POST /api/pauta/baixar-autos`, que passa por `iniciar_lote`. Cada item (`item_json`) traz também `causa` e `refazer`, os mesmos do relatório e do JSON da linha de comando (seção 5.1), e `grau`, o dos autos daquele processo (`1g` ou `2g`, sempre)
 * `GET /api/download/lotes` → `[{nome, quando, total, baixados, falhas, pasta, relatorio}]`
 
 **Audiências (transcrição)**
@@ -632,7 +660,7 @@ Sucesso: `{"ok": true, "dados": ...}`. Erro: `{"ok": false, "erro": {"codigo":
 * `POST /api/pauta/exportar` `{de, ate, sistema?, situacao?, busca?, incluir_partes_sigilosos?}` → `{arquivo}` (`incluir_partes_sigilosos` presente vale como veio, `true` ou `false`, inclusive o `false` com o ajuste ligado; ausente, vale `[pauta] incluir_partes_sigilosos`)
 * `GET /api/pauta/alteracoes?desde=` → `[{quando, tipo: "nova"|"alterada"|"cancelada"|"removida", audiencia, campos: [{campo, antes, depois}]}]`; `POST /api/pauta/alteracoes/vistas`
 * `POST /api/pauta/monitoramento` `{ativo, intervalo_horas}`
-* `POST /api/pauta/baixar-autos` `{ids?: [], de?, ate?}` → `{tarefa}` (lote de download com os processos)
+* `POST /api/pauta/baixar-autos` `{ids?: [], de?, ate?}` → `{tarefa}` (lote de download com os processos, sempre do 1º grau: a pauta é de audiências do 1º grau, e o lote vai com `grau: "1g"`, seja qual for o dos Ajustes; o número que só existe no 2º grau vai ao 2º)
 
 **Compartilhar com IA** (as ações recusam com 409 `sigiloso_no_acervo` enquanto os **autos** de um processo sigiloso, um PDF dele fora de `Produtos\`, estiverem presos no acervo, e os outros arquivos presos só avisam; as que entregam o acervo — preparar, abrir o Cowork, o Claude Code, o ChatGPT Work ou o Codex, o pacote e o espelho na nuvem — começam pelo preparo, que tira do acervo o processo sigiloso, e, nas tarefas, o que não puder sair faz a tarefa falhar com a mesma frase: seção 12. Antes disso, preparar, Cowork, Claude Code, ChatGPT Work, Codex e o espelho recusam com 409 `pastas_em_conflito` enquanto a pasta dos sigilosos ou a da pauta estiver dentro do acervo, ou o acervo dentro delas — `api_compartilhar.exigir_pastas_separadas`, com a frase de `servicos.problema_nas_pastas` —, e nenhuma abertura nem preparo acontece: as ferramentas que leem a pasta direto leriam os sigilosos, e o `CLAUDE.md` diria que eles não estão ali; o espelho automático também pula, com aviso no registro)
 * `GET /api/compartilhar/estado` → estado de cada destino (`servicos.estado_ia`), mais `sigilosos_avisos` (os arquivos de processo sigiloso que ficaram no acervo sem travar nada)
@@ -649,7 +677,7 @@ Cada evento: `event: <tipo>` + `data: <json>`. Tipos:
 | tipo | dados |
 |---|---|
 | `tarefa` | `Tarefa` (sempre que muda) |
-| `item` | `{tarefa, numero, situacao, rotulo, mensagem, arquivo, sigiloso, paginas, tribunal, sistema, ordem, causa, refazer}` (download; `causa` e `refazer`: seção 5.1) |
+| `item` | `{tarefa, numero, situacao, rotulo, mensagem, arquivo, sigiloso, paginas, tribunal, sistema, ordem, causa, refazer, grau}` (download; `causa` e `refazer`: seção 5.1; `grau`: o dos autos, seção 14) |
 | `log` | `{tarefa?, nivel: "info"|"aviso"|"erro", texto, hora}` |
 | `pergunta` | `{id, tarefa, tipo: "codigo"|"confirmar"|"texto"|"escolha", titulo, mensagem, opcoes?, prazo_s}` |
 | `pergunta_fechada` | `{id, motivo}` |
@@ -686,7 +714,23 @@ Combinados na revisão da versão 1.0.0; cada lado tolera a falta do outro
   aos portais, “Testar” e “Alterar” (ou “Cadastrar”) são botões irmãos numa
   linha que não é botão, e o resultado aparece na própria linha (“Testando o
   acesso…”, “Acesso confirmado às HH:MM.”, “O teste falhou. …”); o aviso do
-  fim dessa tarefa não aparece enquanto a tela está aberta.
+  fim dessa tarefa não aparece enquanto a tela está aberta. Desde a 1.1.0,
+  o pedido aceita também `grau` (`1g` ou `2g`; ausente, o 1º grau, com o
+  corpo e o título de antes), e o teste roda no Tribunal do portal no grau
+  pedido (`api_geral.no_grau_pedido`, `Tribunal.no_grau`), pelas mesmas
+  fábricas do motor: o 2º grau do e-SAJ entra pelo login de sempre e abre a
+  consulta de 2º grau (o `entrar()` do `PortalESAJ` no 2º grau passa pela
+  porta de entrada dela e confere que ela abriu); o do eProc abre o perfil
+  `eproc2g-<SIGLA>` com a senha de `eproc2g:<SIGLA>`. A linha com `graus` de
+  dois itens (o e-SAJ do TJAL) tem os botões “Testar 1º grau” e “Testar 2º
+  grau”, e o resultado é guardado por portal e grau (“2º grau: Acesso
+  confirmado às HH:MM.”); a de um item tem “Testar”, como antes. A tela só
+  manda `grau` no 2º grau, usa `sistema` e `tribunal` da resposta do
+  `GET /api/acessos` (a chave `eproc2g:TJAL` não diz o sistema pelo
+  prefixo) e oferece “Testar” também nos modos certificado e manual (o
+  navegador abre e espera o usuário entrar). O título do 2º grau é “Testar
+  o acesso ao TJAL · e-SAJ (2º grau)”, e a mensagem, “Acesso ao TJAL · e-SAJ
+  (2º grau) confirmado.”.
 * **C2 — Microfone pelo nome.** `[transcricao] dispositivo` guarda o
   **nome** do microfone (`""` = padrão do Windows): o número muda quando se
   liga ou desliga um aparelho USB. A configuração antiga, só com dígitos, é
@@ -729,9 +773,10 @@ Combinados na revisão da versão 1.0.0; cada lado tolera a falta do outro
   importado, já fora da pauta), está marcada sigilosa (`Armazem.sigilosas`).
   Ela compara o número exato, sem a herança do incidente: na transcrição, a
   herança vem da regra única (seção 12), que
-  `servidor/audiencia.sigilo_conhecido` consulta por último e que diz quando
-  o sigilo vem do principal (“Este processo é incidente de um processo
-  sigiloso: …”).
+  `servidor/audiencia.sigilo_conhecido` consulta por último (`sigilo.motivo`)
+  e que diz quando o sigilo vem do principal (“Este processo é incidente de
+  um processo sigiloso: …”) ou de um recurso interno do 2º grau (“Um
+  recurso interno deste processo no 2º grau é sigiloso.”).
   Na transcrição (`servidor/audiencia.py`, `sigilo_da_audiencia`), o pedido da
   página só **acrescenta** sigilo: vale `servicos.processo_sigiloso` (autos,
   transcrição, gravação ou diário do processo na pasta dos sigilosos), a
@@ -825,12 +870,22 @@ Combinados na revisão da versão 1.0.0; cada lado tolera a falta do outro
   `_Lote`) lê o relatório anterior da pasta (o mais recente entre
   `relatorio.csv` e `relatorio (atualizado).csv`; a linha mascarada
   “(processo sigiloso)” é casada, pela ordem, com a do relatório completo da
-  pasta de sigilosos) e grava a mescla: as linhas refeitas no lugar das
+  pasta de sigilosos, e continua sigilosa mesmo que o completo, desatualizado,
+  diga que não — por isso, para desfazer uma marcação por engano, o manual
+  manda trocar também a linha mascarada pela do completo, já com “não”:
+  seção 12, Sigilo) e grava a mescla: as linhas refeitas no lugar das
   antigas, as demais como estavam e as novas no fim, com a ordem
   renumerada. O relatório do acervo continua mascarado, e o completo vai
   para a pasta de sigilosos do lote (`pasta_sigilosos_do_lote`, seção 5.1).
-  A coluna `causa` vai no fim, também nas linhas mascaradas, e o relatório
-  antigo sem ela é lido e mesclado.
+  A coluna `causa` vai no fim (desde a 1.1.0, seguida só de `grau`), também
+  nas linhas mascaradas, e o relatório antigo sem ela é lido e mesclado.
+  Desde a 1.1.0, o “Tentar de novo”
+  manda também o grau do lote que terminou (`grau: res.grau`, o `grau` do
+  `resultado` da tarefa), e não o do rascunho da tela: depois de recarregar
+  a página o rascunho é nulo (o servidor usaria o dos Ajustes), e o lote da
+  Pauta, sempre do 1º grau, refeito com o rascunho em 2º grau iria ao 2º.
+  As linhas se casam pela chave dos autos (o processo e o grau: seção
+  5.1).
 
 ## 7. Interface (`helestron/web`)
 
@@ -919,7 +974,14 @@ versão. Conteúdo: título grande + subtítulo + ações à direita.
   falhas”, âmbar; “Nenhum processo baixado”, vermelho), e “Tentar de novo”
   refaz os que falharam no mesmo lote (contrato C9). Mais “Últimos lotes”.
   O processo que o programa já sabe sigiloso (seção 12) vai para a pasta
-  dos sigilosos mesmo que a página do portal não mostre o selo.
+  dos sigilosos mesmo que a página do portal não mostre o selo. O 2º grau
+  (seção 14.9): nas opções, o segmentado “Grau” (`#grau-lote`, “1º grau” |
+  “2º grau”), que começa com o `[download] grau` dos Ajustes e vai sempre
+  no pedido; na revisão, a coluna “Grau” (selo sem clique: o grau do lote
+  ou o `grau_fixo`, com contorno e o título “Só existe no 2º grau”; em
+  âmbar, o grau que o Helestron não baixa daquele tribunal), as pílulas por
+  tribunal, sistema e grau e o “Acesso aos portais” no grau de cada linha;
+  no andamento, o selo “TJAL · 2º grau”.
 * **Audiências** — preparação (número do processo com validação e sugestões da
   pauta de hoje, microfone escolhido pelo nome com medidor de nível — Gravar
   e Testar desativados enquanto a lista carrega —, participantes F1–F8,
@@ -988,8 +1050,12 @@ versão. Conteúdo: título grande + subtítulo + ações à direita.
   “Sigilo e responsabilidade” lembra a regra do sigilo (seção 12).
 * **Ajustes** — listas agrupadas: Acessos aos portais (usuário/senha por
   portal, com os botões irmãos “Testar” e “Alterar”/“Cadastrar” e o
-  resultado do teste na linha: contrato C1), Pastas, Unidade, Download,
-  Transcrição (com a lista “Microfone”, pelo nome), Pauta (fontes,
+  resultado do teste na linha: contrato C1; no e-SAJ do TJAL, “Testar 1º
+  grau” e “Testar 2º grau”; o eProc do 2º grau numa linha própria, também
+  oferecida no “Adicionar acesso”; o rodapé diz que o acesso ao e-SAJ vale
+  para os dois graus e que o eProc do 2º grau tem acesso próprio), Pastas,
+  Unidade, Download (com “Grau dos processos”), Transcrição (com a lista
+  “Microfone”, pelo nome), Pauta (fontes,
   monitoramento; a fonte cuja última sincronização falhou mostra “Último
   erro: …” com um ponto âmbar, e o ícone dela não muda de cor),
   Compartilhar, Sobre e diagnóstico (versão, verificar instalação, abrir
@@ -1599,7 +1665,7 @@ obrigatória: sem elas, a mensagem traz `COMANDOS_CONVERSAO`.
    `manifesto.json` e a própria lista por último, e depois `P <pasta>`, das
    mais fundas para as de cima) e o script NSIS (`@REGISTRO@`: a lista desta
    versão vai embutida no instalador), e roda `makensis` →
-   `dist/Helestron-Setup-1.0.2.exe` + `.sha256`. O Setup acima de 500 MiB
+   `dist/Helestron-Setup-1.1.0.exe` + `.sha256`. O Setup acima de 500 MiB
    (`LIMITE_SETUP`, o limite para entrega por anexo) é recusado e apagado
    de `dist`.
 
@@ -1896,16 +1962,47 @@ dados ficam com a instalação registrada.
     `Processos` primeiro; cada relatório
     relido só quando muda a data ou o tamanho; “sim” na coluna `sigiloso`,
     UTF-8 com BOM ou, salvo pelo Excel, cp1252; a linha mascarada não
-    conta). É o que cobre o lote baixado com a separação desligada antes do
+    conta; a de um recurso interno do 2º grau marca também o principal, que
+    não tem linha própria: veja o incidente, abaixo). É o que cobre o lote
+    baixado com a separação desligada antes do
     registro (versão anterior) ou depois de ele se perder (LOCAL apagada,
-    acervo noutro computador); `chaves_sigilosas` acrescenta ao registro
-    do download o que só o relatório conhece (não o que a pasta ou a pauta
-    já dão), e o `preparar --pasta` soma o relatório da própria pasta.
+    acervo noutro computador); do relatório completo, na pasta dos
+    sigilosos (`<sigilosos>/<lote>/_controle`, os dois relatórios, um nível
+    abaixo dela), contam só as linhas “sim” dos recursos internos do 2º
+    grau, com o principal de cada um (`sigilo.recursos_dos_completos`): o
+    recurso interno de processo em segredo não tem autos (o Helestron não o
+    baixa), e a linha dele no acervo, com a separação ligada, é mascarada;
+    `chaves_sigilosas` acrescenta ao registro do download o que só o
+    relatório conhece (não o que a pasta ou a pauta já dão), e o
+    `preparar --pasta` soma o relatório da própria pasta; (6)
+    com o acervo, a **capa do 2º grau de um originário** (HC, MS, AI de
+    órgão `0000`; originário de turma recursal, `9xxx`), guardada em
+    `<lote>/_controle/<número> (2G)_capa.json`, lista em
+    `numeros_1a_instancia` uma ação de origem sigilosa por qualquer das
+    fontes anteriores (`sigilo.herdadas_das_origens`: as mesmas pastas
+    `_controle` e o mesmo limite de acervo grande; só as capas de
+    originários são abertas — não a da apelação nem a do recurso interno
+    dela, cuja origem é o próprio número —, cada uma relida só quando muda
+    a data ou o tamanho). O motor já trata o originário como sigiloso no
+    download, se a origem já se sabe sigilosa — e também o que já estava na
+    pasta (`JA_BAIXADO`), pela capa ao lado do PDF; esta fonte cobre a origem
+    que vira sigilosa depois. `chaves_sigilosas` acrescenta o originário ao
+    registro do download — herdado pela capa, não pelo selo do portal: o
+    registro não guarda o porquê (`sigilo.motivo` o dá como apurado por um
+    download), e por isso `chaves_sigilosas` avisa no registro do programa,
+    uma vez por originário novo, “originário X tratado como sigiloso: o
+    processo de origem A é sigiloso (capa do 2º grau em …)”
+    (`sigilo.origens_herdadas` devolve a origem e a capa de cada um;
+    `herdadas_das_origens`, só os nomes) —, e o `preparar --pasta` soma as
+    capas da própria pasta.
     `sigilo.chaves_sigilosas` dá todos; `sigilo.motivo` diz por quê (“os
     autos, uma transcrição ou uma gravação dele estão na pasta dos
     sigilosos”, “a pauta de audiências indica que ele corre em segredo de
-    justiça” ou “um download anterior apurou que ele corre em segredo de
-    justiça”). O banco da
+    justiça”, “um download anterior apurou que ele corre em segredo de
+    justiça”, “o relatório completo de um lote, na pasta dos sigilosos, o
+    dá como sigiloso” — o recurso interno sem autos — ou, no principal que
+    só um recurso interno dele torna sigiloso, “um recurso interno dele no
+    2º grau é sigiloso”). O banco da
     pauta só é lido se já existir e só para consulta: `chaves_da_pauta` não
     abre o `Armazem`, mas o SQLite em `file:…?mode=ro` (a URI montada à
     mão, com `%XX`, para servir a `C:/` e a `\\servidor`), com `PRAGMA
@@ -1941,7 +2038,8 @@ dados ficam com a instalação registrada.
     e a classe `Sigilosas` (um `frozenset` em que `chave in sigilosas` vale
     também para `<principal>-NN`) fazem a herança; `chaves_sigilosas`,
     `chaves_na_pasta` e `chaves_da_pauta` devolvem `Sigilosas`, e `na_pasta`
-    e `na_pauta` herdam (o parâmetro `herdar=False` desliga). Os motivos
+    e `na_pauta` herdam (o parâmetro `herdar=False` desliga a herança e a
+    extensão do recurso interno, abaixo). Os motivos
     dizem quando o sigilo vem do principal (`motivo_da_pasta`,
     `motivo_da_pauta`, `MOTIVO_PASTA_PRINCIPAL`, `MOTIVO_PAUTA_PRINCIPAL`):
     na tela, “Este processo é incidente de um processo sigiloso: …”; na
@@ -1949,7 +2047,89 @@ dados ficam com a instalação registrada.
     sigiloso: …”. Com isso, o índice, o MCP, a nuvem, o pacote, o preparo, o
     download (`motor._motivo_sigilo` e os relatórios anteriores do lote) e a
     transcrição herdam, e retirar do acervo o principal leva também os
-    incidentes.
+    incidentes (o recurso interno do 2º grau, `…-50000`, é incidente do
+    principal para a regra). O **recurso interno do 2º grau** é a exceção
+    ao “o contrário não vale”: o dependente de cinco algarismos começando
+    por `5` (`…-50000`, `…-50001`: `cnj.grau_do_numero`) corre nos autos do
+    principal no 2º grau, e a consulta do recurso interno de um processo em
+    segredo abre a página do principal em segredo (`esaj.achar_codigo_2g`
+    põe os dois em `sigilosos_apurados`). Por isso, o recurso interno
+    sigiloso torna sigiloso também o principal, em todas as fontes da regra
+    única (`com_principais_dos_recursos`, em `chaves_sigilosas` e
+    `sigilosos_dos_relatorios`) — a pasta, a pauta, o registro do download,
+    o relatório de um lote (a linha “sim” do recurso interno basta, também
+    no relatório completo, na pasta dos sigilosos:
+    `recursos_dos_completos`) e a herança do originário pela capa — e no
+    motor, pelos relatórios anteriores do lote, o do acervo e o completo
+    (`_ler_sigilos_anteriores`). As consultas de um número só
+    (`sigilo.motivo`, `motivo_sabido`, `processo_sigiloso`,
+    `motivo_da_pasta`, `motivo_da_pauta`, `motivo_do_download`, `na_pasta`,
+    `na_pauta`: o motor, fora dos relatórios do lote, a transcrição e a
+    tela da audiência) fazem a mesma extensão, pela mesma conta
+    (`_como_contem`: `com_principais_dos_recursos` sobre as chaves de cada
+    fonte, já lidas; sem dependente `/5xxxx`, nenhuma leitura a mais), e
+    leem também a linha “sim” do recurso interno no relatório completo
+    (`_recursos_dos_completos`, a última fonte, com cada completo relido só
+    quando muda): o principal é sigiloso se um recurso interno dele o é
+    pelos autos na pasta, pela pauta, pelo registro do download ou pelo
+    completo, sem depender do registro do principal, que se perde com as
+    configurações apagadas na desinstalação ou com o acervo levado a outro
+    computador. O motivo do próprio processo (ou o do principal, no
+    incidente) vem antes, em qualquer fonte; só sem ele valem
+    `MOTIVO_RECURSO` (“um recurso interno dele no 2º grau é sigiloso”) e,
+    no incidente desse principal, `MOTIVO_RECURSO_PRINCIPAL`; o recurso
+    interno que só o completo dá diz `MOTIVO_COMPLETO` (na tela da
+    audiência, “Um recurso interno deste processo no 2º grau é sigiloso.”,
+    com as frases do incidente e do completo; ela confere os autos na pasta
+    antes, por `na_pasta`, e pede o resto a `motivo_sabido` com
+    `com_os_autos=False`). Só o relatório do lote no acervo e a capa do
+    originário, que pedem a raiz (o acervo), ficam fora delas: o que eles
+    dão chega às consultas de um número só pelo registro do download, aonde
+    `chaves_sigilosas` o leva (o preparo, o conector, a nuvem) — o teste
+    de invariante `TestCoerenciaDaRegra` (testes/test_sigilo.py) confere a
+    concordância, fonte a fonte, com essas duas exceções. O registro
+    continua guardando o principal: `_principal_apurado` o põe nele no
+    download do recurso interno sigiloso (salvo o que herdou o sigilo do
+    principal já sabido), também quando só a extensão o dava
+    (`MOTIVO_RECURSO`), e `chaves_sigilosas` o devolve, também quando só a
+    linha “sim”, os autos na pasta ou o registro do recurso interno o dão.
+    A pauta (`ServicoPauta._sigilosas_fora_do_banco`) faz a extensão sobre
+    a pasta, os registros e o completo que lê. Os incidentes comuns (`-01`)
+    continuam sem fazer o principal sigiloso, e o 1º grau, sem `/5xxxx`, não
+    muda.
+  * **O sigilo vale nos dois graus** (1.1.0). A regra continua por
+    processo, sem grau: `sigilo.contem` normaliza a chave dos autos
+    (`X (2G)`, `X-01 (2G)`, um `Numero` ou um nome de arquivo) para a do
+    processo antes de comparar, e o sigilo apurado num grau tira do acervo,
+    do índice, do MCP, do pacote e da nuvem os autos dos dois
+    (`motor.retirar_do_acervo` leva `X` e `X (2G)` de cada lote, com capa,
+    registro e gravações; `_motivo_sigilo` lê a capa guardada dos dois
+    graus; `_apagar_texto_da_ia` apaga de `_ia/texto` todo texto do
+    processo e dos incidentes dele, nos dois graus, mesmo com o PDF do
+    incidente fora do 1º nível das pastas de lote). O originário do 2º grau
+    (órgão `0000`, e o originário de turma recursal, `9xxx`), que tem número
+    próprio, herda o sigilo da ação de origem: com o item OK no 2º grau e
+    antes de os autos irem para o lote, o motor lê a lista
+    `numeros_1a_instancia` do nível de cima do `_capa.json`
+    do 2º grau (só o e-SAJ a traz) e, se algum desses números já se sabe
+    sigiloso pela regra única, marca o item (`r.sigiloso`, “tratado como
+    sigiloso: o processo de origem X é sigiloso”) e o registra
+    (`_lembrar_sigilo`). Se a origem se apura sigilosa na mesma rodada,
+    depois de o originário já ter sido baixado público (a relação `[H, A]`),
+    a retirada dela (`_Lote._retirar_do_acervo`) aplica a herança na hora,
+    pela mesma capa (`sigilo.herdadas_das_origens` com o lote como raiz):
+    o item do originário passa a sigiloso, com o mesmo detalhe, é
+    registrado e tem os autos levados à pasta de sigilosos, e o relatório
+    o mascara — o JSON do lote não fica dizendo “público” de um PDF que o
+    preparo do fim do lote levaria. A herança vale também depois do download: com o
+    acervo, `chaves_sigilosas` relê a capa guardada em `_controle` (a
+    fonte 6, acima), e a origem que só vira sigilosa mais tarde — a
+    apelação dela baixada com o selo, os autos levados à pasta dos
+    sigilosos, a pauta — leva o originário à pasta dos sigilosos no
+    próximo preparo e o tira do índice, do MCP, do pacote e da nuvem.
+    **Risco aceito:** o sigilo sabido só em outro
+    computador (o da vara) não chega ao do gabinete do 2º grau; o manual o
+    diz.
   * **Nada sigiloso vai para a IA nem para a nuvem.** Processo sigiloso
     nunca vai para a IA, o pacote, o espelho na nuvem (nem na subpasta
     antiga `Assessor Integrado - Acervo`), o MCP, o texto em `_ia/texto` ou
@@ -2090,14 +2270,84 @@ dados ficam com a instalação registrada.
     justiça: não”) continua valendo. Não há comando nem botão “não é
     sigiloso” (mexeria na interface, na pasta dos sigilosos, no download e
     no preparo). O manual (Segredo de justiça › Se um processo foi marcado
-    como sigiloso por engano) dá o caminho manual: fechar o programa,
-    afastar o `pauta.sqlite3` **e o `pauta.sigilo.json`** (o registro do
+    como sigiloso por engano) dá o caminho manual: conferir no portal o
+    processo e, no 2º grau, os recursos internos dele marcados (um recurso
+    interno em segredo torna sigiloso o principal: aí não se desmarca),
+    fechar o programa, afastar o `pauta.sqlite3` **e o
+    `pauta.sigilo.json`** (o registro do
     apurado, que sozinho manteria o processo sigiloso; a pauta recomeça: é
     preciso cadastrar as fontes, sincronizar e importar de novo antes de
     baixar ou transcrever), o `download.sigilo.json` se o sigilo veio de um
-    download, trocar “sim” por “não” na linha dele no relatório do lote
-    (fonte 5, e “uma vez sigiloso, sempre sigiloso” do motor) e trazer os
-    arquivos de volta da pasta dos sigilosos para o acervo.
+    download, trocar “sim” por “não” em todas as linhas dele (uma por grau,
+    coluna `grau`) — e nas dos recursos internos dele do 2º grau
+    (`…/50000`) que só herdaram a marcação (abaixo), que
+    `com_principais_dos_recursos` faz marcar o principal —
+    no relatório de cada lote em que foi baixado (fonte 5, e “uma vez
+    sigiloso, sempre sigiloso” do motor: uma linha com “sim” basta para
+    refazer a marcação, nos dois graus) e trazer os arquivos de volta da
+    pasta dos sigilosos para o acervo — os autos dos dois graus, de cada
+    `Sigilosos\<lote>` em que estiverem, os dos recursos internos dele que
+    só herdaram a marcação (`<número>-50000 (2G).pdf`), que também o marcam
+    pela pasta, e também o originário do 2º grau levado pela capa (fonte
+    6), que fica sigiloso
+    pela própria pasta, com o “sim” da linha dele no relatório completo.
+    Quem separa o recurso interno que só herdou é a conferência no portal
+    (passo 1): com a página dele pública, ele só herdou e se desmarca
+    junto; com a página dele em segredo, ou com a linha que diz que a
+    consulta abriu a página do principal em segredo de justiça
+    (`NAO_SUPORTADO`, de `esaj.achar_codigo_2g`), o principal é sigiloso
+    pela regra, e o manual manda não desmarcá-lo. A linha do relatório não
+    basta: o motor só grava a herança no detalhe (“tratado como sigiloso: é
+    incidente de um processo sigiloso…”, o motivo de `motivo_sabido`) no
+    download OK, com a página dele sem o segredo, em que o `_motivo_sigilo`
+    do recurso interno não vem dos relatórios anteriores do lote nem da
+    capa. Na falha (`ERRO`,
+    `NAO_ENCONTRADO`: só a falha, a mesma linha do recurso interno com a
+    página em segredo que falhou, pelos `sigilosos_apurados`), no
+    `JA_BAIXADO` (“já estava na pasta (não baixei de novo)”) e no baixado de
+    novo ou no lote que já tinha a linha dele ou a do principal com “sim”
+    (`SIGILO_ANTERIOR`, “assim constava de download anterior”), a linha do
+    que só herdou não diz que herdou. O manual dá essas frases como pistas,
+    com os casos, e os sinais da página em segredo (a capa com “SEGREDO DE
+    JUSTIÇA”, a situação `SIGILOSO_SEM_SENHA`, o `NAO_SUPORTADO` do
+    principal em segredo) como razão para não desmarcar.
+    A capa (`_controle\<número>_capa.txt` e `<número> (2G)_capa.txt`) perde a
+    linha “SEGREDO DE JUSTIÇA” que o download grava no começo da capa do
+    processo que achou sigiloso (ou é apagada), num passo próprio do
+    manual, onde ela estiver: a que volta da pasta dos sigilosos e também a
+    que nem saiu do acervo (com a separação desligada, os autos e a capa
+    ficam em `Processos\<lote>\_controle`). O motor a procura nos
+    primeiros 2000 caracteres das capas dos dois graus do lote
+    (`_motivo_sigilo`), e o próximo download do processo no lote refaria a
+    marcação. Com a separação dos sigilosos ligada, o “não” vai no
+    relatório completo, e cada linha mascarada “(processo sigiloso)” de
+    mesma ordem, no relatório do acervo (e no “(atualizado)”), é trocada
+    pela linha copiada do completo (as do processo, uma por grau, as dos
+    recursos internos dele e a do originário levado junto); o manual
+    lembra que o Excel pode não abrir ao mesmo tempo os dois
+    `relatorio.csv` (copiar a linha, fechar um e abrir o outro). Desde a
+    1.1.0 (contrato C9, seção 6.6), a linha
+    mascarada vale “sim” mesmo que o completo diga “não”, para o completo
+    desatualizado (preso no Excel na rodada que apurou o sigilo) não
+    devolver o número ao acervo, e não há como distinguir dele o completo
+    editado. Sem a troca, a rodada seguinte do lote regrava o “sim” no
+    completo, e a primeira que tiver o processo na relação leva os autos
+    de volta para a pasta dos sigilosos (uma vez sigiloso, sempre
+    sigiloso). Afastado o `download.sigilo.json`, os outros processos que
+    um download apurou continuam sigilosos pela pasta (fonte 1) ou pelo
+    relatório do lote (fonte 5), e também o principal que só um recurso
+    interno dele apurou (`_principal_apurado`), pela linha “sim” do recurso
+    interno (veja o incidente, abaixo): no relatório do lote no acervo ou,
+    com a separação ligada (a linha no acervo é mascarada), no completo, na
+    pasta dos sigilosos (`recursos_dos_completos`), também com o principal
+    nunca baixado — ou pelos autos do recurso interno na pasta dos
+    sigilosos. As consultas de um número só já o veem pelos autos do
+    recurso interno na pasta e pelo completo (`_como_contem`), mas o que só
+    o relatório do lote no acervo marca volta ao registro apenas quando
+    `chaves_sigilosas` roda — no manual, o “Preparar acervo para a IA” do
+    último passo: até lá, o download noutro lote (sem o relatório do lote
+    do recurso) e a transcrição o tratam como público. Por isso o manual
+    manda preparar o acervo antes de baixar ou transcrever.
   * **Download.** O processo que o programa já sabe sigiloso pela regra
     única vai para a pasta dos sigilosos mesmo que a página do portal não
     mostre o selo (segredo decretado depois, leiaute que a leitura não
@@ -2155,7 +2405,9 @@ dados ficam com a instalação registrada.
     `localStorage`, e vale por até 12 h (`SESSAO_VALIDA_S`); a sessão em
     texto puro da 1.0.1 é regravada no formato novo (`migrar_sessao`).
     Apagar o acesso, ou trocar o usuário, apaga a sessão e os perfis do
-    portal (`esquecer_portal`), e o navegador aberto antes disso não a
+    portal (`esquecer_portal`; o do eProc do 2º grau, `eproc2g:TJAL`, apaga
+    só `perfis\eproc2g-TJAL` e `perfis\eproc2g-TJAL-certificado`), e o
+    navegador aberto antes disso não a
     regrava ao fechar e apaga o próprio perfil, também o de outro processo
     (o `baixar` da linha de comando): o instante fica ainda na marca
     `perfis\<portal>.esquecido`, que a abertura do programa apaga depois de
@@ -2260,6 +2512,12 @@ página 1”) ou “paginação não conferida (PDF de versão anterior à 1.0.2
   `arquivo`, a mídia salva (caminho relativo POSIX,
   `_controle/midias/<número>/Evento 7 - VIDEO1.mp4`). No modo completo,
   `documentos = []` e `partes = [{inicio: 1, paginas: n}, …]`.
+* **Grau** (1.1.0): o manifesto dos autos do 2º grau leva `grau: "2g"`
+  (`manifesto_esaj(..., grau=)`, `manifesto_eproc(..., grau=)`;
+  `SEGUNDO_GRAU`) e as palavras-chave terminam em `;grau=2g`; no 1º grau,
+  o campo não vai, e o manifesto é byte a byte o da 1.0.2.
+  `paginacao.grau(m)` dá `2g` se o manifesto o diz e `1g` em qualquer
+  outro caso (inclusive o PDF da 1.0.2). `FORMATO` continua 1.
 
 ### 13.2 e-SAJ: página N = folha N (`download/esaj.py`, `download/pdf.py`)
 
@@ -2352,6 +2610,10 @@ página 1”) ou “paginação não conferida (PDF de versão anterior à 1.0.2
   documentos. Os eventos são lidos ANTES do Download Completo (a falha da
   paginação deles não impede o completo, e a capa avisa “lista
   incompleta”), e são reaproveitados se o completo falhar.
+* **2º grau**: o `PortalEProc` no Tribunal do 2º grau (outra instalação
+  do eProc, com acesso próprio: seção 14.4) monta o PDF pelas mesmas
+  regras; os eventos são os do processo no 2º grau. O e-SAJ do 2º grau
+  segue a seção 13.2, com a Pasta Digital do 2º grau (seção 14.3).
 
 ### 13.4 A capa (`_controle/<número>_capa.txt` e `_capa.json`)
 
@@ -2405,11 +2667,17 @@ caracteres para manter o processo fora do acervo nas próximas rodadas.
   ambos; as chaves de `capa` são as de cada sistema. Os seletores `capa_assunto` (`#txtAssunto`) e
   `capa_valor` (`#txtValorCausa`) ainda não foram confirmados em portal
   real.
+* **2º grau** (1.1.0): os dois sistemas gravam a capa pelo nome do destino
+  (`<destino.stem>_capa.*`: `<número> (2G)_capa.txt` e `_capa.json`), com
+  `grau: "2g"` no JSON; a do e-SAJ do 2º grau tem campos e seções próprios
+  (seção 14.3). No 1º grau, `_capa.txt` e `_capa.json` são byte a byte os
+  da 1.0.2.
 
 ### 13.5 O texto dos autos, formato 2 (`compartilhar/textos.py`)
 
 O texto em `_ia/texto/<número>.txt` (e o do `baixar --texto` e do
-`preparar --pasta`) é um cache, refeito quando o PDF muda ou quando a
+`preparar --pasta`; o nome é sempre o do PDF: nos autos do 2º grau,
+`<número> (2G).txt`) é um cache, refeito quando o PDF muda ou quando a
 primeira linha não é do formato 2 (`versao_do_texto`). A gravação é atômica
 (`gravar_atomico`: temporário de nome único e, no Windows, nova tentativa
 do `os.replace`).
@@ -2417,7 +2685,12 @@ do `os.replace`).
 * **1ª linha**, legível por máquina: `# helestron-texto 2 |
   sistema=<esaj|eproc|desconhecido> | paginacao=<folhas|documento|nao_garantida>
   | paginas=<n> | ausentes=<faixas>` (`ausentes`: as páginas do PDF que são
-  aviso; no e-SAJ, as próprias folhas).
+  aviso; no e-SAJ, as próprias folhas) e, só nos autos do 2º grau,
+  `| grau=2g` no fim (o grau dos autos é o do manifesto, `paginacao.grau`,
+  e, sem manifesto, o do nome do arquivo, `cnj.grau_do_nome`:
+  `textos.grau_dos_autos`). O texto do 1º grau é byte a byte o da 1.0.2
+  (nada a reextrair nem a reenviar à nuvem). `cabecalho()` e
+  `info_do_texto()` devolvem também `grau` (`1g` ou `2g`).
 * **Preâmbulo**: linhas entre colchetes, tiradas do manifesto — o que o
   arquivo é, como citar (`COMO_CITAR_ESAJ`, `COMO_CITAR_EPROC`,
   `COMO_CITAR_NAO_GARANTIDA` e, no eProc cujo manifesto não descreve o
@@ -2425,7 +2698,11 @@ do `os.replace`).
   “fls. N” de documento vindo de outro sistema; cita-se o evento e o
   documento, sem a página), as folhas com aviso e o motivo, as notas do
   download e, no eProc, a capa, as partes, os documentos não incluídos, as
-  gravações e os eventos sem documento. Nenhuma delas contém `=== [`.
+  gravações e os eventos sem documento. Nenhuma delas contém `=== [`. Nos
+  autos do 2º grau, a abertura e o como citar são os do 2º grau
+  (`COMO_CITAR_ESAJ_2G`, `COMO_CITAR_EPROC_2G`,
+  `COMO_CITAR_EPROC_NAO_GARANTIDA_2G`, `COMO_CITAR_NAO_GARANTIDA_2G`:
+  seção 14.7).
 * **Marcas** (o que vai entre os colchetes é o que se cita):
   - e-SAJ: `=== [fl. N] ===`; a folha com aviso tem logo abaixo
     `[folha não disponível no e-SAJ: <MOTIVOS[código]>]` e não leva o texto
@@ -2470,23 +2747,25 @@ do `os.replace`).
   `resumo_da_paginacao`, `recortar_paginas` e `folha_na_posicao`
   (página do PDF), `analisar(caminho) → (texto, info)` (PDF, `.txt` ou
   `.docx`) e `info_do_texto` (`versao`, `sistema`, `paginacao`, `paginas`,
-  `ausentes`, `paginas_sem_texto` — citadas como os autos as citam:
+  `ausentes`, `grau`, `paginas_sem_texto` — citadas como os autos as citam:
   folhas em faixas no e-SAJ; “evento 1, INIC1, p. 2-3 (págs. 2-3 do PDF)”
   no eProc; “págs. 2-3 do PDF” sem garantia —, `paginas_sem_texto_pdf` e
   `total_sem_texto`; as páginas de aviso não contam).
 
 ### 13.6 O conector MCP (`compartilhar/mcp_servidor.py`)
 
-As quatro ferramentas continuam com os mesmos nomes, todas só de leitura:
+As quatro ferramentas continuam com os mesmos nomes, todas só de leitura
+(o 2º grau, desde a 1.1.0: seção 14.7):
 
-* `listar_acervo`: os processos, com as páginas, o caminho e
+* `listar_acervo`: os autos, pela chave dos autos (os do 2º grau com
+  ` (2G)` e “— 2º grau —” na linha), com as páginas, o caminho e
   `textos.resumo_da_paginacao` de cada PDF (o `paginacao.resumo` do
   manifesto que descreve o arquivo; “NÃO garantida…” se ele não o
   descreve), e as transcrições, com o tamanho em caracteres;
 * `ler_processo {numero, folha_inicial?, folha_final?, evento?,
-  documento?}`: o texto pela faixa de páginas do PDF (no e-SAJ, as folhas)
-  ou, no eProc, pelo evento e o documento (o rótulo que aparece em mais de
-  um evento pede o evento). A resposta começa por um cabeçalho (sistema,
+  documento?, grau?}`: o texto pela faixa de páginas do PDF (no e-SAJ, as
+  folhas) ou, no eProc, pelo evento e o documento (o rótulo que aparece em
+  mais de um evento pede o evento). A resposta começa por um cabeçalho (sistema,
   páginas, “Página N = folha N.”, as folhas ausentes, ou como citar no
   eProc, ou o aviso de paginação não garantida, que no eProc manda citar o
   evento e o documento, nunca “fl.”) e pelo preâmbulo do texto.
@@ -2495,8 +2774,10 @@ As quatro ferramentas continuam com os mesmos nomes, todas só de leitura:
   resposta acima de `LIMITE_CARACTERES` (90.000) é cortada no começo de uma
   página (`\n=== [`) e diz com que `folha_inicial` continuar — a
   continuação recomeça exatamente na página seguinte;
-* `buscar {termo, numero?}`: devolve a citação (“fl. N”, ou “evento N,
-  RÓTULO, p. Y (pág. M do PDF)”) e o trecho;
+* `buscar {termo, numero?, grau?}`: devolve a citação (“fl. N”, ou
+  “evento N, RÓTULO, p. Y (pág. M do PDF)”), com os autos de onde ela saiu
+  quando eles são do 2º grau ou o processo tem os dois graus no acervo, e
+  o trecho;
 * `ler_transcricao {numero, inicio?, arquivo?}`: o texto com o total de
   caracteres, cortado no fim de uma linha com
   `[Resposta cortada …: continue com inicio=N]`; `arquivo` lê uma
@@ -2507,7 +2788,24 @@ objeto, `-32602`; `tools/call` com `name` ou `arguments` inválidos,
 `-32602`; qualquer outro defeito vira `-32603`, e o laço continua. A
 resposta que repete um texto sem forma em UTF-8 (o escape `\ud800` no
 `id` ou no `termo`) vai com escapes `\uXXXX`; a que não vira JSON vira
-`-32603`.
+`-32603`. O stdout é só do protocolo: o registro do conector (avisos e
+erros) vai para o stderr e, como o da janela e o da linha de comando, para
+`Logs` (o formato e o filtro dos segredos de `registro.configurar`), onde
+fica, por exemplo, o aviso do originário herdado pela capa quando é o
+conector que aplica a regra primeiro (seção 12). O `Logs\AAAA-MM.log` é
+aberto e fechado a cada registro, com o mês de cada um (`_RegistroAvulso`):
+o Claude Desktop e o Codex mantêm o conector vivo a sessão inteira, e o
+arquivo aberto não se apaga no Windows — o desinstalador que apaga as
+configurações o deixaria para trás. A falha da gravação e a do fechamento
+(o disco cheio, em que o `close()` refaz o `flush` e relança o erro) vão
+para o `handleError`: o registro nunca levanta para quem o chamou — o
+aviso “pastas demais” levantando dentro de `sigilo.chaves_na_pasta` daria
+a pasta dos sigilosos por vazia. Se algo ainda ficar em
+`%LOCALAPPDATA%\Helestron` depois do `RMDir /r`, o desinstalador avisa no
+detalhe, como nos perfis, sem culpar o conector, que já não segura nada
+entre um registro e outro: “Parte de $LOCALAPPDATA\Helestron estava em uso
+e ficou lá (um navegador aberto por um download, o Helestron da linha de
+comando ou o conector do acervo): feche-os e apague essa pasta depois.”
 
 ### 13.7 Arquivos de contexto, índice e pacote (`compartilhar/preparo.py`, `compartilhar/chatgpt.py`)
 
@@ -2517,34 +2815,612 @@ resposta que repete um texto sem forma em UTF-8 (o escape `\ud800` no
   campos restritos aos valores que o programa grava; o arquivo que casa com
   o modelo de agora é regravado se mudou algum valor (a regra do sigilo, a
   unidade, a versão; a data sozinha não regrava); o que casa com um modelo
-  antigo (o da 1.0.0/1.0.1, `CONTEXTO_1_0_1` e `SKILL_1_0_1`, e o do
-  programa anterior, derivado deles com o nome e o conector de
-  `migracao.py`) é trocado pelo novo. O editado fica como está, com duas
-  exceções: com a separação dos sigilosos desligada, a frase
+  antigo (o da 1.0.2, `CONTEXTO_1_0_2` e `SKILL_1_0_2`; o da 1.0.0/1.0.1,
+  `CONTEXTO_1_0_1` e `SKILL_1_0_1`; e o do programa anterior, derivado
+  deles com o nome e o conector de `migracao.py`) é trocado pelo novo. O
+  editado fica como está, com duas exceções: com a separação dos sigilosos desligada, a frase
   `REGRA_SIGILO_SEPARADOS` é trocada por `REGRA_SIGILO_JUNTOS` (e, se o
   arquivo não fala de sigilo, vai um aviso); e, com autos de sigiloso
   presos no acervo (cautela), “pode conter” não volta para “não estão”.
-  Sem a regra de citação nova (`pág. M do PDF`), `rel.avisos` explica como
-  recebê-la. O rodapé diz que o programa mantém o arquivo em dia. O
+  Sem a regra de citação nova (`_MARCA_REGRA_NOVA`: `pág. M do PDF`, da
+  1.0.2, e `(2G)`, da 1.1.0; falta de qualquer uma), `rel.avisos` explica
+  como recebê-la. O rodapé diz que o programa mantém o arquivo em dia. O
   conteúdo traz as regras: no e-SAJ, página N = folha N, e a página de
   aviso não é prova; no eProc, cita-se evento, rótulo e p. Y;
   “(pág. M do PDF)” nunca se cita; o que fazer com `nao_garantida` (PDF
   de versão anterior ou alterado depois do download; no eProc, nunca
-  “fl.”).
+  “fl.”; nos autos do 2º grau, sem citar o carimbo, que pode ser o dos
+  autos de origem); e, desde a 1.1.0, os autos do 2º grau:
+  `<número CNJ> (2G).pdf`, o recurso interno `-50000`, a numeração própria
+  do 2º grau, “fl. N dos autos de origem” e o carimbo divergente que não
+  se cita (seção 14.7).
 * **`INDICE.md`**: as colunas Processo, Tribunal, **Sistema**, Páginas,
   **Paginação** (`textos.resumo_da_paginacao`: o `paginacao.resumo` do
   manifesto que descreve o arquivo; “NÃO garantida…”, sem as ausentes, se
   ele não o descreve, como o texto; para PDF sem manifesto, vem da 1ª
-  linha do texto em dia), **Ausentes**, Lote, Autos, Texto e Transcrições,
-  e uma linha com a regra de citação. Aceita um mapeador de caminhos (o
+  linha do texto em dia), **Ausentes**, **Grau** (1.1.0: “1º grau” ou
+  “2º grau”, pelo manifesto e, sem ele, pelo nome; se o nome do arquivo
+  disser outro, a célula avisa), Lote, Autos, Texto e Transcrições, e uma
+  linha com a regra de citação. Uma linha por PDF de autos: a coluna
+  Processo é a chave dos autos (`X`, `X (2G)`), e as transcrições, que são
+  do processo, aparecem na linha de cada grau dele. Com autos do 2º grau no acervo, vem
+  antes da tabela a frase `preparo.FRASE_DO_2G` (“Autos do 2º grau têm
+  "(2G)" no nome e numeração própria …”); a contagem do cabeçalho e
+  `RelatorioPreparo.processos` contam processos distintos
+  (`preparo.contar_processos`). Aceita um mapeador de caminhos (o
   pacote usa `autos/`, `texto/` e `audiencias/`, e lista só o que foi
   empacotado). As gravações dos arquivos de contexto e do índice passam
   por uma trava, e os erros de disco vão para `rel.erros`.
 * **Pacote para o ChatGPT** (`chatgpt.gerar_pacote` → `Pacote`, que
   desempacota como `(pasta, zip)`, com `faltaram`, `avisos` e
-  `tamanho_zip`): os números pedidos que não estão no acervo geram aviso; o
+  `tamanho_zip`): os números pedidos que não estão no acervo geram aviso
+  (o número leva os autos dos dois graus do processo, e o número com
+  ` (2G)`, só os do 2º grau: `chatgpt._escolher`; os arquivos levam a chave
+  dos autos, `autos/X (2G).pdf`, e a mensagem conta processos, dizendo
+  quantos levam os autos dos dois graus); o
   `.zip` é medido contra `LIMITE_ARQUIVO_MB`; os pacotes antigos da pasta
   de destino perdem os arquivos e as linhas de índice de processo que
   virou sigiloso (`servicos.retirar_sigilosos_dos_pacotes`, chamado por
   `servicos.atualizar_indice`, inclusive quando o preparo falha), e o
   `.zip` é refeito sem carregar os autos inteiros na memória.
+
+## 14. O 2º grau (1.1.0)
+
+Desde a 1.1.0, o download (a janela, a linha de comando e a pauta), o
+compartilhamento e a interface tratam os autos do **2º grau**: no TJAL, o
+**e-SAJ do 2º grau** (a consulta de 2º grau do portal, o CPOSG, em
+`https://www2.tjal.jus.br/cposg5`) e o **eProc do 2º grau**
+(`https://eproc2g.tjal.jus.br/eproc/`, outra instalação, com acesso próprio);
+nos tribunais só de eProc que têm o endereço `2g` no catálogo, o eProc do
+2º grau pelo mesmo código. O grau (`"1g"` ou `"2g"`) é decidido por uma
+regra única e **viaja dentro do `Tribunal`** (`Tribunal.no_grau("2g")`):
+nenhuma assinatura de fábrica, de portal, de `servicos.testar_login` ou da
+pauta mudou. O 1º grau continua byte a byte o da 1.0.2, salvo os
+acréscimos da seção 14.10.
+
+### 14.1 A regra do grau (`nucleo/cnj.py`)
+
+`cnj.GRAUS = ("1g", "2g")`. `normalizar_grau(valor)`: `1`, `1g`, `1G`,
+`1º`, `1° grau`, `1o` → `1g` (o mesmo com 2 → `2g`); outra coisa → `""`
+(quem chama decide: a linha de comando recusa, o `config.ini` vale `1g`, a
+API devolve 400). `grau_do_numero(n)` → `"2g"` quando o número só existe no
+2º grau, `""` quando não diz. `grau_do_processo(n, grau_do_lote)` é **a
+regra única** (`grau_do_numero(n) or normalizar_grau(grau_do_lote) or
+"1g"`), usada pelo motor (`_Lote`), pela linha de comando (`--retomar`,
+credenciais) e pela API (`grau_fixo` da leitura); ninguém mais decide grau.
+
+| Situação | Exemplo | Grau | Quem decide |
+|---|---|---|---|
+| órgão `0000` (competência originária do tribunal: HC, MS, agravo de instrumento, revisão criminal) | `0803061-28.2025.8.02.0000` | 2g | o número |
+| órgão começando por `9` (plantão do 2º grau, turma recursal) | `0800103-29.2025.8.02.9002` | 2g | o número |
+| dependente de 5 algarismos começando por `5` (recurso interno do e-SAJ 2º grau: embargos de declaração, agravo interno) | `0706265-50.2017.8.02.0001/50000` | 2g | o número |
+| os demais, com o grau do lote | a apelação `0700001-93.2024.8.02.0058`, o incidente `…/01` | o do lote | a opção Grau do lote, o `opcoes.grau` da API, o `--grau` |
+| os demais, pela janela, sem grau no pedido | idem | `[download] grau` (padrão `1g`) | os Ajustes |
+| os demais, pela linha de comando sem `--grau` | idem | `1g` (como na 1.0.2) | a linha de comando |
+
+Não há troca automática de grau (a apelação existe nos dois graus, com o
+mesmo número; trocar entregaria autos errados); a troca de sistema e-SAJ →
+eProc continua, dentro do mesmo grau. A última linha da tabela é de
+propósito: a linha de comando **não** lê `[download] grau`, para que a skill
+que chama o `baixar` sem `--grau` (o contrato da 1.0.2) não passe a receber
+os autos do 2º grau quando alguém põe os Ajustes em 2º grau na mesma
+máquina; a `docs/INTEGRACAO-CLAUDE.md` manda toda skill passar `--grau`.
+
+O número aceita dependente de 1 a 5 algarismos (`_PADRAO`: colado à barra,
+de 1 a 5; com espaço em volta da barra, de 2 a 5; nunca seguido de letra,
+ordinal ou grau), guardado sem encolher (`/0003` → `03`, `/50000` →
+`50000`); no nome de arquivo, `-50000` (`_DEPENDENTE_NO_NOME`). As mesmas
+faixas valem em `cli._RE_CURTO` (o `--completar` aceita
+`0706265-50.2017/50000`), em `chatgpt._RE_NUMERO_CNJ` (`-\d{2,5}`) e nos
+padrões da interface (`componentes.js`: `DEPENDENTE_DIGITADO`,
+`DEPENDENTE_COM_ESPACO`, `NUMERO_NO_NOME`; `secao-audiencias.js`, com o
+campo do número em 31 caracteres; `demo.js`). `Numero` não ganhou campo de
+grau: a igualdade, o `hash` e `cnj.chave` são os de antes.
+
+### 14.2 Os nomes dos autos e as duas chaves
+
+`cnj.SUFIXO_2G = " (2G)"`. `nome_dos_autos(n, grau)` é o único lugar que
+escreve o sufixo: `n.nome_arquivo` no 1º grau (o nome de sempre) e
+`n.nome_arquivo + " (2G)"` no 2º, depois do número e do `-NN` (nunca colado
+com hífen, que apagaria o incidente do nome), em ASCII. Vale para o PDF, a
+capa, o `_meta.json`, as mídias e o texto: `X (2G).pdf`,
+`_controle/X (2G)_capa.json`, `_controle/midias/X (2G)/`, `_ia/texto/X (2G).txt`;
+o recurso interno, `X-50000 (2G).pdf`. `grau_do_nome(texto)` → `"2g"` se,
+logo depois do número (e do `-NN`), vem ` (2G)` (na leitura, também
+` (2g)`, ` (2º grau)` e ` - 2g`; não casa a cópia do Windows ` (2)` nem
+` - 2ª Vara`), senão `"1g"`; `NumeroInvalido` sem número.
+
+| Chave | O que é | Quem usa |
+|---|---|---|
+| **do processo** | `Numero.nome_arquivo` = `cnj.ler_nome_arquivo(t).nome_arquivo` (ignora o sufixo do grau): `X`, `X-01`, `X-50000` | o sigilo (registros, pasta, pauta), o motor (`chave_do_nome`, `processos_no_acervo`, `retirar_do_acervo`, `sigilosos_apurados`), as transcrições, o mascaramento do relatório |
+| **dos autos** | `cnj.chave_dos_autos(t)` ou `cnj.nome_dos_autos(n, grau)`: `X`, `X-01`, `X (2G)`, `X-50000 (2G)` | tudo o que é por arquivo: o nome do PDF e dos arquivos ao lado, `Acervo.pdfs()`, o índice, `_ia/texto`, o MCP, o pacote, as linhas do relatório, o `--retomar`, o `JA_BAIXADO` |
+
+No 1º grau, as duas chaves são iguais (nada muda nos acervos de antes).
+`chave_dos_autos` de um **texto** vale pelo que o nome diz (sem o sufixo,
+1º grau: um arquivo `H.pdf` posto à mão é outro arquivo, diferente de
+`H (2G).pdf`); de um **`Numero`**, pelo que o número diz
+(`nome_dos_autos(n, grau_do_numero(n) or "1g")`: o HC e o `/50000` só têm
+autos no 2º grau).
+
+### 14.3 O e-SAJ do 2º grau (`download/esaj.py`)
+
+* **Catálogo**: no e-SAJ, `urls["base"]` é o portal (o login e o 1º grau)
+  e `urls["2g"]` a consulta de 2º grau (no TJAL, `.../cposg5`); sem `2g`, o
+  2º grau do e-SAJ daquele tribunal não é baixado (`Tribunal.tem_grau`:
+  hoje, só o TJAL o tem). A correção do endereço (`enderecos-locais.json`)
+  vale também para o `2g`.
+* **Um portal, duas tabelas de rotas** (`RotasESAJ(grau, base, app)`, e não
+  uma classe derivada): `busca`, `processo`, `abertura`, `gateway`, `pasta`
+  e o prefixo das capturas de diagnóstico (`esaj-…` ou `esaj2g-…`). No 1º
+  grau, os endereços de sempre. O grau tem uma fonte só, o Tribunal
+  (`PortalESAJ(nav, tribunal, opcoes, ctx, credenciais, *, grau=None)`: um
+  `grau=` diferente de `tribunal.grau` é `ValueError`, “passe
+  tribunal.no_grau(…)”, porque a credencial e o perfil saem de
+  `tribunal.portal`). Sem o endereço do 2º grau, `PortalIndisponivel` (“o
+  catálogo de tribunais não traz o endereço do 2º grau do e-SAJ do …”).
+  `nome`: “e-SAJ do TJAL (2º grau)”.
+* **Login**: o mesmo `entrar()` do 1º grau (CAS, cofre `esaj:TJAL`, perfil
+  `esaj-TJAL`, código por e-mail, certificado, manual), que no 2º grau
+  termina passando pela porta de entrada da consulta de 2º grau
+  (`{app}/open.do?gateway=true`) e conferindo que ela abriu (é o que o
+  “Testar 2º grau” prova). A passagem se repete antes da 1ª busca quando a
+  sessão foi refeita, e a Pasta Digital que recusa com a sessão de pé
+  ganha uma passada pela porta de entrada e nova tentativa antes do “sem
+  acesso” (o “SSO por webapp”: sem isso, a consulta ainda não reconhece o
+  login, e o processo viraria `SEM_ACESSO`, definitivo). Os eventos do
+  portal (`login_aguardando`, `login_concluido`) levam `grau: "2g"`.
+* **Busca**: `url_busca_2g(app, numero)`: `search.do` com `cbPesquisa=NUMPROC`,
+  `tipoNuProcesso=UNIFICADO`, `numeroDigitoAnoUnificado`,
+  `foroNumeroUnificado` (o OOOO do próprio número: `0000` nos originários,
+  o da origem nas apelações) e `dePesquisaNuUnificado`, sempre pelo
+  **principal**. A consulta responde de **três formas**, lidas de uma vez
+  (`_JS_RESPOSTA_2G`): a página do processo (o `input[name=cdProcesso]` e
+  os links da tabela de incidentes terminados em `- 50000`), o modal
+  “Selecione o processo” (`#modalIncidentes`, um rádio
+  `processoSelecionado` por processo, os recursos internos com o título
+  “50000 - Embargos de Declaração…”) e a lista (`#listagemDeProcessos`). A
+  escolha é sempre pelo **número exato** (`escolher_processo_2g(candidatos,
+  numero)`: os 20 dígitos e o dependente; sem dependente, o principal; com
+  `/50000`, a opção “50000 - …”): devolve o código, `None` se nenhuma opção
+  é do número pedido, e `_Ambiguo` se mais de uma é (“o 2º grau do e-SAJ
+  tem mais de um processo com este número (…); não baixei, para não gravar
+  autos trocados”); `achar_codigo_2g` o levanta também quando a consulta
+  devolve processos e nenhum traz exatamente o número. Em `baixar`, a recusa
+  é definitiva, como a guarda da numeração abaixo: `NAO_SUPORTADO`, sem
+  `causa`, `refazer` falso (repetir daria as mesmas opções; baixe pelo
+  portal). A página em segredo que vem sem número, só com o código e o
+  pedido de senha, vale só para o pedido do principal, com um candidato
+  único (`_pagina_com_senha_2g`, que olha o modal duas vezes pelo
+  `precisa_senha`, como o 1º grau: ele abre por script). Para o pedido do
+  `/50000` nessa página, com o modal à vista, `_Ambiguo` com a frase
+  própria (“a consulta de 2º grau abriu a página do processo principal em
+  segredo de justiça, sem o número; o recurso interno … de processo em
+  segredo não é escolhido pelo Helestron: baixe-o pelo portal do tribunal”),
+  mesmo com a senha do processo na relação: a página em segredo não lista
+  as opções, e a senha só serve ao pedido do principal (`achar_codigo_2g`
+  não a recebe). O número e o principal entram em `sigilosos_apurados`: o
+  resultado nasce sigiloso, a linha do relatório do acervo é mascarada, e o
+  principal também fica sigiloso — o motor o põe no registro do download
+  com o `/50000` e, com a separação ligada, leva os autos dele no acervo
+  (dos dois graus, de qualquer lote) para a pasta dos sigilosos; e, sem
+  depender do registro, a linha “sim” do recurso interno no relatório do
+  lote marca também o principal (seção 12, o incidente). Sem o
+  modal à vista, a página não se reconhece e o erro é passageiro
+  (`RuntimeError` comum: “a página aberta pela consulta de 2º grau não traz
+  o número do processo (sem acesso, ou sessão expirada?)”), nunca
+  `_Ambiguo`. O incidente `/01` do 1º grau não existe no 2º: sem opção
+  exata, `ProcessoNaoEncontrado`.
+* **Página do processo**: `show.do?processo.codigo=<cd>`, só com o código (o
+  foro interno do 2º grau não é o OOOO do número). `conferir_pagina_2g`
+  confere os 20 dígitos, o código e, no recurso interno, que a página se
+  declara ele (pelo número, pelo título ou, sem eles, pelo código do 2º
+  grau, cujos quatro últimos caracteres são o dependente em base 36); para
+  o principal, que ela não é a de um recurso interno. A página aberta sem o
+  número é olhada de novo (`precisa_senha`): com o modal à vista, é a do
+  processo em segredo, e a conferência fica para depois da senha
+  (`_liberar`); a que traz o número não espera nada. No 2º grau não se usa
+  a aritmética do incidente do 1º grau (`codigo_incidente`,
+  `marca_do_incidente`).
+* **Pasta Digital**: `verificarAcessoPastaDigital.do?cdProcesso=<cd>&_=<ms>`
+  (o que o botão “Visualizar autos” chama), pedido de dentro da aba: o texto
+  que começa por `http` é o endereço da pasta; erro HTTP é falta de acesso
+  ou pedido de senha (com o modal de senha à vista, segue pela senha; com a
+  sessão caída, `SessaoPerdida`; com a sessão de pé, o “SSO por webapp”
+  acima e, recusando de novo, `SemAcesso`). O caminho da pasta sai do
+  endereço devolvido (`prefixo_da_pasta`: `/pastadigital` no 1º grau,
+  `/pastadigital/sg`, por exemplo, no 2º) e é usado em
+  `salvarDocumentoPreparado.do`, `buscarDocumentoFinalizado.do`, `getPDF.do`
+  e `getArquivo.do`. Daí em diante, tudo como no 1º grau (seção 13.2):
+  **página N = folha N da Pasta Digital do 2º grau**.
+* **Guarda da numeração**: no 2º grau, se o plano de folhas tiver folha
+  reivindicada por peças de `cdDocumento` diferentes (duas numerações, a da
+  origem e a do 2º grau; `folhas_em_duplicidade`), o portal **não monta o
+  PDF**: `NAO_SUPORTADO`, sem `causa`, `refazer` falso, com o detalhe “a
+  Pasta Digital do 2º grau numera folhas em duplicidade (fls. X–Y em mais
+  de uma peça); não gravei os autos, para não perder peças: baixe-os pelo
+  portal do tribunal”. Conferido sobre o plano, antes de baixar qualquer
+  peça, também na pasta reaberta. A mesma peça listada duas vezes continua
+  como antes. No 1º grau, nada muda (a sobreposição fica só anotada).
+* **Segredo**: `processo_senha_enviar` soma `#botaoEnviarSenha` ao
+  `#btEnviarSenha`; o modal visível `#popupSenhaProcesso` conta em
+  `_JS_MODAL_SENHA`; e `#popupSenhaProcesso` sai do texto usado para
+  detectar segredo (o texto dele diz “segredo de justiça”: sem isso, todo
+  processo do 2º grau seria sigiloso).
+* **Capa** (`dados_da_capa`/`formatar_capa(..., grau=)`, `helestron.capa/2`):
+  no 2º grau, `grau: "2g"`; em `capa`, também `secao`, `orgao_julgador`,
+  `relator` e `origem` (`CHAVES_CAPA`); as listas `numeros_1a_instancia`
+  (`[{numero, foro, vara, juiz, obs, principal}]`, com o `numero` no
+  formato CNJ, ou `""` sem número legível; é nela, no nível de cima do
+  `_capa.json`, que o motor procura a ação de origem para o sigilo — o
+  objeto `capa` traz só rótulo e texto), `composicao` (`[{papel, nome}]`), `julgamentos` (`[{data,
+  situacao, decisao}]`) e `subprocessos` (as linhas de “Incidentes, ações
+  incidentais, recursos…”, as mesmas de `incidentes`). O `_capa.txt`
+  começa por “Processo X - TJAL (e-SAJ, 2º grau)”, diz em “== Arquivo ==”
+  que a página N é a folha N da Pasta Digital do 2º grau (a dos autos de
+  origem pode ser outra) e tem no fim as seções “Números de 1ª Instância”,
+  “Composição do Julgamento” e “Julgamentos”. Capa e mídias são gravadas
+  pelo nome do destino (`destino.stem`). No 1º grau, a capa é byte a byte a
+  da 1.0.2.
+* **Não encontrado**: 1º grau, “não encontrado no 1º grau do e-SAJ do TJAL.
+  Confira o número; ” e a dica de `modelos.dica_de_grau(n, "1g")` (que
+  manda escolher o 2º grau); 2º grau, “não encontrado no e-SAJ do TJAL (2º
+  grau). Confira o número; ” e `dica_de_grau(n, "2g")` (o recurso pode não
+  ter subido: escolher o 1º grau; para o número que só existe no 2º grau, a
+  dica diz que trocar o grau do lote não muda a busca). As frases de troca
+  de grau têm uma fonte só (`modelos.DICA_GRAU_2G`, `DICA_GRAU_1G`,
+  `dica_de_grau`), para o e-SAJ, o eProc e o motor.
+* **Manifesto**: `manifesto_esaj(..., grau=self.grau)`.
+
+### 14.4 O eProc do 2º grau e a chave `eproc2g` (`nucleo/tribunais.py`, `download/eproc.py`)
+
+O `Tribunal` ganhou `grau` (último campo, padrão `"1g"`) e:
+
+| Membro | Valor |
+|---|---|
+| `portal` | `esaj:TJAL` (o e-SAJ nos dois graus: o mesmo login), `eproc:TJAL` (eProc, 1º grau), `eproc2g:TJAL` (eProc, 2º grau): a chave do cofre, do perfil do navegador e da sessão |
+| `portal_do_sistema` | `esaj:TJAL` ou `eproc:TJAL`, sem o grau: a chave dos endereços corrigidos e da folha “Endereço do portal” |
+| `perfil` | `nome_do_perfil(portal)`: `esaj-TJAL`, `eproc-TJAL`, `eproc2g-TJAL` (o do certificado, com `-certificado`) |
+| `rotulo` | `TJAL · e-SAJ`; no 2º grau, `TJAL · e-SAJ (2º grau)`, `TJAL · eProc (2º grau)` |
+| `tem_grau(grau)` | o Helestron baixa deste sistema neste grau? (e-SAJ: `base` ou `urls["2g"]`; eProc: o endereço do grau) |
+| `no_grau(grau)` | o Tribunal no grau, com o alternativo no mesmo grau (ou sem alternativo, se ele não o tiver); chamado sempre no Tribunal do catálogo |
+| `urls_para(numero, grau)` | sem `grau`, o do Tribunal; no eProc, **estrito no 2º grau**: sem endereço do 2º grau, `[]`, nunca o do 1º |
+
+Também `tribunais.RE_PORTAL` (`esaj`, `eproc` ou `eproc2g`, dois-pontos e a
+sigla: a regra única das chaves, que a API e o navegador usam),
+`PREFIXO_EPROC_2G`, `por_portal(portal)` (o Tribunal do portal, o de
+`eproc2g:` já no 2º grau; `None` se o tribunal não tem aquele sistema ou o
+2º grau dele) e `nome_do_perfil`. No catálogo do TJAL, o eProc tem `1g`
+(`eproc1g`) e `2g` (`eproc2g`); o `eproc.tjal.jus.br`, que não resolve,
+saiu.
+
+A senha do eProc do 1º grau **nunca** é usada no 2º grau. A chave
+`eproc2g:<SIGLA>` vale em todo lugar:
+
+| Lugar | Como |
+|---|---|
+| cofre de senhas | `motor._credenciais(tribunal)` → `cofre.obter(tribunal.portal)` (o Tribunal do grupo já está no 2º grau); sem a senha no modo senha, o grupo vira manual (a janela abre para o usuário entrar) |
+| linha de comando | `cli._pedir_credenciais` pergunta por `t.portal` dos Tribunais no grau (“Acesso ao eProc do TJAL (2º grau)”) |
+| perfil do navegador e sessão | `motor.fabrica_navegador_padrao` abre `caminhos.PERFIS / tribunal.perfil` (`perfis/eproc2g-TJAL`, com o `sessao.json` dentro) |
+| esquecer o acesso | `navegador.pastas_do_portal("eproc2g:TJAL")` → `perfis/eproc2g-TJAL` e `perfis/eproc2g-TJAL-certificado`; `esquecer_portal` não toca no 1º grau |
+| API e Ajustes › Acessos | a linha própria `eproc2g:TJAL` (seção 6.3), “Adicionar acesso” com “TJAL · eProc (2º grau)”, o apagar e o “Testar” do 2º grau |
+| endereços | continuam sob `eproc:TJAL`, grau `2g` (`definir_endereco("eproc2g:TJAL", "2g", url)` grava sob `eproc:TJAL`) |
+
+O `PortalEProc` lê o grau **só** do Tribunal (`grau=` divergente é
+`ValueError`, como no e-SAJ); sem o endereço do grau, `PortalIndisponivel`
+(“o catálogo de tribunais não traz o endereço do eProc do TJAL (2º grau)”).
+`nome`: “eProc do TJAL (2º grau)”. Não encontrado: no 2º grau, “não
+encontrado no eProc do TJAL (2º grau). Confira o número; ” e
+`dica_de_grau(n, "2g")`; no 1º, a frase de antes com a dica de
+`dica_de_grau(n, "1g")`. Os eventos (`login_aguardando`, `acao_na_janela`,
+`login_concluido`), o manifesto (`manifesto_do_processo(..., grau=)`) e o
+`_capa.json` levam `grau: "2g"` só no 2º grau; capa e mídias são gravadas
+pelo nome do destino. O perfil do usuário (`[eproc] perfil`) e o modo de
+entrada (`[eproc] login`) valem para os dois graus. Os eventos “de outro
+grau” (os do processo de origem que o eProc do 2º grau mostra) ficam de
+fora nesta versão: o PDF traz os eventos do próprio processo no 2º grau.
+
+### 14.5 Motor, relatório e linha de comando (`download/motor.py`, `cli.py`, `acompanhamento.py`)
+
+* **Lote**: para cada número, `grau = cnj.grau_do_processo(n, opcoes.grau)`;
+  o `ResultadoProcesso` sai com `grau` (que `absorver()` não troca), e o
+  lote guarda `graus` e `autos` (a chave dos autos de cada item). A
+  deduplicação continua por `cnj.chave(n)` (num lote, o grau é função do
+  número).
+* **Grupos**: por tribunal e grau (`f"{t.chave}|{grau}"`, na ordem da
+  primeira aparição), com o Tribunal do grupo já `no_grau(grau)`. Se o
+  sistema **principal** não tem o grau (`not t.tem_grau(grau)`: o e-SAJ do
+  TJSP), `NAO_SUPORTADO`, sem causa: “o 2º grau do e-SAJ do TJSP ainda não
+  é baixado pelo Helestron; baixe-o pelo portal do tribunal”. Nesses
+  tribunais, o “não encontrado” do 1º grau não manda escolher o 2º grau
+  nas Opções do lote: a dica é `modelos.DICA_SEM_2G` (“se o processo
+  estiver no 2º grau, baixe-o pelo portal do tribunal...”), escolhida por
+  `tribunais.baixa_o_2o_grau(t)` e passada a `modelos.dica_de_grau(...,
+  com_o_2o_grau=False)` pelo e-SAJ e pelo eProc. O
+  alternativo do 2º grau é o eProc do 2º grau, se houver. O nome do grupo
+  diz o grau (“e-SAJ do TJAL (2º grau)”), e a frase de quando nenhum dos
+  dois sistemas achou o processo no 2º grau é “não encontrado no e-SAJ nem
+  no eProc do TJAL (2º grau); confira o número; ” e
+  `dica_de_grau(n, "2g")` (no 1º grau, a de antes).
+* **Nomes pela chave dos autos**: `_ja_baixado`, a área provisória
+  (`provisorio/<chave dos autos>`), `_limpar_parcial`, o alvo do item,
+  `_guardar`, `_levar` e `_retirar_do_acervo`; `_registro_anterior` lê o
+  `_meta.json` pelo nome do PDF. O PDF do 1º grau na pasta não é
+  `JA_BAIXADO` de um pedido do 2º grau, nem o contrário. `_baixar_de_novo`:
+  o PDF com o nome destes autos cujo manifesto diz outro grau é baixado de
+  novo (“o PDF na pasta é do outro grau …”).
+* **Relatório**: `COLUNAS` ganha `grau`, a última. A linha leva `r.grau`
+  (a mascarada também: não identifica ninguém). As linhas se casam pela
+  chave dos autos (`_chave_da_linha`), em `_mesclar_relatorios`,
+  `_linhas_csv`, `_pdf_que_fica`, `_linha_anterior`,
+  `ler_relatorio_do_lote` (que devolve pares de chave dos autos, ou `None`,
+  e linha) e na deduplicação do `_mascarar_relatorios`; `_chave_relatorio`
+  continua a do processo. O sigilo é do processo e vale pela regra, não só
+  pelo que a linha diz: em `_linhas_csv`, a linha de um processo que o lote
+  já sabe sigiloso (pelos relatórios anteriores ou por um item desta
+  rodada; o incidente herda do principal) sai mascarada no acervo e com
+  sigiloso “sim” no completo mesmo que dissesse “não” — é A baixado
+  público no 1º grau antes de o 2º apurar o segredo, no mesmo lote, ou o
+  incidente baixado antes do principal, na mesma rodada; a retirada já
+  levou os autos, e o `salvar_relatorio` seguinte não os devolve pela
+  linha antiga. A linha mascarada do lote que `_mesclar_relatorios` (e
+  `_mascarar_relatorios`) troca pela do relatório completo sai com
+  sigiloso “sim” mesmo que o completo diga “não”: ele pode estar
+  desatualizado (aberto no Excel na rodada que apurou o sigilo, quando
+  `_mascarar_relatorios` registra como preso o próprio completo), e o
+  número não volta ao acervo por ele. O item desta rodada cujo PDF a
+  retirada levou passa a sigiloso, com o PDF e as gravações onde estão
+  (`_retirar_do_acervo`), para o JSON do lote não contradizer o
+  relatório; o item cujo PDF ficou preso no acervo também passa a
+  sigiloso, com o PDF onde está e o detalhe “processo sigiloso: a cópia
+  dos autos ficou presa no acervo (feche-a e mova-a para a pasta de
+  sigilosos)”. O originário do 2º grau baixado nesta rodada antes de a
+  ação de origem se apurar sigilosa herda o sigilo na mesma retirada
+  (seção 12) e, com a separação desligada, também, sem sair do lote
+  (`_herdar_originarios`). Nos três caminhos em que o download dá ao
+  originário o sigilo da origem (baixado depois dela, antes dela na mesma
+  rodada, ou já na pasta), o registro do programa (Logs) recebe a linha do
+  preparo: “originário … tratado como sigiloso: o processo de origem … é
+  sigiloso”. O recurso interno cuja consulta abre a página do principal em
+  segredo (o e-SAJ põe o principal também em `sigilosos_apurados`) apura o
+  principal (`_principal_apurado`): ele vai para o registro do download e
+  para o que o lote já sabe (a linha dele sai mascarada), os autos dele,
+  nos dois graus e em qualquer lote, saem do acervo, e o item dele nesta
+  rodada passa a sigiloso com o detalhe “tratado como sigiloso: a consulta
+  do recurso interno … abriu a página dele em segredo de justiça” — o que
+  já terminou, mesmo sem os autos (falha, sem acesso), e o que vem depois
+  na relação, para o qual `_motivo_sigilo` dá esse porquê antes do “assim
+  constava de download anterior” (`_pelo_recurso_interno`). O incidente do
+  principal (o `/01`) pedido depois, na mesma rodada, herda o sigilo com o
+  porquê do principal: “tratado como sigiloso: a consulta do recurso
+  interno … abriu a página do processo principal … em segredo de justiça”.
+  O recurso interno consultado no portal e sigiloso por outro caminho — a
+  própria página dele em segredo (`SIGILOSO_SEM_SENHA`, ou `OK` sigiloso
+  com a senha: o e-SAJ põe só ele em `sigilosos_apurados`) ou o que o
+  programa já sabia dele (os autos dele na pasta dos sigilosos de outro
+  lote, o registro do download, a capa) — apura o principal do mesmo
+  jeito, com o porquê “o recurso interno … é sigiloso” (no incidente do
+  principal, “o recurso interno …, do processo principal …, é
+  sigiloso”), salvo se o principal já se sabia sigiloso
+  (`_motivo_sigilo`): o recurso interno que herdou o sigilo dele não
+  acrescenta nada. O que já estava na pasta do lote (`JA_BAIXADO`) tem a
+  linha “sim” no relatório do lote, que já dá o principal ao lote
+  (`_ler_sigilos_anteriores`) e, pela regra única, ao registro.
+  Sem o item dele com os autos no lote, o detalhe do recurso interno diz o
+  que saiu, com os autos dele contados à
+  parte dos autos dos incidentes dele (“1 cópia dos autos dele e 1 dos
+  incidentes dele levadas para a pasta de sigilosos”). Com o item do
+  principal no lote ou sem ele, a cópia dos autos do próprio recurso
+  interno que a retirada do principal leva junto (ele é incidente do
+  principal) é do item do recurso interno (`_proprio_levado`), não “dos
+  incidentes dele”: o detalhe dele diz “levado agora para a pasta de
+  sigilosos” e, sem PDF novo (`SIGILOSO_SEM_SENHA`, a falha com o sigilo
+  apurado), o item passa a apontá-la. Com a separação
+  desligada, os autos do principal só saem se o sigilo dele não pôde ir
+  para o registro (`_separar`), e o detalhe diz `SEM_REGISTRO_DO_SIGILO`.
+  O principal não tem linha própria no relatório (só o item dele, quando
+  está na relação): nas rodadas seguintes, quem o dá é a linha “sim” do
+  recurso interno, nos relatórios anteriores do lote, o do acervo e o
+  completo (`_ler_sigilos_anteriores`), e na regra única (seção 12: o
+  relatório do lote no acervo ou, com a separação ligada, o completo,
+  `recursos_dos_completos`), além do registro do download — e por isso
+  afastar o registro para desfazer a marcação de outro processo (o manual)
+  não o torna público. Noutro lote, porém, o download só o vê sigiloso
+  depois que `chaves_sigilosas` o devolve ao registro (no manual, o
+  “Preparar acervo para a IA” do último passo, antes de baixar ou
+  transcrever: seção 12, “Uma marcação errada…”).
+  O relatório completo que a retirada não pôde regravar (aberto no Excel)
+  não ficou no acervo: fica fora de `Retirada.presos` e de
+  `sigilosos_avisos` (em `completos_presos`, com o relatório do lote no
+  acervo que, por isso, continua com o número) e só aparece no detalhe do
+  item e no registro do programa (“o relatório completo da pasta de
+  sigilosos não pôde ser atualizado: …”; com mais de um, “N relatórios
+  completos da pasta de sigilosos não puderam ser atualizados: …”). O
+  relatório do lote no acervo que ficou com o número entra em
+  `Retirada.outros_presos` (e em `avisam`), com o porquê “o relatório
+  completo do lote, na pasta dos sigilosos, não pôde ser atualizado: …”.
+  O de OUTRO lote vai para os avisos — no download, uma vez só, para
+  `sigilosos_avisos` (o aviso do fim do lote, o Início); no “Tentar de
+  novo” da tela Compartilhar, para as pendências; e o preparo o avisa
+  também —, e o detalhe diz “Feche-o e prepare o acervo para a IA
+  de novo: até lá, o relatório do lote no acervo continua com o número
+  dele” (com mais de um completo, “Feche-os e prepare o acervo para a IA
+  de novo: até lá, os relatórios dos outros lotes, no acervo, continuam
+  com o número dele”). O relatório que o lote em curso está gravando
+  (`_Lote.relatorio`) não vira aviso: `salvar_relatorio` o regrava no fim
+  do item (mascarado, com a separação ligada), e, se só ele ficou com o
+  número, o detalhe diz “Feche-o: o próximo download do lote o regrava”.
+  Se ele, aberto depois do início do lote, também não puder ser regravado,
+  ele vira aviso: `_retirar_do_acervo` o guarda em
+  `_regravar_pelo_completo`, com o porquê, e `salvar_relatorio`, ao passar
+  ao `(atualizado)`, o põe em `sigilosos_avisos` (“…; ele mesmo também
+  está aberto no Excel?”), que o fim do lote lê depois da última gravação.
+  A gravação mascarada que dá certo o tira de `_regravar_pelo_completo`
+  (o número saiu dele): aberto no Excel só depois dela, ele não é aviso.
+  O outro, isto é, o `relatorio.csv` aberto no Excel,
+  que deu lugar ao `(atualizado)`, ou um `(atualizado)` antigo, é aviso
+  como o de outro lote, com o mesmo detalhe. O grau vazio (CSV de versão
+  anterior) é `cnj.grau_do_numero(n) or "1g"` (`_grau_da_linha`): a 1.0.2
+  procurava o HC de órgão `0000` no 1º grau e gravava a linha sem grau, e
+  lida como 1º grau ela nunca seria substituída pela nova nem retomada.
+* **Registros**: `_meta.json`, `consultas[]`, `essencial_da_paginacao` e os
+  eventos do motor (`grupo_inicio`, `navegador_ocupado`, `login_falhou`,
+  `sessao_caiu`) levam `grau: "2g"` só no 2º grau (`_do_grau`).
+* **Sigilo**: seção 12 (“O sigilo vale nos dois graus”).
+* **Linha de comando**: `--grau` (seção 5.1); `_RE_CURTO` com `/50000`; as
+  credenciais pelos Tribunais no grau; o `--retomar` por chave dos autos e
+  por grau (seção 5.1); `--texto` como antes (`<pdf.stem>.txt`: no 2º grau,
+  `X (2G).txt`). O `Acompanhamento` grava `grau` no topo desde o primeiro
+  JSON e em cada processo (`processo_json`), e o `nome_arquivo` sem PDF é
+  `cnj.nome_dos_autos(ler_nome_arquivo(numero), r.grau)`.
+* **`__main__.py`**: `RECURSOS` termina em `baixar.grau`, `esaj.2g` e
+  `eproc.2g`; o `caminhos --json` traz `grau` (o padrão da janela); o
+  `preparar --pasta` dá o `grau` de cada item (seção 5.2).
+
+### 14.6 O campo `grau` em cada formato
+
+| Onde | 1º grau | 2º grau | Ausente |
+|---|---|---|---|
+| JSON `helestron.baixar/1`: topo e cada processo | `"1g"` | `"2g"` | — (sempre presente, desde o primeiro JSON gravado) |
+| `relatorio.csv`: coluna `grau`, a última, depois de `causa` | `1g` | `2g` | vazia (CSV de versão anterior) = `cnj.grau_do_numero(n) or "1g"` |
+| API: `item`, `resultado` da tarefa de download, leitura da relação (`grau_fixo`, `graus`), acessos (`grau`, `graus`) | `"1g"` | `"2g"` | — |
+| `caminhos --json`: `grau` (o padrão da janela; o `baixar` sem `--grau` usa `1g`) | `"1g"` | `"2g"` | — |
+| `preparar --pasta --json`: `grau` de cada item | `"1g"` | `"2g"` | — |
+| `textos.cabecalho()`, `textos.info_do_texto()` | `"1g"` | `"2g"` | — |
+| manifesto do PDF, `_meta.json`, `_capa.json`, `consultas[]`, `paginacao` do JSON | não vai | `"grau": "2g"` | 1g |
+| eventos (`ctx.evento`) de grupo e de login, os do motor e os dos portais, e com eles o `aguardando` e o `ultimo_evento` do JSON | não vai | `"grau": "2g"` | 1g |
+| texto (1ª linha) | sem nada | termina em `grau=2g` | 1g |
+
+### 14.7 Texto, índice, MCP e pacote no 2º grau (`compartilhar/`)
+
+* **Texto** (`textos.py`, formato 2, marcas iguais): o grau dos autos é o do
+  manifesto e, sem ele, o do nome (`grau_dos_autos`). No 2º grau, a 1ª linha
+  termina em `grau=2g`; a abertura do e-SAJ diz “autos do e-SAJ do TJAL, 2º
+  grau (Pasta Digital do processo no Tribunal). A página N deste PDF é
+  sempre a folha N destes autos (fls. 1 a U).”, e o como citar é
+  `COMO_CITAR_ESAJ_2G`: cita-se a marca `[fl. N]`, a folha da Pasta Digital
+  do 2º grau; os autos de origem são outro arquivo, sem `(2G)`, com folhas
+  próprias (“fl. N dos autos de origem”); e o carimbo “fls.” diferente da
+  marca é de outros autos, inclusive dos de origem, de mesmo número: não se
+  cita como folha destes, cita-se a marca e avisa-se o magistrado. É **o
+  contrário do 1º grau de propósito** (`COMO_CITAR_ESAJ` manda citar a
+  folha carimbada que diverge, porque lá o carimbo de outro processo traz
+  outro número): no 2º grau, a peça da origem trazida à Pasta Digital com o
+  carimbo “fls. 120”, numa página marcada `[fl. 735]`, não se distingue
+  pelo número. No eProc do 2º grau, `COMO_CITAR_EPROC_2G` e
+  `COMO_CITAR_EPROC_NAO_GARANTIDA_2G` acrescentam `EVENTOS_DO_2G` (os eventos
+  são os do processo no 2º grau; o da origem cita-se “evento N, RÓTULO, do
+  processo de origem”); sem paginação garantida, `COMO_CITAR_NAO_GARANTIDA_2G`
+  não manda citar a folha carimbada (ela pode ser a da origem).
+* **Índice e contexto** (`preparo.py`): `INDICE.md` com uma linha por PDF
+  de autos e a coluna **Grau** (seção 13.7); `CLAUDE.md`, `AGENTS.md` e a
+  habilidade com a estrutura `Processos/<lote>/<número CNJ> (2G).pdf`, o
+  `-50000` e a regra de citação do 2º grau (os modelos da 1.0.2 congelados
+  em `CONTEXTO_1_0_2` e `SKILL_1_0_2` são regravados com o novo). Os textos
+  órfãos são apagados pela chave dos autos: o `X (2G).txt` do
+  `baixar --texto` fica enquanto o PDF dele estiver no acervo.
+* **MCP** (`mcp_servidor.py`): `Acervo.pdfs()` é `{chave dos autos: Path}`
+  (“o mais recente vence” só entre arquivos dos mesmos autos; os do 1º e do
+  2º grau do mesmo número ficam os dois), filtrado pelo sigilo da chave do
+  processo; `Acervo.numerados()` e `transcricoes()` continuam pela chave do
+  processo. `listar_acervo`: `- X (2G) — 2º grau — N pág. — <caminho> —
+  <paginação>` (o 1º grau, como antes). `ler_processo(numero, …, grau=None)`:
+  `numero` aceita a chave da listagem (`X (2G)`), o número (`X`,
+  `X/50000`), `X (1º grau)` e, com `grau` (`"1g"`/`"2g"`), o grau; com os
+  dois graus no acervo e sem grau, erro: “o processo X tem autos dos dois
+  graus no acervo (X e X (2G)): informe grau="1g" ou grau="2g" (ou peça
+  "X (1º grau)" ou "X (2G)")”; com um grau só, serve-o. O cabeçalho do 2º grau diz
+  “Processo X — e-SAJ, 2º grau: …” e que a página N é a folha N da Pasta
+  Digital do 2º grau, e que o carimbo “fls.” diferente da marca é de outros
+  autos; o dos autos do 1º grau, quando o acervo tem também os do 2º, diz
+  “Processo X (1º grau — autos de origem do X (2G)) — …” e lembra que, no 2º
+  grau, a folha se cita “fl. N dos autos de origem”. Nos cabeçalhos novos,
+  o plural é escrito por extenso (“1 página no PDF”, “2 páginas no PDF”); o
+  do acervo só de 1º grau é o de antes. `buscar(termo, numero=None,
+  grau=None)`: com `numero`, os autos dos dois graus (ou do pedido); cada
+  achado diz de que autos saiu (`X (2G), fl. 12` e, com os dois graus do
+  processo no acervo, `X (1º grau), fl. 12`). `FERRAMENTAS`: `grau`
+  (`enum ["1g", "2g"]`) em `ler_processo` e `buscar`, e a regra do 2º grau
+  nas descrições e em `INSTRUCOES`. Acervo só de 1º grau: a saída é a de
+  antes, byte a byte.
+* **Pacote** (`chatgpt.py`): seção 13.7. **Espelho** (`nuvem.py`): nada
+  mudou (a chave é a do processo, para o sigilo, e os nomes `(2G)` são
+  copiados como são).
+
+### 14.8 Sigilo nos dois graus
+
+Seção 12 (“O sigilo vale nos dois graus”). Em resumo: o sigilo é do
+processo; `sigilo.contem` normaliza a chave dos autos; o apurado num grau
+tira os autos dos dois do acervo, do índice, do MCP, do pacote e da nuvem;
+o recurso interno sigiloso torna sigiloso também o principal (o incidente
+comum, não: seção 12, o incidente); o originário do 2º grau herda o
+sigilo da ação de origem pela capa do 2º grau, no download e depois dele
+(a capa guardada em `_controle` é uma das fontes da regra única); e o
+sigilo sabido só em outro computador não chega a este (risco aceito, no
+manual).
+
+### 14.9 Interface e API
+
+* **Ajustes** (`servidor/esquema.py`): `Campo("download", "grau",
+  "escolha", "Grau dos processos", …, opcoes=(("1g", "1º grau"), ("2g",
+  "2º grau")))`, o primeiro do grupo Download; o valor mostrado e o gravado
+  passam por `cnj.normalizar_grau` (`2` e `2º` editados à mão viram `2g`; o
+  que não for grau aparece como `1g`). No `config.ini`, `[download] grau`,
+  padrão `1g`, com o comentário de que a linha de comando não o lê.
+* **API**: seção 6.3 (leitura com `grau_fixo` e `graus`; `opcoes.grau` do
+  download, com o 400 “Grau inválido (use 1g ou 2g).”; `grau` no `item` e
+  no `resultado`; a pauta sempre em `1g`; os acessos com `eproc2g`, `grau`
+  e `graus`; o testar com `grau`; os endereços pelo sistema; os tribunais
+  com `graus` e `graus_alternativo`). `servicos.resumo_acervo` conta
+  processos distintos (o “N processos” do Início não conta duas vezes o
+  processo com os autos dos dois graus).
+* **Tela Processos** (`secao-processos.js`): seção 7.2. O grau do lote é o
+  rascunho da tela (`r.opcoes.grau`), pré-preenchido pelos Ajustes; o grau
+  de cada linha é `grau_fixo` ou o do lote; o “Acesso aos portais” mostra
+  uma linha por portal do sistema principal de cada linha, no grau dela (o
+  e-SAJ com a mesma chave nos dois graus; o eProc do 2º grau,
+  `eproc2g:<SIGLA>`); o “Tentar de novo” manda `grau: res.grau`
+  (contrato C9).
+* **Ajustes › Acessos** (`secao-ajustes.js`, `api.js`): contrato C1. O
+  rodapé: “O acesso ao e-SAJ vale para o 1º e o 2º grau; o eProc do 2º grau
+  tem acesso próprio.”
+* **Demonstração** (`demo.js`): versão 1.1.0; `grau` nos itens, na leitura
+  e no resultado; a linha `eproc2g:TJAL`; `download.grau` nos Ajustes; o
+  testar com grau; o lote da Pauta em 1º grau; `NAO_SUPORTADO` no 2º grau
+  de tribunal sem ele.
+
+### 14.10 Compatibilidade: o que mudou para o 1º grau
+
+Só acréscimos: o `grau` do JSON do `baixar` (no topo e em cada processo),
+do `caminhos --json` (e os três recursos no fim de `recursos`), do
+`preparar --pasta --json` e da API; a coluna `grau` no fim do
+`relatorio.csv` (a linha de versão anterior de um número que só existe no
+2º grau, como o HC de órgão `0000`, passa a valer como do 2º grau); a
+coluna Grau do `INDICE.md` (e a frase do 2º grau, só com autos do 2º grau
+no acervo); a dica final da frase de “não encontrado” do 1º grau (que
+agora manda escolher o 2º grau); o endereço do 2º grau do e-SAJ do TJAL na
+folha “Endereço do portal” e o fim do `eproc.tjal.jus.br`; o campo “Grau
+dos processos” nos Ajustes; o pedido da tela ao download, que leva sempre
+`grau`; a versão 1.1.0. Não mudaram: os nomes de arquivo, a capa, o
+`_meta.json`, o manifesto, o texto (1ª linha e corpo), os eventos, as
+`consultas`, as chaves do cofre e os perfis, o `numero` e o
+`nome_arquivo` de tudo o que não é dependente de cinco algarismos, a saída
+do MCP num acervo só de 1º grau e o grau do `baixar` sem `--grau` (1g, como
+na 1.0.2, mesmo com os Ajustes em 2º grau).
+
+### 14.11 Fora desta versão e pontos abertos
+
+* Os eventos “de outro grau” do eProc (os do processo de origem): fora.
+* A pauta de sessões de julgamento do 2º grau: fora (a Pauta é a das
+  audiências do 1º grau, e o “Baixar os autos” dela vai em 1º grau).
+* Uma coluna “Grau” na relação: não é lida (o grau é o do lote).
+* O dependente de 1 a 4 algarismos (`/01`, incidente do 1º grau) não entra
+  na regra do número: num lote de 2º grau, ele é procurado no 2º grau e
+  volta “não encontrado” com a dica do 1º grau (não grava autos errados).
+* O órgão começando por `9` vai ao 2º grau em todo tribunal. Na Justiça
+  Federal, a turma recursal fica no eProc das seções (1º grau), e esses
+  originários não são achados; no TJAL, as turmas recursais do e-SAJ estão
+  na consulta de 2º grau, mas a base do eProc da Turma Recursal (o do 1º ou
+  o do 2º grau) ainda não foi confirmada em caso real.
+* A numeração da Pasta Digital do 2º grau (se a apelação traz as peças da
+  origem e se as folhas continuam as dela) só um caso real confirma; a
+  guarda da seção 14.3 transforma duas numerações em `NAO_SUPORTADO`.

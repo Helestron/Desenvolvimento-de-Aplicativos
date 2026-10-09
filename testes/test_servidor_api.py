@@ -149,7 +149,8 @@ class TestTribunaisEAcessos(ServidorDeTeste):
     def test_guardar_listar_apagar(self):
         self.cfg.definir("unidade", "tribunal", "TJAL")
         lista = self.cliente.dados("GET", "/api/acessos")
-        self.assertEqual([a["portal"] for a in lista], ["esaj:TJAL", "eproc:TJAL"])
+        # o eProc do 2º grau tem acesso próprio (o e-SAJ usa o mesmo nos dois graus)
+        self.assertEqual([a["portal"] for a in lista], ["esaj:TJAL", "eproc:TJAL", "eproc2g:TJAL"])
         self.assertFalse(lista[0]["tem_senha"])
         dados = self.cliente.dados("POST", "/api/acessos", {"portal": "esaj:TJAL",
                                                             "usuario": "123", "senha": "s3"})
@@ -215,9 +216,12 @@ class TestTribunaisEAcessos(ServidorDeTeste):
         with mock.patch.object(tribunais, "ARQUIVO_LOCAL", arquivo):
             dados = self.cliente.dados("GET", "/api/tribunais/enderecos/esaj:TJAL")
             self.assertEqual(dados["rotulo"], "TJAL · e-SAJ")
-            self.assertEqual(dados["enderecos"], [{
-                "grau": "base", "rotulo": "Endereço do portal", "url": "https://www2.tjal.jus.br",
-                "padrao": "https://www2.tjal.jus.br", "corrigido": False}])
+            self.assertEqual(dados["enderecos"], [
+                {"grau": "base", "rotulo": "Endereço do portal", "url": "https://www2.tjal.jus.br",
+                 "padrao": "https://www2.tjal.jus.br", "corrigido": False},
+                # o e-SAJ de 2º grau do TJAL (cposg5), corrigível à parte
+                {"grau": "2g", "rotulo": "2º grau", "url": "https://www2.tjal.jus.br/cposg5",
+                 "padrao": "https://www2.tjal.jus.br/cposg5", "corrigido": False}])
             self.assertEqual(self.cliente.dados("GET", "/api/tribunais/enderecos"), [])
 
             novo = "https://novo.tjal.jus.br"

@@ -285,12 +285,14 @@ class TextosQueOUsuarioLe(unittest.TestCase):
         # do processo com a causa e o refazer (api_processos.item_json), o espelho
         # com o que não foi copiado e o pacote com os avisos e o .zip grande demais
         # (api_compartilhar.concluir_espelho e concluir_pacote) - e a tela de fim
-        # de tarefa os lê para o aviso âmbar.
+        # de tarefa os lê para o aviso âmbar. E o grau: o da linha, o do lote
+        # (no resultado da tarefa) e o que o número impõe, na leitura da relação.
         demo = (WEB / "js" / "demo.js").read_text(encoding="utf-8")
         app = (WEB / "js" / "app.js").read_text(encoding="utf-8")
         servidor = "".join((RAIZ / "helestron" / "servidor" / nome).read_text(encoding="utf-8")
                            for nome in ("api_processos.py", "api_compartilhar.py"))
-        for campo in ("causa", "refazer", "nao_copiados", "grande_demais", "avisos", "resumo"):
+        for campo in ("causa", "refazer", "nao_copiados", "grande_demais", "avisos", "resumo",
+                      "grau", "grau_fixo", "graus"):
             with self.subTest(campo=campo):
                 self.assertIn(f'"{campo}"', servidor)
                 self.assertRegex(demo, rf"\b{campo}: ")

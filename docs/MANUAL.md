@@ -1,13 +1,13 @@
 # Helestron — Manual do usuário
 
-Versão 1.0.2 · para Windows 10 e 11 (64 bits)
+Versão 1.1.0 · para Windows 10 e 11 (64 bits)
 
 O Helestron reúne, numa única janela, as tarefas do gabinete que mais tomam
 tempo:
 
 | Função | O que faz | Onde o resultado fica |
 |---|---|---|
-| **1. Baixar processos** | Com o **seu** login no e-SAJ ou no eProc, baixa todos os processos de uma relação (Excel, Word, PDF, lista colada ou link): **um PDF por processo**, com o número do processo como nome | `Acervo\Processos\<nome do lote>\` |
+| **1. Baixar processos** | Com o **seu** login no e-SAJ ou no eProc, baixa todos os processos de uma relação (Excel, Word, PDF, lista colada ou link), no **1º ou no 2º grau**: **um PDF por processo**, com o número do processo como nome (os autos do 2º grau, com “(2G)” depois do número) | `Acervo\Processos\<nome do lote>\` |
 | **2. Transcrever audiência** | Transcreve a audiência **ao vivo**, pelo microfone, no próprio computador; transcreve também gravações de áudio ou vídeo já existentes | `Acervo\Transcricoes\<número do processo>.docx` |
 | **3. Pauta de audiências** | Traz a pauta do e-SAJ e do eProc, acompanha as mudanças e exporta tudo para o Excel | `Pauta\` (fora do acervo) |
 | **4. Compartilhar com IA** | Deixa o acervo pronto para o Claude Code, o Claude Cowork, o Claude Desktop, o ChatGPT Work e o Codex, sem anexar arquivo por arquivo | a própria pasta `Acervo` |
@@ -73,7 +73,7 @@ erro), para o botão de gravar e para os botões que encerram ou apagam algo.
 
 O Helestron substitui o antigo Assessor Integrado. O que mudou:
 
-- a instalação é feita por **um único arquivo**, `Helestron-Setup-1.0.2.exe`,
+- a instalação é feita por **um único arquivo**, `Helestron-Setup-1.1.0.exe`,
   sem o `INSTALAR.bat`, sem PowerShell e sem baixar nada durante a
   instalação;
 - as pastas de trabalho passaram para `Documentos\Helestron`; os arquivos do
@@ -120,7 +120,7 @@ O Helestron substitui o antigo Assessor Integrado. O que mudou:
 1. **Baixe o instalador.** Na página de versões do Helestron
    (<https://github.com/Helestron/Desenvolvimento-de-Aplicativos/releases>),
    abra a versão mais recente e, na lista de arquivos (**Assets**), clique em
-   **`Helestron-Setup-1.0.2.exe`** (cerca de 400 MB). Deixe-o na pasta
+   **`Helestron-Setup-1.1.0.exe`** (cerca de 400 MB). Deixe-o na pasta
    **Downloads**: é lá que o botão **Reparar** o procura, se um dia for
    preciso (veja [Problemas comuns](#o-helestron-não-pôde-abrir-antivírus)).
 
@@ -240,8 +240,8 @@ mensagem que diz qual é) em vez de quebrar no meio do uso (veja
 O instalador aceita o modo silencioso do NSIS:
 
 ```bat
-Helestron-Setup-1.0.2.exe /S
-Helestron-Setup-1.0.2.exe /S /D=D:\Programas\Helestron
+Helestron-Setup-1.1.0.exe /S
+Helestron-Setup-1.1.0.exe /S /D=D:\Programas\Helestron
 ```
 
 - `/S` instala sem nenhuma tela, na pasta padrão
@@ -260,7 +260,7 @@ Helestron-Setup-1.0.2.exe /S /D=D:\Programas\Helestron
   usar o programa**, e não como SYSTEM nem com outra conta, senão o Helestron
   vai para o perfil errado.
 - Para esperar o fim num script do `cmd`, use
-  `start /wait "" Helestron-Setup-1.0.2.exe /S` e leia o `%ERRORLEVEL%`.
+  `start /wait "" Helestron-Setup-1.1.0.exe /S` e leia o `%ERRORLEVEL%`.
 - A conferência final roda também no modo silencioso, e o relatório fica em
   `%LOCALAPPDATA%\Helestron\Logs\verificacao-instalacao.txt`.
 - Numa atualização, o Claude Desktop e o Codex podem continuar abertos, mesmo
@@ -284,7 +284,7 @@ Códigos de saída:
 | 9 | instalado e conferido, mas o computador não tem como abrir a janela do Helestron: falta o Microsoft Edge WebView2 Runtime (e o Edge), e o navegador padrão é o Internet Explorer; instale o WebView2 Runtime |
 
 Para conferir a impressão digital do instalador, no PowerShell:
-`Get-FileHash .\Helestron-Setup-1.0.2.exe -Algorithm SHA256`, e compare com o
+`Get-FileHash .\Helestron-Setup-1.1.0.exe -Algorithm SHA256`, e compare com o
 arquivo `.sha256` da página de versões.
 
 A desinstalação silenciosa é descrita em [Desinstalar](#desinstalar).
@@ -306,13 +306,13 @@ o Helestron, em modo isolado:
 - **Onde está o programa.** O instalador **não mexe no PATH**. Quem chama o
   Helestron de fora o encontra pela chave `HKCU\Software\Helestron` do
   registro do Windows, que traz três valores: `Python` (o `python.exe` da
-  pasta do programa), `Versao` (por exemplo, `1.0.2`) e `InstallLocation`
+  pasta do programa), `Versao` (por exemplo, `1.1.0`) e `InstallLocation`
   (a pasta do programa, onde está o `helestron.cmd`). O `helestron.cmd`
   equivale a `"<pasta do programa>\python.exe" -I -m helestron`, e o código
   de saída dele é o do programa. A desinstalação apaga os três valores.
 - `--ajuda` (ou `-h`) lista os comandos; cada comando tem a própria ajuda,
   com `-h` (por exemplo, `pauta importar -h`). `--version` (ou `--versao`)
-  mostra a versão (“Helestron 1.0.2”).
+  mostra a versão (“Helestron 1.1.0”).
 - A ajuda e as mensagens de erro saem em português, e um erro de uso termina
   com o código 2, por exemplo:
 
@@ -322,9 +322,10 @@ o Helestron, em modo isolado:
   ```
 - `caminhos` (ou `caminhos --json`, para programas) mostra onde ficam o
   acervo, os processos, as transcrições, os sigilosos, a pauta exportada, a
-  configuração e os registros, o modo de entrada em cada portal e o que esta
-  versão oferece. Não cria nada, nem mesmo o `config.ini`, e não mostra
-  senhas, perfis do navegador nem sessões.
+  configuração e os registros, o modo de entrada em cada portal, o grau
+  padrão da janela (**Grau dos processos**, em **Ajustes › Download**) e o
+  que esta versão oferece. Não cria nada, nem mesmo o `config.ini`, e não
+  mostra senhas, perfis do navegador nem sessões.
 - `pauta importar` e `pauta sincronizar` aplicam o sigilo na hora, como a
   janela: se a pauta mostrar em segredo de justiça um processo que tem
   arquivos no acervo, a saída diz “Segredo de justiça: a pauta indica que o
@@ -351,6 +352,7 @@ os mesmos ajustes da tela Processos:
 ```bat
 "%LOCALAPPDATA%\Programs\Helestron\helestron.cmd" baixar --lista "C:\Relacoes\semana.xlsx"
 "%LOCALAPPDATA%\Programs\Helestron\helestron.cmd" baixar 0700123-83.2024.8.02.0001 --destino "D:\Lotes\Semana 41"
+"%LOCALAPPDATA%\Programs\Helestron\helestron.cmd" baixar --lista "C:\Relacoes\apelacoes.xlsx" --grau 2g
 ```
 
 | Opção | O que faz |
@@ -359,13 +361,14 @@ os mesmos ajustes da tela Processos:
 | `--destino PASTA` | a pasta do lote (padrão: `Acervo\Processos\<nome da relação>`) |
 | `--completar J.TR.OOOO` | completa os números curtos (`0700123-83.2024`) com segmento, tribunal e foro, por exemplo `--completar 8.02.0001`; o argumento que não vira número aparece como “ignorado”, com o motivo |
 | `--login senha`, `certificado` ou `manual` | o modo de entrada nos portais (padrão: o dos Ajustes) |
+| `--grau 1g` ou `2g` | o grau em que procurar os autos: `1g`, o 1º grau (as varas), ou `2g`, o 2º grau (os recursos e as ações originárias do tribunal); aceita também `1`, `2`, `1º` e `2º`, e outro valor é erro de uso (código 2). **Sem `--grau`, vale o 1º grau**, como nas versões anteriores, mesmo com **Grau dos processos** em 2º grau nos Ajustes (esse ajuste vale só para a janela). O número que só existe no 2º grau (órgão `0000` ou começando por `9`, recurso interno `/50000`) vai sempre ao 2º grau (veja [1º e 2º grau](#1º-e-2º-grau)) |
 | `--sem-cofre` | não usa as senhas guardadas: no modo **Usuário e senha**, o navegador abre na tela de entrada, e você entra |
 | `--visivel` | mostra a janela do navegador |
 | `--rebaixar` | baixa de novo o que já está na pasta |
 | `--rebaixar-incompletos` | baixa de novo só o que tem folhas (ou documentos) ausentes, o PDF de versão anterior, sem o manifesto de paginação, ou o PDF alterado depois do download (página incluída ou apagada), cuja paginação deixou de ser garantida |
 | `--midias` | baixa também as gravações de audiência |
 | `--texto` | ao fim, extrai o texto de cada PDF, com a marca de cada página (em `_texto`, ao lado dos PDFs; dentro do acervo, em `_ia\texto`) |
-| `--retomar` | refaz só o que o relatório da pasta do lote diz que pede nova tentativa (falhou, ficou pendente ou foi interrompido), os números que ainda não estão nele e o processo baixado cujo PDF já não está na pasta; com `--rebaixar-incompletos`, também o que tem folhas (ou documentos) ausentes. Com `--destino`, dispensa a relação; se a pasta não tiver o relatório de um lote, sai com o código 2 |
+| `--retomar` | refaz só o que o relatório da pasta do lote diz que pede nova tentativa (falhou, ficou pendente ou foi interrompido), os números que ainda não estão nele e o processo baixado cujo PDF já não está na pasta; com `--rebaixar-incompletos`, também o que tem folhas (ou documentos) ausentes. Com `--destino`, dispensa a relação; se a pasta não tiver o relatório de um lote, sai com o código 2. Passe o mesmo `--grau` do lote: sem ele vale o 1º grau, e as linhas do 2º grau não são retomadas (a saída diz “não retomado: … (do 2º grau: para retomá-la, use --grau 2g)”) |
 | `--esperar-navegador MIN` | se outro download estiver usando o navegador do portal (ou, no modo certificado, se a cópia antiga do perfil do Chrome ainda não puder ser apagada, e o aviso diz isso), espera até MIN minutos (tentando a cada 30 segundos; no máximo 1440, um dia), em vez de desistir |
 | `--json ARQ` | grava o andamento e o resultado num arquivo JSON, para programas |
 | `--eventos` | imprime cada acontecimento (o login que espera você, o fim…) numa linha `HELESTRON-EVENTO {…}` |
@@ -443,7 +446,8 @@ a explicação aparece numa janela.
 Em **Ajustes › Acessos aos portais**:
 
 1. Clique em **Adicionar acesso**.
-2. Escolha o **Portal** (por exemplo, `TJAL · e-SAJ` ou `TJAL · eProc`).
+2. Escolha o **Portal** (por exemplo, `TJAL · e-SAJ`, `TJAL · eProc` ou
+   `TJAL · eProc (2º grau)`).
 3. Preencha o usuário (**CPF ou usuário**, no e-SAJ; **Usuário (CPF ou
    sigla)**, no eProc) e a **Senha**.
 4. Deixe ligado **Lembrar neste computador**: a senha fica cifrada pelo
@@ -454,14 +458,31 @@ Em **Ajustes › Acessos aos portais**:
 5. Clique em **Salvar**.
 
 Cada portal aparece na lista com a situação da senha (“Senha guardada”,
-“Senha só até fechar o Helestron” ou “Sem senha guardada”) e, ao lado, os
-botões **Testar** (quando há senha) e **Alterar** (ou **Cadastrar**, se o
-acesso ainda não foi cadastrado). **Testar** entra exatamente no portal
-daquela linha (no TJAL, no TJSP e no TJAC, o e-SAJ e o eProc são testados
-cada um no seu botão) e mostra o resultado na própria linha: “Testando o
-acesso…”, “Acesso confirmado às 14:32.” ou “O teste falhou.”, com o motivo.
-Para trocar a senha, clique em **Alterar**; para apagar o acesso, clique em
+“Senha só até fechar o Helestron” ou “Sem senha guardada”; sem senha, no
+modo certificado, “Entrada com o certificado digital” e, no modo manual,
+“Entrada manual, na janela do navegador”) e, ao lado, os botões **Testar**
+e **Alterar** (ou **Cadastrar**, se o acesso ainda não foi cadastrado).
+**Testar** aparece quando há senha e também nos modos **Certificado
+digital** e **Entrar manualmente**: aí o navegador abre e espera você
+entrar, como no download. Ele entra exatamente no portal daquela linha (no
+TJAL, no TJSP e no TJAC, o e-SAJ e o eProc são testados cada um no seu
+botão) e mostra o resultado na própria linha: “Testando o acesso…”,
+“Acesso confirmado às 14:32.” ou “O teste falhou.”, com o motivo. Para
+trocar a senha, clique em **Alterar**; para apagar o acesso, clique em
 **Alterar** e, na janela que se abre, em **Apagar**.
+
+**1º e 2º grau.** O acesso ao **e-SAJ** vale para os dois graus: é o mesmo
+login. Por isso, a linha do e-SAJ do TJAL tem dois botões, **Testar 1º
+grau** e **Testar 2º grau** (este entra no portal e abre a consulta de 2º
+grau, que é o que o download do 2º grau usa), e o resultado de cada um
+aparece na linha, com o grau na frente (“2º grau: Acesso confirmado às
+14:32.”). O **eProc do 2º grau** é outra instalação do eProc, com login
+próprio: ele tem linha própria, `TJAL · eProc (2º grau)`, com a sua senha,
+a sua sessão e o seu perfil do navegador, e a senha do eProc do 1º grau
+nunca é usada nele. Cadastre-o em **Adicionar acesso**, escolhendo
+`TJAL · eProc (2º grau)`. Apagar (ou trocar o usuário de) um dos dois
+acessos do eProc não mexe no outro. **Como entrar no eProc** e **Perfil do
+eProc**, abaixo, valem para os dois graus.
 
 Depois de entrar num portal, o Helestron guarda a sessão por até 12 horas,
 para não pedir o login a cada lote: só os cookies dos portais dos
@@ -505,7 +526,7 @@ Em **Ajustes › Pastas**, confira:
 - **Pasta do acervo**: processos e transcrições que o Helestron compartilha
   com a IA;
 - **Pasta dos processos sigilosos**: processos em segredo de justiça; fica
-  fora do acervo e nunca vai para a IA;
+  fora do acervo, e o Helestron nunca a leva à IA;
 - **Pasta da pauta exportada**: as planilhas da pauta, também fora do acervo,
   porque trazem as partes dos processos sigilosos.
 
@@ -600,7 +621,8 @@ Em **Ajustes › Unidade**:
    Proteger pasta de trabalho › Criptografar com senha**, salve e escolha de
    novo).
 3. **Confira a revisão.** A tabela mostra cada processo reconhecido, com o
-   **tribunal** e o **sistema** (eles saem do próprio número). À parte
+   **tribunal** e o **sistema** (eles saem do próprio número) e o **grau**
+   em que ele será procurado (veja [1º e 2º grau](#1º-e-2º-grau)). À parte
    aparecem os avisos, os **Números que o Excel corrompeu** (formate a
    coluna como Texto, digite-os de novo e salve) e os números **Fora do
    alcance do Helestron** (tribunal ou sistema que ele não atende). O número
@@ -611,6 +633,9 @@ Em **Ajustes › Unidade**:
    para desfazer, clique de novo. **Trocar a relação** recomeça.
 4. **Confira as opções do lote**:
    - **Nome do lote (vira o nome da pasta)**;
+   - **Grau** (**1º grau** ou **2º grau**): onde procurar os autos quando o
+     número não diz o grau. Começa com o grau de **Ajustes › Download ›
+     Grau dos processos** (veja [1º e 2º grau](#1º-e-2º-grau));
    - **Separar os sigilosos** (ligado: o processo em segredo de justiça vai
      para a pasta dos sigilosos, fora do acervo da IA);
    - **Baixar de novo o que já existe** (desligado: o processo cujo PDF já
@@ -618,9 +643,12 @@ Em **Ajustes › Unidade**:
    - **Mostrar o navegador enquanto baixa** (útil para acompanhar, ou quando
      o portal pede alguma confirmação).
 
-   Em **Acesso aos portais**, logo abaixo, aparece cada portal da relação:
-   “Senha guardada” ou “Sem senha guardada: o navegador abre para você
-   entrar”. Use **Cadastrar** ou **Alterar** para resolver ali mesmo.
+   Em **Acesso aos portais**, logo abaixo, aparece cada portal da relação,
+   no grau do lote: “Senha guardada” ou “Sem senha guardada: o navegador
+   abre para você entrar”. Use **Cadastrar** ou **Alterar** para resolver
+   ali mesmo. O e-SAJ usa o mesmo acesso nos dois graus; o eProc do 2º grau
+   aparece à parte (“eProc (2º grau) · TRF4”, por exemplo), com o acesso
+   dele.
 5. Clique em **Baixar N processos** (o botão mostra quantos são).
 6. **Acompanhe o andamento.** O anel mostra o progresso, e a lista
    **Processos do lote** mostra a situação de cada um:
@@ -632,9 +660,9 @@ Em **Ajustes › Unidade**:
    | Baixado | pronto; o ícone ao lado abre o PDF |
    | Já estava na pasta | pulado, porque o PDF já existia |
    | Sigiloso: falta a senha | o processo é sigiloso e a relação não trouxe a senha dele |
-   | Não encontrado | o portal não achou o processo (número errado, ou processo de outro sistema) |
+   | Não encontrado | o portal não achou o processo (número errado, processo de outro sistema ou do outro grau: o detalhe diz onde mais procurar) |
    | Sem acesso | o portal recusou o acesso (senha, perfil ou permissão) |
-   | Tribunal não suportado | tribunal ou sistema que o Helestron não atende |
+   | Tribunal não suportado | tribunal, sistema ou grau que o Helestron não atende (o 2º grau do e-SAJ do TJSP, por exemplo), ou autos do 2º grau que ele não consegue montar com segurança (o detalhe diz por quê) |
    | Falhou | outro problema; o detalhe aparece na linha (em telas estreitas, logo abaixo da situação) |
    | Interrompido | o lote foi parado antes |
 
@@ -643,26 +671,112 @@ Em **Ajustes › Unidade**:
    **Nenhum processo baixado** (anel vermelho). Aparecem então **Abrir
    pasta**, **Relatório**, **Tentar de novo (N)** e **Novo lote**.
    **Tentar de novo** baixa de novo só os que falharam, no mesmo lote (a
-   mesma pasta), e atualiza o relatório dele: as linhas refeitas tomam o
-   lugar das antigas, e as dos processos que já estavam baixados continuam
-   lá.
+   mesma pasta) e no mesmo grau, e atualiza o relatório dele: as linhas
+   refeitas tomam o lugar das antigas, e as dos processos que já estavam
+   baixados continuam lá. Na lista, o processo do 2º grau tem o selo do
+   tribunal com o grau (“TJAL · 2º grau”).
 
 Abaixo da área da relação, **Últimos lotes** lista os lotes já baixados, com
 **Abrir** (a pasta) e o ícone do relatório.
 
+### 1º e 2º grau
+
+O Helestron baixa os autos do **1º grau** (as varas) e os do **2º grau**
+(os recursos e as ações originárias do tribunal). No TJAL, nos dois
+sistemas: o **e-SAJ do 2º grau** (a consulta de 2º grau do portal, com o
+mesmo login do 1º grau) e o **eProc do 2º grau** (outra instalação do eProc,
+com acesso próprio: veja [Acessos aos portais](#acessos-aos-portais)). No
+2º grau, como no 1º, o processo é procurado primeiro no e-SAJ e, não
+achado, no eProc, sempre **no mesmo grau**.
+
+**Como o grau é escolhido.** Cada processo vai a um grau só, decidido
+nesta ordem:
+
+1. **pelo número**, quando ele só existe no 2º grau:
+   - o órgão `0000`, de competência originária do tribunal (habeas corpus,
+     mandado de segurança, agravo de instrumento, revisão criminal), como
+     `0803061-28.2025.8.02.0000`;
+   - o órgão começando por `9` (plantão do 2º grau, turma recursal), como
+     `0800103-29.2025.8.02.9002`;
+   - o recurso interno do 2º grau (embargos de declaração, agravo
+     interno), que leva o dependente de cinco algarismos `/50000`, `/50001`…,
+     como `0706265-50.2017.8.02.0001/50000`;
+2. **pelo grau do lote**: **Opções do lote › Grau**, na tela Processos;
+3. **pelo padrão**: **Ajustes › Download › Grau dos processos**, que é o
+   valor com que a opção **Grau** de cada lote começa (o 1º grau, se você
+   não mexer: quem não usa o 2º grau continua como antes).
+
+A apelação e o recurso em sentido estrito sobem ao tribunal com o número
+do processo de origem: o mesmo número existe nos dois graus, e é o grau do
+lote que diz quais autos você quer. Num gabinete de 2º grau, deixe **Grau
+dos processos** em **2º grau**; para baixar os autos de origem de uma
+apelação, faça um lote em **1º grau**. O Helestron **nunca troca de grau
+sozinho** (trocaria os autos): se o processo não está no grau pedido, a
+linha diz “Não encontrado”, e o detalhe diz onde mais procurar (no 1º
+grau, que o processo pode estar no 2º; no 2º, que o recurso pode ainda não
+ter subido). Para o número que só existe no 2º grau, trocar o grau do lote
+não muda nada, e o detalhe diz isso.
+
+**Na revisão**, a coluna **Grau** mostra o grau de cada linha: o do lote
+ou, com contorno, o que o próprio número impõe (com o mouse em cima, “Só
+existe no 2º grau”). Trocar o **Grau** nas opções do lote muda as linhas na
+hora, menos as que o número fixa. Em âmbar fica o grau que o Helestron
+ainda não baixa daquele tribunal: o processo vai aparecer como **Tribunal
+não suportado**. Os selos do resumo separam os portais por grau (“TJAL ·
+e-SAJ (2º grau)”).
+
+**Os nomes dos arquivos.** Os autos do 2º grau levam “(2G)” depois do
+número (e do dependente), separado por um espaço:
+
+| Autos | Nome |
+|---|---|
+| 1º grau (como sempre) | `0700123-83.2024.8.02.0001.pdf` |
+| 2º grau, do mesmo processo | `0700123-83.2024.8.02.0001 (2G).pdf` |
+| recurso interno do 2º grau | `0706265-50.2017.8.02.0001-50000 (2G).pdf` |
+| habeas corpus (só no 2º grau) | `0803061-28.2025.8.02.0000 (2G).pdf` |
+
+A capa, o registro do download e o texto para a IA acompanham o nome
+(`_controle\0700123-83.2024.8.02.0001 (2G)_capa.txt`, por exemplo). Assim,
+os autos dos dois graus do mesmo número cabem na mesma pasta de lote, sem
+um tomar o lugar do outro: o que já está na pasta num grau não conta como
+“Já estava na pasta” para o outro, e o relatório do lote tem uma linha para
+cada grau.
+
+**Relação misturada.** A relação não diz o grau (uma coluna “Grau” na
+planilha não é lida): o lote tem um grau só, salvo os números que só
+existem no 2º grau. Para baixar umas apelações no 2º grau e outros
+processos no 1º, faça dois lotes.
+
+**Pela Pauta.** **Baixar os autos**, na Pauta, baixa sempre no 1º grau (a
+pauta é a das audiências do 1º grau), seja qual for o grau dos Ajustes; só
+o número que só existe no 2º grau vai ao 2º.
+
+**Pela linha de comando.** `baixar --grau 2g` (ou `--grau 1g`). Sem
+`--grau`, vale o 1º grau, mesmo com **Grau dos processos** em 2º grau: esse
+ajuste vale só para a janela (veja [Linha de
+comando](#linha-de-comando-para-a-equipe-de-informática)).
+
+**Onde há 2º grau.** O 2º grau do e-SAJ é baixado só no TJAL. O do eProc,
+no TJAL e nos tribunais só de eProc que têm o endereço do eProc do 2º grau
+no catálogo do programa (como o TJRS e o TRF4), cada um com o seu acesso
+(`TRF4 · eProc (2º grau)`). Nos demais tribunais do e-SAJ (o TJSP, por
+exemplo), o 2º grau ainda não é baixado: o processo aparece como
+**Tribunal não suportado**, e o detalhe manda baixá-lo pelo portal.
+
 ### O que sai
 
 Uma pasta com o nome do lote, em `Acervo\Processos\`, contendo **um PDF por
-processo**, nomeado com o número (`0700123-83.2024.8.02.0001.pdf`). Na
-subpasta `_controle\` ficam:
+processo**, nomeado com o número (`0700123-83.2024.8.02.0001.pdf`; os autos
+do 2º grau, `0700123-83.2024.8.02.0001 (2G).pdf`). Na subpasta `_controle\`
+ficam:
 
 - `relatorio.csv`, o relatório do lote, que abre no Excel: a situação de
   cada processo, o número de páginas, o que não veio (coluna
-  `incompleto`), o detalhe e, na última coluna, `causa`, um código curto do
-  motivo do que não deu certo (por exemplo, `login`, `portal` ou
-  `pdf_aberto`), para quem automatiza o programa. Se o relatório estiver
-  aberto no Excel quando o lote terminar, o Helestron grava ao lado
-  `relatorio (atualizado).csv`;
+  `incompleto`), o detalhe, a coluna `causa`, um código curto do motivo do
+  que não deu certo (por exemplo, `login`, `portal` ou `pdf_aberto`), para
+  quem automatiza o programa, e, na última coluna, `grau`, o grau dos autos
+  (`1g` ou `2g`). Se o relatório estiver aberto no Excel quando o lote
+  terminar, o Helestron grava ao lado `relatorio (atualizado).csv`;
 - `<número>_capa.txt`, a **capa** do processo, para ler sem abrir o portal
   nem o PDF: classe, assunto, juiz, partes, as marcas do processo
   (prioridade, justiça gratuita, idoso, segredo de justiça), **todas** as
@@ -671,13 +785,19 @@ subpasta `_controle\` ficam:
   a 245”); no eProc, como citar, o **mapa de todos os documentos** (no PDF
   montado documento a documento, com a página em que cada um começa) e a
   lista de todos os eventos. O mesmo vai em `<número>_capa.json`, para
-  programas;
+  programas. A capa dos autos do 2º grau do e-SAJ traz também a seção, o
+  órgão julgador, o relator, a origem, os **Números de 1ª Instância** (o
+  processo de origem, com o foro, a vara e o juiz), a **Composição do
+  Julgamento** (relator, revisor e vogais), os **Julgamentos** e os
+  incidentes e recursos ligados ao processo;
 - `<número>_meta.json`, o registro do download (sistema, páginas, o que não
   veio): quando você roda a mesma relação de novo e o processo já está na
   pasta, a linha dele no relatório continua dizendo o que dizia.
 
-A capa e o registro acompanham o PDF quando ele vai para a pasta dos
-sigilosos.
+Nos autos do 2º grau, os três levam o “(2G)” do PDF:
+`<número> (2G)_capa.txt`, `<número> (2G)_capa.json` e
+`<número> (2G)_meta.json`. A capa e o registro acompanham o PDF quando ele
+vai para a pasta dos sigilosos.
 
 ### As páginas do PDF: folhas e eventos
 
@@ -713,6 +833,19 @@ citação feita a partir dele seja a mesma do portal.
   página M do PDF é a página M desse arquivo, com os marcadores dele. Se o
   download completo falhar ou demorar, o processo é montado documento a
   documento.
+- **Nos autos do 2º grau**, a numeração é a do 2º grau, própria: no e-SAJ,
+  a página N do PDF `(2G)` é a folha N da **Pasta Digital do 2º grau**, que
+  não é a folha N dos autos de origem; no eProc, os eventos são os do
+  processo no 2º grau. Se a Pasta Digital do 2º grau numerar a mesma folha
+  em peças diferentes (duas numerações misturadas, a da origem e a do 2º
+  grau), o Helestron **não grava** os autos, para não perder peças: a linha
+  diz “Tribunal não suportado”, com o detalhe “a Pasta Digital do 2º grau
+  numera folhas em duplicidade (…); não gravei os autos, para não perder
+  peças: baixe-os pelo portal do tribunal” (ele não entra em **Tentar de
+  novo**: repetir daria o mesmo). Pelo mesmo motivo, a consulta de 2º grau
+  que mostra mais de um processo com o mesmo número não é baixada (veja
+  [O que o 2º grau ainda não faz](#o-que-o-2º-grau-ainda-não-faz-limites)).
+  Veja como citar em [Os autos do 2º grau na IA](#os-autos-do-2º-grau-na-ia).
 
 O PDF leva dentro dele um registro dessa numeração (o “manifesto de
 paginação”), que o acompanha para onde for e que o texto para a IA usa
@@ -729,12 +862,14 @@ certo); para refazer os demais, use **Baixar de novo o que já existe**
 
 - O que já foi baixado não é baixado de novo: pode deixar a relação crescer e
   baixar outra vez.
-- Processo dependente (incidente) sai com o sufixo: `...0001-01.pdf`. O
-  incidente de um processo sigiloso também é sigiloso.
+- Processo dependente (incidente) sai com o sufixo: `...0001-01.pdf`; o
+  recurso interno do 2º grau, `...0001-50000 (2G).pdf`. O incidente de um
+  processo sigiloso também é sigiloso.
 - Se a relação trouxer a **senha do processo** (`número ; senha`, ou uma
   coluna “senha”), ela é usada, e a linha mostra **Senha na relação**.
 - **Tribunais em transição** do e-SAJ para o eProc (TJAL, TJSP e TJAC): o
-  Helestron procura primeiro no e-SAJ e, não achando, no eProc.
+  Helestron procura primeiro no e-SAJ e, não achando, no eProc, no mesmo
+  grau.
 - No eProc, os autos são montados documento a documento, na ordem dos
   eventos, com um marcador (índice) por documento no PDF e o rótulo de cada
   página (veja [As páginas do PDF](#as-páginas-do-pdf-folhas-e-eventos)).
@@ -750,7 +885,7 @@ certo); para refazer os demais, use **Baixar de novo o que já existe**
   zere a pausa em listas grandes: uma rajada de acessos pode ser lida pelo
   portal como abuso.
 - Um lote também pode começar pela **Pauta** (“Baixar os autos”); o
-  andamento aparece aqui do mesmo jeito.
+  andamento aparece aqui do mesmo jeito. Esse lote é sempre do 1º grau.
 
 ### Segredo de justiça no download
 
@@ -778,10 +913,75 @@ Com **Separar os sigilosos** ligado (o padrão):
   indicando segredo de justiça, ou um download anterior que o encontrou em
   segredo de justiça) vai para a pasta dos sigilosos mesmo que a
   página do portal não mostre o selo, e o mesmo vale para os incidentes dele
-  (`...0001-01`); e o que um lote já deu como sigiloso continua sigiloso
-  quando você usa **Tentar de novo**.
+  (`...0001-01`) e, se ele for um recurso interno do 2º grau
+  (`...0001-50000`), para o processo principal; e o que um lote já deu
+  como sigiloso continua sigiloso quando você usa **Tentar de novo**;
+- o sigilo é do **processo**, e vale para os autos **dos dois graus**: se o
+  2º grau mostra o processo em segredo de justiça, os autos do 1º grau dele
+  que estiverem no acervo (em qualquer lote) também vão para a pasta dos
+  sigilosos, com a capa, e os textos dos dois graus saem de `_ia\texto`; e
+  o contrário também vale. O recurso interno do 2º grau (`...0001-50000`)
+  herda o sigilo do processo, como o incidente, e, ao contrário do
+  incidente, o recurso interno sigiloso torna sigiloso também o processo
+  principal;
+- o processo originário do 2º grau (o habeas corpus, o mandado de
+  segurança ou o agravo de instrumento, que têm número próprio, com órgão
+  `0000`) é tratado como sigiloso quando o processo de origem, que a capa
+  do 2º grau do e-SAJ lista em **Números de 1ª Instância**, já se sabe
+  sigiloso: a petição costuma trazer cópia dele. A linha diz “tratado como
+  sigiloso: o processo de origem … é sigiloso”. Se o processo de origem
+  vem depois do originário na mesma relação e só então se mostra em
+  segredo, o originário já baixado é levado na hora para a pasta dos
+  sigilosos, com a mesma frase na linha. E vale também depois do
+  download: se o processo de origem só vier a ser sigiloso mais tarde, o
+  originário vai para a pasta dos sigilosos na próxima atualização do
+  acervo para a IA (o programa relê a capa guardada em `_controle`).
 
 A regra completa está em [Segredo de justiça](#segredo-de-justiça).
+
+### O que o 2º grau ainda não faz (limites)
+
+- **Eventos “de outro grau” do eProc.** Os eventos do processo de origem,
+  que o eProc do 2º grau pode mostrar junto, não entram no PDF: ele traz os
+  eventos do próprio processo no 2º grau. Para os da origem, baixe os autos
+  de origem num lote de 1º grau.
+- **Pauta do 2º grau.** A Pauta do Helestron é a das audiências do 1º
+  grau: a pauta de sessões de julgamento do 2º grau não é lida, e **Baixar
+  os autos**, na Pauta, baixa no 1º grau.
+- **Grau na relação.** Uma coluna “Grau” na planilha da relação não é
+  lida: o grau é o do lote (salvo os números que só existem no 2º grau).
+  Para graus diferentes, faça lotes diferentes.
+- **Folhas em duplicidade.** A Pasta Digital do 2º grau que numera a mesma
+  folha em peças diferentes não vira PDF (veja [As páginas do
+  PDF](#as-páginas-do-pdf-folhas-e-eventos)): baixe esses autos pelo
+  portal.
+- **Mais de um processo com o mesmo número.** Se a consulta de 2º grau
+  mostrar mais de um processo com exatamente o número pedido, o Helestron
+  não escolhe (seriam autos trocados): a linha diz “Tribunal não
+  suportado”, com o detalhe “o 2º grau do e-SAJ tem mais de um processo com
+  este número (…); não baixei, para não gravar autos trocados”, e não entra
+  em **Tentar de novo**: baixe pelo portal. O mesmo vale para o recurso
+  interno (`...0001-50000`) de processo em segredo de justiça: a consulta
+  abre a página do processo principal em segredo, sem o número, e o
+  Helestron não o escolhe, mesmo com a senha do processo na relação: a
+  página em segredo não lista as opções, e a senha só serve ao pedido do
+  principal. O detalhe diz “… o recurso interno … de processo em segredo
+  não é escolhido pelo Helestron: baixe-o pelo portal do tribunal”, e a
+  linha, sigilosa, aparece no relatório do acervo como “(processo
+  sigiloso)”. O processo principal, que a consulta mostrou em segredo,
+  também fica sigiloso: o sigilo dos dois fica guardado no registro à parte
+  (o `download.sigilo.json`) e na linha do recurso interno no relatório do
+  lote (“sim” na coluna `sigiloso`), que marca também o principal (veja
+  [Segredo de justiça](#segredo-de-justiça)); e, com **Separar os
+  sigilosos** ligado, os autos do principal que estiverem no acervo, dos
+  dois graus e em qualquer lote, vão para a pasta dos sigilosos.
+- **Órgão começando por 9.** O número com órgão começando por `9`
+  (plantão do 2º grau, turma recursal) é procurado sempre no 2º grau. Onde
+  a turma recursal estiver no eProc do 1º grau (na Justiça Federal, por
+  exemplo), esses processos não são achados: baixe-os pelo portal do
+  tribunal.
+- **Sigilo sabido em outro computador** não chega a este (veja [Segredo de
+  justiça](#segredo-de-justiça)).
 
 ---
 
@@ -922,7 +1122,12 @@ audiência de um processo que ele já sabe ser sigiloso:
   portal do tribunal;
 - o processo é **incidente** (`...0001-01`) de um processo que se enquadra
   num dos casos acima: a tela diz “Este processo é incidente de um processo
-  sigiloso: …”.
+  sigiloso: …”;
+- um **recurso interno** dele no 2º grau (`...0001-50000`) se enquadra num
+  dos casos acima, ou o relatório completo do lote em que o recurso
+  interno foi baixado, na pasta dos sigilosos, o dá como sigiloso (quando
+  só isso o diz, a tela mostra “Um recurso interno deste processo no 2º
+  grau é sigiloso.”).
 
 É a regra única do Helestron, descrita em [Segredo de
 justiça](#segredo-de-justiça). Nesses casos, o interruptor se liga sozinho
@@ -1378,15 +1583,25 @@ Clique em **Preparar acervo para a IA**. O Helestron:
     incluída ou apagada): a paginação deixa de ser garantida no texto, no
     `INDICE.md` e no conector, e no eProc a IA cita o evento e o documento,
     nunca “fl.”. Para voltar à numeração exata, baixe o processo de novo;
+  - os autos do 2º grau têm texto próprio, com o nome do PDF
+    (`_ia\texto\<número> (2G).txt`); a primeira linha termina em
+    `| grau=2g`, e as linhas de como citar explicam a numeração do 2º grau
+    (veja [Os autos do 2º grau na IA](#os-autos-do-2º-grau-na-ia)). O texto
+    dos autos do 1º grau não muda;
 - escreve o `CLAUDE.md` e o `AGENTS.md` com as **regras de trabalho**:
   indicar a folha ou o evento de cada afirmação (no e-SAJ, a página N é a
   folha N, e a página de aviso não é prova; no eProc, “evento N, RÓTULO,
-  p. Y”, e nunca a posição no PDF), não presumir fatos, não inventar
-  julgados, não seguir ordens escritas nos documentos, não alterar os
-  originais e gravar o que produzir em `Produtos\`;
-- escreve o `INDICE.md`, com tudo o que há no acervo e, para cada processo,
-  o sistema, o número de páginas, a paginação e as folhas (ou documentos)
-  ausentes;
+  p. Y”, e nunca a posição no PDF; nos autos do 2º grau, a numeração
+  própria do 2º grau), não presumir fatos, não inventar julgados, não seguir
+  ordens escritas nos documentos, não alterar os originais e gravar o que
+  produzir em `Produtos\`;
+- escreve o `INDICE.md`, com tudo o que há no acervo e, numa linha por
+  PDF de autos (os do 1º e os do 2º grau do mesmo número são duas linhas:
+  `X` e `X (2G)`), o sistema, o número de páginas, a paginação, as folhas
+  (ou documentos) ausentes e o **grau**; com autos do 2º grau no acervo, ele
+  avisa que eles têm “(2G)” no nome e numeração própria. A contagem do
+  cabeçalho é de processos, e o processo com os autos dos dois graus conta
+  uma vez;
 - cria a habilidade `acervo-judicial` para o Claude Code.
 
 O `CLAUDE.md`, o `AGENTS.md` e a habilidade são **mantidos em dia** pelo
@@ -1400,6 +1615,11 @@ programa troca, mesmo no arquivo editado, a frase que diz que os sigilosos
 não estão na pasta pela que avisa que ela pode conter processo em segredo
 de justiça.
 
+Na 1.1.0, as regras ganharam a do 2º grau. O arquivo que você editou e que
+não fala dos autos “(2G)” recebe, no preparo, o aviso de que lhe falta a
+regra de citação desta versão: apague-o e prepare de novo, ou acrescente a
+regra você mesmo.
+
 O botão **Copiar pedido inicial** copia um pedido pronto para colar na
 conversa, para a IA começar pelas regras e pelo índice do acervo. O quadro
 **Acervo** mostra o caminho da pasta, quantos processos e transcrições há, e
@@ -1411,7 +1631,7 @@ os botões **Abrir a pasta** e **Copiar o caminho**.
 |---|---|---|
 | **Claude Code** | **Abrir no Claude Code** | abre o Claude Code numa janela própria, já na pasta do acervo; ele lê sozinho o `CLAUDE.md` e o índice. Se ele não estiver instalado, o Helestron abre no navegador a página oficial que explica como instalá-lo (sem administrador); depois de instalar, clique de novo no botão. Exige plano pago do Claude. |
 | **Claude Cowork** | **Abrir no Cowork** | copia o pedido inicial (na hora do clique) e abre o Cowork, no app Claude Desktop, com a pasta do acervo; o Claude pede que você confirme o acesso à pasta, e é só colar o pedido (Ctrl+V). Exige o Claude Desktop e plano pago; sem ele, o Helestron abre no navegador a página de download do Claude Desktop: instale o app, entre com a sua conta e clique de novo. |
-| **Claude Desktop** | **Conectar o acervo** | registra no Claude Desktop o conector **helestron**, com as ferramentas `listar_acervo`, `ler_processo` (por faixa de páginas ou, no eProc, por evento e documento), `buscar` (que devolve a citação de cada trecho) e `ler_transcricao` (em partes, nas transcrições longas), que **só leem**. Feche o Claude Desktop pela bandeja do Windows (perto do relógio) e abra de novo para ele carregar o conector. Depois de conectado, o botão vira **Reconectar o acervo**. Se o app não estiver instalado, o conector fica registrado e o Helestron abre a página de download do Claude Desktop. |
+| **Claude Desktop** | **Conectar o acervo** | registra no Claude Desktop o conector **helestron**, com as ferramentas `listar_acervo`, `ler_processo` (por faixa de páginas ou, no eProc, por evento e documento; e pelo grau, quando o acervo tem os autos dos dois graus do processo), `buscar` (que devolve a citação de cada trecho, com os autos de onde ele saiu) e `ler_transcricao` (em partes, nas transcrições longas), que **só leem**. Feche o Claude Desktop pela bandeja do Windows (perto do relógio) e abra de novo para ele carregar o conector. Depois de conectado, o botão vira **Reconectar o acervo**. Se o app não estiver instalado, o conector fica registrado e o Helestron abre a página de download do Claude Desktop. |
 | **ChatGPT Work** | **Abrir no ChatGPT Work** | copia o caminho do acervo (na hora do clique) e abre o app do ChatGPT. No modo **Work**, tecle **Ctrl+O** e cole o caminho: o ChatGPT passa a trabalhar na pasta e lê o `AGENTS.md`. Sem o app, o Helestron abre o ChatGPT no navegador, que não lê pastas do computador: instale o app do ChatGPT para Windows ou, no cartão **Pacote para o ChatGPT**, use **Gerar o pacote**. |
 | **Codex** | **Abrir no Codex** | registra o conector do acervo para o Codex (no arquivo `%USERPROFILE%\.codex\config.toml`) e abre o agente da OpenAI numa janela própria, dentro do acervo; ele lê o `AGENTS.md`, com as mesmas regras do Claude. Sem o Codex instalado, use **Abrir no ChatGPT Work** ou, no cartão **Pacote para o ChatGPT**, **Gerar o pacote**. |
 | **Pacote para o ChatGPT** | **Gerar o pacote** | monta uma pasta e um `.zip` com os autos, os textos, as transcrições, o índice e as instruções, em `Documentos\Helestron\Pacotes para IA`, para anexar numa conversa ou num Projeto. No fim, o aviso traz o botão **Abrir pasta**, e os avisos do pacote aparecem na tela (o número pedido que não está no acervo, ou é sigiloso, por exemplo). Se o `.zip` passar do limite de tamanho do ChatGPT (cerca de 500 MB), o aviso manda arrastar os **arquivos da pasta do pacote** (o texto e as instruções primeiro), e não o `.zip`. |
@@ -1436,10 +1656,46 @@ delas): tudo o que está na nuvem sai do computador. Se uma configuração
 antiga estiver assim, o espelho não roda, e o Início mostra **Pasta da
 nuvem em conflito**, com o caminho para corrigir.
 
+### Os autos do 2º grau na IA
+
+Os autos do 2º grau (`<número> (2G).pdf`) e os do 1º grau do mesmo número
+(`<número>.pdf`, os autos de origem) são **dois arquivos, com numerações
+diferentes**. As regras que o Helestron dá à IA (no `CLAUDE.md`, no
+`AGENTS.md`, na habilidade, no texto de cada processo e no conector) e
+que valem também para quem redige:
+
+- **No e-SAJ do 2º grau**, cita-se “fl. N”, a marca `[fl. N]` de cada
+  página: é a folha da **Pasta Digital do 2º grau**. A folha dos autos de
+  origem, se for preciso citá-la, é “fl. N dos autos de origem”: nunca se
+  presume que a fl. N de um é a fl. N do outro.
+- **O carimbo “fls.” diferente da marca**, numa página dos autos do 2º
+  grau, é de outros autos, inclusive dos de origem (que têm o mesmo
+  número): não se cita como folha destes autos. Cita-se a marca, e a IA
+  avisa o magistrado do carimbo divergente. É o contrário do 1º grau, em
+  que a folha carimbada que diverge da marca é a citada: no 2º grau, a peça
+  trazida da origem com o carimbo “fls. 120”, numa página marcada
+  `[fl. 735]`, não se distingue pelo número.
+- **No eProc do 2º grau**, cita-se “evento N, RÓTULO, p. Y”, como no 1º
+  grau, mas os eventos são os do processo no 2º grau; o evento do processo
+  de origem não está nesse PDF e se cita “evento N, RÓTULO, do processo de
+  origem”.
+- **No conector**, a listagem mostra os autos do 2º grau com “(2G)” e
+  “2º grau” na linha. Com os autos dos dois graus do mesmo processo no
+  acervo, `ler_processo` pede o grau (ou o número com ele: `X (1º grau)`
+  ou `X (2G)`), e
+  a resposta sobre os autos do 1º grau avisa que eles são os autos de
+  origem; `buscar` diz de que autos saiu cada trecho (“X (2G), fl. 12” ou
+  “X (1º grau), fl. 12”).
+- **No pacote para o ChatGPT**, o número pedido leva os autos dos dois
+  graus do processo; com “(2G)” depois do número, só os do 2º grau.
+
 ### Regras de sigilo
 
-- O processo em segredo de justiça **nunca** vai para a IA, para o pacote,
-  para a nuvem, para o conector ou para o índice, seja qual for a ferramenta.
+- O Helestron **nunca** leva processo em segredo de justiça à IA, ao
+  pacote, à nuvem, ao conector ou ao índice, seja qual for a ferramenta.
+  Uma skill do Claude Code só trabalha um deles com a autorização expressa
+  do magistrado, no chat, lendo-o e gravando o que produzir na própria
+  pasta dos sigilosos (`docs/INTEGRACAO-CLAUDE.md`, seção 11).
   Quem decide o que é sigiloso é a regra única descrita em
   [Segredo de justiça](#segredo-de-justiça): os autos, a transcrição ou a
   gravação na pasta dos sigilosos, a pauta de audiências ou um download
@@ -1501,10 +1757,16 @@ nuvem em conflito**, com o caminho para corrigir.
 
 ## Segredo de justiça
 
-Processo em segredo de justiça **nunca vai para a IA nem para a nuvem**. Para
-garantir isso, o Helestron segue **uma regra só**, a mesma ao baixar os
-autos, ao transcrever a audiência, ao compartilhar o acervo e ao montar a
-pauta.
+O Helestron **nunca leva processo em segredo de justiça à IA nem à
+nuvem**. Para garantir isso, ele segue **uma regra só**, a mesma ao baixar
+os autos, ao transcrever a audiência, ao compartilhar o acervo e ao montar
+a pauta.
+
+Uma skill do Claude Code (como a que monta minutas a partir de um lote) só
+trabalha um processo sigiloso se o magistrado o autorizar expressamente, no
+chat; e então lê os arquivos na própria pasta dos sigilosos e grava lá o
+que produzir. O acervo, o pacote e a nuvem continuam sem ele (veja
+`docs/INTEGRACAO-CLAUDE.md`, seção 11, no repositório do programa).
 
 ### Quando o processo é sigiloso para o Helestron
 
@@ -1534,12 +1796,46 @@ Basta uma destas situações:
    sigilosos** desligado, é esse relatório que guarda o sigilo dos lotes
    baixados por uma versão anterior, ou depois de o registro do item 4 se
    perder (as configurações apagadas na desinstalação, o acervo levado para
-   outro computador); o Helestron o devolve ao registro.
+   outro computador); o Helestron o devolve ao registro. Do recurso interno
+   do 2º grau, vale também a linha dele no relatório completo do lote, na
+   pasta dos sigilosos.
 
 O **incidente** de um processo sigiloso (o `...0001-01`, como o cumprimento
 de sentença) também é sigiloso: as partes e o conteúdo são os mesmos. O
 contrário não vale: o processo principal não fica sigiloso só por causa de
-um incidente.
+um incidente. O **recurso interno do 2º grau** (`...0001-50000`,
+`...0001-50001`…, os embargos de declaração ou o agravo interno) também
+herda o sigilo do processo, mas nele o contrário vale: ele corre nos autos
+do próprio processo no 2º grau (no portal, a consulta do recurso interno
+de um processo em segredo abre a página do principal em segredo), e por
+isso o recurso interno sigiloso, por qualquer das situações acima, torna
+sigiloso também o processo principal.
+
+O sigilo é do **processo**, nos **dois graus**: apurado no 1º ou no 2º
+grau, ele vale para os autos dos dois (`<número>.pdf` e
+`<número> (2G).pdf`). O processo originário do 2º grau (o habeas corpus, o
+mandado de segurança, o agravo de instrumento), que tem número próprio, é
+tratado como sigiloso quando o processo de origem listado na capa do 2º
+grau do e-SAJ (**Números de 1ª Instância**) já se sabe sigiloso — no
+download e depois dele: a capa fica guardada em `_controle` do lote, e o
+programa a relê sempre que aplica a regra; o processo de origem que só se
+revela sigiloso mais tarde leva o originário à pasta dos sigilosos na
+próxima atualização do acervo para a IA, e ele sai do índice, do conector,
+do pacote e da nuvem. Uma vez apurado, fica: o originário levado assim
+entra no registro do item 4 (o `download.sigilo.json`) e, na pasta dos
+sigilosos, fica sigiloso também pelo item 1; o porquê fica anotado no
+registro do programa, na pasta `%LOCALAPPDATA%\Helestron\Logs` (“originário
+… tratado como sigiloso: o processo de origem … é sigiloso”). Se o processo
+de origem foi marcado por engano, leve o originário de volta junto com ele
+(veja [Se um processo foi marcado como sigiloso por
+engano](#se-um-processo-foi-marcado-como-sigiloso-por-engano)).
+
+> **Cada computador sabe o que viu.** O sigilo apurado por um download, os
+> autos na pasta dos sigilosos e a pauta ficam no computador em que foram
+> sabidos. O que o computador da vara sabe não chega ao do gabinete do 2º
+> grau (nem o contrário): lá, o Helestron só conhece o que o portal do
+> 2º grau mostra e o que aquele computador já viu. Na dúvida, confira o
+> segredo de justiça no portal antes de entregar o acervo à IA.
 
 ### O que muda para o processo sigiloso
 
@@ -1606,7 +1902,20 @@ mais esses casos, mas a marcação já gravada continua.
 
 Se o processo é público e você precisa dele no acervo:
 
-1. Confirme no portal que o processo não corre em segredo de justiça.
+1. Confirme no portal que o processo não corre em segredo de justiça. No
+   2º grau, confira também cada recurso interno dele (`<número>/50000`,
+   `/50001`…, os embargos de declaração) que estiver na pasta dos
+   sigilosos ou com “sim” no relatório do lote: é essa conferência, e não
+   o relatório, que diz se ele só herdou a marcação. Se a página do
+   recurso interno está em segredo de justiça, se a linha dele no
+   relatório diz que a consulta abriu a página do processo principal em
+   segredo de justiça (situação `NAO_SUPORTADO`; na tela, “Tribunal não
+   suportado”) ou se há outro sinal de que a página estava em segredo no
+   download dele (veja o passo 5), o processo é sigiloso pela regra (o
+   recurso interno sigiloso torna sigiloso também o processo): não o
+   desmarque. Sem nada disso, se o portal mostra pública a página do
+   recurso interno, ele só herdou a marcação do processo e é desmarcado
+   junto com ele (passos 5 e 6).
 2. Feche o Helestron (**Ajustes › Sobre e diagnóstico › Encerrar o
    Helestron**) e, se estiverem abertos, o Claude Desktop e o Codex.
 3. Se a marcação pode ter vindo da pauta (o processo tem, ou já teve,
@@ -1630,23 +1939,108 @@ Se o processo é público e você precisa dele no acervo:
    em segredo de justiça continuam sigilosos: pelos autos na pasta dos
    sigilosos ou, os que ficaram no acervo (com **Separar os processos
    sigilosos** desligado), pelo relatório do lote deles, que os devolve ao
-   registro.
-5. No relatório do lote em que ele foi baixado, troque “sim” por “não” na
-   coluna `sigiloso` da linha dele (o Excel abre o arquivo; salve-o no
-   mesmo formato): no `Sigilosos\<nome do lote>\_controle\relatorio.csv`,
-   se existir, e, com **Separar os processos sigilosos** desligado, no
-   `Acervo\Processos\<nome do lote>\_controle\relatorio.csv`; faça o mesmo
-   no `relatorio (atualizado).csv`, se houver. Sem isso, o relatório o
-   marca de novo (e o devolve ao `download.sigilo.json`).
+   registro. Vale também para o processo principal que a consulta de um
+   recurso interno dele no 2º grau (`...0001-50000`) achou em segredo, sem
+   linha própria no relatório: a linha “sim” do recurso interno o marca
+   também, no relatório do lote do recurso interno no acervo ou, com a
+   separação ligada (em que essa linha, no acervo, diz “(processo
+   sigiloso)”), no relatório completo, na pasta dos sigilosos. O download e
+   a transcrição já os veem pelos autos na pasta dos sigilosos e pelo
+   relatório completo, mas o relatório do lote no acervo só os devolve ao
+   registro no passo 8: até lá, o download em outro lote e a transcrição
+   tratam como públicos os que só ele marca. Por isso, não baixe processos
+   nem transcreva audiências antes do passo 8.
+5. No relatório de cada lote em que ele foi baixado, troque “sim” por
+   “não” na coluna `sigiloso` de todas as linhas dele (o Excel abre o
+   arquivo; salve-o no mesmo formato): no
+   `Sigilosos\<nome do lote>\_controle\relatorio.csv` (o relatório
+   completo), se existir, e no
+   `Acervo\Processos\<nome do lote>\_controle\relatorio.csv`. O processo
+   tem uma linha por grau em que foi baixado (coluna `grau`: `1g` e `2g`)
+   e pode estar em mais de um lote (o 1º grau num, o 2º noutro, por
+   exemplo): basta uma linha com “sim” para ele voltar a ser sigiloso, nos
+   dois graus. O recurso interno sigiloso dele no 2º grau
+   (`<número>/50000`, `/50001`…) torna sigiloso também o processo (veja
+   [Segredo de justiça](#segredo-de-justiça)). Por isso, troque também as
+   linhas de cada recurso interno dele que, pelo passo 1, só herdou a
+   marcação e, no passo 6, traga de volta os autos dele
+   (`<número>-50000 (2G).pdf`, que já têm o número do processo no nome).
+   A coluna `detalhe` da linha do recurso interno (no relatório completo,
+   com a separação ligada) dá pistas, mas não basta para saber se ele só
+   herdou: quem decide é a conferência no portal (passo 1). Ela pode dizer
+   “tratado como sigiloso: é incidente de um processo sigiloso…” no
+   download dele que deu certo. Nos outros casos, ela não diz que ele
+   herdou, mesmo quando ele só herdou: se o download dele falhou ou ele
+   não foi encontrado, ela diz só isso (“o portal demorou demais”, por
+   exemplo); se ele já estava na pasta do lote, “já estava na pasta (não
+   baixei de novo)”; se ele já tinha sido baixado noutro lote (os autos
+   dele na pasta dos sigilosos), “tratado como sigiloso: os autos, uma
+   transcrição ou uma gravação dele estão na pasta dos sigilosos”; e se
+   um download anterior do lote tinha deixado a linha dele, a do processo
+   ou a de outro recurso interno dele com “sim” (quando ele é baixado de
+   novo, com **Tentar de novo**, por exemplo, ou num lote em que o
+   processo já tinha sido baixado como sigiloso), “tratado como sigiloso:
+   assim constava de download anterior”. Já estes
+   sinais mostram que a página estava em segredo no download dele: a
+   capa dele (`_controle\<número>-50000 (2G)_capa.txt`) com a linha
+   “SEGREDO DE JUSTIÇA” no começo, a situação `SIGILOSO_SEM_SENHA` na
+   linha dele (na tela, “Sigiloso: falta a senha”) e a linha que diz que a
+   consulta abriu a página do processo principal em segredo de justiça
+   (`NAO_SUPORTADO`). Com qualquer deles, o processo é sigiloso pela
+   regra: não o desmarque.
+   Com **Separar os processos sigilosos** ligado, as linhas dele (e as
+   desses recursos internos) neste último não têm o número: dizem
+   “(processo sigiloso)” e têm, na coluna `ordem`, o mesmo número da linha
+   no relatório completo.
+   Troque cada uma dessas linhas inteira pela linha de mesma ordem
+   copiada do relatório completo (já com “não”): desde a versão 1.1.0, a
+   linha “(processo sigiloso)” vale “sim” mesmo que o relatório completo
+   diga “não” (para que um relatório completo desatualizado, que estava
+   aberto no Excel, não devolva o número ao acervo). Os dois arquivos se
+   chamam `relatorio.csv`, e o Excel pode não abrir ao mesmo tempo dois
+   arquivos com o mesmo nome: copie a linha no relatório completo, feche-o
+   e abra o do acervo para colá-la. Faça o mesmo no
+   `relatorio (atualizado).csv`, se houver. Sem isso, o relatório o marca
+   de novo (e o devolve ao `download.sigilo.json`); com a separação
+   ligada, o próximo download do lote devolve o “sim” ao relatório
+   completo, e o primeiro que o tiver na relação leva os autos de volta
+   para a pasta dos sigilosos.
 6. Leve de volta para o acervo o que o Helestron pôs na pasta dos sigilosos:
-   os autos, de `Sigilosos\<nome do lote>\` para
-   `Acervo\Processos\<nome do lote>\`; as transcrições, de
+   os autos dos dois graus (`<número>.pdf` e `<número> (2G).pdf`), de cada
+   `Sigilosos\<nome do lote>\` em que estiverem, para o
+   `Acervo\Processos\<nome do lote>\` de mesmo nome; as transcrições, de
    `Sigilosos\Transcricoes\` para `Acervo\Transcricoes\` (e as gravações, de
    `Sigilosos\Transcricoes\_audio\` para `Acervo\Transcricoes\_audio\`); e o
-   que mais tiver o número dele no nome (uma minuta em
-   `Sigilosos\Produtos\`, por exemplo).
-7. Abra o Helestron e, na tela Compartilhar, clique em **Preparar acervo
-   para a IA**.
+   que mais tiver o número dele no nome (a capa, que o passo 7 confere, e
+   o registro do download, em `_controle\`, ou uma minuta em
+   `Sigilosos\Produtos\`, por exemplo). Traga do mesmo jeito os autos dos
+   recursos internos dele que só herdaram a marcação (passo 5:
+   `<número>-50000 (2G).pdf`, com a capa e o registro do download, em
+   `_controle\`), da pasta dos sigilosos do lote em que cada um foi
+   baixado: enquanto estiverem lá, também o tornam sigiloso. Leve de volta
+   também o processo originário do 2º grau (o habeas corpus, o mandado de
+   segurança, o agravo de instrumento: `<outro número> (2G).pdf`, com a
+   capa) cuja capa lista esse processo em **Números de 1ª Instância**: ele
+   foi levado junto, por causa dele, e fica sigiloso pela própria pasta
+   enquanto estiver lá. O registro do programa, em
+   `%LOCALAPPDATA%\Helestron\Logs`, diz qual foi (“originário … tratado como
+   sigiloso: o processo de origem … é sigiloso”). Nos relatórios do lote
+   dele, faça com a linha dele o mesmo que no passo 5: o “não” no relatório
+   completo e, com a separação ligada, a linha “(processo sigiloso)” dele
+   no relatório do acervo trocada pela linha dele copiada do completo.
+7. Confira a capa dele em cada lote em que ele foi baixado, onde ela
+   estiver: em `Acervo\Processos\<nome do lote>\_controle\`, a que você
+   trouxe de volta no passo 6 e também a que nem saiu do acervo (com
+   **Separar os processos sigilosos** desligado, os autos e a capa ficam no
+   acervo). Quando o download o achou sigiloso, a capa dele
+   (`_controle\<número>_capa.txt` e `_controle\<número> (2G)_capa.txt`)
+   traz no começo a linha “SEGREDO DE JUSTIÇA - processo sigiloso. Não
+   compartilhe.”, e o Helestron relê a capa: apague essa linha (no Bloco
+   de Notas) ou a capa inteira; sem isso, o próximo download dele no lote
+   o marca de novo. Confira do mesmo jeito a capa do originário do passo 6.
+8. Abra o Helestron e, na tela Compartilhar, clique em **Preparar acervo
+   para a IA**, **antes** de baixar processos ou de transcrever audiências
+   (veja o passo 4).
 
 Na dúvida, não faça nada: um processo público marcado por engano só fica
 fora da IA e da nuvem.
@@ -1659,10 +2053,10 @@ Os Ajustes são organizados em grupos (o índice fica à esquerda da tela):
 
 | Grupo | O que tem |
 |---|---|
-| **Acessos aos portais** | usuário e senha de cada portal (**Adicionar acesso**, **Testar**, **Alterar**), o grupo **Como entrar** (modo de entrada no e-SAJ e no eProc, **Esperar o login até (minutos)** e **Perfil do eProc**) e o grupo **Endereço do portal** (**Corrigir o endereço de um portal**, raramente necessário) |
+| **Acessos aos portais** | usuário e senha de cada portal (**Adicionar acesso**, **Testar**, **Alterar**; na linha do e-SAJ do TJAL, **Testar 1º grau** e **Testar 2º grau**; o eProc do 2º grau numa linha própria), o grupo **Como entrar** (modo de entrada no e-SAJ e no eProc, **Esperar o login até (minutos)** e **Perfil do eProc**) e o grupo **Endereço do portal** (**Corrigir o endereço de um portal**, raramente necessário) |
 | **Pastas** | **Pasta do acervo**, **Pasta dos processos sigilosos**, **Pasta da pauta exportada** e os **Atalhos** para abri-las |
 | **Unidade** | **Como o Helestron chama você** e os dados do cabeçalho das transcrições (**Magistrado(a)**, **Cargo**, **Vara**, **Comarca**, **Tribunal**) |
-| **Download** | pular os já baixados, separar os sigilosos, baixar as gravações, mostrar o navegador, **Navegador dos portais** (o padrão usa o Chrome e, sem ele, o Edge), pausa, tentativas, esperas, guardar a imagem da tela quando algo der errado e a montagem do PDF no eProc |
+| **Download** | **Grau dos processos** (o grau com que a opção **Grau** de cada lote começa: **1º grau** ou **2º grau**; veja [1º e 2º grau](#1º-e-2º-grau)), pular os já baixados, separar os sigilosos, baixar as gravações, mostrar o navegador, **Navegador dos portais** (o padrão usa o Chrome e, sem ele, o Edge), pausa, tentativas, esperas, guardar a imagem da tela quando algo der errado e a montagem do PDF no eProc |
 | **Transcrição** | modelos ao vivo e de revisão, revisar ao encerrar, separar as vozes, guardar a gravação, horário de cada fala, participantes padrão, vocabulário, núcleos do processador, o **Microfone** (guardado pelo nome), a lista **Modelos de transcrição** e a **Separação de falantes** |
 | **Pauta** | **Monitorar a pauta**, intervalo, dias para trás e à frente, **Mostrar as partes e as observações dos processos sigilosos na planilha** e as **Fontes da pauta** (**Adicionar fonte**, a situação de cada fonte e a lixeira para remover) |
 | **Compartilhar** | **Pasta da nuvem**, espelhar sozinho e **Gerar a versão em texto dos autos** |
@@ -1678,8 +2072,8 @@ deixam de ser conferidas no portal.
 | O quê | Onde |
 |---|---|
 | **Programa** | `%LOCALAPPDATA%\Programs\Helestron\` (ou a pasta escolhida na instalação; se ela já tinha outros arquivos, a subpasta `Helestron` dentro dela), com o `helestron.cmd` (a linha de comando) e a lista `arquivos-instalados.txt` do que a instalação pôs lá; depois de uma atualização, pode haver ali, por pouco tempo, a pasta `.antigos` (veja [Atualizar](#atualizar)). A chave `HKCU\Software\Helestron` do registro do Windows diz onde ela está |
-| **Configuração e registros** | `%LOCALAPPDATA%\Helestron\`: `config.ini` (a configuração), `Logs\` (registros, `diagnostico\`, `execucoes\` (os registros dos downloads pela linha de comando com `--json`) e o relatório da conferência da instalação), `credenciais.json` (senhas cifradas pelo Windows; se ele se estragar, a cópia `credenciais.json.ilegivel-<data>`), `perfis\` (só as sessões dos portais, cifradas pelo Windows, e, no modo certificado, a extensão Web Signer), `pauta.sqlite3` (a pauta e o histórico de alterações), `pauta.sigilo.json` (o registro dos processos que a pauta já indicou em segredo de justiça), `modelos\` (modelos de transcrição baixados depois), `temp\` e, se houver, as correções feitas para o seu tribunal (`enderecos-locais.json`, `seletores.json` e `seletores-eproc.json`), que as atualizações não apagam |
-| **Acervo** (compartilhado com a IA) | `Documentos\Helestron\Acervo\`: `Processos\<nome do lote>\` (os PDFs e, em `_controle\`, o relatório, a capa e o registro do download de cada processo), `Transcricoes\` (os DOCX e, em `_audio\`, as gravações), `_ia\` (textos para a IA; pode apagar, é refeito), `Produtos\` (o que a IA produzir), `CLAUDE.md`, `AGENTS.md` e `INDICE.md` |
+| **Configuração e registros** | `%LOCALAPPDATA%\Helestron\`: `config.ini` (a configuração), `Logs\` (registros, `diagnostico\`, `execucoes\` (os registros dos downloads pela linha de comando com `--json`) e o relatório da conferência da instalação), `credenciais.json` (senhas cifradas pelo Windows; se ele se estragar, a cópia `credenciais.json.ilegivel-<data>`), `perfis\` (só as sessões dos portais, cifradas pelo Windows, e, no modo certificado, a extensão Web Signer; uma pasta por portal, e o eProc do 2º grau tem a sua, como `eproc2g-TJAL`), `pauta.sqlite3` (a pauta e o histórico de alterações), `pauta.sigilo.json` (o registro dos processos que a pauta já indicou em segredo de justiça), `modelos\` (modelos de transcrição baixados depois), `temp\` e, se houver, as correções feitas para o seu tribunal (`enderecos-locais.json`, `seletores.json` e `seletores-eproc.json`), que as atualizações não apagam |
+| **Acervo** (compartilhado com a IA) | `Documentos\Helestron\Acervo\`: `Processos\<nome do lote>\` (os PDFs, os do 2º grau com “(2G)” no nome, e, em `_controle\`, o relatório, a capa e o registro do download de cada processo), `Transcricoes\` (os DOCX e, em `_audio\`, as gravações), `_ia\` (textos para a IA; pode apagar, é refeito), `Produtos\` (o que a IA produzir), `CLAUDE.md`, `AGENTS.md` e `INDICE.md` |
 | **Sigilosos** (nunca compartilhados) | `Documentos\Helestron\Sigilosos\`: `<nome do lote>\` (processos em segredo de justiça; de um lote baixado fora de `Acervo\Processos`, pela linha de comando, `<nome do lote> (<código>)`), `Transcricoes\` (as transcrições das audiências deles) e, se o Helestron tirou do acervo outros arquivos de processo sigiloso, as mesmas pastas que eles tinham lá (como `Produtos\` ou `Minutas\`) |
 | **Pauta exportada** (fora do acervo) | `Documentos\Helestron\Pauta\` |
 | **Pacotes para o ChatGPT** | `Documentos\Helestron\Pacotes para IA\` |
@@ -1717,6 +2111,17 @@ modo certificado (ela levava as senhas e os cookies do Chrome) e passa a
 guardar a sessão dos portais cifrada. Os textos para a IA em `_ia\texto` são
 refeitos no próximo preparo, com as marcas novas, e o `CLAUDE.md` e o
 `AGENTS.md` que você não editou recebem as regras novas.
+
+A 1.1.0 traz o 2º grau e não muda nada do que já foi baixado: os PDFs, as
+capas e os textos do 1º grau continuam os mesmos, e nada precisa ser
+baixado nem extraído de novo. **Grau dos processos** começa em **1º grau**:
+quem não usa o 2º grau continua como antes. No próximo preparo, o
+`CLAUDE.md`, o `AGENTS.md` e a habilidade que você não editou recebem as
+regras do 2º grau. O relatório de cada lote ganha a coluna `grau` quando é
+regravado (a linha antiga de um número que só existe no 2º grau, como o
+habeas corpus de órgão `0000`, passa a valer como do 2º grau). O acesso ao
+eProc do 2º grau, se você o usar, é cadastrado à parte (veja [Acessos aos
+portais](#acessos-aos-portais)).
 
 - **Audiência em andamento.** Se houver uma audiência sendo transcrita
   (gravando ou pausada), o instalador não fecha o Helestron: mostra “Há uma
@@ -1767,7 +2172,11 @@ desinstalador avisa no detalhe, e a pasta pode ser apagada depois.
 Depois, ele **pergunta** se você quer apagar também as configurações e as
 senhas guardadas (`%LOCALAPPDATA%\Helestron`: configurações, registros,
 senhas dos portais e a pauta monitorada). A resposta já vem em **Não**, que
-é o que convém se você pretende instalar o Helestron de novo.
+é o que convém se você pretende instalar o Helestron de novo. Se algo
+nessa pasta estiver em uso (por um navegador aberto por um download, pelo
+Helestron da linha de comando ou pelo conector do acervo, com o Claude
+Desktop ou o Codex abertos), o desinstalador avisa no detalhe, e a pasta
+pode ser apagada depois de fechá-los.
 
 Se você desinstalar uma cópia do Helestron que não é a registrada (de uma
 pasta antiga, por exemplo), só os arquivos dela saem (e as sessões dos
@@ -1801,7 +2210,7 @@ foi interrompida no meio. **Os seus dados não foram afetados.**
 - Clique em **Reparar**: o Helestron procura o instalador na pasta
   **Downloads** do Windows (também quando a informática a levou para outro
   lugar). Ele só aceita o arquivo com o nome publicado
-  (`Helestron-Setup-1.0.2.exe`, ou `Helestron-Setup-1.0.2 (1).exe`, quando
+  (`Helestron-Setup-1.1.0.exe`, ou `Helestron-Setup-1.1.0 (1).exe`, quando
   baixado de novo), confere que é mesmo o instalador do Helestron (e, se o
   arquivo `.sha256` estiver ao lado, a impressão digital dele) e nunca
   escolhe uma versão mais antiga que a instalada. Antes de abrir, a tela
@@ -1874,8 +2283,26 @@ o código 9).
 
 ### O portal recusou o usuário ou a senha
 
-Confira em **Ajustes › Acessos aos portais** e use **Testar**. Se trocou a
-senha no portal, atualize aqui também.
+Confira em **Ajustes › Acessos aos portais** e use **Testar** (no e-SAJ do
+TJAL, **Testar 1º grau** e **Testar 2º grau**). Se trocou a senha no
+portal, atualize aqui também. O eProc do 2º grau tem a sua senha, na linha
+`TJAL · eProc (2º grau)`: a do eProc do 1º grau não vale para ele.
+
+### O processo não foi encontrado
+
+O detalhe da linha diz onde mais procurar. Quase sempre é o grau:
+
+- **no 1º grau**, o processo pode ser do 2º grau: troque o **Grau** nas
+  opções do lote para **2º grau** (na linha de comando, `--grau 2g`) e
+  baixe de novo;
+- **no 2º grau**, a apelação pode ainda não ter subido: os autos estão no
+  1º grau (lote em **1º grau**, ou `--grau 1g`);
+- o número de órgão `0000` ou começando por `9` e o recurso interno
+  `/50000` só são procurados no 2º grau: trocar o grau do lote não muda
+  nada, e o detalhe diz isso. Confira o número.
+
+O incidente do 1º grau (`/01`) não existe no 2º grau: num lote de 2º grau,
+ele volta “Não encontrado”.
 
 ### O portal mudou e o download parou
 
@@ -2002,6 +2429,7 @@ magistrado.
 - Confira a pauta no portal antes de atos que dependam dela.
 - Trate resumos e minutas da IA como sugestões; nunca os junte aos autos sem
   revisão.
-- Processos em segredo de justiça ficam fora do acervo e nunca vão para a IA:
-  mantenha a pasta dos sigilosos fora do acervo e fora de pastas
-  sincronizadas com a nuvem.
+- Processos em segredo de justiça ficam fora do acervo, e o Helestron nunca
+  os leva à IA: mantenha a pasta dos sigilosos fora do acervo e fora de
+  pastas sincronizadas com a nuvem. Uma skill só trabalha um deles com a
+  sua autorização expressa, sem tirá-lo dessa pasta.

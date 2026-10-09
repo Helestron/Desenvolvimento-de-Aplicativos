@@ -386,6 +386,89 @@ class TestRestosDoSigiloso(BaseSigilo):
         frase = " ".join(rel.avisos)
         self.assertIn("que ainda traz o número dele (está aberto no Excel?)", frase)
 
+    def test_completo_aberto_no_excel_avisa_o_relatorio_do_acervo(self):
+        """Achado X10: com o relatório COMPLETO do lote (o da pasta dos
+        sigilosos) aberto no Excel, o número não sai do relatório do lote no
+        acervo. O aviso nomeia esse, que está no acervo e traz o número - não
+        o completo, que fica fora dele e não é pendência do acervo (nem no
+        preparo, nem no "Tentar de novo" da tela Compartilhar)."""
+        from helestron.download import motor
+
+        controle = self.lote / "_controle"
+        controle.mkdir(parents=True)
+        do_acervo = controle / "relatorio.csv"
+        do_acervo.write_text(
+            "﻿" + ";".join(motor.COLUNAS) + "\r\n"
+            f"1;{X};TJAL;esaj;OK;2;1;{X}.pdf;não;;;2026-10-01 10:00\r\n", encoding="utf-8")
+        completo = self.sig / "Lote 1" / "_controle" / "relatorio.csv"
+        completo.parent.mkdir(parents=True)
+        completo.write_text("﻿" + ";".join(motor.COLUNAS) + "\r\n", encoding="utf-8")
+        original = motor._gravar_relatorio
+
+        def excel(arquivo, linhas):
+            if Path(arquivo) == completo:
+                raise PermissionError(13, "aberto no Excel", str(arquivo))
+            return original(arquivo, linhas)
+
+        self.marcar_na_pauta(X)
+        with mock.patch.object(motor, "_gravar_relatorio", excel), \
+                self.assertLogs("compartilhar", "WARNING"):
+            rel = self.preparar()
+            ret = motor.retirar_do_acervo(self.cfg, X)
+        self.assertIn(X, do_acervo.read_text(encoding="utf-8-sig"), "o número ficou no acervo")
+        self.assertEqual(rel.sigilosos_avisos, [do_acervo])
+        frase = " ".join(rel.avisos)
+        self.assertIn(f"{Path('Processos', 'Lote 1', '_controle', 'relatorio.csv')}, que ainda "
+                      "traz o número dele (o relatório completo do lote, na pasta dos sigilosos, "
+                      "não pôde ser atualizado: está aberto em outro programa?)", frase)
+        self.assertNotIn(str(self.sig), frase)
+        # o "Tentar de novo" (api_compartilhar) registra o que a retirada
+        # avisa: o relatório do lote no acervo, com o porquê - não o completo
+        # (achado Y1)
+        self.assertEqual(ret.avisam, [do_acervo])
+        self.assertEqual(ret.motivos[do_acervo], "o relatório completo do lote, na pasta dos "
+                         "sigilosos, não pôde ser atualizado: está aberto em outro programa?")
+        self.assertEqual(ret.completos_presos, {completo: [do_acervo]})
+
+    def test_tentar_de_novo_avisa_o_relatorio_do_lote_com_o_completo_preso(self):
+        """Achado Y1: o "Tentar de novo" da tela Compartilhar (antes do Claude
+        Desktop, do pacote e do espelho) leva os autos de X, que estavam
+        presos no acervo, mas o relatório completo do lote está aberto no
+        Excel: o relatório do lote, no acervo, continua com o número de X e
+        passa a ser pendência (o Início), com o porquê - como na 1.0.2."""
+        from types import SimpleNamespace
+
+        from helestron.download import motor
+        from helestron.servidor import api_compartilhar
+
+        controle = self.lote / "_controle"
+        controle.mkdir(parents=True)
+        do_acervo = controle / "relatorio.csv"
+        do_acervo.write_text(
+            "﻿" + ";".join(motor.COLUNAS) + "\r\n"
+            f"1;{X};TJAL;esaj;OK;2;1;{X}.pdf;não;;;2026-10-01 10:00\r\n", encoding="utf-8")
+        pdf = _pdf(self.lote / f"{X}.pdf", ["Petição inicial do sigiloso"])
+        completo = self.sig / "Lote 1" / "_controle" / "relatorio.csv"
+        original = motor._gravar_relatorio
+
+        def excel(arquivo, linhas):
+            if Path(arquivo) == completo:
+                raise PermissionError(13, "aberto no Excel", str(arquivo))
+            return original(arquivo, linhas)
+
+        self.marcar_na_pauta(X)
+        app = SimpleNamespace(cfg=self.cfg, sigilosos_presos=[pdf], sigilosos_avisos=[],
+                              sigilosos_motivos={pdf: "está aberto em outro programa?"})
+        with mock.patch.object(motor, "_gravar_relatorio", excel):
+            api_compartilhar.exigir_sem_sigiloso(app)      # os autos saíram agora
+        self.assertFalse(pdf.exists())
+        self.assertEqual(app.sigilosos_presos, [])
+        self.assertIn(X, do_acervo.read_text(encoding="utf-8-sig"), "o número ficou no acervo")
+        self.assertEqual(app.sigilosos_avisos, [do_acervo])
+        self.assertEqual(app.sigilosos_motivos[do_acervo], "o relatório completo do lote, na "
+                         "pasta dos sigilosos, não pôde ser atualizado: está aberto em outro "
+                         "programa?")
+
 
 class TestSeparacaoDesligada(BaseSigilo):
     """Achado R19: com a separação dos sigilosos desligada, o processo que o
@@ -664,6 +747,209 @@ class TestRestosDaVersaoAnterior(unittest.TestCase):
                 self.assertEqual(migracao.limpar_restos_antigos(), [])
         self.assertEqual(self.json.read_text(encoding="utf-8"), "{ isto não é json")
         self.assertIn("assessor_integrado", self.toml.read_text(encoding="utf-8"))
+
+
+class TestRegistroDoConector(unittest.TestCase):
+    """Achado W9 da terceira verificação do 2º grau: o conector MCP só mandava
+    o registro para o stderr, que o Claude Desktop guarda à parte. Quando era
+    ele o primeiro a aplicar a regra do sigilo depois de a origem de um HC
+    virar sigilosa, o aviso "originário … tratado como sigiloso", dado uma vez
+    só, nunca chegava a %LOCALAPPDATA%\\Helestron\\Logs, onde o manual manda
+    procurá-lo para desfazer uma marcação por engano. Agora vai também para
+    Logs, e o stdout, o canal do protocolo, continua só com o JSON-RPC.
+
+    Achados X9 e X12 da quarta verificação: o arquivo de Logs ficava aberto
+    enquanto o Claude Desktop mantinha o conector vivo, e o desinstalador que
+    apaga as configurações não conseguia apagá-lo no Windows. Agora o
+    conector o abre e fecha a cada registro.
+
+    Achado Y3 da quinta verificação: com o disco cheio, o erro do fechamento
+    saía do log.warning, e a regra do sigilo dava a pasta dos sigilosos por
+    vazia."""
+
+    def cenario(self):
+        """O HC no acervo, com a origem sigilosa pela pasta: o conector o tira
+        do acervo e avisa uma vez (env, acervo, Logs, aviso, mensagens)."""
+        import os
+
+        from testes.test_sigilo import _capa_2g, _originario
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        casa = Path(tmp.name)
+        local, dados = casa / "local", casa / "dados"
+        acervo, lote = dados / "Acervo", dados / "Acervo" / "Processos" / "Gabinete"
+        origem, self.hc = cnj.ler(X), _originario("0803001")
+        _pdf(lote / f"{cnj.nome_dos_autos(self.hc, '2g')}.pdf", ["Habeas corpus"])
+        _capa_2g(lote / "_controle", self.hc, origem)
+        _pdf(dados / "Sigilosos" / "Outro lote" / f"{origem.nome_arquivo}.pdf", ["Em segredo"])
+        env = dict(os.environ, HELESTRON_LOCAL=str(local), HELESTRON_DADOS=str(dados),
+                   HOME=str(casa), APPDATA=str(casa), LOCALAPPDATA=str(casa))
+        mensagens = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": "2025-06-18", "capabilities": {}}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "listar_acervo", "arguments": {}}},
+        ]
+        aviso = (f"originário {self.hc.nome_arquivo} tratado como sigiloso: o processo de "
+                 f"origem {origem.nome_arquivo} é sigiloso")
+        return env, acervo, local / "Logs", aviso, mensagens
+
+    def test_aviso_do_originario_vai_para_logs_e_o_stdout_so_tem_o_protocolo(self):
+        import subprocess
+        import sys
+
+        env, acervo, logs, aviso, mensagens = self.cenario()
+        hc = self.hc
+        r = subprocess.run(
+            [sys.executable, "-m", "helestron", "mcp", "--pasta", str(acervo)],
+            input="".join(json.dumps(m) + "\n" for m in mensagens).encode(),
+            capture_output=True, cwd=str(Path(__file__).resolve().parents[1]), env=env,
+            timeout=120)
+        erros = r.stderr.decode("utf-8", "replace")
+        self.assertEqual(r.returncode, 0, erros)
+        # o stdout: só as respostas, uma por linha, todas JSON-RPC
+        saida = r.stdout.decode("utf-8")
+        respostas = [json.loads(linha) for linha in saida.splitlines()]
+        self.assertEqual([(x["jsonrpc"], x["id"]) for x in respostas], [("2.0", 1), ("2.0", 2)])
+        self.assertIn("result", respostas[1], erros)
+        self.assertNotIn(hc.nome_arquivo, saida, "o HC saiu do acervo do conector")
+        self.assertIn(aviso, erros)
+        # e o aviso também no registro do programa, em Logs
+        registros = sorted(logs.glob("*.log"))
+        self.assertEqual(len(registros), 1, erros)
+        self.assertIn(aviso, registros[0].read_text(encoding="utf-8"))
+
+    def test_logs_nao_fica_aberto_enquanto_o_conector_espera(self):
+        # O conector de verdade, vivo como o Claude Desktop o deixa: depois do
+        # aviso, à espera da próxima mensagem, não segura nenhum arquivo de
+        # Logs (no Linux, os abertos estão em /proc/<pid>/fd).
+        import os
+        import subprocess
+        import sys
+        import threading
+
+        if not Path(f"/proc/{os.getpid()}/fd").is_dir():
+            self.skipTest("sem /proc para ver os arquivos abertos pelo conector")
+        env, acervo, logs, aviso, mensagens = self.cenario()
+        erros = logs.parent.parent / "stderr.txt"
+        with open(erros, "wb") as stderr:
+            conector = subprocess.Popen(
+                [sys.executable, "-m", "helestron", "mcp", "--pasta", str(acervo)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr,
+                cwd=str(Path(__file__).resolve().parents[1]), env=env)
+        relogio = threading.Timer(120, conector.kill)
+        relogio.start()
+        try:
+            conector.stdin.write("".join(json.dumps(m) + "\n" for m in mensagens).encode())
+            conector.stdin.flush()
+            respostas = [json.loads(conector.stdout.readline()) for _ in range(2)]
+            abertos = []
+            for fd in Path(f"/proc/{conector.pid}/fd").iterdir():
+                try:
+                    abertos.append(os.readlink(fd))
+                except OSError:
+                    pass
+        finally:
+            relogio.cancel()
+            conector.stdin.close()
+            conector.stdout.close()
+            conector.wait(timeout=60)
+        texto = erros.read_text(encoding="utf-8", errors="replace")
+        self.assertEqual([x["id"] for x in respostas], [1, 2], texto)
+        self.assertEqual(conector.returncode, 0, texto)
+        registros = sorted(logs.glob("*.log"))
+        self.assertEqual(len(registros), 1, texto)
+        self.assertIn(aviso, registros[0].read_text(encoding="utf-8"))
+        pasta = os.path.realpath(logs)
+        self.assertEqual([a for a in abertos if a.startswith(pasta)], [],
+                         "o conector segura o registro do programa")
+
+    def test_registro_do_conector_fecha_o_arquivo_e_censura(self):
+        # O mesmo no processo do teste (vale também no Windows): depois de cada
+        # registro, nenhum arquivo aberto; o formato e o filtro dos segredos de
+        # registro.py; e o mês de cada registro, não o da partida.
+        import logging
+        from datetime import datetime
+
+        raiz = logging.getLogger()
+        antes, nivel = list(raiz.handlers), raiz.level
+
+        def restaurar():
+            for h in raiz.handlers:
+                if h not in antes:
+                    h.close()
+            raiz.handlers[:] = antes
+            raiz.setLevel(nivel)
+        self.addCleanup(restaurar)
+        raiz.handlers[:] = []          # o conector liga o registro só se não houver
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        logs = Path(tmp.name) / "Logs"
+        abertos = []
+
+        def servir(pasta, saida=None):
+            for mes in (1, 2):
+                agora = mock.Mock(now=lambda mes=mes: datetime(2001, mes, 28, 23, 59))
+                with mock.patch.object(mcp_servidor, "datetime", agora, create=True):
+                    logging.getLogger("mcp").warning(
+                        "aviso %d: https://portal/abrir?ticket=ST-SEGREDO", mes)
+                abertos.append([h.stream for h in raiz.handlers
+                                if getattr(h, "_helestron", False)])
+
+        with mock.patch.object(caminhos, "LOGS", logs), \
+                mock.patch.object(mcp_servidor, "servir", side_effect=servir), \
+                mock.patch.object(mcp_servidor.os, "dup2"), \
+                mock.patch.object(mcp_servidor.sys, "stdout", io.StringIO()), \
+                mock.patch.object(mcp_servidor.sys, "stderr", io.StringIO()):
+            self.assertEqual(mcp_servidor.main(["--pasta", tmp.name]), 0)
+        self.assertEqual(abertos, [[None], [None]])
+        for mes in (1, 2):
+            texto = (logs / f"2001-{mes:02d}.log").read_text(encoding="utf-8")
+            self.assertRegex(texto, rf"^\S+ \S+  WARNING  mcp  aviso {mes}: "
+                                    r"https://portal/abrir\?ticket=\*\*\*\n$")
+
+    def test_disco_cheio_nao_faz_o_aviso_levantar_nem_esvaziar_os_sigilosos(self):
+        # O disco cheio: o flush do registro falha, e o close() o refaz. A
+        # pasta dos sigilosos grande dá o aviso "pastas demais" e a origem do
+        # HC, o do originário; os dois avisos não levantam, e o sigiloso só
+        # pela pasta (a cópia no acervo, o HC que herda dele) continua sigiloso.
+        import errno
+        import logging
+
+        from testes.test_sigilo import _capa_2g, _originario
+
+        class Cheio(io.StringIO):
+            def flush(self):
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        sig, lote = base / "Sigilosos", base / "Acervo" / "Processos" / "Lote 2"
+        hc = _originario("0803001")
+        _pdf(sig / "Lote X" / f"{X}.pdf", ["Em segredo"])
+        _pdf(lote / f"{X}.pdf", ["A cópia que a separação deixou"])
+        _pdf(lote / f"{cnj.nome_dos_autos(hc, '2g')}.pdf", ["Habeas corpus"])
+        _capa_2g(lote / "_controle", hc, cnj.ler(X))
+        for i in range(sigilo.MAX_PASTAS + 1):
+            (sig / "Arquivo antigo" / f"{i // 50:02d}" / f"{i % 50:02d}").mkdir(parents=True)
+        registro = mcp_servidor._RegistroAvulso(base / "Logs")
+        raiz = logging.getLogger()
+        self.addCleanup(raiz.setLevel, raiz.level)
+        raiz.setLevel(logging.WARNING)            # o nível do conector
+        raiz.addHandler(registro)
+        self.addCleanup(raiz.removeHandler, registro)
+        with mock.patch.object(registro, "_open", side_effect=Cheio), \
+                mock.patch.object(sigilo, "_avisou_pasta_grande", set()), \
+                mock.patch("sys.stderr", io.StringIO()) as erros:
+            chaves = mcp_servidor.chaves_sigilosas(sig, base / "Acervo", pauta=None)
+        self.assertIn(X, chaves)
+        self.assertIn(hc.nome_arquivo, chaves)
+        self.assertIn("pastas demais", erros.getvalue())
+        self.assertIn("originário", erros.getvalue())
+        self.assertIsNone(registro.stream)      # o próximo registro reabre o arquivo
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import tempfile
 import tomllib
@@ -82,6 +83,28 @@ class BaseAcervo(unittest.TestCase):
 
 
 class TestServidorMCP(BaseAcervo):
+    def setUp(self):
+        super().setUp()
+        # mcp_servidor.main configura o logger raiz do processo (o stderr e o
+        # _RegistroAvulso, marcado _helestron, no Logs de agora): desfeito
+        # depois de cada teste, para os seguintes do mesmo processo não
+        # herdarem esse registro (test_aplicativo_cli procura o erro no Logs
+        # dele, e o registro marcado faria o programa não configurar outro).
+        raiz = logging.getLogger()
+        antes, nivel = list(raiz.handlers), raiz.level
+
+        def restaurar():
+            for h in list(raiz.handlers):
+                if h not in antes:
+                    raiz.removeHandler(h)
+                    h.close()
+            for h in antes:
+                if h not in raiz.handlers:
+                    raiz.addHandler(h)
+            raiz.setLevel(nivel)
+
+        self.addCleanup(restaurar)
+
     def conversar(self, mensagens: list[dict]) -> list[dict]:
         entrada = io.BytesIO("".join(json.dumps(m) + "\n" for m in mensagens).encode())
         saida = io.BytesIO()

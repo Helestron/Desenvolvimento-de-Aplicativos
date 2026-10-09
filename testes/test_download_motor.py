@@ -853,10 +853,13 @@ class TestRelatorio(BaseMotor):
                             roteiro={TJAL2.formatado: ["ok_sigiloso"]})
         self.assertEqual(resumo.relatorio, self.destino / "_controle" / "relatorio.csv")
         linhas = ler_relatorio(resumo.relatorio)
-        # "causa" entrou no FIM (1.0.2): quem lê pelo nome da coluna não muda
+        # "causa" entrou no FIM (1.0.2), e "grau" depois dela (1.1.0): quem lê
+        # pelo nome da coluna não muda
         self.assertEqual(linhas[0], ["ordem", "processo", "tribunal", "sistema", "situacao",
                                      "paginas", "documentos", "arquivo", "sigiloso",
-                                     "incompleto", "detalhe", "data_hora", "causa"])
+                                     "incompleto", "detalhe", "data_hora", "causa", "grau"])
+        # o grau de cada linha (a mascarada também: não identifica ninguém)
+        self.assertEqual([l[-1] for l in linhas[1:]], ["1g", "1g", "1g"])
         # o relatório do acervo (que a IA lê) não diz QUAL processo é sigiloso
         self.assertEqual([l[1] for l in linhas[1:]],
                          [TJAL1.formatado, TJBA1.formatado, "(processo sigiloso)"])

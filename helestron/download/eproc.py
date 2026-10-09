@@ -31,7 +31,7 @@ O que este módulo faz, e a armadilha que cada passo contorna:
   descrição — rótulo (data)" e rótulos de página ("Ev. 1 INIC1 p. 2"); o PDF
   leva metadados e o manifesto de paginação (nucleo.paginacao). Os dados da
   capa (classe, partes, como citar, o mapa dos documentos) vão para
-  _controle/<número>_capa.txt e _capa.json e para o manifesto. O Download
+  _controle/<nome do PDF>_capa.txt e _capa.json e para o manifesto. O Download
   Completo nativo é opcional ([eproc] modo = completo): o arquivo do eProc
   entra intacto (a página M do PDF é a página M dele) e, se falhar ou demorar,
   cai no modo por documentos;
@@ -42,7 +42,18 @@ O que este módulo faz, e a armadilha que cada passo contorna:
   nenhum vira página de aviso e é anotado em "incompleto";
 * a sessão do eProc cai sem aviso: vira SessaoPerdida, e o motor entra de
   novo e recomeça o processo - os links colhidos na sessão anterior
-  perderam a validade.
+  perderam a validade;
+* o 2º grau é outra instalação do eProc (no TJAL, eproc2g), com login,
+  senha guardada, perfil do navegador e sessão próprios (a chave
+  'eproc2g:TJAL'): o grau vem SÓ do Tribunal que o motor passa
+  (Tribunal.no_grau("2g")), de onde saem também a credencial e o perfil - um
+  grau= diferente dele é recusado, para a senha de um grau nunca ir ao
+  portal do outro. Sem o endereço do grau no catálogo, o portal nem abre
+  (urls_para é estrito no 2º grau). O manifesto, a capa JSON e os eventos
+  do 2º grau levam "grau": "2g"; os autos e a capa são gravados pelo nome
+  do destino ("<número> (2G).pdf"). Os eventos "de outro grau" (os do
+  processo de origem) ficam de fora nesta versão: o PDF traz os eventos do
+  próprio processo do 2º grau.
 
 Seletores: listas de alternativas por chave (SELETORES_PADRAO), com correção
 sem mexer no código em seletores-eproc.json, na pasta de dados do Helestron
@@ -74,15 +85,15 @@ from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 
-from ..nucleo import caminhos, paginacao, sistema
-from ..nucleo.cnj import Numero
+from ..nucleo import caminhos, paginacao, sistema, tribunais
+from ..nucleo.cnj import Numero, normalizar_grau
 from . import pdf
 from .contexto import Contexto
 from .modelos import (AJUSTES_ACESSOS, CAMPO_PRAZO_LOGIN, ENTRAR_MANUALMENTE,
                       MOSTRAR_NAVEGADOR, NAO_ENCONTRADO, OK, ONDE_CADASTRAR_ACESSO,
                       ONDE_CORRIGIR_ENDERECO, PERFIL_EPROC, SEM_ACESSO, SIGILOSO_SEM_SENHA,
                       TENTAR_DE_NOVO, Cancelado, LoginFalhou, PortalIndisponivel, ProcessoNaoEncontrado,
-                      ResultadoProcesso, SemAcesso, SessaoPerdida, SigilosoSemSenha)
+                      ResultadoProcesso, SemAcesso, SessaoPerdida, SigilosoSemSenha, dica_de_grau)
 from .navegador import (DICA_DIAGNOSTICO, DICA_SEM_DIAGNOSTICO, diagnosticar_processo,
                         explicar_erro, primeiro_visivel, recusou_credenciais, sem_acento)
 
@@ -1347,13 +1358,15 @@ def eventos_sem_documento(eventos: list[Evento]) -> list[dict]:
 def manifesto_do_processo(numero: Numero, portal: str, tribunal: str, capa: dict,
                           partes: list[str], eventos: list[Evento] | None, sigiloso: bool,
                           modo: str = "documentos", ausentes: str = "",
-                          quando: datetime | None = None) -> dict:
+                          quando: datetime | None = None, grau: str = "1g") -> dict:
     """O manifesto de paginação do PDF (nucleo.paginacao.manifesto_eproc).
 
     Os documentos, com início e páginas, quem completa é o pdf.juntar (pelo
     ``info`` de cada parte); no modo completo, as partes do arquivo (pdf.gravar
     ou pdf.juntar). ``eventos=None``: a lista de eventos não foi lida inteira,
     e os eventos sem documento ficam de fora - melhor nada que meia lista.
+    ``grau``: "2g" nos autos do eProc do 2º grau (o manifesto leva "grau";
+    no 1º grau, nada muda).
     """
     quando = quando or datetime.now()
     extras = {"portal": portal, "extraido_em": quando.isoformat(timespec="seconds"),
@@ -1362,7 +1375,7 @@ def manifesto_do_processo(numero: Numero, portal: str, tribunal: str, capa: dict
         extras["eventos_sem_documento"] = eventos_sem_documento(eventos)
         extras["eventos_nao_listados"] = ausentes or ""
     return paginacao.manifesto_eproc(numero.formatado, [], modo=modo, tribunal=tribunal,
-                                     **extras)
+                                     grau=grau, **extras)
 
 
 def paginas_do_pdf(m: dict | None) -> int:
@@ -1545,9 +1558,11 @@ def texto_capa_txt(numero: Numero, portal: str, capa: dict, partes: list[str],
 
 def dados_da_capa(numero: Numero, portal: str, tribunal: str, capa: dict, partes: list[str],
                   eventos: list[Evento], sigiloso: bool, manifesto: dict | None = None,
-                  quando: datetime | None = None, eventos_completos: bool = True) -> dict:
-    """_controle/<número>_capa.json: o mesmo do capa.txt, legível por máquina
-    (a skill do Claude o lê pelo "capa_json" do --json do baixar).
+                  quando: datetime | None = None, eventos_completos: bool = True,
+                  grau: str = "1g") -> dict:
+    """_controle/<nome do PDF>_capa.json: o mesmo do capa.txt, legível por
+    máquina (a skill do Claude o lê pelo "capa_json" do --json do baixar).
+    No 2º grau leva "grau": "2g" (no 1º grau, o campo não vai: ausente = 1º).
 
     "paginacao" é um objeto, como no e-SAJ ({resumo, ultima, ...}), e só
     existe com o manifesto de paginação: era o texto do resumo (ou ""), e
@@ -1594,6 +1609,10 @@ def dados_da_capa(numero: Numero, portal: str, tribunal: str, capa: dict, partes
     }
     if m.get("modo") == "completo":
         saida["partes_do_arquivo"] = [p for p in m.get("partes") or [] if isinstance(p, dict)]
+    if normalizar_grau(grau) == paginacao.SEGUNDO_GRAU:
+        # logo depois do sistema, para quem lê o arquivo
+        saida = {"formato": saida["formato"], "sistema": saida["sistema"],
+                 "grau": paginacao.SEGUNDO_GRAU, **saida}
     return saida
 
 
@@ -1755,20 +1774,31 @@ class _FalhaDocumento(RuntimeError):
 
 # ============================================================== o portal
 class PortalEProc:
-    """Login e download no eProc de um tribunal (1º grau, por padrão)."""
+    """Login e download no eProc de um tribunal, no grau do Tribunal recebido
+    (o do catálogo é o 1º; o 2º vem de tribunal.no_grau("2g"))."""
 
     sistema = "eproc"
 
     def __init__(self, nav, tribunal, opcoes, ctx: Contexto | None,
                  credenciais: tuple[str, str] | None, *, modo: str | None = None,
-                 grau: str = "1g", seletores: dict | None = None):
+                 grau: str | None = None, seletores: dict | None = None):
+        # O grau tem uma fonte só: o Tribunal. É dele que o motor tira a
+        # credencial (cofre[tribunal.portal]) e o perfil do navegador; um
+        # grau= que vencesse o do Tribunal mandaria a senha do eProc do 1º
+        # grau ao do 2º (outra instalação, que bloqueia o usuário depois de
+        # poucas tentativas erradas). Divergente, é erro de programação.
+        proprio = normalizar_grau(getattr(tribunal, "grau", "1g")) or "1g"
+        if grau not in (None, "") and normalizar_grau(grau) != proprio:
+            pedido = normalizar_grau(grau) or str(grau)
+            raise ValueError(f"o grau pedido ({pedido}) não é o do tribunal ({proprio}): passe "
+                             f"tribunal.no_grau('{pedido}')")
         self.nav = nav
         self.tribunal = tribunal
         self.opcoes = opcoes
         self.ctx = ctx or Contexto()
         self.usuario, self.senha = (credenciais or ("", ""))
         self.modo_login = opcoes.modo_login("eproc")
-        self.grau = grau or "1g"
+        self.grau = proprio
         self.sel = seletores or carregar_seletores()
         self.modo_pdf = resolver_modo(modo, opcoes)
         try:
@@ -1780,8 +1810,9 @@ class PortalEProc:
         urls = dict(getattr(tribunal, "urls", {}) or {})
         self._por_secao = any(str(k).startswith(f"{self.grau}_") for k in urls)
         if not tribunal.urls_para(None, self.grau):
+            # no 2º grau, urls_para é estrito: nunca cai no endereço do 1º
             raise PortalIndisponivel(
-                f"o catálogo de tribunais não traz o endereço do eProc do {tribunal.sigla}. "
+                f"o catálogo de tribunais não traz o endereço do {self.nome}. "
                 f"Informe-o {ONDE_CORRIGIR_ENDERECO}.")
         self.base: str = ""
         self._candidatos_atuais: list[str] = []
@@ -1986,10 +2017,13 @@ class PortalEProc:
         """Evento legível por máquina para quem acompanha (a skill do Claude,
         pela linha de comando): "login_aguardando", "acao_na_janela",
         "login_concluido". Contexto sem ``evento`` (versão anterior) não
-        recebe nada; e o evento é aviso: nunca derruba o login."""
+        recebe nada; e o evento é aviso: nunca derruba o login. No 2º grau,
+        leva "grau": "2g" (no 1º grau, o corpo de sempre)."""
         ev = getattr(self.ctx, "evento", None)
         if not callable(ev):
             return
+        if self.grau == paginacao.SEGUNDO_GRAU:
+            dados = {**dados, "grau": paginacao.SEGUNDO_GRAU}
         try:
             ev(tipo, sistema=self.sistema, tribunal=self.tribunal.sigla, **dados)
         except Exception as erro:
@@ -2829,10 +2863,18 @@ class PortalEProc:
         # falha passageira, e não processo inexistente.
         if consulta == "nao_encontrado" or (rapida == "nao_encontrado"
                                             and consulta == "indisponivel"):
-            grau = "2º grau" if self.grau == "2g" else "1º grau"
+            # A dica final diz onde mais procurar (modelos.dica_de_grau): o
+            # outro grau - ou, para o número que só existe no 2º, que trocar
+            # o grau do lote não muda nada. A opção “2º grau” só é sugerida
+            # onde o Helestron baixa o 2º grau (tribunais.baixa_o_2o_grau).
+            if self.grau == paginacao.SEGUNDO_GRAU:
+                raise ProcessoNaoEncontrado(
+                    f"não encontrado no {self.nome}. Confira o número; "
+                    f"{dica_de_grau(numero, '2g')}.")
+            dica = dica_de_grau(numero, "1g",
+                                com_o_2o_grau=tribunais.baixa_o_2o_grau(self.tribunal))
             raise ProcessoNaoEncontrado(
-                f"não encontrado no {grau} do {self.nome}. Confira o número; se o processo "
-                "estiver em outro grau ou sistema, baixe-o pelo portal.")
+                f"não encontrado no 1º grau do {self.nome}. Confira o número; {dica}.")
         dica = self._diagnosticar_processo(f"eproc-abrir-{numero.nome_arquivo}", numero)
         if rapida == "nao_encontrado":
             raise RuntimeError("a pesquisa rápida não achou o processo, e a consulta processual "
@@ -3215,7 +3257,7 @@ class PortalEProc:
                       sigiloso: bool, modo: str, ausentes: str = "") -> dict:
         return manifesto_do_processo(numero, self.nome, self.tribunal.sigla,
                                      info.get("capa") or {}, info.get("partes") or [], eventos,
-                                     sigiloso, modo, ausentes)
+                                     sigiloso, modo, ausentes, grau=self.grau)
 
     def _montar_documentos(self, numero: Numero, destino: Path, r: ResultadoProcesso,
                            info: dict, eventos: list[Evento], ausentes: str = "") -> None:
@@ -3241,7 +3283,9 @@ class PortalEProc:
         midias_salvas: list[str] = []
         midias_fora = 0
         obtidos = 0
-        pasta_midias = destino.parent / "_controle" / "midias" / numero.nome_arquivo
+        # pelo nome do destino: no 2º grau, "<número> (2G)" (o motor as leva
+        # junto com os autos pelo mesmo nome)
+        pasta_midias = destino.parent / "_controle" / "midias" / Path(destino).stem
 
         def documento(doc: Documento, dados: bytes, tipo: str, origem: str) -> None:
             prefixo, numerar = rotulo_de_pagina(doc, origem)
@@ -3683,23 +3727,25 @@ class PortalEProc:
     # ------------------------------------------------------------- capa
     def _gravar_capa(self, numero: Numero, destino: Path, info: dict, eventos: list[Evento],
                      sigiloso: bool, eventos_completos: bool = True) -> None:
-        """_controle/<número>_capa.txt e _capa.json (o motor os leva junto com o
-        PDF): a capa, o arquivo, como citar, o mapa de todos os documentos e
-        todos os eventos. Capa é conveniência, não dever: falha vai só para o log."""
+        """_controle/<nome do PDF>_capa.txt e _capa.json (o motor os leva junto
+        com o PDF, pelo mesmo nome - no 2º grau, "<número> (2G)_capa.json"): a
+        capa, o arquivo, como citar, o mapa de todos os documentos e todos os
+        eventos. Capa é conveniência, não dever: falha vai só para o log."""
         controle = destino.parent / "_controle"
+        nome = Path(destino).stem
         quando = datetime.now()
         capa, partes = info.get("capa") or {}, info.get("partes") or []
         try:
             texto = texto_capa_txt(numero, self.nome, capa, partes, eventos, sigiloso,
                                    self._manifesto, quando, eventos_completos)
-            sistema.gravar_atomico(controle / f"{numero.nome_arquivo}_capa.txt",
-                                   texto.encode("utf-8"))
+            sistema.gravar_atomico(controle / f"{nome}_capa.txt", texto.encode("utf-8"))
         except Exception as erro:
             log.debug("capa não gravada: %s", erro)
         try:
             dados = dados_da_capa(numero, self.nome, self.tribunal.sigla, capa, partes, eventos,
-                                  sigiloso, self._manifesto, quando, eventos_completos)
-            sistema.gravar_atomico(controle / f"{numero.nome_arquivo}_capa.json",
+                                  sigiloso, self._manifesto, quando, eventos_completos,
+                                  grau=self.grau)
+            sistema.gravar_atomico(controle / f"{nome}_capa.json",
                                    json.dumps(dados, ensure_ascii=False, indent=1).encode("utf-8"))
         except Exception as erro:
             log.debug("capa (JSON) não gravada: %s", erro)

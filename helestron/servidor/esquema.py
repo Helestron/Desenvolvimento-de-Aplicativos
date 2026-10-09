@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import servicos
-from ..nucleo import caminhos, config
+from ..nucleo import caminhos, cnj, config
 from .rede import ErroApi, erro_400
 
 
@@ -54,6 +54,7 @@ NAVEGADORES = (("auto", "Automático (Chrome, senão Edge)"), ("chrome", "Google
 LOGIN_ESAJ = (("senha", "Usuário e senha"), ("certificado", "Certificado digital"),
               ("manual", "Entrar manualmente"))
 LOGIN_EPROC = (("senha", "Usuário e senha"), ("manual", "Entrar manualmente"))
+GRAUS = (("1g", "1º grau"), ("2g", "2º grau"))
 MODELOS_AO_VIVO = (("base", "Base — rápido, para computador modesto"),
                    ("small", "Small — recomendado"),
                    ("medium", "Medium — computador forte"))
@@ -80,6 +81,12 @@ CAMPOS: tuple[Campo, ...] = (
     Campo("unidade", "tribunal", "texto", "Tribunal",
           "Sigla do tribunal da unidade (ex.: TJAL)."),
     # ----------------------------------------------------------- download
+    # O grau do lote quando o número não diz (cnj.grau_do_processo). Vale para
+    # a tela; a linha de comando usa --grau (sem ele, 1º grau).
+    Campo("download", "grau", "escolha", "Grau dos processos",
+          "Onde o download procura os autos quando o número não diz: 1º grau (varas) ou 2º grau "
+          "(recursos e ações originárias do tribunal). Dá para trocar em cada lote, em Processos.",
+          opcoes=GRAUS),
     Campo("download", "pular_baixados", "flag", "Pular os processos que já estão na pasta"),
     Campo("download", "separar_sigilosos", "flag", "Separar os processos sigilosos",
           "Processo em segredo de justiça vai para a pasta dos sigilosos, fora do acervo "
@@ -154,6 +161,7 @@ CAMPOS: tuple[Campo, ...] = (
 )
 
 POR_CHAVE = {(c.secao, c.chave): c for c in CAMPOS}
+GRAU = ("download", "grau")
 # Gravadas pela própria interface (último processo, tipo de audiência...):
 # aceitas no POST, mas não aparecem em Ajustes.
 SECOES_INTERNAS = ("interface",)
@@ -207,6 +215,10 @@ def valor_atual(cfg, c: Campo):
     if (c.secao, c.chave) == ("pauta", "pasta"):
         return str(servicos.pasta_pauta(cfg))
     texto = _texto(cfg, c)
+    if (c.secao, c.chave) == GRAU:
+        # Como o download o lê (OpcoesDownload.de_config): '2' ou '2º' editados
+        # à mão valem 2º grau; o que não for grau vale 1º grau.
+        return cnj.normalizar_grau(texto) or "1g"
     if c.tipo == "flag":
         return texto.strip().lower() in ("1", "true", "sim", "s", "yes", "on")
     if c.tipo == "inteiro":
@@ -257,6 +269,8 @@ def normalizar(c: Campo, valor) -> str:
         return str(numero)
     texto = "" if valor is None else str(valor)
     texto = texto.replace("\r", " ").replace("\n", " ").strip()
+    if (c.secao, c.chave) == GRAU:
+        texto = cnj.normalizar_grau(texto) or texto      # '2', '2º grau' -> '2g'
     if c.tipo == "escolha":
         validos = [v for v, _ in c.opcoes]
         if validos and texto not in validos:

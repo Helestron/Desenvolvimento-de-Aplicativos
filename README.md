@@ -10,7 +10,10 @@ as tarefas que mais tomam tempo do magistrado e da equipe:
    veio tem uma página de aviso no lugar, com o motivo); no eProc, sem capa
    nem páginas inseridas, cada documento conserva a paginação própria
    (“evento N, RÓTULO, p. Y”). O PDF leva dentro um manifesto da paginação,
-   e a capa completa do processo vai ao lado, em texto e em JSON.
+   e a capa completa do processo vai ao lado, em texto e em JSON. Baixa os
+   autos do **1º e do 2º grau** (no TJAL, o e-SAJ e o eProc dos dois graus):
+   os do 2º grau saem como `<número> (2G).pdf`, com a numeração própria do
+   2º grau.
 2. **Transcrever audiências ao vivo**, pelo microfone, no próprio computador
    e sem internet: um **DOCX nomeado com o número do processo**, com o
    falante e a hora de cada fala. Gravações de áudio ou vídeo já existentes
@@ -31,13 +34,17 @@ as tarefas que mais tomam tempo do magistrado e da equipe:
    (veja [docs/INTEGRACAO-CLAUDE.md](docs/INTEGRACAO-CLAUDE.md)).
 
 Processos em **segredo de justiça** ficam numa pasta própria, **fora** do
-acervo, e nunca vão para a IA, para o pacote, para a nuvem nem para o
-conector. A regra é uma só, no download, na transcrição e no
-compartilhamento: é sigiloso o processo com autos, transcrição ou gravação
-na pasta dos sigilosos, ou que a pauta de audiências marca em segredo de
-justiça (só a indicação positiva conta, como o selo “Segredo de Justiça”;
-“Nível 1” no local da audiência ou “Segredo de justiça: não” não marcam), e
-também o incidente de um processo sigiloso. Com a separação dos sigilosos
+acervo, e o Helestron nunca os leva à IA, ao pacote, à nuvem nem ao
+conector (uma skill do Claude Code só trabalha um deles com a autorização
+expressa do magistrado, sem tirá-lo dessa pasta: seção 11 de
+[docs/INTEGRACAO-CLAUDE.md](docs/INTEGRACAO-CLAUDE.md)). A regra é uma
+só, no download, na transcrição e no compartilhamento: é sigiloso o
+processo com autos, transcrição ou gravação na pasta dos sigilosos, ou
+que a pauta de audiências marca em segredo de justiça (só a indicação
+positiva conta, como o selo “Segredo de Justiça”; “Nível 1” no local da
+audiência ou “Segredo de justiça: não” não marcam), e também o incidente
+de um processo sigiloso e o principal cujo recurso interno do 2º grau
+(`/50000`) é sigiloso. Com a separação dos sigilosos
 ligada (o padrão), o que ainda estiver no acervo de um processo sigiloso é
 levado para a pasta dos sigilosos antes de o acervo ser entregue a qualquer
 ferramenta; quando é a pauta que revela o segredo, isso acontece na hora, com
@@ -50,7 +57,7 @@ instalador de um só arquivo, interface nova e a pauta de audiências.
 
 ## Instalação
 
-1. Baixe o **`Helestron-Setup-1.0.2.exe`** na
+1. Baixe o **`Helestron-Setup-1.1.0.exe`** na
    [página de versões](https://github.com/Helestron/Desenvolvimento-de-Aplicativos/releases)
    (a versão mais recente, em **Assets**).
 2. Dê dois cliques no arquivo. Se o Windows mostrar “O Windows protegeu o
@@ -74,7 +81,7 @@ e do Codex. Numa atualização, uma audiência sendo transcrita nunca é
 interrompida (o instalador pede que ela seja encerrada antes), e o conector
 do acervo aberto pelo Claude Desktop ou pelo Codex não trava a cópia. Para a
 equipe de informática, há o modo silencioso,
-`Helestron-Setup-1.0.2.exe /S [/D=pasta]` (com `/D=` numa pasta que já tem
+`Helestron-Setup-1.1.0.exe /S [/D=pasta]` (com `/D=` numa pasta que já tem
 outros arquivos, o Helestron vai para `<pasta>\Helestron`), com códigos de
 saída próprios: 0 (instalado), 2 (a conferência encontrou problema), 3 (a
 pasta escolhida e a subpasta `Helestron` dentro dela já têm arquivos de
@@ -202,10 +209,11 @@ legível por máquina:
   `helestron.baixar/1`, descrito em `helestron/download/acompanhamento.py`),
   `--eventos` (linhas `HELESTRON-EVENTO {…}`), `--log ARQ`, `--texto`,
   `--retomar`, `--completar J.TR.OOOO`, `--esperar-navegador MIN`,
-  `--rebaixar-incompletos`, `--sem-cofre` e `--desanexar`; o relatório do
-  lote ganhou, no fim, a coluna `causa`, e cada PDF tem ao lado o
-  `_controle\<número>_meta.json`. Códigos de saída: 0 tudo certo, 1 parte
-  falhou ou ficou pendente, 2 nada pôde ser feito;
+  `--rebaixar-incompletos`, `--sem-cofre`, `--desanexar` e `--grau 1g|2g`
+  (sem ele, 1º grau); o relatório do lote tem, no fim, as colunas `causa` e
+  `grau`, e cada PDF tem ao lado o `_controle\<número>_meta.json`. Códigos
+  de saída: 0 tudo certo, 1 parte falhou ou ficou pendente, 2 nada pôde ser
+  feito;
 - `preparar [--sem-texto] [--json]` (0, 1, 2 ou 3, autos de processo
   sigiloso presos no acervo) e `preparar --pasta PASTA [--texto-em DIR]
   [--incluir-sigilosos] [--json]`, só o texto dos autos de uma pasta de

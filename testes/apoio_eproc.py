@@ -43,6 +43,9 @@ from testes import apoio_download as apoio
 
 HOST = "eproc1g.tjfalso.invalid"
 BASE = f"https://{HOST}/eproc/"
+# O eProc do 2º grau: outra instalação, noutro host (EProcFalso(grau="2g"))
+HOST_2G = "eproc2g.tjfalso.invalid"
+BASE_2G = f"https://{HOST_2G}/eproc/"
 HOST_SSO = "sso.tjfalso.invalid"
 SSO = f"https://{HOST_SSO}/realms/eproc/"
 HOST_FORA = "eproc-fora.tjfalso.invalid"      # endereço candidato que não existe
@@ -163,7 +166,13 @@ class EProcFalso:
     def __init__(self, estilo: str = "legado", captcha: bool = False, perfis=None,
                  processos: dict | None = None, painel_extra: str = "",
                  rapida_inerte: bool = False, consulta_quebrada: bool = False,
-                 completo_outros: bool = False, paginacao_sem_onchange: bool = False):
+                 completo_outros: bool = False, paginacao_sem_onchange: bool = False,
+                 grau: str = "1g"):
+        # O grau da instalação: "2g" responde no host do 2º grau (HOST_2G), e
+        # o do 1º grau deixa de responder (o nome não resolve)
+        self.grau = grau
+        self.host = HOST_2G if grau == "2g" else HOST
+        self.base = f"https://{self.host}/eproc/"
         self.estilo = estilo
         self.captcha = captcha
         # texto a mais no painel (o de um magistrado lista andamentos de outros processos)
@@ -392,7 +401,7 @@ class EProcFalso:
             partes = urllib.parse.urlsplit(req.url)
             if partes.hostname == HOST_SSO:
                 resposta = self._sso(req, partes)
-            elif partes.hostname == HOST:
+            elif partes.hostname == self.host:
                 resposta = self._eproc(req, partes)
             else:
                 route.abort("namenotresolved")
@@ -423,7 +432,7 @@ class EProcFalso:
         if self.captcha:
             sid, cab = self._nova_sessao("captcha")
             return self._redirecionar(
-                BASE + "externo_controlador.php?acao=principal&acao_retorno=login", cab)
+                self.base + "externo_controlador.php?acao=principal&acao_retorno=login", cab)
         sid, cab = self._nova_sessao("otp")
         status, corpo, tipo, _ = self._tela_codigo()
         return status, corpo, tipo, cab
@@ -435,7 +444,8 @@ class EProcFalso:
             status, corpo, tipo, _ = self._tela_perfis(sid)
             return status, corpo, tipo, dict(cab or {})
         self.sessoes[sid] = "ok"
-        return self._redirecionar(BASE + self.link(sid, "painel_adv_listar", "painel"), cab)
+        return self._redirecionar(self.base + self.link(sid, "painel_adv_listar", "painel"),
+                                  cab)
 
     def _sso(self, req, partes) -> tuple:
         form = urllib.parse.parse_qs(req.post_data or "", keep_blank_values=True, encoding="cp1252")
@@ -460,7 +470,7 @@ class EProcFalso:
                 return self._html(tela_otp.format(
                     erro="<span id='input-error-otp-code'>Código inválido.</span>"), "Entrar")
             self.sso_codigo = uuid.uuid4().hex
-            return self._redirecionar(BASE + "controlador.php?acao=sso_retorno&code="
+            return self._redirecionar(self.base + "controlador.php?acao=sso_retorno&code="
                                       + self.sso_codigo)
         if campo("username") == USUARIO and campo("password") == SENHA:
             self.sso_etapa = "otp"
@@ -480,10 +490,11 @@ class EProcFalso:
             return 200, _pdf(5, "COMPLETO"), "application/pdf", {}
         if caminho in ("", "index.php") and req.method == "GET":
             if estado == "ok":
-                return self._redirecionar(BASE + self.link(sid, "painel_adv_listar", "painel"))
+                return self._redirecionar(
+                    self.base + self.link(sid, "painel_adv_listar", "painel"))
             if self.estilo == "keycloak":
                 return self._redirecionar(SSO + "protocol/openid-connect/auth?client_id=eproc"
-                                          "&redirect_uri=" + urllib.parse.quote(BASE))
+                                          "&redirect_uri=" + urllib.parse.quote(self.base))
             return self._tela_login()
         if caminho == "index.php":       # POST
             if "txtAcessoCodigo" in form:
@@ -499,7 +510,7 @@ class EProcFalso:
             if usuario == USUARIO and senha == SENHA:
                 return self._depois_da_senha()
             return self._redirecionar(
-                BASE + "externo_controlador.php?acao=principal&acao_retorno=login_invalido")
+                self.base + "externo_controlador.php?acao=principal&acao_retorno=login_invalido")
         if caminho == "externo_controlador.php":
             if q.get("acao_retorno") == "login_invalido":
                 return self._tela_login("Usuário ou senha inválidos.")
@@ -519,7 +530,7 @@ class EProcFalso:
                 return self._sessao_encerrada()
             self.perfil_escolhido.append(q.get("id_usuario", ""))
             self.sessoes[sid] = "ok"
-            return self._redirecionar(BASE + self.link(sid, "painel_adv_listar", "painel"))
+            return self._redirecionar(self.base + self.link(sid, "painel_adv_listar", "painel"))
         if caminho in ("controlador.php", "controlador_ajax.php"):
             if estado != "ok":
                 return self._sessao_encerrada()
@@ -533,7 +544,7 @@ class EProcFalso:
         return False
 
     def _sem_assinatura(self) -> tuple:
-        return self._redirecionar(BASE + "externo_controlador.php?acao=principal&msg="
+        return self._redirecionar(self.base + "externo_controlador.php?acao=principal&msg="
                                   + urllib.parse.quote("Link sem assinatura"))
 
     def _interno(self, req, caminho: str, q: dict, form: dict, sid: str) -> tuple:
@@ -566,7 +577,7 @@ class EProcFalso:
             if proc is None or not proc.pela_rapida:
                 return self._html(f"{self._topo(sid)}<div id='divInfraAreaTela'>"
                                   "<div class='infraMensagem'>Processo não encontrado.</div></div>")
-            return self._redirecionar(BASE + self.link(sid, "processo_selecionar",
+            return self._redirecionar(self.base + self.link(sid, "processo_selecionar",
                                                        f"proc:{digitos}", num_processo=digitos))
         if acao == "processo_consultar":
             if not self._confere(sid, q, "consultar", url):
@@ -654,13 +665,15 @@ class EProcFalso:
                 return self._html(
                     f"{self._topo(sid)}<p>DOCUMENTO COMPLETO GERADO COM SUCESSO</p>"
                     "<table class='infraTable'><tr><th>Processo</th><th>Arquivo</th></tr>"
-                    f"<tr><td>{RELACIONADO.formatado}</td><td><a href='{BASE}download72h/outro/"
+                    f"<tr><td>{RELACIONADO.formatado}</td><td>"
+                    f"<a href='{self.base}download72h/outro/"
                     "arquivo.pdf'>BAIXAR ARQUIVO</a></td></tr>"
-                    f"<tr><td>{proprio}</td><td><a href='{BASE}download72h/"
+                    f"<tr><td>{proprio}</td><td><a href='{self.base}download72h/"
                     f"{uuid.uuid4().hex}/arquivo.pdf'>BAIXAR ARQUIVO</a></td></tr></table>")
             return self._html(
                 f"{self._topo(sid)}<p>DOCUMENTO COMPLETO GERADO COM SUCESSO</p>"
-                f"<a href='{BASE}download72h/{uuid.uuid4().hex}/arquivo.pdf'>BAIXAR ARQUIVO</a>")
+                f"<a href='{self.base}download72h/{uuid.uuid4().hex}/arquivo.pdf'>"
+                "BAIXAR ARQUIVO</a>")
         return 404, b"<html><body>Acao desconhecida</body></html>", "text/html", {}
 
 

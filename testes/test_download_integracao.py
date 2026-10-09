@@ -1,361 +1,49 @@
 """Ponta a ponta: Chromium de verdade contra um e-SAJ de mentira, sem rede.
 
-Um servidor HTTP local imita o fluxo do e-SAJ - CAS com código por e-mail,
-cpopg (open.do, search.do, show.do), segredo de justiça com senha,
-incidente, Pasta Digital (requestScope), salvarDocumentoPreparado /
-buscarDocumentoFinalizado e getPDF.do - com as armadilhas que a base
-conheceu: o botão Entrar que nasce desabilitado, o modal de senha que
-existe escondido em toda página, o "Não existem informações disponíveis",
-a busca que devolve LISTA, o foro que tem de vir do número (o servidor
-recusa processo.foro errado, como o 56 fixo da base) e o servidor que não
-monta o PDF único.
+O servidor local (testes/apoio_esaj2g.py) imita o fluxo do e-SAJ - CAS com
+código por e-mail, cpopg (open.do, search.do, show.do), segredo de justiça
+com senha, incidente, Pasta Digital (requestScope), salvarDocumentoPreparado
+/ buscarDocumentoFinalizado e getPDF.do - com as armadilhas que a base
+conheceu: o botão Entrar que nasce desabilitado, o modal de senha que existe
+escondido em toda página, o "Não existem informações disponíveis", a busca
+que devolve LISTA, o foro que tem de vir do número (o servidor recusa
+processo.foro errado, como o 56 fixo da base) e o servidor que não monta o
+PDF único. Estes são o teste de regressão do 1º grau (cpopg).
+
+O mesmo servidor tem a consulta de 2º grau (cposg5): a porta de entrada que
+faz a consulta reconhecer o login ("SSO por webapp"), a busca que só aceita
+os parâmetros do CPOSG, as três respostas (a página do processo, o modal
+"Selecione o processo" com o recurso interno /50000, a lista), o show.do só
+com o código, o segredo de justiça do 2º grau e a Pasta Digital aberta por
+verificarAcessoPastaDigital.do, em /pastadigital/sg.
 
 Pula sozinho se não houver Chromium que abra (o CI do Windows usa o Chrome
-ou o Edge instalados; aqui, o Chromium de /opt/pw-browsers).
+ou o Edge instalados; aqui, o Chromium de /opt/pw-browsers). Os testes do
+próprio servidor falso (TestServidorFalso) não precisam de navegador.
 """
 
 from __future__ import annotations
 
 import glob
-import http.cookies
 import json
 import os
-import threading
 import unittest
+import urllib.error
 import urllib.parse
-import uuid
-from dataclasses import replace
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import urllib.request
 from unittest import mock
 
 from helestron.download import esaj, modelos, motor
 from helestron.download.esaj import PortalESAJ
 from helestron.download.navegador import Navegador
-from helestron.nucleo import tribunais
+from helestron.nucleo import cnj, paginacao
 
 from testes import apoio_download as apoio
+from testes import apoio_esaj2g as falso
+from testes.apoio_esaj2g import (CODIGO, NUMEROS, P1, P1_INC, P2, P3, P5, P6, SENHA,
+                                 SENHA_S_2G, USUARIO)
 
-USUARIO, SENHA, CODIGO = "12345678900", "s3nh@ %;fácil", "123456"
-P1 = apoio.numero("0700001", tr="02", origem="0001")
-P1_INC = apoio.numero("0700001", tr="02", origem="0001", dependente="01")
-P2 = apoio.numero("0700002", tr="02", origem="0001")     # sigiloso, servidor falha
-P3 = apoio.numero("0700003", tr="02", origem="0001")     # inexistente
-P5 = apoio.numero("0700005", tr="02", origem="0001")     # busca devolve lista
-P6 = apoio.numero("0700006", tr="02", origem="0001")     # fls. 3-4 ocultas pela Pasta Digital
-OUTRO = apoio.numero("0700099", tr="02", origem="0001")
-
-
-def _par(numero, cd, ini, fim):
-    return (f"nuSeqRecurso=00000&nuProcesso={numero.principal}&cdDocumento={cd}"
-            f"&numInicial={ini}&numFinal={fim}&idDocumento=D{cd}-{ini}")
-
-
-def _doc(titulo, cd, data, blocos, midia=None):
-    filhos = [{"data": {"parametros": p, "nuPaginas": 1}} for p in blocos]
-    if midia:
-        filhos.append({"data": {"urlMidiaDigital": midia}})
-    return {"data": {"title": titulo, "cdDocumento": cd, "dtInclusao": data}, "children": filhos}
-
-
-class PortalDeMentira:
-    """O estado do e-SAJ falso: processos, sessões, pedidos recebidos."""
-
-    def __init__(self):
-        self.porta = 0
-        self.pedidos: list[tuple[str, str]] = []
-        self.localizadores: dict[str, dict] = {}
-        self.codigos_enviados: list[str] = []
-        self.processos: dict[str, dict] = {}
-
-    def montar(self):
-        base = f"http://127.0.0.1:{self.porta}"
-        midia = f"{base}/pastadigital/getMidia.do?gravacaoAudiencia=C%3A%5Cgrav%5Caudiencia1.mp3"
-        self.processos = {
-            "1K0001AAA0000": dict(numero=P1, arvore=[
-                _doc("Petição Inicial", 101, "01/02/2024", [_par(P1, 101, 1, 2)]),
-                _doc("Contestação", 102, "10/03/2024", [_par(P1, 102, 3, 4), _par(P1, 102, 5, 5)]),
-                _doc("Termo de Audiência", 103, "20/04/2024", [_par(P1, 103, 6, 6)], midia),
-            ], incidente="1K0001AAA0001"),
-            "1K0001AAA0001": dict(numero=P1_INC, principal=P1, arvore=[
-                _doc("Petição de cumprimento", 111, "05/05/2024", [_par(P1, 111, 1, 2)]),
-            ]),
-            "1K0002BBB0000": dict(numero=P2, senha="abc123", servidor_falha=True,
-                                  pecas_ausentes={"202"}, arvore=[
-                _doc("Petição Inicial", 201, "02/02/2024", [_par(P2, 201, 1, 2)]),
-                _doc("Laudo psicossocial", 202, "03/03/2024", [_par(P2, 202, 3, 3)], midia),
-            ]),
-            "1K0005EEE0000": dict(numero=P5, arvore=[
-                _doc("Petição Inicial", 501, "05/01/2024", [_par(P5, 501, 1, 1)]),
-            ]),
-            "1K0006FFF0000": dict(numero=P6, arvore=[
-                _doc("Petição Inicial", 601, "06/01/2024", [_par(P6, 601, 1, 2)]),
-                _doc("Sentença", 605, "06/06/2024", [_par(P6, 605, 5, 5)]),
-            ]),
-            "1K0099ZZZ0000": dict(numero=OUTRO, arvore=[]),
-        }
-        self.por_numero = {"0700001": "1K0001AAA0000", "0700002": "1K0002BBB0000",
-                           "0700005": "lista", "0700006": "1K0006FFF0000"}
-
-
-def _pdf(paginas, rotulo):
-    return apoio.pdf_bytes(paginas, rotulo)
-
-
-class Atendente(BaseHTTPRequestHandler):
-    portal: PortalDeMentira = None   # definido por classe derivada
-
-    # ---------------------------------------------------------- utilidades
-    def log_message(self, *args):     # silêncio
-        pass
-
-    def _cookies(self):
-        c = http.cookies.SimpleCookie()
-        try:
-            c.load(self.headers.get("Cookie") or "")
-        except http.cookies.CookieError:
-            pass
-        return {k: v.value for k, v in c.items()}
-
-    def _logado(self):
-        return self._cookies().get("SESSAO") == "ok"
-
-    def _enviar(self, status=200, corpo=b"", tipo="text/html; charset=utf-8", cabecalhos=()):
-        if isinstance(corpo, str):
-            corpo = corpo.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", tipo)
-        self.send_header("Content-Length", str(len(corpo)))
-        for k, v in cabecalhos:
-            self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(corpo)
-
-    def _ir(self, local, cabecalhos=()):
-        self._enviar(302, b"", cabecalhos=[("Location", local), *cabecalhos])
-
-    def _pagina(self, corpo, logado=None):
-        logado = self._logado() if logado is None else logado
-        flag = "true" if logado else "false"
-        return (f"<html><head><meta charset='utf-8'><title>e-SAJ</title><script>"
-                f"window.sajcas={{usuarioLogadoNoCasServer:{flag}}};</script></head>"
-                f"<body>{corpo}</body></html>")
-
-    def _form(self):
-        tamanho = int(self.headers.get("Content-Length") or 0)
-        bruto = self.rfile.read(tamanho).decode("utf-8")
-        return bruto, urllib.parse.parse_qs(bruto, keep_blank_values=True)
-
-    # -------------------------------------------------------------- telas
-    def _tela_login(self, erro=""):
-        aviso = f"<div class='erro'>{erro}</div>" if erro else ""
-        return ("<html><head><meta charset='utf-8'></head><body><h1>Portal de Serviços</h1>"
-                "<form method='post' action='/sajcas/login'>"
-                "<label>CPF/CNPJ</label><input id='usernameForm' name='username' type='text'>"
-                "<label>Senha</label><input id='passwordForm' name='password' type='password'>"
-                "<input id='pbEntrar' type='submit' value='Entrar' disabled></form>"
-                f"{aviso}<div id='modalSenhaExpirada' style='display:none'>Senha expirada "
-                "Verifique sua caixa de e-mail para cadastrar nova senha.</div>"
-                # o Entrar nasce desabilitado e só acende com os dois campos
-                "<script>const u=document.getElementById('usernameForm'),"
-                "s=document.getElementById('passwordForm'),b=document.getElementById('pbEntrar');"
-                "function f(){b.disabled=!(u.value&&s.value);}"
-                "u.addEventListener('input',f);s.addEventListener('input',f);</script>"
-                "</body></html>")
-
-    def _tela_codigo(self, erro=""):
-        aviso = f"<div class='erro'>{erro}</div>" if erro else ""
-        return ("<html><head><meta charset='utf-8'></head><body><div id='modalTokenDuploFator'>"
-                "<p>Insira o código de validação enviado para seu e-mail</p>"
-                f"{aviso}<form method='post' action='/sajcas/token'>"
-                "<input type='text' id='tokenInformado' name='tokenInformado'>"
-                "<button id='btnEnviarToken' type='submit'>Enviar</button></form>"
-                "<button id='btnReceberToken' type='button'>Receber novo código</button>"
-                "</div></body></html>")
-
-    def _tela_processo(self, cd, info):
-        n = info["numero"]
-        cookies = self._cookies()
-        if info.get("senha") and cookies.get(f"LIB_{cd}") != "1":
-            modal = ("<div id='popupSenha' style='display:block;width:400px;height:200px'>"
-                     "<p>Processo em segredo de justiça. Informe a senha.</p>"
-                     "<form method='get' action='/cpopg/senha.do'>"
-                     f"<input type='hidden' name='cd' value='{cd}'>"
-                     "<input id='senhaProcesso' name='senha' type='password'>"
-                     "<button id='btEnviarSenha' type='submit'>Enviar</button></form></div>")
-            return self._pagina(f"<h2>Consulta de processo</h2>{modal}")
-        incidente = ""
-        if info.get("incidente"):
-            # a seção é achada pelo título; a linha começa por data, como no
-            # portal ("Recebido em")
-            incidente = ("<h2 class='subtitle tituloDoBloco'>Incidentes, ações incidentais, "
-                         "recursos e execuções de sentenças</h2>"
-                         "<table><thead><tr><th>Recebido em</th><th>Processo</th><th>Classe</th>"
-                         "</tr></thead><tr><td>15/05/2024</td><td><a href='/cpopg/show.do?"
-                         f"processo.codigo={info['incidente']}&processo.foro=1'>{n.principal}/01"
-                         "</a></td><td>Cumprimento de sentença (00001)</td></tr></table>")
-        principal = (f"<p>Processo principal: {info['principal'].principal}</p>"
-                     if info.get("principal") else "")
-        corpo = (
-            f"<div id='containerDadosPrincipaisProcesso'><span id='numeroProcesso'>"
-            f"{n.formatado}</span><span id='classeProcesso'>Procedimento Comum Cível</span>"
-            "<span id='assuntoProcesso'>Estatuto do Idoso</span>"
-            "<span id='juizProcesso'>Dra. Fulana de Tal</span>"
-            "<span class='unj-tag'>Tramitação prioritária</span>"
-            "<span class='unj-label'>Outros números</span><div>0001234-56.2023.8.02.0001</div>"
-            "</div>"
-            f"{principal}"
-            "<table id='tablePartesPrincipais'><tr><td>Autor:</td><td>Maria da Silva</td></tr>"
-            "<tr><td>Réu:</td><td>Banco Exemplo S.A.</td></tr></table>"
-            "<table id='tableTodasPartes'><tr><td>Autor:</td><td>Maria da Silva</td></tr>"
-            "<tr><td>Réu:</td><td>Banco Exemplo S.A.</td></tr>"
-            "<tr><td>Terceiro:</td><td>João Terceiro</td></tr></table>"
-            f"{incidente}"
-            "<h2 class='subtitle tituloDoBloco'>Movimentações</h2>"
-            "<table id='tabelaUltimasMovimentacoes'>"
-            "<tr><td>20/04/2024</td><td>Retirado o segredo de justiça</td></tr></table>"
-            "<table id='tabelaTodasMovimentacoes'>"
-            "<tr><td>20/04/2024</td><td>Retirado o segredo de justiça</td></tr>"
-            "<tr><td>01/02/2024</td><td>Distribuído por sorteio</td></tr>"
-            "<tr><td>01/02/2024</td><td>Distribuído por sorteio</td></tr></table>"
-            # tabelas com linhas que começam por data e NÃO são movimentações
-            "<h2 class='subtitle tituloDoBloco'>Petições diversas</h2>"
-            "<table><tr><th>Data</th><th>Tipo</th></tr>"
-            "<tr><td>05/03/2024</td><td>Pedido de vista dos autos</td></tr></table>"
-            "<h2 class='subtitle tituloDoBloco'>Audiências</h2>"
-            "<table><tr><th>Data</th><th>Audiência</th><th>Situação</th><th>Qt. Pessoas</th></tr>"
-            "<tr><td>19/04/2024</td><td>Conciliação</td><td>Realizada</td><td>2</td></tr></table>"
-            "<h2 class='subtitle tituloDoBloco'>Histórico de classes</h2>"
-            "<table><tr><td>01/02/2024</td><td>Evolução de classe</td>"
-            "<td>Procedimento Comum Cível</td><td>Cível</td></tr></table>"
-            # o modal de senha existe ESCONDIDO em toda página
-            "<div id='popupSenha' style='display:none'><p>Segredo de justiça: informe a "
-            "senha</p><input id='senhaProcesso'><button id='btEnviarSenha'>Enviar</button></div>")
-        return self._pagina(corpo)
-
-    # ------------------------------------------------------------------ GET
-    def do_GET(self):
-        url = urllib.parse.urlsplit(self.path)
-        q = urllib.parse.parse_qs(url.query, keep_blank_values=True)
-        p = self.portal
-        p.pedidos.append(("GET", self.path))
-        rota = url.path
-        if rota == "/esaj/api/auth/session":
-            return self._enviar(200, json.dumps({"usuarioLogado": self._logado(),
-                                                 "nome": "anônimo"}), "application/json")
-        if rota in ("/esaj/", "/esaj/portal.do"):
-            return self._enviar(200, self._pagina("<h1>Portal de Serviços e-SAJ</h1>"))
-        if rota == "/sajcas/login":
-            return self._enviar(200, self._tela_login())
-        if rota == "/cpopg/open.do":
-            if "gateway" in q and not self._logado():
-                return self._ir("/sajcas/login?service=cpopg")
-            return self._enviar(200, self._pagina("<form>Consulta</form>"))
-        if not self._logado():
-            if rota.startswith("/cpopg/abrirPastaDigital"):
-                return self._enviar(200, "Não foi possível validar o seu acesso.", "text/plain")
-            return self._ir("/sajcas/login")
-
-        if rota == "/cpopg/search.do":
-            numero = q.get("dadosConsulta.valorConsultaNuUnificado", [""])[0]
-            foro = q.get("foroNumeroUnificado", [""])[0]
-            if not numero or numero[-4:] != foro:
-                return self._enviar(200, self._pagina("Foro inválido para o número"))
-            cd = p.por_numero.get(numero[:7])
-            if cd == "lista":
-                linhas = "".join(
-                    f"<tr><td><a href='/cpopg/show.do?processo.codigo={c}&processo.foro=1'>"
-                    f"{p.processos[c]['numero'].principal}</a></td><td>Cível</td></tr>"
-                    for c in ("1K0099ZZZ0000", "1K0005EEE0000"))
-                return self._enviar(200, self._pagina(f"<table>{linhas}</table>"))
-            if cd is None:
-                return self._enviar(200, self._pagina(
-                    "<p>Não existem informações disponíveis para os parâmetros informados.</p>"))
-            return self._ir(f"/cpopg/show.do?processo.codigo={cd}&processo.foro=1"
-                            f"&processo.numero={numero}")
-        if rota == "/cpopg/show.do":
-            cd = q.get("processo.codigo", [""])[0]
-            info = p.processos.get(cd)
-            foro = q.get("processo.foro", ["1"])[0]
-            if info is None or foro != "1":
-                # foro errado (o 56 fixo da base) não abre o processo
-                return self._enviar(200, self._pagina("Não foi possível validar o seu acesso."))
-            return self._enviar(200, self._tela_processo(cd, info))
-        if rota == "/cpopg/senha.do":
-            cd = q.get("cd", [""])[0]
-            info = p.processos.get(cd, {})
-            cab = []
-            if q.get("senha", [""])[0] == info.get("senha"):
-                cab.append(("Set-Cookie", f"LIB_{cd}=1; Path=/"))
-            return self._ir(f"/cpopg/show.do?processo.codigo={cd}&processo.foro=1", cab)
-        if rota == "/cpopg/abrirPastaDigital.do":
-            cd = q.get("processo.codigo", [""])[0]
-            info = p.processos.get(cd)
-            if info is None or (info.get("senha") and self._cookies().get(f"LIB_{cd}") != "1"):
-                return self._enviar(200, "Não foi possível validar o seu acesso.", "text/plain")
-            return self._enviar(200, f"http://127.0.0.1:{p.porta}/pastadigital/"
-                                     f"abrirPastaProcessoDigital.do?cd={cd}", "text/plain")
-        if rota == "/pastadigital/abrirPastaProcessoDigital.do":
-            info = p.processos[q["cd"][0]]
-            arvore = json.dumps(info["arvore"])
-            return self._enviar(200, f"<html><body><div>Pasta Digital</div>"
-                                     f"<script>var requestScope = {arvore};</script></body></html>")
-        if rota == "/pastadigital/documentoFinal.do":
-            loc = p.localizadores[q["loc"][0]]
-            return self._enviar(200, _pdf(loc["paginas"], "servidor"), "application/pdf")
-        if rota == "/pastadigital/getPDF.do":
-            cd = q.get("cdDocumento", [""])[0]
-            dono = next(i for i in p.processos.values()
-                        if any(cd == str(d["data"]["cdDocumento"]) for d in i["arvore"]))
-            if cd in dono.get("pecas_ausentes", set()):
-                return self._enviar(404, "não encontrado")
-            paginas = int(q["numFinal"][0]) - int(q["numInicial"][0]) + 1
-            return self._enviar(200, _pdf(paginas, f"peça {cd}"), "application/pdf")
-        if rota == "/pastadigital/getArquivo.do":
-            return self._enviar(404, "não encontrado")
-        if rota == "/pastadigital/getMidia.do":
-            return self._enviar(200, b"ID3" + b"\x00" * 2000, "audio/mpeg")
-        return self._enviar(404, "não encontrado")
-
-    # ----------------------------------------------------------------- POST
-    def do_POST(self):
-        url = urllib.parse.urlsplit(self.path)
-        p = self.portal
-        p.pedidos.append(("POST", self.path))
-        bruto, form = self._form()
-        if url.path == "/sajcas/login":
-            if form.get("username", [""])[0] == USUARIO and form.get("password", [""])[0] == SENHA:
-                return self._enviar(200, self._tela_codigo())
-            return self._enviar(200, self._tela_login("Usuário ou senha inválidos."))
-        if url.path == "/sajcas/token":
-            codigo = form.get("tokenInformado", [""])[0]
-            p.codigos_enviados.append(codigo)
-            if codigo == CODIGO:
-                return self._ir("/esaj/portal.do", [("Set-Cookie", "SESSAO=ok; Path=/")])
-            return self._enviar(200, self._tela_codigo("Código inválido."))
-        if not self._logado():
-            return self._enviar(401, "sessão expirada")
-        if url.path == "/pastadigital/salvarDocumentoPreparado.do":
-            cd = form["cdProcesso"][0]
-            if p.processos[cd].get("servidor_falha"):
-                return self._enviar(500, "<html>Erro interno do servidor</html>")
-            itens = form.get("itensPdfSelecionados", [])
-            paginas = 0
-            for item in itens:
-                qi = urllib.parse.parse_qs(item)
-                paginas += int(qi["numFinal"][0]) - int(qi["numInicial"][0]) + 1
-            loc = str(uuid.uuid4())
-            p.localizadores[loc] = {"cd": cd, "paginas": paginas, "consultas": 0,
-                                    "corpo": bruto}
-            return self._enviar(200, loc, "text/plain")
-        if url.path == "/pastadigital/buscarDocumentoFinalizado.do":
-            loc = p.localizadores[form["localizador"][0]]
-            loc["consultas"] += 1
-            if loc["consultas"] < 2:                # ainda montando
-                return self._enviar(200, "", "text/plain")
-            return self._enviar(200, f"http://127.0.0.1:{p.porta}/pastadigital/"
-                                     f"documentoFinal.do?loc={form['localizador'][0]}",
-                                "text/plain")
-        return self._enviar(404, "não encontrado")
+A, H, E, P, PL, S = (NUMEROS[k] for k in ("A", "H", "E", "P", "PL", "S"))
 
 
 def _procurar_navegador() -> tuple[str, str | None] | None:
@@ -407,27 +95,19 @@ def navegador_de_teste():
     return _NAVEGADOR
 
 
-class TestPortaADentro(apoio.PastaTemporaria):
-    """O e-SAJ inteiro, do login ao PDF, num navegador de verdade."""
+class _ComServidor(apoio.PastaTemporaria):
+    """Base: o e-SAJ falso no ar (um por classe) e o navegador de verdade."""
 
     @classmethod
     def setUpClass(cls):
         if navegador_de_teste() is None:
             raise unittest.SkipTest("nenhum navegador (Chromium, Chrome ou Edge) abre aqui")
-        cls.portal = PortalDeMentira()
-        atendente = type("AtendenteDoTeste", (Atendente,), {"portal": cls.portal})
-        cls.servidor = ThreadingHTTPServer(("127.0.0.1", 0), atendente)
-        cls.servidor.daemon_threads = True
-        cls.portal.porta = cls.servidor.server_address[1]
-        cls.portal.montar()
-        cls.fio = threading.Thread(target=cls.servidor.serve_forever, daemon=True)
-        cls.fio.start()
-        cls.base = f"http://127.0.0.1:{cls.portal.porta}"
+        cls.servidor = falso.servidor_esaj()
+        cls.base = cls.servidor.base
 
     @classmethod
     def tearDownClass(cls):
-        cls.servidor.shutdown()
-        cls.servidor.server_close()
+        cls.servidor.parar()
 
     def setUp(self):
         super().setUp()
@@ -437,7 +117,7 @@ class TestPortaADentro(apoio.PastaTemporaria):
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
-        self.tribunal = replace(tribunais.por_sigla("TJAL"), urls={"base": self.base})
+        self.tribunal = self.servidor.tribunal()
 
     def navegador(self, nome="esaj-TJAL"):
         canal, exe = navegador_de_teste()
@@ -446,6 +126,10 @@ class TestPortaADentro(apoio.PastaTemporaria):
                          dominios=motor.hosts_do_tribunal(self.tribunal),
                          pasta_downloads=self.tmp / "downloads",
                          pasta_diagnostico=self.tmp / "diagnostico")
+
+
+class TestPortaADentro(_ComServidor):
+    """O e-SAJ inteiro, do login ao PDF, num navegador de verdade (1º grau)."""
 
     def fabricas(self, nome="esaj-TJAL"):
         def fabrica_navegador(tribunal, opcoes):
@@ -468,7 +152,7 @@ class TestPortaADentro(apoio.PastaTemporaria):
         r = {x.numero: x for x in resumo.itens}
 
         # login: o primeiro código foi recusado, o segundo aceito
-        self.assertEqual(self.portal.codigos_enviados[:2], ["000000", CODIGO])
+        self.assertEqual(self.servidor.codigos_enviados[:2], ["000000", CODIGO])
         self.assertEqual(len(ctx.pedidos_codigo), 2)
         self.assertIn("não aceitou", ctx.pedidos_codigo[1][1])
 
@@ -522,7 +206,7 @@ class TestPortaADentro(apoio.PastaTemporaria):
         self.assertEqual(len(capa_json["movimentacoes"]), 3)
         self.assertTrue((destino / "_controle" / "midias" / P1.nome_arquivo /
                          "audiencia1.mp3").exists())
-        loc = next(l for l in self.portal.localizadores.values() if l["cd"] == "1K0001AAA0000")
+        loc = next(l for l in self.servidor.localizadores.values() if l["cd"] == "1K0001AAA0000")
         self.assertTrue(loc["corpo"].startswith("itensPdfSelecionados=nuSeqRecurso%3D00000"))
         self.assertIn("&cdProcesso=1K0001AAA0000&cdDocumento=103&separarDocumentos=false",
                       loc["corpo"])
@@ -558,9 +242,9 @@ class TestPortaADentro(apoio.PastaTemporaria):
         self.assertTrue((destino / f"{P1.principal}-01.pdf").exists())
         r5 = r[P5.formatado]
         self.assertEqual(r5.situacao, modelos.OK, r5.detalhe)
-        self.assertTrue(any("1K0005EEE0000" in c for _, c in self.portal.pedidos
+        self.assertTrue(any("1K0005EEE0000" in c for _, c in self.servidor.pedidos
                             if "show.do" in c))
-        self.assertFalse(any("processo.foro=56" in c for _, c in self.portal.pedidos))
+        self.assertFalse(any("processo.foro=56" in c for _, c in self.servidor.pedidos))
 
         # P6: a Pasta Digital oculta as fls. 3-4 - a página 5 continua a fl. 5
         r6 = r[P6.formatado]
@@ -650,6 +334,387 @@ class TestPortaADentro(apoio.PastaTemporaria):
             self.assertIsNone(primeiro_visivel(nav.pagina, ["#a", "#x"], 300))
             botao = primeiro_visivel(nav.pagina, ["#nada", "button:has-text('Entrar')"], 1000)
             self.assertEqual(botao.get_attribute("id"), "c")
+
+
+# ======================================================== o servidor falso
+def _pedir(url, cookies="", metodo="GET", corpo=None):
+    """(status, texto, cabeçalhos) de um pedido ao servidor falso, sem seguir
+    redirecionamento."""
+    class SemSeguir(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    abridor = urllib.request.build_opener(SemSeguir)
+    pedido = urllib.request.Request(url, data=corpo, method=metodo,
+                                    headers={"Cookie": cookies} if cookies else {})
+    try:
+        with abridor.open(pedido, timeout=10) as r:
+            return r.status, r.read().decode("utf-8"), dict(r.headers)
+    except urllib.error.HTTPError as erro:
+        return erro.code, erro.read().decode("utf-8"), dict(erro.headers)
+
+
+class TestServidorFalso(unittest.TestCase):
+    """As rotas do cposg5 falso se comportam como as do portal (sem navegador):
+    se o servidor aceitasse o que o portal recusa, os testes do 2º grau
+    passariam com um programa errado."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.s = falso.servidor_esaj()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.s.parar()
+
+    def logado_2g(self):
+        status, _, cab = _pedir(f"{self.s.app_2g}/open.do?gateway=true", "SESSAO=ok")
+        self.assertEqual(status, 200)
+        return "SESSAO=ok; " + cab["Set-Cookie"].split(";")[0]
+
+    def test_porta_de_entrada_do_2o_grau(self):
+        status, _, cab = _pedir(f"{self.s.app_2g}/open.do?gateway=true")
+        self.assertEqual((status, cab.get("Location")), (302, "/sajcas/login?service=cposg5"))
+        self.assertTrue(self.logado_2g().startswith("SESSAO=ok; SG5="))
+
+    def test_busca_so_com_os_parametros_do_cposg(self):
+        status, texto, _ = _pedir(esaj.url_busca_2g(self.s.app_2g, H))
+        self.assertEqual(status, 200)
+        self.assertIn("name='cdProcesso' value='P0000HHHH0000'", texto)
+        # os parâmetros do cpopg no cposg5: nada
+        cpopg = esaj.url_busca(self.s.base, H).replace("/cpopg/", "/cposg5/")
+        self.assertIn("Não existem informações disponíveis", _pedir(cpopg)[1])
+        # o foro tem de ser o do próprio número
+        errado = esaj.url_busca_2g(self.s.app_2g, H).replace("foroNumeroUnificado=0000",
+                                                              "foroNumeroUnificado=0001")
+        self.assertIn("Não existem informações disponíveis", _pedir(errado)[1])
+
+    def test_as_tres_respostas(self):
+        modal = _pedir(esaj.url_busca_2g(self.s.app_2g, E))[1]
+        self.assertIn("id='modalIncidentes'", modal)
+        self.assertIn("value='P00006BXP12KW'", modal)
+        self.assertIn("50000 - Embargos de Declaração Cível", modal)
+        lista = _pedir(esaj.url_busca_2g(self.s.app_2g, PL))[1]
+        self.assertIn("id='listagemDeProcessos'", lista)
+        self.assertIn("class='linkProcesso'", lista)
+
+    def test_show_do_so_com_o_codigo(self):
+        ok = _pedir(esaj.url_processo_2g(self.s.app_2g, falso.COD_A_2G))[1]
+        self.assertIn(f"id='numeroProcesso'>{A.formatado}<", ok)
+        com_foro = _pedir(f"{self.s.app_2g}/show.do?processo.codigo={falso.COD_A_2G}"
+                          "&processo.foro=58")[1]
+        self.assertNotIn("numeroProcesso", com_foro, "o foro da origem não abre o processo")
+        dependente = _pedir(esaj.url_processo_2g(self.s.app_2g, falso.COD_E_2G))[1]
+        self.assertIn(f">{E.formatado}<", dependente)
+
+    def test_pasta_do_2o_grau(self):
+        url = (f"{self.s.app_2g}/verificarAcessoPastaDigital.do?cdProcesso={falso.COD_H_2G}"
+               "&_=1")
+        self.assertEqual(_pedir(url)[0], 401, "sem login")
+        self.assertEqual(_pedir(url, "SESSAO=ok")[0], 401,
+                         "com o login do portal, mas sem a porta de entrada do 2º grau")
+        status, texto, _ = _pedir(url, self.logado_2g())
+        self.assertEqual(status, 200)
+        self.assertTrue(texto.startswith(f"{self.s.base}/pastadigital/sg/"), texto)
+        # a Pasta Digital do 2º grau não responde no caminho do 1º grau
+        corpo = urllib.parse.urlencode({"cdProcesso": falso.COD_H_2G,
+                                        "itensPdfSelecionados": "numInicial=1&numFinal=1"})
+        self.assertEqual(_pedir(f"{self.s.base}/pastadigital/salvarDocumentoPreparado.do",
+                                "SESSAO=ok", "POST", corpo.encode())[0], 404)
+        self.assertEqual(_pedir(f"{self.s.base}/pastadigital/sg/salvarDocumentoPreparado.do",
+                                "SESSAO=ok", "POST", corpo.encode())[0], 200)
+
+    def test_pasta_com_senha(self):
+        url = (f"{self.s.app_2g}/verificarAcessoPastaDigital.do?cdProcesso={falso.COD_S_2G}"
+               "&_=1")
+        cookies = self.logado_2g()
+        status, texto, _ = _pedir(url, cookies)
+        self.assertEqual(status, 403)
+        self.assertIn("popupSenhaProcesso", texto)
+        corpo = urllib.parse.urlencode({"cdProcesso": falso.COD_S_2G,
+                                        "senhaDoProcessoDigitada": "errada"}).encode()
+        self.assertEqual(_pedir(f"{self.s.app_2g}/validarSenhaAcessoProcesso.do", "", "POST",
+                                corpo)[0], 400)
+        corpo = urllib.parse.urlencode({"cdProcesso": falso.COD_S_2G,
+                                        "senhaDoProcessoDigitada": SENHA_S_2G}).encode()
+        status, _, cab = _pedir(f"{self.s.app_2g}/validarSenhaAcessoProcesso.do", "", "POST",
+                                corpo)
+        self.assertEqual(status, 200)
+        liberado = cookies + "; " + cab["Set-Cookie"].split(";")[0]
+        self.assertEqual(_pedir(url, liberado)[0], 200)
+
+    def test_tribunal_e_enderecos(self):
+        t = self.s.tribunal()
+        self.assertEqual((t.sigla, t.grau, t.alternativo), ("TJAL", "1g", None))
+        self.assertEqual(t.no_grau("2g").urls_para(), [self.s.app_2g])
+        self.assertEqual(self.s.enderecos_locais(),
+                         {"esaj:TJAL": {"base": self.s.base, "2g": self.s.app_2g}})
+
+
+# =========================================================== o 2º grau
+class TestSegundoGrau(_ComServidor):
+    """O e-SAJ do 2º grau (cposg5), do login ao PDF, num navegador de verdade.
+    O motor do 2º grau é de outra frente: aqui, o portal direto."""
+
+    def opcoes(self, **k):
+        return apoio.opcoes_de_teste(self.tmp, espera_s=20, espera_tela_codigo_s=15, **k)
+
+    def portais(self, nav, ctx, servidor=None):
+        t = (servidor or self.servidor).tribunal()
+        return (PortalESAJ(nav, t, self.opcoes(), ctx, (USUARIO, SENHA)),
+                PortalESAJ(nav, t.no_grau("2g"), self.opcoes(), ctx, (USUARIO, SENHA)))
+
+    def capa_json(self, pasta, nome):
+        return json.loads((pasta / "_controle" / f"{nome}_capa.json").read_text(encoding="utf-8"))
+
+    def test_o_mesmo_numero_nos_dois_graus(self):
+        """A apelação tem o mesmo número nos dois graus: cada grau grava os
+        seus autos, com a sua árvore, e nada colide."""
+        import pymupdf
+        s = self.servidor
+        pasta = self.tmp / "Lote"
+        ctx = apoio.ContextoGravador(codigos=[CODIGO])
+        antes = len(s.pedidos)
+        with self.navegador() as nav:
+            p1, p2 = self.portais(nav, ctx)
+            p2.entrar()
+            # o login do portal, e depois a porta de entrada da consulta de 2º grau
+            novos = [c for _, c in s.pedidos[antes:]]
+            self.assertIn("/cposg5/open.do?gateway=true", novos)
+            self.assertLess(max(i for i, c in enumerate(novos) if c.startswith("/sajcas/")),
+                            novos.index("/cposg5/open.do?gateway=true"))
+            p1.entrar()
+            self.assertEqual(len(ctx.pedidos_codigo), 1, "um login só para os dois graus")
+            r1 = p1.baixar(A, pasta / f"{A.nome_arquivo}.pdf")
+            autos_2g = cnj.nome_dos_autos(A, "2g")
+            r2 = p2.baixar(A, pasta / f"{autos_2g}.pdf")
+        self.assertEqual(r1.situacao, modelos.OK, r1.detalhe)
+        self.assertEqual(r2.situacao, modelos.OK, r2.detalhe)
+        self.assertEqual((r1.paginas, r2.paginas), (4, 8), "cada grau com a sua árvore")
+        self.assertEqual((r1.grau, r2.grau), ("1g", "2g"))
+        with pymupdf.open(pasta / f"{A.nome_arquivo}.pdf") as doc:
+            self.assertIn("servidor 1", doc[0].get_text())
+            m1 = paginacao.ler_do_doc(doc)
+        with pymupdf.open(pasta / f"{autos_2g}.pdf") as doc:
+            self.assertIn("servidor 2g 1", doc[0].get_text())
+            m2 = paginacao.ler_do_doc(doc)
+            self.assertIn(";grau=2g", doc.metadata.get("keywords") or "")
+        self.assertNotIn("grau", m1, "o manifesto do 1º grau é o de sempre")
+        self.assertEqual((m2["grau"], m2["ultima"], paginacao.grau(m2)), ("2g", 8, "2g"))
+        # capas separadas, pelo nome dos autos
+        c1 = self.capa_json(pasta, A.nome_arquivo)
+        c2 = self.capa_json(pasta, autos_2g)
+        self.assertNotIn("grau", c1)
+        self.assertEqual(c2["grau"], "2g")
+        self.assertEqual({k: c2["capa"][k] for k in ("classe", "secao", "orgao_julgador",
+                                                      "relator", "origem")},
+                         {"classe": "Apelação Criminal", "secao": "Tribunal de Justiça",
+                          "orgao_julgador": "Câmara Criminal", "relator": "DES. JOÃO EXEMPLO",
+                          "origem": "Comarca de Arapiraca / Foro de Arapiraca / 1ª Vara "
+                                    "Criminal de Arapiraca"})
+        self.assertEqual(c2["numeros_1a_instancia"], [{
+            "numero": A.formatado, "foro": "Foro de Arapiraca",
+            "vara": "1ª Vara Criminal de Arapiraca", "juiz": "Juiz Fulano de Tal", "obs": "",
+            "principal": True}])
+        self.assertNotIn("numeros_1a_instancia", c2["capa"], "a lista fica num lugar só")
+        self.assertEqual([x["papel"] for x in c2["composicao"]],
+                         ["Relator", "Revisor", "3º Julgador"])
+        self.assertEqual(c2["julgamentos"], [{"data": "09/10/2024", "situacao": "Julgado",
+                                              "decisao": "à unanimidade, negou provimento ao "
+                                                         "recurso"}])
+        self.assertEqual([x.get("codigo") for x in c2["subprocessos"]], [falso.COD_A_2G_50000])
+        self.assertEqual(c2["codigo_processo"], falso.COD_A_2G)
+        self.assertEqual(len(c2["movimentacoes"]), 2)
+        self.assertEqual(c2["partes"], ["Apelante: João da Silva", "Apelado: Ministério Público"])
+        self.assertFalse(c2["segredo"], "o popup de senha escondido não é segredo")
+        texto = (pasta / "_controle" / f"{autos_2g}_capa.txt").read_text(encoding="utf-8")
+        self.assertTrue(texto.startswith(f"Processo {A.formatado} - TJAL (e-SAJ, 2º grau)\n"))
+        self.assertIn("folha N da Pasta Digital do 2º grau", texto)
+        self.assertIn("== Números de 1ª Instância (1) ==", texto)
+        # as rotas do 2º grau: só os parâmetros do CPOSG, show.do só com o
+        # código, a Pasta Digital por verificarAcessoPastaDigital.do em /pastadigital/sg
+        meus = [c for _, c in s.pedidos[antes:]]
+
+        def de(rota):
+            return [c for c in meus if urllib.parse.urlsplit(c).path == rota]
+        buscas = de("/cposg5/search.do")
+        self.assertEqual(len(buscas), 1)
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(buscas[0]).query, keep_blank_values=True)
+        self.assertEqual(q["dePesquisaNuUnificado"], [A.principal])
+        self.assertEqual(q["foroNumeroUnificado"], ["0058"])
+        self.assertFalse([k for k in q if k.startswith("dadosConsulta")])
+        self.assertEqual(de("/cposg5/show.do"),
+                         [f"/cposg5/show.do?processo.codigo={falso.COD_A_2G}"])
+        self.assertEqual(len(de("/cposg5/verificarAcessoPastaDigital.do")), 1)
+        self.assertTrue(de("/pastadigital/sg/abrirPastaProcessoDigital.do"))
+        self.assertTrue(de("/pastadigital/sg/salvarDocumentoPreparado.do"))
+        loc = next(l for l in s.localizadores.values() if l["cd"] == falso.COD_A_2G)
+        self.assertEqual(loc["grau"], "2g", "o PDF do 2º grau pedido em /pastadigital/sg")
+        self.assertFalse([c for c in de("/cpopg/show.do") if falso.COD_A_2G in c])
+
+    def test_tres_respostas_e_o_numero_exato(self):
+        s = self.servidor
+        pasta = self.tmp / "Lote"
+        ctx = apoio.ContextoGravador(codigos=[CODIGO])
+        with self.navegador() as nav:
+            _, p2 = self.portais(nav, ctx)
+            p2.entrar()
+            r = {nome: p2.baixar(n, pasta / f"{cnj.nome_dos_autos(n, '2g')}.pdf")
+                 for nome, n in (("E", E), ("P", P), ("H", H), ("PL", PL))}
+            i = cnj.ler(A.principal + "/01")
+            e2 = cnj.ler(P.principal + "/50001")
+            x = cnj.ler(falso.P3.formatado)
+            fora = {nome: p2.baixar(n, pasta / f"{cnj.nome_dos_autos(n, '2g')}.pdf")
+                    for nome, n in (("I", i), ("E2", e2), ("X", x))}
+        for nome, res in r.items():
+            self.assertEqual(res.situacao, modelos.OK, f"{nome}: {res.detalhe}")
+        # E pelo modal: os embargos (3 folhas), nunca a apelação (6)
+        self.assertEqual((r["E"].paginas, r["P"].paginas, r["H"].paginas, r["PL"].paginas),
+                         (3, 6, 5, 2))
+        pedidos_pdf = {l["cd"] for l in s.localizadores.values() if l["grau"] == "2g"}
+        self.assertTrue({falso.COD_E_2G, falso.COD_P_2G, falso.COD_H_2G,
+                         falso.COD_PL_2G} <= pedidos_pdf)
+        self.assertNotIn(falso.COD_OUTRO_PL, pedidos_pdf, "da lista, só o do número exato")
+        self.assertTrue((pasta / "0706265-50.2017.8.02.0001-50000 (2G).pdf").exists())
+        ce = self.capa_json(pasta, "0706265-50.2017.8.02.0001-50000 (2G)")
+        self.assertEqual((ce["processo"], ce["codigo_processo"]), (E.formatado, falso.COD_E_2G))
+        ch = self.capa_json(pasta, f"{H.nome_arquivo} (2G)")
+        self.assertEqual([x["numero"] for x in ch["numeros_1a_instancia"]], [A.formatado],
+                         "o HC diz a ação de origem (o motor herda o sigilo dela)")
+        # não encontrados, com a dica do grau
+        for nome, n in (("I", i), ("E2", e2), ("X", x)):
+            self.assertEqual(fora[nome].situacao, modelos.NAO_ENCONTRADO, fora[nome].detalhe)
+            self.assertTrue(fora[nome].detalhe.startswith(
+                "não encontrado no e-SAJ do TJAL (2º grau). Confira o número; "))
+            self.assertIn(modelos.dica_de_grau(n, "2g"), fora[nome].detalhe)
+        self.assertIn("os autos estão no 1º grau", fora["I"].detalhe)
+        self.assertIn("(/50001) só existe no 2º grau", fora["E2"].detalhe)
+
+    def test_sigiloso_so_no_2o_grau(self):
+        """S é público no 1º grau e sigiloso no 2º: a página do 2º grau vem sem
+        os dados, com o pedido de senha (#popupSenhaProcesso)."""
+        pasta = self.tmp / "Lote"
+        ctx = apoio.ContextoGravador(codigos=[CODIGO])
+        autos = f"{S.nome_arquivo} (2G)"
+        with self.navegador() as nav:
+            p1, p2 = self.portais(nav, ctx)
+            p2.entrar()
+            sem = p2.baixar(S, pasta / f"{autos}.pdf")
+            com = p2.baixar(S, pasta / f"{autos}.pdf", senha=SENHA_S_2G)
+            publico = p1.baixar(S, pasta / f"{S.nome_arquivo}.pdf")
+        self.assertEqual(sem.situacao, modelos.SIGILOSO_SEM_SENHA)
+        self.assertTrue(sem.sigiloso)
+        self.assertEqual(com.situacao, modelos.OK, com.detalhe)
+        self.assertTrue(com.sigiloso)
+        self.assertEqual(com.paginas, 3)
+        self.assertIn(S.nome_arquivo, p2.sigilosos_apurados, "pela chave do processo")
+        capa = (pasta / "_controle" / f"{autos}_capa.txt").read_text(encoding="utf-8")
+        self.assertIn("SEGREDO DE JUSTIÇA", capa[:2000])
+        self.assertTrue(self.capa_json(pasta, autos)["segredo"])
+        # no 1º grau o mesmo número é público (o portal do 1º grau não sabe do 2º)
+        self.assertEqual(publico.situacao, modelos.OK, publico.detalhe)
+        self.assertFalse(publico.sigiloso)
+
+    def test_sso_por_webapp(self):
+        """A consulta de 2º grau esquece o login (o do portal continua de pé):
+        a Pasta Digital recusa, e o portal passa de novo pela porta de entrada
+        em vez de dar "sem acesso" (definitivo)."""
+        s = self.servidor
+        ctx = apoio.ContextoGravador(codigos=[CODIGO])
+        with self.navegador() as nav:
+            _, p2 = self.portais(nav, ctx)
+            p2.entrar()
+            primeiro = p2.baixar(H, self.tmp / "um" / f"{H.nome_arquivo} (2G).pdf")
+            s.expirar_sessao_2g()
+            antes = len(s.pedidos)
+            segundo = p2.baixar(H, self.tmp / "dois" / f"{H.nome_arquivo} (2G).pdf")
+        self.assertEqual(primeiro.situacao, modelos.OK, primeiro.detalhe)
+        self.assertEqual(segundo.situacao, modelos.OK, segundo.detalhe)
+        depois = [c for _, c in s.pedidos[antes:]]
+        verificar = [i for i, c in enumerate(depois)
+                     if c.startswith("/cposg5/verificarAcessoPastaDigital.do")]
+        self.assertEqual(len(verificar), 2, "recusada uma vez, aceita depois da porta de entrada")
+        self.assertIn("/cposg5/open.do?gateway=true", depois[verificar[0]:verificar[1]])
+
+    def test_pasta_do_2o_grau_com_folhas_em_duplicidade(self):
+        """Duas numerações na mesma Pasta Digital do 2º grau: os autos não são
+        gravados (NAO_SUPORTADO); o 1º grau do mesmo número segue normal."""
+        ctx = apoio.ContextoGravador(codigos=[CODIGO])
+        pasta = self.tmp / "Lote"
+        with falso.servidor_esaj(("A",), pasta_2g_duplicada=True) as s:
+            self.tribunal = s.tribunal()
+            with self.navegador("esaj-duplicada") as nav:
+                p1, p2 = self.portais(nav, ctx, s)
+                p2.entrar()
+                r2 = p2.baixar(A, pasta / f"{A.nome_arquivo} (2G).pdf")
+                r1 = p1.baixar(A, pasta / f"{A.nome_arquivo}.pdf")
+            self.assertFalse([l for l in s.localizadores.values() if l["grau"] == "2g"],
+                             "nada pedido ao servidor")
+            self.assertFalse([c for c in s.pedidos_de("/pastadigital/sg/getPDF.do")])
+        self.assertEqual(r2.situacao, modelos.NAO_SUPORTADO)
+        self.assertEqual(r2.causa, "")
+        self.assertFalse(modelos.pede_nova_tentativa(r2.situacao, r2.causa))
+        self.assertIn("numera folhas em duplicidade (fls. 3-4 em mais de uma peça)", r2.detalhe)
+        self.assertFalse((pasta / f"{A.nome_arquivo} (2G).pdf").exists())
+        self.assertFalse((pasta / "_controle" / f"{A.nome_arquivo} (2G)_capa.json").exists())
+        self.assertEqual(r1.situacao, modelos.OK, r1.detalhe)
+
+    def test_capa_do_2o_grau_no_navegador(self):
+        """A leitura da página do 2º grau no navegador de verdade, no desenho
+        real (rótulos sem id, tabela de cabeçalho à parte, popup de senha
+        VISÍVEL que fala em segredo de justiça)."""
+        with self.navegador("esaj-capa-2g") as nav:
+            nav.pagina.set_content(
+                "<div class='unj-entity-header__summary'><span id='numeroProcesso'>"
+                f"{A.formatado}</span><span class='unj-tag' id='situacaoProcesso'>Baixado</span>"
+                "<span class='unj-label'>Classe</span><div id='classeProcesso'><span>Apelação "
+                "Criminal</span></div><span class='unj-label'>Seção</span><div "
+                "id='secaoProcesso'><span>Tribunal de Justiça</span></div><span "
+                "class='unj-label'>Órgão Julgador</span><div id='orgaoJulgadorProcesso'><span>"
+                "Câmara Criminal</span></div></div><div id='maisDetalhes' class='collapse' "
+                "style='display:none'><span class='unj-label'>Relator</span><div "
+                "id='relatorProcesso'><span>DES. JOÃO</span></div><span class='unj-label'>"
+                "Origem</span><div><span>Comarca de Arapiraca / 1ª Vara</span></div></div>"
+                "<div><h2 class='subtitle'>Números de 1ª Instância</h2></div>"
+                "<table><tr class='label'><td>Nº de 1ª instância</td><td>Foro</td></tr>"
+                "<tr class='fundoEscuro'><td></td><td></td></tr></table>"
+                f"<table><tr class='fundoClaro'><td><a href='/cpopg/show.do?processo.codigo=X1'>"
+                f"{A.formatado}</a> (Principal)</td><td>Foro de Arapiraca</td></tr></table>"
+                "<div><h2 class='subtitle'>Composição do Julgamento</h2></div>"
+                "<table><tr class='label'><td>Participação</td><td>Magistrado</td></tr></table>"
+                "<table><tr class='fundoClaro itemComposicaoJulgamento'><td class='label'>Relator"
+                "</td><td>Des. João&nbsp;</td></tr></table>"
+                "<div><h2 class='subtitle'>Julgamentos</h2></div>"
+                "<table><tr class='label'><td>Data</td><td>Situação do julgamento</td>"
+                "<td>Decisão</td></tr></table><table><tr class='fundoClaro'><td>07/10/2021</td>"
+                "<td>Julgado</td><td>à unanimidade</td></tr></table>"
+                "<div id='popupSenhaProcesso' style='display:block'>É necessário informar uma "
+                "senha para acessar processo em segredo de justiça.<input id='senhaProcesso'>"
+                "</div>")
+            info = nav.pagina.evaluate(esaj._JS_PAGINA_PROCESSO, {"grau": "2g"})
+            primeiro = nav.pagina.evaluate(esaj._JS_PAGINA_PROCESSO)
+            modal = nav.pagina.evaluate(esaj._JS_MODAL_SENHA)
+        self.assertEqual(info["capa"], {"Classe": "Apelação Criminal",
+                                        "Seção": "Tribunal de Justiça",
+                                        "Órgão julgador": "Câmara Criminal",
+                                        "Relator": "DES. JOÃO", "Situação": "Baixado",
+                                        "Origem": "Comarca de Arapiraca / 1ª Vara"})
+        self.assertEqual(info["secoes"]["numeros_1a_instancia"],
+                         [{"celulas": ["", ""], "codigo": ""},
+                          {"celulas": [f"{A.formatado} (Principal)", "Foro de Arapiraca"],
+                           "codigo": "X1"}])
+        self.assertEqual(info["secoes"]["composicao"][-1]["celulas"], ["Relator", "Des. João"])
+        self.assertEqual(info["secoes"]["julgamentos"][-1]["celulas"],
+                         ["07/10/2021", "Julgado", "à unanimidade"])
+        self.assertNotIn("segredo de justi", info["texto"].lower(),
+                         "o popup do 2º grau não faz o processo sigiloso")
+        self.assertFalse(esaj.texto_indica_sigilo(info["texto"]))
+        self.assertTrue(modal, "o popup do 2º grau visível é o pedido de senha")
+        # o 1º grau lê a mesma página como sempre (sem os campos do 2º grau)
+        self.assertNotIn("Seção", primeiro["capa"])
+        self.assertNotIn("numeros_1a_instancia", primeiro["secoes"])
+        dados = esaj.dados_da_capa(info, A, "TJAL", grau="2g")
+        self.assertEqual(dados["numeros_1a_instancia"][0]["numero"], A.formatado)
+        self.assertEqual(dados["composicao"], [{"papel": "Relator", "nome": "Des. João"}])
 
 
 if __name__ == "__main__":

@@ -37,6 +37,17 @@ mesmo em _capa.json para máquina), que é barata - sai da página do processo
 que o download já abre - e dá à IA classe, partes, juiz, marcas (prioridade,
 justiça gratuita...), todas as movimentações, incidentes, audiências e as
 folhas do PDF sem abrir o portal nem o PDF.
+
+O 2º grau (a consulta de 2º grau, o CPOSG - no TJAL, /cposg5) é o mesmo
+portal com outra tabela de rotas (RotasESAJ), escolhida pelo grau do
+Tribunal (Tribunal.no_grau("2g")): o mesmo login (CAS, cofre "esaj:TJAL",
+perfil do navegador), outra busca (os parâmetros do CPOSG), três respostas
+possíveis (a página do processo, o modal "Selecione o processo" com os
+recursos internos /50000 e a lista), a escolha sempre pelo número EXATO, a
+Pasta Digital aberta por verificarAcessoPastaDigital.do e a capa do 2º grau
+(seção, órgão julgador, relator, origem, números de 1ª instância, composição
+e julgamentos). Os autos do 2º grau têm nome próprio ("<número> (2G).pdf",
+dado pelo motor), e a página N do PDF é a folha N da Pasta Digital do 2º grau.
 """
 
 from __future__ import annotations
@@ -53,15 +64,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ..nucleo import caminhos, paginacao, sistema
+from ..nucleo import caminhos, cnj, paginacao, sistema, tribunais
 from ..nucleo.cnj import Numero
 from . import pdf
 from .contexto import Contexto
 from .modelos import (AJUSTES_ACESSOS, CAMPO_PRAZO_LOGIN, ENTRAR_MANUALMENTE,
-                      MOSTRAR_NAVEGADOR, OK, ONDE_CADASTRAR_ACESSO, TENTAR_DE_NOVO, Cancelado,
-                      LoginFalhou, NAO_ENCONTRADO, PortalIndisponivel, ProcessoNaoEncontrado,
-                      ResultadoProcesso, SEM_ACESSO, SemAcesso, SessaoPerdida,
-                      SIGILOSO_SEM_SENHA, SigilosoSemSenha)
+                      MOSTRAR_NAVEGADOR, NAO_SUPORTADO, OK, ONDE_CADASTRAR_ACESSO, TENTAR_DE_NOVO,
+                      Cancelado, LoginFalhou, NAO_ENCONTRADO, PortalIndisponivel,
+                      ProcessoNaoEncontrado, ResultadoProcesso, SEM_ACESSO, SemAcesso,
+                      SessaoPerdida, SIGILOSO_SEM_SENHA, SigilosoSemSenha, dica_de_grau)
 from .navegador import (DICA_DIAGNOSTICO, DICA_SEM_DIAGNOSTICO, diagnosticar_processo,
                         explicar_erro, primeiro_visivel, recusou_credenciais, sem_acento,
                         tem_web_signer)
@@ -91,8 +102,10 @@ SELETORES_PADRAO: dict[str, list[str]] = {
     "login_token_novo": ["#btnReceberToken",
                          "#modalTokenDuploFator button:has-text('Receber novo')"],
     "login_senha_expirada": ["#modalSenhaExpirada"],
+    # o campo da senha do processo é o mesmo nos dois graus; o botão, não:
+    # "#btEnviarSenha" no 1º grau, "#botaoEnviarSenha" no 2º (#popupSenhaProcesso)
     "processo_senha": ["#senhaProcesso"],
-    "processo_senha_enviar": ["#btEnviarSenha"],
+    "processo_senha_enviar": ["#btEnviarSenha", "#botaoEnviarSenha"],
 }
 
 
@@ -199,6 +212,260 @@ def marca_do_incidente(ordem: int) -> "re.Pattern[str]":
 def codigo_na(texto: str) -> str | None:
     m = _RE_CODIGO.search(texto or "")
     return m.group(1) if m else None
+
+
+# ------------------------------------------------------------ 2º grau
+# A consulta de 2º grau (CPOSG; no TJAL, https://www2.tjal.jus.br/cposg5) é
+# outra aplicação do mesmo portal: o login é o mesmo (o CAS), mas a busca tem
+# outros nomes de parâmetro, a página do processo tem outro desenho, os
+# recursos internos (/50000, /50001: embargos de declaração, agravo interno)
+# aparecem num modal "Selecione o processo" e a Pasta Digital abre por outro
+# endereço. O que muda fica na tabela de rotas (RotasESAJ); o resto do fluxo
+# - Pasta Digital, plano de folhas, PDF, manifesto - é o do 1º grau.
+def url_busca_2g(app: str, numero: Numero) -> str:
+    """Consulta do CPOSG pelo número unificado: sempre pelo PRINCIPAL (o
+    recurso interno é escolhido depois, entre as opções que a consulta
+    mostra), com o foro do próprio número (0000 nos originários; o da
+    origem nas apelações, que sobem com o número do 1º grau)."""
+    consulta = [
+        ("conversationId", ""), ("paginaConsulta", "1"), ("cbPesquisa", "NUMPROC"),
+        ("tipoNuProcesso", "UNIFICADO"),
+        ("numeroDigitoAnoUnificado", numero.unificado),
+        ("foroNumeroUnificado", numero.foro),
+        ("dePesquisaNuUnificado", numero.principal),
+        ("dePesquisa", ""), ("uuidCaptcha", ""),
+    ]
+    return f"{app.rstrip('/')}/search.do?" + urllib.parse.urlencode(consulta)
+
+
+def url_processo_2g(app: str, codigo: str) -> str:
+    """A página do processo no 2º grau: só o código. O "foro" interno do 2º
+    grau (900, Tribunal de Justiça) não é o OOOO do número, e o da origem
+    não abre o processo."""
+    return f"{app.rstrip('/')}/show.do?processo.codigo={codigo}"
+
+
+@dataclass(frozen=True)
+class RotasESAJ:
+    """Os endereços do e-SAJ que dependem do grau.
+
+    1º grau: a consulta de 1º grau (CPOPG), em ``base``/cpopg; 2º grau: a
+    consulta de 2º grau (CPOSG), no endereço ``urls["2g"]`` do catálogo. O
+    login (CAS) e a sessão (/esaj/api/auth/session) são do portal (``base``)
+    nos dois graus; a Pasta Digital do 2º grau fica no caminho que o próprio
+    portal devolve (prefixo_da_pasta).
+    """
+    grau: str          # "1g" | "2g"
+    base: str          # https://www2.tjal.jus.br
+    app: str           # https://www2.tjal.jus.br/cpopg | https://www2.tjal.jus.br/cposg5
+
+    @property
+    def caminho(self) -> str:
+        """O caminho da consulta no servidor, para o fetch de dentro da aba:
+        '/cpopg', '/cposg5'."""
+        return urllib.parse.urlsplit(self.app).path.rstrip("/")
+
+    @property
+    def diagnostico(self) -> str:
+        """O prefixo das capturas em Logs\\diagnostico: 'esaj', 'esaj2g'."""
+        return "esaj2g" if self.grau == "2g" else "esaj"
+
+    @property
+    def abertura(self) -> str:
+        """O formulário da consulta (passar por ele encerra a consulta anterior)."""
+        return f"{self.app}/open.do"
+
+    @property
+    def gateway(self) -> str:
+        """A porta de entrada da consulta com o CAS: quem não tem sessão vai
+        ao login, quem tem volta à consulta - e, no 2º grau, é ela que faz a
+        consulta reconhecer o login do portal."""
+        if self.grau == "2g":
+            return f"{self.app}/open.do?gateway=true"
+        return URL_ENTRADA.format(base=self.base)
+
+    def busca(self, numero: Numero) -> str:
+        return url_busca_2g(self.app, numero) if self.grau == "2g" else url_busca(self.base, numero)
+
+    def processo(self, codigo: str, numero: Numero | None = None) -> str:
+        if self.grau == "2g":
+            return url_processo_2g(self.app, codigo)
+        return url_processo(self.base, codigo, numero)
+
+    def pasta(self, codigo: str, carimbo_ms: int) -> str:
+        """O endereço (no servidor da aba) que devolve, em texto, o da Pasta
+        Digital: abrirPastaDigital.do no 1º grau, verificarAcessoPastaDigital.do
+        no 2º (o mesmo que o botão "Visualizar autos" chama)."""
+        if self.grau == "2g":
+            return (f"{self.caminho}/verificarAcessoPastaDigital.do?cdProcesso={codigo}"
+                    f"&_={carimbo_ms}")
+        return f"/cpopg/abrirPastaDigital.do?processo.codigo={codigo}&_={carimbo_ms}"
+
+
+def _dependente_normal(valor) -> str:
+    """O dependente como o cnj o guarda ('1', '0001' -> '01'; '50000'); '' sem
+    dependente; '?' quando a opção é de um dependente cujo número não se leu
+    (e então nunca é tomada por outra coisa - nem pelo principal)."""
+    texto = str(valor if valor is not None else "").strip()
+    if not texto:
+        return ""
+    if texto.isdigit() and len(texto) <= 5:
+        return (texto.lstrip("0") or "0").zfill(2)
+    return "?"
+
+
+_RE_DEPENDENTE_NO_TITULO = re.compile(r"^\s*(\d{1,5})\s*-\s|-\s*(\d{5})\s*$")
+
+
+def escolher_processo_2g(candidatos, numero: Numero) -> str | None:
+    """O código, entre as opções da consulta de 2º grau, do processo pedido.
+
+    ``candidatos``: [{"codigo", "numero", "titulo", "dependente"}] - da
+    página direta (o próprio processo e os links da tabela de incidentes),
+    do modal "Selecione o processo" e da lista. Vale só o NÚMERO EXATO (os
+    20 dígitos e o dependente): sem dependente, o processo principal; com
+    /50000, a opção "50000 - Embargos de Declaração...". Nunca "o primeiro":
+    apelação e embargos têm o mesmo número-base.
+
+    Devolve o código, None se nenhuma opção é do número pedido, e levanta
+    _Ambiguo se mais de uma é (não se chuta: seriam autos trocados).
+    """
+    queria = _dependente_normal(numero.dependente)
+    achados: list[str] = []
+    for c in candidatos or []:
+        if not isinstance(c, dict):
+            continue
+        codigo = str(c.get("codigo") or "").strip()
+        if not codigo:
+            continue
+        try:
+            n = cnj.ler(str(c.get("numero") or ""))
+        except cnj.NumeroInvalido:
+            continue
+        if n.digitos != numero.digitos:
+            continue
+        dependente = _dependente_normal(c.get("dependente"))
+        if not dependente:
+            dependente = _dependente_normal(n.dependente)
+        if not dependente:
+            m = _RE_DEPENDENTE_NO_TITULO.search(_limpo(c.get("titulo"), 300))
+            dependente = _dependente_normal((m.group(1) or m.group(2)) if m else "")
+        if dependente == queria and codigo not in achados:
+            achados.append(codigo)
+    if len(achados) > 1:
+        raise _Ambiguo(
+            f"o 2º grau do e-SAJ tem mais de um processo com este número ({numero.formatado}); "
+            "não baixei, para não gravar autos trocados")
+    return achados[0] if achados else None
+
+
+_RE_CNJ_SOLTO = re.compile(r"(?<!\d)\d{7}-?\d{2}\.?\d{4}\.?\d\.?\d{2}\.?\d{4}(?!\d)")
+# o sufixo no campo do número ("/50000", " / 50000", " - 50000", "(50000)")...
+_RE_SUFIXO_NO_NUMERO = re.compile(r"^\s*(?:/|\(|-|–)?\s*(\d{1,5})(?![\d/])")
+# ...e no cabeçalho, só colado por barra ou parêntese (uma data ou um valor
+# logo depois do número não é dependente)
+_RE_SUFIXO_NO_CABECALHO = re.compile(r"^\s*(?:/|\()\s*(\d{1,5})(?![\d/])")
+_RE_DEPENDENTE_NO_CABECALHO = re.compile(r"(?<![\d.,])(5\d{4})\s+-\s|\s-\s+(5\d{4})(?![\d.,])")
+
+
+def dependentes_da_pagina(numero_na_pagina: str, cabecalho: str = "") -> set[str]:
+    """Os dependentes que a página do processo diz ser: o sufixo logo depois
+    do número ("0706265-50.2017.8.02.0001/50000") e, no cabeçalho, o recurso
+    interno escrito como na consulta ("50000 - Embargos...", "... - 50000")."""
+    achados: set[str] = set()
+    for texto, sufixo in ((numero_na_pagina or "", _RE_SUFIXO_NO_NUMERO),
+                          (cabecalho or "", _RE_SUFIXO_NO_CABECALHO)):
+        for m in _RE_CNJ_SOLTO.finditer(texto):
+            s = sufixo.match(texto[m.end():])
+            if s:
+                achados.add(_dependente_normal(s.group(1)))
+    for m in _RE_DEPENDENTE_NO_CABECALHO.finditer(cabecalho or ""):
+        achados.add(_dependente_normal(m.group(1) or m.group(2)))
+    achados.discard("")
+    return achados
+
+
+def _ordem_no_codigo_2g(codigo: str) -> int | None:
+    """No 2º grau, o código do recurso interno é o do principal com os quatro
+    últimos caracteres trocados pelo número dele em base 36 (P00006BXP0000 ->
+    P00006BXP12KW: 12KW = 50000). Só se usa como CONFIRMAÇÃO da página aberta
+    - o caminho até ela é sempre a opção que a própria consulta mostrou."""
+    final = (codigo or "")[-4:]
+    if len(final) != 4 or not final.isalnum():
+        return None
+    try:
+        return int(final, 36)
+    except ValueError:
+        return None
+
+
+def conferir_pagina_2g(dados: dict, numero: Numero, codigo: str) -> None:
+    """A página aberta no 2º grau é mesmo a do processo pedido? Levanta
+    RuntimeError se não for (para nunca gravar autos trocados).
+
+    ``dados``: {"numero": o #numeroProcesso, "cabecalho": o texto do
+    cabeçalho, "cd": o input cdProcesso, "texto": o texto da página}.
+    Confere os 20 dígitos; que a página é a do código escolhido; para o
+    recurso interno (/50000), que ela se declara ele (pelo número ou pelo
+    título, ou pelo código do 2º grau); para o principal, que ela não é a
+    de um recurso interno.
+    """
+    dados = dados if isinstance(dados, dict) else {}
+    na_pagina = str(dados.get("numero") or "")
+    cabecalho = str(dados.get("cabecalho") or "")
+    digitos = re.sub(r"\D", "", f"{na_pagina} {cabecalho} {dados.get('texto') or ''}")
+    if numero.digitos not in digitos:
+        raise RuntimeError("a página aberta pela consulta não traz este número de processo; "
+                           "não baixei, para não gravar autos trocados")
+    cd_pagina = str(dados.get("cd") or "").strip()
+    if cd_pagina and codigo and cd_pagina != codigo:
+        raise RuntimeError("a página aberta não é a do processo escolhido na consulta; "
+                           "não baixei, para não gravar autos trocados")
+    deps = dependentes_da_pagina(na_pagina, cabecalho)
+    queria = _dependente_normal(numero.dependente)
+    if queria:
+        # o que a página diz vale; o código do 2º grau só confirma quando a
+        # página não diz dependente nenhum
+        if deps:
+            declara = queria in deps
+        else:
+            declara = len(queria) == 5 and _ordem_no_codigo_2g(cd_pagina or codigo) == int(queria)
+        if not declara:
+            raise RuntimeError(
+                f"a página aberta para o recurso /{numero.dependente} não se declara esse "
+                "recurso; não baixei, para não gravar autos trocados")
+    elif deps:
+        raise RuntimeError(
+            "a página aberta é a de um recurso interno do 2º grau (/"
+            + ", /".join(sorted(deps)) + "), e não a do processo pedido; não baixei, para "
+            "não gravar autos trocados")
+
+
+def prefixo_da_pasta(url: str) -> str:
+    """O caminho da Pasta Digital, tirado do endereço que o portal devolveu:
+    '/pastadigital' (1º grau) ou '/pastadigital/sg' (2º grau, por exemplo).
+    É nele que ficam salvarDocumentoPreparado.do, buscarDocumentoFinalizado.do,
+    getPDF.do e getArquivo.do."""
+    caminho = urllib.parse.urlsplit(url or "").path
+    return caminho.rsplit("/", 1)[0] if "/" in caminho.strip("/") else "/pastadigital"
+
+
+def folhas_em_duplicidade(pecas: list[dict]) -> list[int]:
+    """As folhas que peças DIFERENTES (cdDocumento diferente) dizem ocupar.
+
+    Numa Pasta Digital com duas numerações (a dos autos de origem e a do 2º
+    grau recomeçando em 1), o plano de folhas daria cada folha à primeira
+    peça e as outras sumiriam de um PDF dado como completo. A mesma peça
+    listada duas vezes não conta (é o "listada duas vezes", que entra uma)."""
+    donos: dict[int, set[str]] = {}
+    for i, p in enumerate(pecas or []):
+        ini, fim = _inteiro(p.get("pagina_inicial")), _inteiro(p.get("pagina_final"))
+        if ini is None or fim is None or ini < 1 or fim < ini or fim - ini >= LIMITE_FAIXA:
+            continue
+        documento = str(p.get("cdDocumento") or p.get("parametros") or f"#{i}")
+        for f in range(ini, fim + 1):
+            donos.setdefault(f, set()).add(documento)
+    return sorted(f for f, docs in donos.items() if len(docs) > 1)
 
 
 _FRASES_NAO_ENCONTRADO = ("nao existem informacoes disponiveis", "nao encontrado",
@@ -689,7 +956,15 @@ def _limpo(texto, limite: int = 2000) -> str:
 # "resumo" e "ultima", só com o manifesto).
 CHAVES_CAPA = {"Classe": "classe", "Assunto": "assunto", "Foro": "foro", "Vara": "vara",
                "Juiz": "juiz", "Distribuição": "distribuicao", "Valor da ação": "valor",
-               "Situação": "situacao", "Área": "area", "Controle": "controle"}
+               "Situação": "situacao", "Área": "area", "Controle": "controle",
+               # os rótulos da página do 2º grau (CPOSG)
+               "Seção": "secao", "Órgão julgador": "orgao_julgador",
+               "Órgão Julgador": "orgao_julgador", "Relator": "relator", "Origem": "origem"}
+# As seções que só a página do 2º grau tem (achadas pelo título, como as
+# outras), na ordem em que vão para o capa.txt.
+SECOES_CAPA_2G = (("numeros_1a_instancia", "Números de 1ª Instância"),
+                  ("composicao", "Composição do Julgamento"),
+                  ("julgamentos", "Julgamentos"))
 
 
 def _chave_da_capa(rotulo) -> str:
@@ -747,17 +1022,93 @@ def linhas_da_secao(chave: str, linhas) -> list[dict]:
     return saida
 
 
+def _celulas(linha, limite: int = 1000) -> list[str]:
+    """As células de uma linha de seção, NA POSIÇÃO (as vazias ficam)."""
+    if not isinstance(linha, dict):
+        return []
+    return [_limpo(c, limite) for c in linha.get("celulas") or []]
+
+
+def _linha_vazia_ou_aviso(celulas: list[str]) -> bool:
+    cheias = [c for c in celulas if c]
+    return not cheias or (len(cheias) == 1 and bool(re.match(r"(?i)n[aã]o h[aá]\b|nenhum",
+                                                               cheias[0])))
+
+
+def numeros_de_1a_instancia(linhas) -> list[dict]:
+    """A tabela "Números de 1ª Instância" da página do 2º grau: o processo de
+    origem (e os demais do 1º grau ligados ao recurso), com foro, vara, juiz,
+    observação e se é o principal. "numero" vem no formato CNJ (é por ele que
+    o motor herda o sigilo da ação de origem), ou "" se a célula não traz
+    número legível."""
+    saida = []
+    for linha in linhas or []:
+        celulas = _celulas(linha, 500)
+        if _linha_vazia_ou_aviso(celulas):
+            continue
+        primeira = celulas[0] if celulas else ""
+        try:
+            numero = cnj.ler(primeira).formatado
+        except cnj.NumeroInvalido:
+            if "instancia" in sem_acento(primeira):
+                continue                  # o cabeçalho da tabela ("Nº de 1ª instância")
+            numero = ""
+        foro, vara, juiz, obs = (celulas[1:] + ["", "", "", ""])[:4]
+        saida.append({"numero": numero, "foro": foro, "vara": vara, "juiz": juiz,
+                      "obs": "" if obs in ("-", "–", "—") else obs,
+                      "principal": "principal" in sem_acento(primeira)})
+    return saida
+
+
+def composicao_do_julgamento(linhas) -> list[dict]:
+    """A "Composição do Julgamento" do 2º grau: relator, revisor, vogais."""
+    saida = []
+    for linha in linhas or []:
+        celulas = [c for c in _celulas(linha, 300) if c]
+        if len(celulas) < 2 or sem_acento(celulas[0]).startswith("participacao"):
+            continue
+        saida.append({"papel": celulas[0].rstrip(":").strip(), "nome": " ".join(celulas[1:])})
+    return saida
+
+
+def julgamentos_da_capa(linhas) -> list[dict]:
+    """Os "Julgamentos" do 2º grau: data, situação e decisão de cada sessão."""
+    saida = []
+    for linha in linhas or []:
+        celulas = _celulas(linha, 4000)
+        if _linha_vazia_ou_aviso(celulas):
+            continue
+        data, situacao, decisao = (celulas + ["", "", ""])[:3]
+        if not _RE_DATA_CAPA.search(data) and sem_acento(data).startswith("data"):
+            continue                      # o cabeçalho da tabela
+        saida.append({"data": data, "situacao": situacao,
+                      "decisao": " ".join(c for c in [decisao, *celulas[3:]] if c)})
+    return saida
+
+
 def dados_da_capa(info: dict, numero: Numero, sigla: str, sigiloso: bool = False,
-                  manifesto: dict | None = None, quando: datetime | None = None) -> dict:
+                  manifesto: dict | None = None, quando: datetime | None = None,
+                  grau: str = "1g") -> dict:
     """_controle/<número>_capa.json: a capa v2, legível por máquina (a skill do
-    Claude a lê pelo "capa_json" do --json do baixar)."""
+    Claude a lê pelo "capa_json" do --json do baixar).
+
+    Com ``grau="2g"`` (a capa dos autos do 2º grau), vão também "grau": "2g"
+    e, no nível de cima, ao lado de "incidentes" e "movimentacoes", as listas
+    da página do 2º grau: "numeros_1a_instancia" (é dela, e só dela, que o
+    motor lê a ação de origem para o sigilo herdado), "composicao",
+    "julgamentos" e "subprocessos" (as linhas de "Incidentes, ações
+    incidentais, recursos...", as mesmas de "incidentes"). O objeto "capa"
+    continua só com os rótulos da página e seus textos. No 1º grau, nada
+    disso: o capa.json de sempre."""
     quando = quando or datetime.now()
+    segundo = cnj.normalizar_grau(grau) == "2g"
     marcas, sinais = marcas_da_capa(info, sigiloso)
     extras = info.get("extras") if isinstance(info.get("extras"), dict) else {}
     secoes = info.get("secoes") if isinstance(info.get("secoes"), dict) else {}
     dados = {
         "formato": FORMATO_CAPA,
         "sistema": "esaj",
+        **({"grau": paginacao.SEGUNDO_GRAU} if segundo else {}),
         "tribunal": sigla,
         "processo": numero.formatado,
         "extraido_em": quando.isoformat(timespec="seconds"),
@@ -778,6 +1129,12 @@ def dados_da_capa(info: dict, numero: Numero, sigla: str, sigiloso: bool = False
     }
     for chave, _titulo in SECOES_CAPA:
         dados[chave] = linhas_da_secao(chave, secoes.get(chave))
+    if segundo:
+        dados["numeros_1a_instancia"] = numeros_de_1a_instancia(
+            secoes.get("numeros_1a_instancia"))
+        dados["composicao"] = composicao_do_julgamento(secoes.get("composicao"))
+        dados["julgamentos"] = julgamentos_da_capa(secoes.get("julgamentos"))
+        dados["subprocessos"] = [dict(x) for x in dados["incidentes"]]
     if paginacao.valido(manifesto):
         dados["paginacao"] = {"resumo": paginacao.resumo(manifesto),
                               "ultima": int(manifesto.get("ultima") or 0),
@@ -787,8 +1144,27 @@ def dados_da_capa(info: dict, numero: Numero, sigla: str, sigiloso: bool = False
     return dados
 
 
+def _linhas_da_capa_2g(d: dict) -> list[str]:
+    """As seções que só a capa do 2º grau tem, para o capa.txt."""
+    linhas: list[str] = []
+    textos = {
+        "numeros_1a_instancia": lambda x: " - ".join(
+            c for c in (x["numero"] + (" (principal)" if x["principal"] else ""),
+                        x["foro"], x["vara"], x["juiz"], x["obs"]) if c),
+        "composicao": lambda x: f"{x['papel']}: {x['nome']}",
+        "julgamentos": lambda x: (f"{x['data']}  " if x["data"] else "") + " - ".join(
+            c for c in (x["situacao"], x["decisao"]) if c),
+    }
+    for chave, titulo in SECOES_CAPA_2G:
+        itens = d.get(chave) or []
+        if itens:
+            linhas += ["", f"== {titulo} ({len(itens)}) =="] + [textos[chave](x) for x in itens]
+    return linhas
+
+
 def formatar_capa(info: dict, numero: Numero, sigla: str, sigiloso: bool = False,
-                  manifesto: dict | None = None, quando: datetime | None = None) -> str:
+                  manifesto: dict | None = None, quando: datetime | None = None,
+                  grau: str = "1g") -> str:
     """_controle/<número>_capa.txt: a capa v2 para ler (os títulos "== Capa ==",
     "== Partes ==" e "== Movimentações (N) ==" ficam como na 1.0.1). Todas as
     movimentações - só as da tabela de movimentações, sem limite de 60 -, as
@@ -797,10 +1173,15 @@ def formatar_capa(info: dict, numero: Numero, sigla: str, sigiloso: bool = False
 
     "SEGREDO DE JUSTIÇA" vai no topo: o motor o procura nos primeiros 2000
     caracteres para manter o processo fora do acervo nas próximas rodadas.
+
+    Com ``grau="2g"``: o cabeçalho diz "(e-SAJ, 2º grau)", o "Como citar" fala
+    da Pasta Digital do 2º grau, e vêm no fim os números de 1ª instância, a
+    composição do julgamento e os julgamentos. No 1º grau, o capa.txt de sempre.
     """
     quando = quando or datetime.now()
-    d = dados_da_capa(info, numero, sigla, sigiloso, manifesto, quando)
-    linhas =[f"Processo {numero.formatado} - {sigla} (e-SAJ, 1º grau)",
+    segundo = cnj.normalizar_grau(grau) == "2g"
+    d = dados_da_capa(info, numero, sigla, sigiloso, manifesto, quando, grau=grau)
+    linhas =[f"Processo {numero.formatado} - {sigla} (e-SAJ, {'2º' if segundo else '1º'} grau)",
               f"Capa extraída da consulta em {quando:%d/%m/%Y %H:%M}", ""]
     if sigiloso:
         linhas += ["SEGREDO DE JUSTIÇA - processo sigiloso. Não compartilhe.", ""]
@@ -814,11 +1195,21 @@ def formatar_capa(info: dict, numero: Numero, sigla: str, sigiloso: bool = False
         linhas += ["== Partes =="] + d["partes"] + [""]
     if d.get("paginacao"):
         p = d["paginacao"]
-        linhas += ["== Arquivo ==",
-                   f"Folhas 1 a {p['ultima']} (última oferecida pela Pasta Digital)",
-                   f"Paginação: {p['resumo']}",
-                   "Como citar: \"fl. N\" - a página N do PDF é sempre a folha N da Pasta Digital; "
-                   "a folha com página de aviso não veio do e-SAJ (não a use como prova).", ""]
+        if segundo:
+            linhas += ["== Arquivo ==",
+                       f"Folhas 1 a {p['ultima']} (última oferecida pela Pasta Digital do 2º grau)",
+                       f"Paginação: {p['resumo']}",
+                       "Como citar: \"fl. N\" - a página N do PDF é sempre a folha N da Pasta "
+                       "Digital do 2º grau (a folha dos autos de origem, no 1º grau, pode ser "
+                       "outra); a folha com página de aviso não veio do e-SAJ (não a use como "
+                       "prova).", ""]
+        else:
+            linhas += ["== Arquivo ==",
+                       f"Folhas 1 a {p['ultima']} (última oferecida pela Pasta Digital)",
+                       f"Paginação: {p['resumo']}",
+                       "Como citar: \"fl. N\" - a página N do PDF é sempre a folha N da Pasta "
+                       "Digital; a folha com página de aviso não veio do e-SAJ (não a use como "
+                       "prova).", ""]
     movs = d["movimentacoes"]
     linhas.append(f"== Movimentações ({len(movs)}) ==")
     if movs:
@@ -831,28 +1222,39 @@ def formatar_capa(info: dict, numero: Numero, sigla: str, sigiloso: bool = False
             continue
         linhas += ["", f"== {titulo} ({len(itens)}) =="]
         linhas += [(f"{x['data']}  {x['texto']}" if x["data"] else x["texto"]) for x in itens]
+    if segundo:
+        linhas += _linhas_da_capa_2g(d)
     return "\n".join(linhas) + "\n"
 
 
 # --------------------------------------------------------- JS da página
-_JS_PAGINA_PROCESSO = r"""() => {
+_JS_PAGINA_PROCESSO = r"""(a) => {
+    // a = {grau: '2g'} na página do 2º grau (CPOSG); sem argumento, 1º grau.
+    const segundo = !!(a && a.grau === '2g');
     const limpa = s => (s || '').replace(/\s+/g, ' ').trim();
     const semAcento = s => limpa(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
     const texto = el => limpa(el ? (el.innerText || el.textContent) : '');
     // Texto para detectar segredo - o essencial, lido primeiro e fora dos
     // extras: a página inteira MENOS as movimentações ("retirado o segredo de
     // justiça" não faz o processo sigiloso) e menos o modal de senha, que
-    // existe escondido em toda página.
+    // existe escondido em toda página (o do 2º grau, #popupSenhaProcesso,
+    // diz "segredo de justiça" no texto, e pede senha também para autos que
+    // não são sigilosos).
     let resto = (document.body && document.body.innerText) || '';
     document.querySelectorAll(
         '#tabelaUltimasMovimentacoes, #tabelaTodasMovimentacoes, #popupSenha, ' +
-        '#senhaProcesso, [id*="Movimentac"], .modal'
+        '#popupSenhaProcesso, #senhaProcesso, [id*="Movimentac"], .modal'
     ).forEach(el => {
         const t = el.innerText || '';
         if (t) resto = resto.split(t).join(' ');
     });
     const capa = {};
-    const campos = {
+    const campos = segundo ? {
+        'Classe': '#classeProcesso', 'Assunto': '#assuntoProcesso',
+        'Seção': '#secaoProcesso', 'Órgão julgador': '#orgaoJulgadorProcesso',
+        'Relator': '#relatorProcesso', 'Valor da ação': '#valorAcaoProcesso',
+        'Situação': '#situacaoProcesso', 'Área': '#areaProcesso',
+    } : {
         'Classe': '#classeProcesso', 'Assunto': '#assuntoProcesso',
         'Foro': '#foroProcesso', 'Vara': '#varaProcesso', 'Juiz': '#juizProcesso',
         'Distribuição': '#dataHoraDistribuicaoProcesso',
@@ -862,6 +1264,15 @@ _JS_PAGINA_PROCESSO = r"""() => {
     for (const [rot, sel] of Object.entries(campos)) {
         const v = texto(document.querySelector(sel));
         if (v) capa[rot] = v;
+    }
+    if (segundo) {
+        // "Origem" (comarca / foro / vara de origem) não tem id: o rótulo e o
+        // valor ao lado
+        for (const el of document.querySelectorAll('.unj-label')) {
+            if (semAcento(el.textContent).replace(/:$/, '') !== 'origem') continue;
+            const v = texto(el.nextElementSibling);
+            if (v) { capa['Origem'] = v; break; }
+        }
     }
     // Partes: a tabela de todas; sem ela, a das principais (juntar as duas
     // repetia cada parte)
@@ -879,9 +1290,14 @@ _JS_PAGINA_PROCESSO = r"""() => {
     const secoes = {};
     const tabelasDeSecao = new Set();
     try {
-        const SECOES = {incidentes: /^incidentes/, apensos: /^apensos/, audiencias: /^audiencias/,
-                        historico_classes: /^historico de classes/,
-                        peticoes_diversas: /^peticoes diversas/};
+        const SECOES = segundo ? {
+            numeros_1a_instancia: /^numeros de 1/, incidentes: /^(incidentes|subprocessos)/,
+            apensos: /^apensos/, audiencias: /^audiencias/,
+            historico_classes: /^historico de classes/, peticoes_diversas: /^peticoes diversas/,
+            composicao: /^composicao do julgamento/, julgamentos: /^julgamentos/,
+        } : {incidentes: /^incidentes/, apensos: /^apensos/, audiencias: /^audiencias/,
+             historico_classes: /^historico de classes/,
+             peticoes_diversas: /^peticoes diversas/};
         const titulos = Array.from(document.querySelectorAll(
             'h1, h2, h3, h4, h5, .subtitle, .tituloDoBloco'));
         const ehTitulo = new Set(titulos);
@@ -891,17 +1307,24 @@ _JS_PAGINA_PROCESSO = r"""() => {
             if (!chave || secoes[chave]) continue;
             const w = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
             w.currentNode = h;
-            let tabela = null, n;
+            // No 1º grau, a primeira tabela depois do título; no 2º, todas até
+            // o título seguinte (lá o cabeçalho da tabela é uma tabela à parte,
+            // e as linhas vêm na seguinte).
+            const tabelas = [];
+            let n;
             while ((n = w.nextNode())) {
                 if (h.contains(n)) continue;
                 if (ehTitulo.has(n)) break;
-                if (n.tagName === 'TABLE') { tabela = n; break; }
+                if (n.tagName !== 'TABLE' || tabelas.some(x => x.contains(n))) continue;
+                tabelas.push(n);
+                if (!segundo) break;
             }
             const linhas = [];
-            if (tabela) {
+            for (const tabela of tabelas) {
                 tabelasDeSecao.add(tabela);
                 tabela.querySelectorAll('tr').forEach(tr => {
                     if (tr.closest('table') !== tabela) return;     // tabela aninhada
+                    if (segundo && tr.classList.contains('label')) return;   // cabeçalho
                     const tds = Array.from(tr.cells || []).filter(c => c.tagName === 'TD');
                     if (!tds.length) return;
                     const a = tr.querySelector('a[href*="processo.codigo="]');
@@ -954,7 +1377,9 @@ _JS_PAGINA_PROCESSO = r"""() => {
             const t = texto(el);
             if (t && !marcas.includes(t)) marcas.push(t);
         });
-        cabecalho = texto(document.querySelector('#containerDadosPrincipaisProcesso'));
+        cabecalho = texto(document.querySelector('#containerDadosPrincipaisProcesso')
+                          || (segundo ? document.querySelector('.unj-entity-header__summary')
+                                      : null));
         for (const v of Object.values(capa)) if (v) cabecalho = cabecalho.split(v).join(' ');
         // Outros números, processo principal...: o rótulo e o valor ao lado
         const EXTRAS = {outros_numeros: /^outros numeros/, local_fisico: /^local fisico/,
@@ -990,12 +1415,77 @@ _JS_PAGINA_PROCESSO = r"""() => {
 }"""
 
 _JS_MODAL_SENHA = r"""() => {
-    const el = document.querySelector('#senhaProcesso, #popupSenha');
-    if (!el) return false;
-    const e = getComputedStyle(el);
-    if (e.display === 'none' || e.visibility === 'hidden') return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
+    // o modal de senha do 1º grau (#popupSenha) e o do 2º (#popupSenhaProcesso);
+    // o campo da senha é o mesmo (#senhaProcesso). Conta só se VISÍVEL.
+    const visivel = el => {
+        const e = getComputedStyle(el);
+        if (e.display === 'none' || e.visibility === 'hidden') return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+    };
+    return Array.from(document.querySelectorAll(
+        '#senhaProcesso, #popupSenha, #popupSenhaProcesso')).some(visivel);
+}"""
+
+# A resposta da consulta de 2º grau, de uma vez: as opções das três formas
+# que ela tem - a página do processo (input cdProcesso; na tabela de
+# incidentes, os recursos internos "... - 50000"), o modal "Selecione o
+# processo" (#modalIncidentes: um rádio processoSelecionado por processo, o
+# número em .modal__process-choice__number e, nos dependentes, o título
+# "50000 - Embargos de Declaração...") e a lista (#listagemDeProcessos).
+_JS_RESPOSTA_2G = r"""() => {
+    const t = el => (el ? (el.textContent || '') : '').replace(/\s+/g, ' ').trim();
+    const cod = h => { const m = /processo\.codigo=([A-Za-z0-9]+)/.exec(h || '');
+                       return m ? m[1] : ''; };
+    const out = [];
+    const cd = document.querySelector('input[name="cdProcesso"]');
+    if (cd && cd.value) {
+        const numero = t(document.querySelector('#numeroProcesso'));
+        out.push({origem: 'pagina', codigo: cd.value, numero,
+                  titulo: t(document.querySelector('#classeProcesso')), dependente: ''});
+        document.querySelectorAll('a[href*="processo.codigo="]').forEach(a => {
+            const c = cod(a.getAttribute('href'));
+            const titulo = t(a);
+            const m = /-\s*(\d{5})$/.exec(titulo);
+            if (c && c !== cd.value && m)
+                out.push({origem: 'incidente', codigo: c, numero, titulo, dependente: m[1]});
+        });
+    }
+    document.querySelectorAll('#modalIncidentes input[name="processoSelecionado"]').forEach(r => {
+        const secao = r.closest('section, .modal__lista-processos__item');
+        const numero = t(secao && secao.querySelector('.modal__process-choice__number'));
+        const dep = r.closest('.list__hierarquia-dependentes__item, .list__dependentes_row');
+        let titulo = '', dependente = '';
+        if (dep) {
+            titulo = t(dep.querySelector('.list__hierarquia-dependentes__item__label__info__title'))
+                     || t(dep);
+            const m = /^(\d{1,5})\s*-/.exec(titulo);
+            dependente = m ? m[1] : '?';
+        } else {
+            titulo = t(secao && secao.querySelector(
+                '.modal__lista-processos__item__header__process-info__content__item'));
+        }
+        out.push({origem: 'modal', codigo: r.value || '', numero, titulo, dependente});
+    });
+    document.querySelectorAll('#listagemDeProcessos a[href*="processo.codigo="]').forEach(a => {
+        const linha = a.closest('tr, li, .row, div');
+        out.push({origem: 'lista', codigo: cod(a.getAttribute('href')), numero: t(a),
+                  titulo: t(linha), dependente: ''});
+    });
+    return {candidatos: out, mensagem: t(document.querySelector('#mensagemRetorno')),
+            texto: ((document.body && document.body.innerText) || '').slice(0, 20000)};
+}"""
+
+# O que identifica a página aberta no 2º grau (para conferir_pagina_2g).
+_JS_IDENTIDADE_2G = r"""() => {
+    const t = el => (el ? (el.textContent || '') : '').replace(/\s+/g, ' ').trim();
+    const cab = document.querySelector('.unj-entity-header__summary')
+                || document.querySelector('#containerDadosPrincipaisProcesso')
+                || document.querySelector('.unj-entity-header');
+    const cd = document.querySelector('input[name="cdProcesso"]');
+    return {numero: t(document.querySelector('#numeroProcesso')), cabecalho: t(cab).slice(0, 4000),
+            cd: cd ? (cd.value || '') : '',
+            texto: ((document.body && document.body.innerText) || '').slice(0, 300000)};
 }"""
 
 _JS_BUSCAR_TEXTO = r"""async (a) => {
@@ -1007,12 +1497,20 @@ _JS_BUSCAR_TEXTO = r"""async (a) => {
 
 # ============================================================== o portal
 class PortalESAJ:
-    """Login e download no e-SAJ de um tribunal (1º grau, CPOPG)."""
+    """Login e download no e-SAJ de um tribunal: 1º grau (CPOPG) ou 2º grau
+    (CPOSG), conforme o grau do Tribunal (tribunal.no_grau("2g"))."""
 
     sistema = "esaj"
 
     def __init__(self, nav, tribunal, opcoes, ctx: Contexto | None,
-                 credenciais: tuple[str, str] | None):
+                 credenciais: tuple[str, str] | None, *, grau: str | None = None):
+        # O grau tem UMA fonte, o Tribunal: o motor escolhe por tribunal.portal
+        # o cofre, as credenciais e o perfil do navegador. Um grau= que
+        # vencesse o do Tribunal mandaria a senha de um grau ao portal do outro.
+        self.grau = getattr(tribunal, "grau", "1g") or "1g"
+        if grau is not None and cnj.normalizar_grau(grau) != self.grau:
+            raise ValueError(f"o grau pedido ({grau}) não é o do tribunal ({self.grau}): "
+                             f"passe tribunal.no_grau('{cnj.normalizar_grau(grau) or grau}')")
         self.nav = nav
         self.tribunal = tribunal
         self.opcoes = opcoes
@@ -1022,6 +1520,27 @@ class PortalESAJ:
             raise PortalIndisponivel(
                 f"o catálogo de tribunais não traz o endereço do e-SAJ do {tribunal.sigla}. "
                 "Corrija o arquivo dados\\tribunais.json (campo urls.base).")
+        if self.grau == "2g":
+            candidatos = tribunal.urls_para(None, "2g") if hasattr(tribunal, "urls_para") \
+                else [tribunal.urls.get("2g") or ""]
+            app = (candidatos[0] if candidatos else "").rstrip("/")
+            if not app:
+                raise PortalIndisponivel(
+                    f"o catálogo de tribunais não traz o endereço do 2º grau do e-SAJ do "
+                    f"{tribunal.sigla} (a consulta de 2º grau, campo urls.2g): o 2º grau desse "
+                    "tribunal ainda não é baixado pelo Helestron. Baixe os autos pelo portal "
+                    "do tribunal.")
+        else:
+            app = f"{self.base}/cpopg"
+        self.rotas = RotasESAJ(self.grau, self.base, app)
+        # A consulta de 2º grau já reconheceu o login desta sessão (passou-se
+        # pela porta de entrada dela depois do último login)?
+        self._consulta_2g_aberta = False
+        # O caminho da Pasta Digital no servidor (salvarDocumentoPreparado.do,
+        # buscarDocumentoFinalizado.do) e o endereço das peças (getPDF.do):
+        # /pastadigital no 1º grau; no 2º, o da URL que o portal devolve.
+        self._prefixo_pasta = "/pastadigital"
+        self._raiz_pasta = f"{self.base}/pastadigital"
         self.usuario, self.senha = (credenciais or ("", ""))
         self.modo = opcoes.modo_login("esaj")
         self.sel = carregar_seletores()
@@ -1040,7 +1559,12 @@ class PortalESAJ:
     # ----------------------------------------------------------- atalhos
     @property
     def nome(self) -> str:
-        return f"e-SAJ do {self.tribunal.sigla}"
+        """'e-SAJ do TJAL'; no 2º grau, 'e-SAJ do TJAL (2º grau)'."""
+        return f"e-SAJ do {self.tribunal.sigla}" + (" (2º grau)" if self.grau == "2g" else "")
+
+    def _diag(self, rotulo: str) -> str:
+        """O nome da captura em Logs\\diagnostico: 'esaj-...' ou 'esaj2g-...'."""
+        return f"{self.rotas.diagnostico}-{rotulo}"
 
     @property
     def pg(self):
@@ -1202,7 +1726,7 @@ class PortalESAJ:
         return False
 
     def _falha_de_credencial(self) -> LoginFalhou:
-        self.nav.diagnosticar("esaj-login-recusado")
+        self.nav.diagnosticar(self._diag("login-recusado"))
         self.nav.esquecer_sessao()
         return LoginFalhou(
             f"o {self.nome} recusou o usuário ou a senha. Confira-os {ONDE_CADASTRAR_ACESSO} "
@@ -1223,7 +1747,7 @@ class PortalESAJ:
             self._checar_cancelado()
             expirada = self._senha_expirada()
             if expirada:
-                self.nav.diagnosticar("esaj-senha-expirada")
+                self.nav.diagnosticar(self._diag("senha-expirada"))
                 raise LoginFalhou(
                     f"o {self.nome} diz que a sua senha expirou ({expirada}). Troque a "
                     f"senha no próprio portal e atualize-a em {AJUSTES_ACESSOS}.")
@@ -1274,7 +1798,7 @@ class PortalESAJ:
         if self._sondar_sessao():
             return True
         log.warning("  o portal respondeu: %s", self._recado_da_tela() or "(nada)")
-        self.nav.diagnosticar("esaj-codigo-recusado")
+        self.nav.diagnosticar(self._diag("codigo-recusado"))
         return False
 
     def _recado_da_tela(self) -> str:
@@ -1346,10 +1870,10 @@ class PortalESAJ:
                         f"O {self.nome} enviou um código de verificação para o seu e-mail "
                         "(o cadastrado no portal). Digite-o na janela do navegador que se "
                         "abriu, no campo do código, e clique em Enviar.",
-                        "esaj-codigo-prazo", motivo="codigo", limite=limite)
+                        self._diag("codigo-prazo"), motivo="codigo", limite=limite)
                     log.info("Código aceito na janela do navegador.")
                     return True
-                self.nav.diagnosticar("esaj-codigo-nao-informado")
+                self.nav.diagnosticar(self._diag("codigo-nao-informado"))
                 raise LoginFalhou(
                     "o código de verificação enviado por e-mail não foi informado. "
                     f"Clique em “{TENTAR_DE_NOVO}” quando estiver com ele em mãos (pela linha "
@@ -1376,7 +1900,7 @@ class PortalESAJ:
             recado = ("O portal não aceitou o código anterior (errado ou vencido). "
                       + ("Pedi outro; confira o e-mail. " if self._pedir_codigo_novo()
                          else "Confira o código no e-mail e digite de novo. "))
-        self.nav.diagnosticar("esaj-codigo-recusado")
+        self.nav.diagnosticar(self._diag("codigo-recusado"))
         raise LoginFalhou(
             "não consegui concluir a verificação por código: o portal recusou os códigos "
             "informados, ou o prazo acabou. Tente de novo em alguns minutos.")
@@ -1409,11 +1933,16 @@ class PortalESAJ:
             pass
 
     def entrar(self) -> None:
-        """Garante uma sessão autenticada. Reaproveita a anterior se valer."""
+        """Garante uma sessão autenticada. Reaproveita a anterior se valer.
+
+        No 2º grau, o login é o mesmo (o CAS do portal) e termina na porta de
+        entrada da consulta de 2º grau, conferindo que ela abriu: é o que o
+        "Testar" do 2º grau prova."""
         self._checar_cancelado()
         # O canal pelo proxy leva uma CÓPIA dos cookies de quando foi criado:
         # depois de um novo login, ele baixaria com a sessão velha.
         self._descartar_canal_proxy()
+        self._consulta_2g_aberta = False
         try:
             if self.modo == "certificado":
                 self._entrar_por_certificado()
@@ -1421,6 +1950,8 @@ class PortalESAJ:
                 self._entrar_manualmente()
             else:
                 self._entrar_com_senha()
+            if self.grau == "2g":
+                self._abrir_consulta_2g()
         except (Cancelado, LoginFalhou, PortalIndisponivel):
             raise
         except Exception as erro:
@@ -1428,7 +1959,7 @@ class PortalESAJ:
             # trocou): o grupo para com uma explicação, não com um rastro
             if self.ctx.cancelado():
                 raise Cancelado() from erro
-            self.nav.diagnosticar("esaj-login-erro")
+            self.nav.diagnosticar(self._diag("login-erro"))
             raise PortalIndisponivel(
                 f"o login no {self.nome} não pôde ser concluído "
                 f"({explicar_erro(str(erro))}). Tente de novo; se persistir, ligue "
@@ -1480,14 +2011,14 @@ class PortalESAJ:
                 pass
         else:
             if sem_campos:
-                self.nav.diagnosticar("esaj-login-sem-campos")
+                self.nav.diagnosticar(self._diag("login-sem-campos"))
                 raise PortalIndisponivel(
                     "a tela de login do e-SAJ não trouxe os campos de usuário e senha em "
                     "três tentativas. Veja a captura em Logs\\diagnostico: se mostrar a "
                     "tela de login normal, o portal mudou (os seletores se ajustam em "
                     f"{caminhos.LOCAL / 'seletores.json'}); se mostrar outra página, o portal está "
                     "instável - tente mais tarde.")
-            self.nav.diagnosticar("esaj-login-instavel")
+            self.nav.diagnosticar(self._diag("login-instavel"))
             raise PortalIndisponivel(
                 "a tela de login do e-SAJ trocou de página sozinha durante o preenchimento, "
                 f"nas três tentativas ({str(ultimo)[:120]}). O portal parece instável: tente "
@@ -1500,7 +2031,7 @@ class PortalESAJ:
             texto = self._texto_da_pagina(self._pagina_token or self.pg)
             if recusou_credenciais(texto) or self._recusa_na_tela():
                 raise self._falha_de_credencial()
-            self.nav.diagnosticar("esaj-login-incompleto")
+            self.nav.diagnosticar(self._diag("login-incompleto"))
             if not pediu_codigo:
                 raise LoginFalhou(
                     "o portal aceitou o formulário, mas não abriu a tela do código de "
@@ -1512,13 +2043,56 @@ class PortalESAJ:
                 f"escolha “{ENTRAR_MANUALMENTE}” em {AJUSTES_ACESSOS}.")
         log.info("Login concluído.")
 
+    def _na_consulta_2g(self, url: str) -> bool:
+        """O endereço é o da consulta de 2º grau (e não o do login do CAS)?"""
+        if "sajcas/login" in (url or ""):
+            return False
+        alvo = urllib.parse.urlsplit(self.rotas.app)
+        aqui = urllib.parse.urlsplit(url or "")
+        return (aqui.netloc == alvo.netloc
+                and (aqui.path.rstrip("/") + "/").startswith(self.rotas.caminho + "/"))
+
+    def _abrir_consulta_2g(self) -> None:
+        """Passa pela porta de entrada da consulta de 2º grau (open.do com
+        gateway=true) e confere que ela abriu.
+
+        É o "SSO por webapp" do e-SAJ: o login do CAS só passa a valer na
+        consulta de 2º grau depois de uma passada por ela. Sem isso, a Pasta
+        Digital do 2º grau responde "Não foi possível validar o seu acesso" com
+        a sessão do portal de pé - e o processo viraria "sem acesso", que é
+        definitivo."""
+        self.ctx.status(f"Abrindo a consulta de 2º grau do e-SAJ do {self.tribunal.sigla}...")
+        self.ir_para(self.rotas.gateway, timeout=max(45000, self.espera_ms))
+        self._esperar_carga()
+        url = self.pg.url or ""
+        if self._na_consulta_2g(url) and self._estado_sessao(self.pg) is not False:
+            self._consulta_2g_aberta = True
+            log.info("Consulta de 2º grau aberta (%s).", self.rotas.caminho)
+            return
+        self.nav.diagnosticar(self._diag("consulta-nao-abriu"))
+        if "sajcas/login" in url and not self.sessao_ativa():
+            raise SessaoPerdida(f"a sessão do {self.nome} caiu antes da consulta de 2º grau")
+        raise PortalIndisponivel(
+            f"a consulta de 2º grau do e-SAJ do {self.tribunal.sigla} não abriu depois do login "
+            f"(o portal mandou para {urllib.parse.urlsplit(url).path or 'outra página'}). "
+            f"Tente de novo; se persistir, ligue “{MOSTRAR_NAVEGADOR}” para acompanhar.")
+
+    def _garantir_consulta_2g(self) -> None:
+        """Antes da busca do 2º grau: se a sessão foi refeita sem passar pela
+        consulta de 2º grau, passa agora."""
+        if self.grau == "2g" and not self._consulta_2g_aberta:
+            self._abrir_consulta_2g()
+
     def _evento(self, tipo: str, **dados) -> None:
         """Evento legível por máquina para quem acompanha (a skill do Claude,
         pela linha de comando): "login_aguardando", "login_concluido"...
-        Contexto sem ``evento`` (versão anterior) não recebe nada."""
+        Contexto sem ``evento`` (versão anterior) não recebe nada. No 2º grau
+        o evento leva "grau": "2g" (no 1º, o campo não vai)."""
         ev = getattr(self.ctx, "evento", None)
         if not callable(ev):
             return
+        if self.grau == "2g":
+            dados.setdefault("grau", paginacao.SEGUNDO_GRAU)
         try:
             ev(tipo, **dados)
         except Exception as erro:          # o evento é aviso, nunca derruba o login
@@ -1578,7 +2152,7 @@ class PortalESAJ:
                         "pela Chrome Web Store na janela que se abriu (procure "
                         "'Web Signer'). " + mensagem)
         self._esperar_login_na_janela("Entre com o certificado digital", mensagem,
-                                      "esaj-certificado-prazo", motivo="certificado")
+                                      self._diag("certificado-prazo"), motivo="certificado")
 
     def _entrar_manualmente(self) -> None:
         self.nav.ir(URL_ENTRADA.format(base=self.base))
@@ -1591,7 +2165,7 @@ class PortalESAJ:
             f"Entre no {self.nome}",
             "Conclua o login na janela do navegador que se abriu (usuário e senha, "
             "código por e-mail ou certificado, como de costume).",
-            "esaj-manual-prazo", motivo="manual")
+            self._diag("manual-prazo"), motivo="manual")
 
     # ------------------------------------------------------- diagnóstico
     def _tela_sigilosa(self, numero: Numero | None = None,
@@ -1620,7 +2194,7 @@ class PortalESAJ:
     def baixar(self, numero: Numero, destino_pdf: Path, senha: str | None = None) -> ResultadoProcesso:
         destino_pdf = Path(destino_pdf)
         r = ResultadoProcesso(ordem=0, numero=numero.formatado, tribunal=self.tribunal.sigla,
-                              sistema=self.sistema)
+                              sistema=self.sistema, grau=self.grau)
         inicio = time.monotonic()
         self._em_curso = (numero, r)
         try:
@@ -1636,16 +2210,26 @@ class PortalESAJ:
         except SigilosoSemSenha as erro:
             r.situacao, r.detalhe, r.sigiloso = SIGILOSO_SEM_SENHA, str(erro), True
             self.limpar_estado()
-        except (Cancelado, LoginFalhou, SessaoPerdida, PortalIndisponivel, PermissionError):
+        except (_FolhasEmDuplicidade, _Ambiguo) as erro:
+            # Definitivo: a mesma Pasta Digital daria o mesmo plano, a mesma
+            # consulta as mesmas opções. Sem causa (não é falha passageira) e
+            # sem "Tentar de novo".
+            r.situacao, r.detalhe = NAO_SUPORTADO, str(erro)
+            self.limpar_estado()
+        except SessaoPerdida:
+            self._consulta_2g_aberta = False
+            raise
+        except (Cancelado, LoginFalhou, PortalIndisponivel, PermissionError):
             raise
         except Exception as erro:
             if self.ctx.cancelado():
                 raise Cancelado() from erro
             msg = str(erro) or type(erro).__name__
             if cheira_a_sessao(msg) and not self.sessao_ativa():
+                self._consulta_2g_aberta = False
                 raise SessaoPerdida(f"a sessão do {self.nome} caiu ({msg[:160]})") from erro
             if not erro_transitorio(msg):
-                self._diagnosticar_processo(f"esaj-falha-{numero.nome_arquivo}", numero, r)
+                self._diagnosticar_processo(self._diag(f"falha-{numero.nome_arquivo}"), numero, r)
             self.limpar_estado()
             raise
         finally:
@@ -1665,24 +2249,28 @@ class PortalESAJ:
         rotulo = numero.formatado
         self._checar_cancelado()
         self.ctx.status(f"{rotulo}: consultando o {self.nome}...")
-        cd = self.achar_codigo(numero)
-        if numero.e_dependente:
-            ordem = int(numero.dependente)
-            log.info("    principal: %s; abrindo o incidente %04d...", cd, ordem)
-            cd_principal = cd
-            cd = self.achar_codigo_incidente(ordem, cd, senha, numero)
+        cd_principal = None
+        if self.grau == "2g":
+            # o recurso interno (/50000) é escolhido entre as opções da própria
+            # consulta, pelo número exato - nada da aritmética do 1º grau
+            cd = self.achar_codigo_2g(numero)
         else:
-            cd_principal = None
+            cd = self.achar_codigo(numero)
+            if numero.e_dependente:
+                ordem = int(numero.dependente)
+                log.info("    principal: %s; abrindo o incidente %04d...", cd, ordem)
+                cd_principal = cd
+                cd = self.achar_codigo_incidente(ordem, cd, senha, numero)
         log.info("    código interno: %s", cd)
 
         # Segredo de justiça (Res. 121/CNJ): o modal de senha só conta se
         # VISÍVEL - ele existe escondido no HTML de toda página.
         if self.precisa_senha():
-            self._liberar(senha, r, numero, cd_principal)
+            self._liberar(senha, r, numero, cd_principal, cd)
         info = self.ler_pagina_processo()
         if not r.sigiloso and not info.get("movs") and self.modal_senha_visivel():
             # o modal apareceu depois da primeira olhada (página lenta)
-            self._liberar(senha, r, numero, cd_principal)
+            self._liberar(senha, r, numero, cd_principal, cd)
             info = self.ler_pagina_processo()
         if texto_indica_sigilo(info.get("texto", "")):
             r.sigiloso = True
@@ -1696,7 +2284,7 @@ class PortalESAJ:
             # justiça, não falta de acesso - e com a senha da relação, abre.
             if r.sigiloso or not self.modal_senha_visivel():
                 raise
-            self._liberar(senha, r, numero, cd_principal)
+            self._liberar(senha, r, numero, cd_principal, cd)
             info = self.ler_pagina_processo() or info
             arvore = self.abrir_pasta(cd)
         pecas = extrair_pecas(arvore)
@@ -1714,18 +2302,23 @@ class PortalESAJ:
             raise RuntimeError(
                 "a Pasta Digital não informou a numeração das folhas: não é possível garantir "
                 "que a página N do PDF seja a folha N (o portal mudou?)")
+        self._conferir_numeracao(plano)
         self._registrar_plano(plano)
         inicial = plano
         celula = {"plano": plano}
 
         def reabrir(_n=numero, _cd=cd, _s=senha):
-            principal = self.achar_codigo(_n)
-            if _n.e_dependente:
-                self.achar_codigo_incidente(int(_n.dependente), principal, _s, _n)
+            if self.grau == "2g":
+                self.achar_codigo_2g(_n)
+            else:
+                principal = self.achar_codigo(_n)
+                if _n.e_dependente:
+                    self.achar_codigo_incidente(int(_n.dependente), principal, _s, _n)
             # o índice reaberto pode ter peça nova: o plano (e a conferência
             # do PDF) passa a ser o dele
             novo = planejar_folhas(extrair_pecas(self.abrir_pasta(_cd)))
             if novo.blocos:
+                self._conferir_numeracao(novo)
                 celula["plano"] = novo
             return celula["plano"].pecas_envio()
 
@@ -1742,7 +2335,8 @@ class PortalESAJ:
                                            plano.nao_oferecidas,
                                            self._acabamento(plano, numero, "servidor"))
             log.info("    salvo: %s (%.1f MB)", destino.name, len(dados) / 1048576)
-        except (Cancelado, SessaoPerdida, LoginFalhou, SemAcesso, PortalIndisponivel):
+        except (Cancelado, SessaoPerdida, LoginFalhou, SemAcesso, PortalIndisponivel,
+                _FolhasEmDuplicidade):
             raise
         except Exception as erro:
             if isinstance(erro, PermissionError) and self._na_gravacao(erro, destino):
@@ -1787,7 +2381,8 @@ class PortalESAJ:
             log.info("    %d gravação(ões) de audiência nos autos%s.", len(midias),
                      f" (fls. {fls})" if fls else "")
             if self.opcoes.baixar_midias:
-                pasta = destino.parent / "_controle" / "midias" / numero.nome_arquivo
+                # pelo nome dos autos (destino.stem): no 2º grau, "<número> (2G)"
+                pasta = destino.parent / "_controle" / "midias" / destino.stem
                 r.midias = self.baixar_midias(midias, pasta)
             else:
                 detalhes.append("1 gravação de audiência nos autos, não baixada"
@@ -1797,24 +2392,43 @@ class PortalESAJ:
         self._gravar_capa(info, numero, destino, r.sigiloso)
 
     def _gravar_capa(self, info: dict, numero: Numero, destino: Path, sigiloso: bool) -> None:
-        """_controle/<número>_capa.txt e _capa.json (o motor os leva junto com o
-        PDF), com as folhas do PDF gravado. Capa é conveniência, não dever:
-        falha vai só para o log."""
+        """_controle/<nome dos autos>_capa.txt e _capa.json (o motor os leva
+        junto com o PDF), com as folhas do PDF gravado. O nome é o do PDF
+        (destino.stem): no 1º grau, o número; no 2º, "<número> (2G)". Capa é
+        conveniência, não dever: falha vai só para o log."""
         controle = destino.parent / "_controle"
         quando = datetime.now()
         manifesto = getattr(self, "_manifesto", None)
         try:
-            texto = formatar_capa(info, numero, self.tribunal.sigla, sigiloso, manifesto, quando)
-            sistema.gravar_atomico(controle / f"{numero.nome_arquivo}_capa.txt",
-                                   texto.encode("utf-8"))
+            texto = formatar_capa(info, numero, self.tribunal.sigla, sigiloso, manifesto, quando,
+                                  grau=self.grau)
+            sistema.gravar_atomico(controle / f"{destino.stem}_capa.txt", texto.encode("utf-8"))
         except Exception as erro:
             log.debug("capa não gravada: %s", erro)
         try:
-            dados = dados_da_capa(info, numero, self.tribunal.sigla, sigiloso, manifesto, quando)
-            sistema.gravar_atomico(controle / f"{numero.nome_arquivo}_capa.json",
+            dados = dados_da_capa(info, numero, self.tribunal.sigla, sigiloso, manifesto, quando,
+                                  grau=self.grau)
+            sistema.gravar_atomico(controle / f"{destino.stem}_capa.json",
                                    json.dumps(dados, ensure_ascii=False, indent=1).encode("utf-8"))
         except Exception as erro:
             log.debug("capa (JSON) não gravada: %s", erro)
+
+    def _conferir_numeracao(self, plano: PlanoFolhas) -> None:
+        """No 2º grau, a Pasta Digital com a mesma folha em peças diferentes
+        (duas numerações: a dos autos de origem e a do 2º grau) não vira PDF:
+        o plano daria cada folha à primeira peça, e as outras sumiriam de um
+        PDF dado como completo. Conferido sobre o plano, antes de baixar
+        qualquer peça. No 1º grau, nada muda (fica só a anomalia anotada)."""
+        if self.grau != "2g":
+            return
+        duplicadas = folhas_em_duplicidade(plano.pecas)
+        if duplicadas:
+            log.warning("    a Pasta Digital do 2º grau numera %s em mais de uma peça; "
+                        "os autos não serão gravados.", _fls(duplicadas))
+            raise _FolhasEmDuplicidade(
+                f"a Pasta Digital do 2º grau numera folhas em duplicidade ({_fls(duplicadas)} em "
+                "mais de uma peça); não gravei os autos, para não perder peças: baixe-os pelo "
+                "portal do tribunal")
 
     @staticmethod
     def _na_gravacao(erro: OSError, destino: Path) -> bool:
@@ -1865,15 +2479,17 @@ class PortalESAJ:
             sumario = marcadores_de(plano, ausentes)
             manifesto = paginacao.manifesto_esaj(
                 numero.formatado, plano.ultima, ausentes, origem=origem,
-                tribunal=self.tribunal.sigla, notas=[*notas, *plano.anomalias])
+                tribunal=self.tribunal.sigla, notas=[*notas, *plano.anomalias], grau=self.grau)
             self._manifesto = manifesto        # a capa diz as folhas do PDF
             return sumario, manifesto
         return acabar
 
     def _liberar(self, senha: str | None, r: ResultadoProcesso, numero: Numero,
-                 cd_principal: str | None) -> None:
+                 cd_principal: str | None, cd: str | None = None) -> None:
         """O e-SAJ pediu a senha do processo: usa a da relação, ou desiste
-        deste processo (SIGILOSO_SEM_SENHA) com a orientação certa."""
+        deste processo (SIGILOSO_SEM_SENHA) com a orientação certa. Liberada
+        a página, confere de novo que ela é a do processo pedido (o incidente
+        do 1º grau; no 2º grau, o número exato)."""
         r.sigiloso = True
         if not senha:
             raise SigilosoSemSenha(
@@ -1887,6 +2503,8 @@ class PortalESAJ:
         log.info("    acesso liberado pela senha.")
         if cd_principal:
             self.conferir_incidente(cd_principal, int(numero.dependente))
+        elif self.grau == "2g":
+            self._conferir_pagina_2g(numero, cd or "")
 
     # ------------------------------------------------------------ consulta
     def ir_para(self, url: str, timeout: int = 60000, tentativas: int = 3) -> None:
@@ -1935,13 +2553,15 @@ class PortalESAJ:
         return next((c for c in achados if c.endswith("0000")), achados[0] if achados else None)
 
     def achar_codigo(self, numero: Numero) -> str:
-        url = url_busca(self.base, numero)
+        """O código interno do processo na consulta de 1º grau (CPOPG). O do
+        2º grau é achar_codigo_2g."""
+        url = self.rotas.busca(numero)
         corpo = ""
         for tentativa in range(1, 4):
             # O CPOPG recusa uma consulta enquanto a anterior está aberta
             # ("múltiplas consultas simultâneas"); passar pelo formulário a encerra.
             try:
-                self.pg.goto(f"{self.base}/cpopg/open.do", wait_until="domcontentloaded",
+                self.pg.goto(self.rotas.abertura, wait_until="domcontentloaded",
                              timeout=45000)
             except Exception:
                 pass
@@ -1971,12 +2591,143 @@ class PortalESAJ:
             break
         texto = self._texto_da_pagina() or corpo
         if diz_nao_encontrado(texto):
+            # a dica da opção “2º grau” só onde o Helestron baixa o 2º grau
+            dica = dica_de_grau(numero, "1g",
+                                com_o_2o_grau=tribunais.baixa_o_2o_grau(self.tribunal))
             raise ProcessoNaoEncontrado(
-                f"não encontrado no 1º grau do {self.nome}. Confira o número; se o "
-                "processo estiver no 2º grau ou em outro sistema, baixe-o pelo portal.")
-        self._diagnosticar_processo(f"esaj-consulta-{numero.nome_arquivo}", numero)
+                f"não encontrado no 1º grau do {self.nome}. Confira o número; {dica}.")
+        self._diagnosticar_processo(self._diag(f"consulta-{numero.nome_arquivo}"), numero)
         raise RuntimeError("não consegui identificar o processo na consulta "
                            "(sem acesso, ou sessão expirada?)")
+
+    def _nao_encontrado_2g(self, numero: Numero) -> ProcessoNaoEncontrado:
+        """A frase do 2º grau: onde mais procurar, pelo modelos.dica_de_grau
+        (a apelação que ainda não subiu está no 1º grau; o originário, o
+        plantão e o /50000 só existem no 2º grau)."""
+        return ProcessoNaoEncontrado(
+            f"não encontrado no {self.nome}. Confira o número; {dica_de_grau(numero, '2g')}.")
+
+    def _resposta_da_busca_2g(self) -> dict:
+        try:
+            dados = self.pg.evaluate(_JS_RESPOSTA_2G)
+        except Exception as erro:
+            log.debug("  leitura da consulta de 2º grau: %s", str(erro)[:120])
+            dados = None
+        return dados if isinstance(dados, dict) else {}
+
+    def achar_codigo_2g(self, numero: Numero) -> str:
+        """O código interno do processo na consulta de 2º grau (CPOSG), e a
+        página dele aberta (show.do só com o código) e conferida.
+
+        A busca é sempre pelo principal; a consulta responde de três formas
+        - a página do processo, o modal "Selecione o processo" ou a lista -,
+        e vale a opção do NÚMERO EXATO (escolher_processo_2g): o principal,
+        ou o recurso interno /50000 pedido. O incidente /01 do 1º grau não
+        existe no 2º: sem opção exata, "não encontrado" (com a dica do grau).
+        """
+        self._garantir_consulta_2g()
+        url = self.rotas.busca(numero)
+        texto = ""
+        do_numero = False
+        for tentativa in range(1, 4):
+            self.ir_para(url)
+            self._esperar_carga()
+            resposta = self._resposta_da_busca_2g()
+            candidatos = resposta.get("candidatos") or []
+            cd = escolher_processo_2g(candidatos, numero) or self._pagina_com_senha_2g(
+                candidatos, numero)
+            if cd:
+                log.info("    opção da consulta de 2º grau: %s", cd)
+                self.ir_para(self.rotas.processo(cd))
+                self._conferir_pagina_2g(numero, cd)
+                return cd
+            do_numero = any(self._mesmo_numero(c, numero) for c in candidatos)
+            texto = str(resposta.get("texto") or "") or self._texto_da_pagina()
+            if self._so_a_pagina_sem_numero(candidatos):
+                # A página em segredo do principal (sem número), que
+                # _pagina_com_senha_2g não aceitou: não são "outros processos".
+                if numero.e_dependente and self.precisa_senha():
+                    # o recurso interno não está entre opções: só o portal o abre.
+                    # A página em segredo é a do principal: ele também fica apurado.
+                    self.sigilosos_apurados.update((numero.nome_arquivo, numero.principal))
+                    raise _Ambiguo(
+                        "a consulta de 2º grau abriu a página do processo principal em "
+                        f"segredo de justiça, sem o número; o recurso interno {numero.formatado} "
+                        "de processo em segredo não é escolhido pelo Helestron: baixe-o pelo "
+                        "portal do tribunal")
+                # sem o pedido de senha à vista, a página não se reconhece: passageiro
+                raise RuntimeError("a página aberta pela consulta de 2º grau não traz o número "
+                                   "do processo (sem acesso, ou sessão expirada?)")
+            if candidatos and not do_numero:
+                raise _Ambiguo("a consulta de 2º grau devolveu processos e nenhum traz "
+                               "exatamente este número; não baixei, para não gravar autos "
+                               "trocados")
+            if not do_numero and re.search(r"m[úu]ltiplas\s+consultas", texto, re.I):
+                log.info("    o e-SAJ recusou (consultas simultâneas); repetindo %d/3", tentativa)
+                self._dormir(2)
+                continue
+            break
+        if do_numero or diz_nao_encontrado(texto) \
+                or diz_nao_encontrado(str(resposta.get("mensagem") or "")):
+            # o número existe no 2º grau, mas não o dependente pedido (o /01 do
+            # 1º grau, um /50001 que não há) - ou não existe de todo
+            raise self._nao_encontrado_2g(numero)
+        self._diagnosticar_processo(self._diag(f"consulta-{numero.nome_arquivo}"), numero)
+        raise RuntimeError("não consegui identificar o processo na consulta de 2º grau "
+                           "(sem acesso, ou sessão expirada?)")
+
+    @staticmethod
+    def _so_a_pagina_sem_numero(candidatos: list) -> bool:
+        """A consulta devolveu um candidato só, a própria página, sem o número:
+        é como vem a página do processo em segredo de justiça (só o código e
+        o pedido de senha)."""
+        if len(candidatos or []) != 1 or not isinstance(candidatos[0], dict):
+            return False
+        c = candidatos[0]
+        return c.get("origem") == "pagina" and not str(c.get("numero") or "").strip() \
+            and bool(str(c.get("codigo") or "").strip())
+
+    def _pagina_com_senha_2g(self, candidatos: list, numero: Numero) -> str | None:
+        """A busca pelo número caiu direto na página de um processo em segredo
+        de justiça: ela vem SEM os dados (nem o número), só com o código e o
+        pedido de senha. A consulta foi pelo número exato e devolveu um
+        processo só: é o principal dele. Vale só para o pedido do principal
+        (o /50000 tem de ser achado entre as opções), e a página é conferida
+        depois da senha (_liberar). O modal é aberto pelo script da página:
+        olha-se duas vezes (precisa_senha), como no 1º grau."""
+        if numero.e_dependente or not self._so_a_pagina_sem_numero(candidatos):
+            return None
+        if not self.precisa_senha():
+            return None
+        log.info("    a consulta de 2º grau abriu a página de um processo em segredo de justiça")
+        return str(candidatos[0]["codigo"]).strip()
+
+    @staticmethod
+    def _mesmo_numero(candidato, numero: Numero) -> bool:
+        try:
+            return cnj.ler(str((candidato or {}).get("numero") or "")).digitos == numero.digitos
+        except (cnj.NumeroInvalido, AttributeError):
+            return False
+
+    def _conferir_pagina_2g(self, numero: Numero, cd: str) -> None:
+        """A página aberta no 2º grau é a do processo pedido (conferir_pagina_2g)?
+        Com o modal de senha na frente não há o que ler: a conferência fica
+        para depois da senha (_liberar). O modal é aberto pelo script da
+        página: a que veio sem o número é olhada de novo (precisa_senha)
+        antes de ser dada como de outro processo."""
+        self._esperar_carga()
+        if self.modal_senha_visivel():
+            return
+        try:
+            dados = self.pg.evaluate(_JS_IDENTIDADE_2G)
+        except Exception as erro:
+            log.debug("  leitura da página do 2º grau: %s", str(erro)[:120])
+            dados = {"texto": self._texto_da_pagina()}
+        dados = dados if isinstance(dados, dict) else {}
+        if not str(dados.get("numero") or "").strip() and self.precisa_senha():
+            # a página em segredo, sem os dados: o modal abriu depois da 1ª olhada
+            return
+        conferir_pagina_2g(dados, numero, cd)
 
     def _conferir_numero(self, numero: Numero) -> None:
         """A página aberta é mesmo a deste processo? (pelos 20 dígitos, que
@@ -2155,7 +2906,9 @@ class PortalESAJ:
         info: dict = {}
         for _ in range(4):
             try:
-                info = self.pg.evaluate(_JS_PAGINA_PROCESSO) or {}
+                # no 2º grau, a página tem outros campos e seções (CPOSG)
+                info = (self.pg.evaluate(_JS_PAGINA_PROCESSO, {"grau": self.grau})
+                        if self.grau == "2g" else self.pg.evaluate(_JS_PAGINA_PROCESSO)) or {}
             except Exception:
                 info = {}
             if info.get("movs"):
@@ -2176,16 +2929,18 @@ class PortalESAJ:
 
     def abrir_pasta(self, cd_processo: str):
         """Abre a Pasta Digital e devolve a árvore de documentos."""
-        status, url = self._buscar_texto(
-            f"/cpopg/abrirPastaDigital.do?processo.codigo={cd_processo}&_={int(time.time() * 1000)}")
-        if not url.startswith("http"):
-            if diz_sem_acesso(url):
-                if self.sessao_ativa():
-                    raise SemAcesso(f"o {self.nome} não liberou a Pasta Digital deste processo "
-                                    "para o seu usuário")
-                raise SessaoPerdida("a Pasta Digital pediu login de novo")
-            raise RuntimeError(f"não consegui abrir a Pasta Digital (HTTP {status}: "
-                               f"{' '.join(url.split())[:120]})")
+        if self.grau == "2g":
+            url = self._endereco_da_pasta_2g(cd_processo)
+        else:
+            status, url = self._buscar_texto(self.rotas.pasta(cd_processo, int(time.time() * 1000)))
+            if not url.startswith("http"):
+                if diz_sem_acesso(url):
+                    if self.sessao_ativa():
+                        raise SemAcesso(f"o {self.nome} não liberou a Pasta Digital deste "
+                                        "processo para o seu usuário")
+                    raise SessaoPerdida("a Pasta Digital pediu login de novo")
+                raise RuntimeError(f"não consegui abrir a Pasta Digital (HTTP {status}: "
+                                   f"{' '.join(url.split())[:120]})")
         self.ir_para(url, timeout=90000)
         for _ in range(60):
             self._checar_cancelado()
@@ -2206,6 +2961,46 @@ class PortalESAJ:
             raise SessaoPerdida("a Pasta Digital pediu login de novo")
         raise RuntimeError("a lista de peças da Pasta Digital não carregou a tempo")
 
+    def _endereco_da_pasta_2g(self, cd_processo: str) -> str:
+        """O endereço da Pasta Digital do 2º grau, pelo verificarAcessoPastaDigital.do
+        (o que o botão "Visualizar autos" chama): texto começando por http é o
+        endereço; erro HTTP é falta de acesso ou pedido de senha.
+
+        * modal de senha na tela -> SemAcesso, e _baixar segue pela senha;
+        * sessão do portal caída -> SessaoPerdida (o motor entra de novo);
+        * sessão de pé -> antes do "sem acesso" (definitivo), uma passada pela
+          porta de entrada da consulta de 2º grau e nova tentativa: é o "SSO
+          por webapp" (a consulta ainda não reconhecia o login).
+
+        Do endereço devolvido sai o caminho da Pasta Digital (/pastadigital ou
+        /pastadigital/sg...), usado no pedido do PDF e nas peças."""
+        for volta in (1, 2):
+            status, texto = self._buscar_texto(
+                self.rotas.pasta(cd_processo, int(time.time() * 1000)))
+            if status < 400 and texto.startswith("http"):
+                partes = urllib.parse.urlsplit(texto)
+                self._prefixo_pasta = prefixo_da_pasta(texto)
+                self._raiz_pasta = f"{partes.scheme}://{partes.netloc}{self._prefixo_pasta}"
+                return texto
+            if status < 400 and not diz_sem_acesso(texto):
+                raise RuntimeError(f"não consegui abrir a Pasta Digital (HTTP {status}: "
+                                   f"{' '.join(texto.split())[:120]})")
+            if self.modal_senha_visivel():
+                raise SemAcesso(f"o {self.nome} pediu a senha do processo para abrir a Pasta "
+                                "Digital")
+            if not self.sessao_ativa():
+                self._consulta_2g_aberta = False
+                raise SessaoPerdida("a Pasta Digital do 2º grau pediu login de novo")
+            if volta == 1:
+                log.info("    a Pasta Digital do 2º grau recusou (HTTP %s); passando de novo pela "
+                         "consulta de 2º grau e tentando outra vez", status)
+                self._abrir_consulta_2g()
+                self.ir_para(self.rotas.processo(cd_processo))
+                self._esperar_carga()
+                continue
+        raise SemAcesso(f"o {self.nome} não liberou a Pasta Digital deste processo para o seu "
+                        "usuário")
+
     def _pedir_localizador(self, pecas: list[dict], cd_processo: str) -> tuple[int, str]:
         # o corpo reproduz, byte a byte, o que a própria página envia
         corpo = "&".join("itensPdfSelecionados=" + urllib.parse.quote(p["parametros"], safe="-_.!~*'()")
@@ -2213,7 +3008,7 @@ class PortalESAJ:
         corpo += (f"&cdProcesso={cd_processo}&cdDocumento={_cd_do_pedido(pecas)}"
                   "&separarDocumentos=false&acessoPeloPetsg=")
         return self._buscar_texto(
-            "/pastadigital/salvarDocumentoPreparado.do", "POST", corpo,
+            f"{self._prefixo_pasta}/salvarDocumentoPreparado.do", "POST", corpo,
             {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
              "X-Requested-With": "XMLHttpRequest"})
 
@@ -2236,7 +3031,7 @@ class PortalESAJ:
         while time.monotonic() - inicio < ESPERA_PDF_S:
             self._checar_cancelado()
             st, resp = self._buscar_texto(
-                "/pastadigital/buscarDocumentoFinalizado.do", "POST", corpo,
+                f"{self._prefixo_pasta}/buscarDocumentoFinalizado.do", "POST", corpo,
                 {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"})
             if resp.startswith("http"):
                 return resp
@@ -2359,10 +3154,11 @@ class PortalESAJ:
 
     # --------------------------------------------------------- peça a peça
     def baixar_peca(self, parametros: str) -> bytes | None:
-        """Uma peça avulsa, pelo endereço de documento da Pasta Digital."""
-        for molde in ("{base}/pastadigital/getPDF.do?{p}", "{base}/pastadigital/getArquivo.do?{p}"):
+        """Uma peça avulsa, pelo endereço de documento da Pasta Digital (no 2º
+        grau, no caminho da Pasta Digital que o portal devolveu)."""
+        for molde in ("{raiz}/getPDF.do?{p}", "{raiz}/getArquivo.do?{p}"):
             try:
-                dados = self.pedir_arquivo(molde.format(base=self.base, p=parametros),
+                dados = self.pedir_arquivo(molde.format(raiz=self._raiz_pasta, p=parametros),
                                            timeout_ms=120000)
             except Cancelado:
                 raise
@@ -2465,3 +3261,15 @@ class _CamposNaoApareceram(PortalIndisponivel):
     Nem sempre é defeito de seletor: quem já tem sessão válida não recebe
     formulário, e o portal às vezes devolve a home no lugar do login.
     """
+
+
+class _FolhasEmDuplicidade(RuntimeError):
+    """A Pasta Digital do 2º grau numera a mesma folha em peças diferentes:
+    os autos não são gravados (NAO_SUPORTADO, definitivo)."""
+
+
+class _Ambiguo(RuntimeError):
+    """A consulta de 2º grau não aponta um processo só do número pedido (mais
+    de um com o número exato, nenhum entre os devolvidos, ou só a página em
+    segredo do principal quando se pede o recurso interno): os autos não
+    são gravados, para não serem trocados (NAO_SUPORTADO, definitivo)."""
