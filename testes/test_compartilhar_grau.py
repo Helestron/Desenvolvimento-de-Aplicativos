@@ -401,6 +401,35 @@ class TestModelos2G(Base2G):
         self.assertFalse([a for a in rel.avisos if "CLAUDE.md foi editado" in a], rel.avisos)
         self.assertFalse([a for a in rel.avisos if "SKILL.md foi editada" in a], rel.avisos)
 
+    def test_nao_garantida_nos_modelos_com_a_excecao_do_2g(self):
+        """Achado C4: o item de paginacao=nao_garantida do CLAUDE.md/AGENTS.md,
+        da habilidade e das instruções do conector mandava "citar a folha
+        carimbada" sem excetuar os autos do 2º grau, onde o carimbo pode ser o
+        dos autos de origem, de mesmo número - o contrário do que o texto
+        gravado (COMO_CITAR_NAO_GARANTIDA_2G) e o cabeçalho do ler_processo dizem."""
+        excecao = ("nos autos do 2º grau, não cite o carimbo: pode ser o dos autos de origem; "
+                   "cite o documento e avise o magistrado")
+        for nome, texto in (("CONTEXTO", preparo.CONTEXTO), ("SKILL", preparo.SKILL),
+                            ("conector", mcp_servidor.INSTRUCOES)):
+            with self.subTest(nome):
+                plano = " ".join(texto.replace("*", "").split())
+                item = plano[plano.index("paginacao=nao_garantida"):]
+                item = item[:item.index(". ") + 1]          # só o item da nao_garantida
+                self.assertIn("cite a folha carimbada", item)   # a regra geral continua
+                self.assertIn(excecao, item)
+        # a mesma regra do texto gravado nos autos do 2º grau
+        self.assertIn("não o cite como folha destes autos; cite o documento",
+                      textos.COMO_CITAR_NAO_GARANTIDA_2G)
+        self.assertIn("avise o magistrado", textos.COMO_CITAR_NAO_GARANTIDA_2G)
+        # os modelos congelados não mudam
+        for nome, texto in (("CONTEXTO_1_0_2", preparo.CONTEXTO_1_0_2),
+                            ("SKILL_1_0_2", preparo.SKILL_1_0_2),
+                            ("CONTEXTO_1_0_1", preparo.CONTEXTO_1_0_1),
+                            ("SKILL_1_0_1", preparo.SKILL_1_0_1)):
+            with self.subTest(nome):
+                self.assertNotIn("não cite o carimbo", texto)
+                self.assertNotIn("(2G)", texto)
+
 
 class TestConector2G(Base2G):
     def test_listar_acervo(self):

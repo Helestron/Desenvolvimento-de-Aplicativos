@@ -441,7 +441,9 @@ folha. Baixe de novo com `--retomar --rebaixar-incompletos` (na mesma
 `--destino`) antes de citar; se não
 der, cite a folha carimbada na própria página ou o documento, e avise o
 magistrado. No eProc, nunca “fl.” (nem o carimbo “fls. N” de documento
-vindo de outro sistema): cite o evento e o documento, sem a página.
+vindo de outro sistema): cite o evento e o documento, sem a página. Nos
+autos do 2º grau, não cite o carimbo: pode ser o dos autos de origem; cite
+o documento e avise o magistrado (seção 14).
 
 **Autos do 2º grau** (`(2G)` no nome, `grau: "2g"` no JSON): a numeração
 é própria do 2º grau, e a regra do carimbo é a **oposta** à do 1º grau
