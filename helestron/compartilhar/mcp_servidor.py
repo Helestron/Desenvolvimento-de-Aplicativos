@@ -1016,7 +1016,12 @@ class _RegistroAvulso(logging.FileHandler):
         except Exception:  # noqa: BLE001 - o registro não derruba a conversa
             self.handleError(record)
         finally:
-            self.close()
+            # Com o disco cheio, o close() refaz o flush e relança o erro: sem
+            # isto, ele sairia do log.warning de quem chamou (a regra do sigilo).
+            try:
+                self.close()
+            except Exception:  # noqa: BLE001
+                self.handleError(record)
 
 
 def _registro_avulso() -> None:

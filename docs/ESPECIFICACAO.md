@@ -1961,7 +1961,9 @@ dados ficam com a instalação registrada.
     `Processos` primeiro; cada relatório
     relido só quando muda a data ou o tamanho; “sim” na coluna `sigiloso`,
     UTF-8 com BOM ou, salvo pelo Excel, cp1252; a linha mascarada não
-    conta). É o que cobre o lote baixado com a separação desligada antes do
+    conta; a de um recurso interno do 2º grau marca também o principal, que
+    não tem linha própria: veja o incidente, abaixo). É o que cobre o lote
+    baixado com a separação desligada antes do
     registro (versão anterior) ou depois de ele se perder (LOCAL apagada,
     acervo noutro computador); `chaves_sigilosas` acrescenta ao registro
     do download o que só o relatório conhece (não o que a pasta ou a pauta
@@ -2035,7 +2037,18 @@ dados ficam com a instalação registrada.
     download (`motor._motivo_sigilo` e os relatórios anteriores do lote) e a
     transcrição herdam, e retirar do acervo o principal leva também os
     incidentes (o recurso interno do 2º grau, `…-50000`, é incidente do
-    principal para a regra).
+    principal para a regra). O **recurso interno do 2º grau** é a exceção
+    ao “o contrário não vale”: o dependente de cinco algarismos começando
+    por `5` (`…-50000`, `…-50001`: `cnj.grau_do_numero`) corre nos autos do
+    principal no 2º grau, e a consulta do recurso interno de um processo em
+    segredo abre a página do principal em segredo (`esaj.achar_codigo_2g`
+    põe os dois em `sigilosos_apurados`). Por isso, o recurso interno
+    sigiloso torna sigiloso também o principal, em todas as fontes da regra
+    única — a pasta, a pauta, o registro do download, o relatório de um
+    lote (a linha “sim” do recurso interno basta) e a herança do
+    originário pela capa — e no motor, pelos relatórios anteriores do lote
+    (`_ler_sigilos_anteriores`). Os incidentes comuns (`-01`) continuam
+    sem fazer o principal sigiloso.
   * **O sigilo vale nos dois graus** (1.1.0). A regra continua por
     processo, sem grau: `sigilo.contem` normaliza a chave dos autos
     (`X (2G)`, `X-01 (2G)`, um `Numero` ou um nome de arquivo) para a do
@@ -2222,9 +2235,12 @@ dados ficam com a instalação registrada.
     de cada `Sigilosos\<lote>` em que estiverem, e também o originário do
     2º grau levado pela capa (fonte 6), que fica sigiloso pela própria
     pasta, com o “sim” da linha dele no relatório completo. A capa
-    (`_controle\<número>_capa.txt` e `<número> (2G)_capa.txt`) volta sem a
+    (`_controle\<número>_capa.txt` e `<número> (2G)_capa.txt`) perde a
     linha “SEGREDO DE JUSTIÇA” que o download grava no começo da capa do
-    processo que achou sigiloso (ou é apagada): o motor a procura nos
+    processo que achou sigiloso (ou é apagada), num passo próprio do
+    manual, onde ela estiver: a que volta da pasta dos sigilosos e também a
+    que nem saiu do acervo (com a separação desligada, os autos e a capa
+    ficam em `Processos\<lote>\_controle`). O motor a procura nos
     primeiros 2000 caracteres das capas dos dois graus do lote
     (`_motivo_sigilo`), e o próximo download do processo no lote refaria a
     marcação. Com a separação dos sigilosos ligada, o “não” vai no
@@ -2240,7 +2256,16 @@ dados ficam com a instalação registrada.
     editado. Sem a troca, a rodada seguinte do lote regrava o “sim” no
     completo, e a primeira que tiver o processo na relação leva os autos
     de volta para a pasta dos sigilosos (uma vez sigiloso, sempre
-    sigiloso).
+    sigiloso). Afastado o `download.sigilo.json`, os outros processos que
+    um download apurou continuam sigilosos pela pasta (fonte 1) ou pelo
+    relatório do lote (fonte 5), e também o principal que só a consulta de
+    um recurso interno dele apurou (`_principal_apurado`), pela linha “sim”
+    do recurso interno (veja o incidente, abaixo). A exceção é o principal
+    nunca baixado com a separação ligada: a linha do recurso interno no
+    acervo é mascarada (não conta), e só o relatório completo o marca de
+    novo, pelo motor, nos downloads daquele lote; o manual manda baixar de
+    novo o recurso interno no 2º grau, que o apura de novo, antes de baixar
+    o principal noutro lote.
   * **Download.** O processo que o programa já sabe sigiloso pela regra
     única vai para a pasta dos sigilosos mesmo que a página do portal não
     mostre o selo (segredo decretado depois, leiaute que a leitura não
@@ -2689,9 +2714,16 @@ conector que aplica a regra primeiro (seção 12). O `Logs\AAAA-MM.log` é
 aberto e fechado a cada registro, com o mês de cada um (`_RegistroAvulso`):
 o Claude Desktop e o Codex mantêm o conector vivo a sessão inteira, e o
 arquivo aberto não se apaga no Windows — o desinstalador que apaga as
-configurações o deixaria para trás. Se algo ainda ficar em
+configurações o deixaria para trás. A falha da gravação e a do fechamento
+(o disco cheio, em que o `close()` refaz o `flush` e relança o erro) vão
+para o `handleError`: o registro nunca levanta para quem o chamou — o
+aviso “pastas demais” levantando dentro de `sigilo.chaves_na_pasta` daria
+a pasta dos sigilosos por vazia. Se algo ainda ficar em
 `%LOCALAPPDATA%\Helestron` depois do `RMDir /r`, o desinstalador avisa no
-detalhe, como nos perfis.
+detalhe, como nos perfis, sem culpar o conector, que já não segura nada
+entre um registro e outro: “Parte de $LOCALAPPDATA\Helestron estava em uso
+e ficou lá (um navegador aberto por um download, o Helestron da linha de
+comando ou o conector do acervo): feche-os e apague essa pasta depois.”
 
 ### 13.7 Arquivos de contexto, índice e pacote (`compartilhar/preparo.py`, `compartilhar/chatgpt.py`)
 
@@ -2888,7 +2920,9 @@ autos no 2º grau).
   resultado nasce sigiloso, a linha do relatório do acervo é mascarada, e o
   principal também fica sigiloso — o motor o põe no registro do download
   com o `/50000` e, com a separação ligada, leva os autos dele no acervo
-  (dos dois graus, de qualquer lote) para a pasta dos sigilosos. Sem o
+  (dos dois graus, de qualquer lote) para a pasta dos sigilosos; e, sem
+  depender do registro, a linha “sim” do recurso interno no relatório do
+  lote marca também o principal (seção 12, o incidente). Sem o
   modal à vista, a página não se reconhece e o erro é passageiro
   (`RuntimeError` comum: “a página aberta pela consulta de 2º grau não traz
   o número do processo (sem acesso, ou sessão expirada?)”), nunca
@@ -3079,6 +3113,14 @@ fora nesta versão: o PDF traz os eventos do próprio processo no 2º grau.
   incidentes dele levadas para a pasta de sigilosos”). Com a separação
   desligada, os autos do principal só saem se o sigilo dele não pôde ir
   para o registro (`_separar`), e o detalhe diz `SEM_REGISTRO_DO_SIGILO`.
+  O principal não tem linha própria no relatório (só o item dele, quando
+  está na relação): nas rodadas seguintes, quem o dá é a linha “sim” do
+  recurso interno, nos relatórios anteriores do lote
+  (`_ler_sigilos_anteriores`) e na regra única (seção 12), além do
+  registro do download — e por isso afastar o registro para desfazer a
+  marcação de outro processo (o manual) não o torna público, salvo a
+  exceção da seção 12 (“Uma marcação errada…”: separação ligada e o
+  principal nunca baixado).
   O relatório completo que a retirada não pôde regravar (aberto no Excel)
   não ficou no acervo e tem aviso próprio, só no detalhe do item e no
   registro do programa: “o relatório completo da pasta de sigilosos não
@@ -3181,10 +3223,12 @@ fora nesta versão: o PDF traz os eventos do próprio processo no 2º grau.
 Seção 12 (“O sigilo vale nos dois graus”). Em resumo: o sigilo é do
 processo; `sigilo.contem` normaliza a chave dos autos; o apurado num grau
 tira os autos dos dois do acervo, do índice, do MCP, do pacote e da nuvem;
-o originário do 2º grau herda o sigilo da ação de origem pela capa do 2º
-grau, no download e depois dele (a capa guardada em `_controle` é uma das
-fontes da regra única); e o sigilo sabido só em outro computador não chega
-a este (risco aceito, no manual).
+o recurso interno sigiloso torna sigiloso também o principal (o incidente
+comum, não: seção 12, o incidente); o originário do 2º grau herda o
+sigilo da ação de origem pela capa do 2º grau, no download e depois dele
+(a capa guardada em `_controle` é uma das fontes da regra única); e o
+sigilo sabido só em outro computador não chega a este (risco aceito, no
+manual).
 
 ### 14.9 Interface e API
 

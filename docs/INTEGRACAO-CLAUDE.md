@@ -649,8 +649,14 @@ em diante. Vale também para o incidente (`…-01`) e para o recurso interno
 do 2º grau (`…-50000`) de um processo sigiloso, que o Helestron já marca
 como sigilosos, e para os autos dos **dois graus**: o sigilo é do
 processo, e o apurado num grau vale para os autos do outro (`X.pdf` e
-`X (2G).pdf`). O originário do 2º grau (órgão `0000`) cuja ação de origem
-(`numeros_1a_instancia` da capa) já se sabe sigilosa também vem com
+`X (2G).pdf`). O recurso interno, ao contrário do incidente, também passa
+o sigilo ao principal: o recurso interno sigiloso torna sigiloso o
+processo principal (no e-SAJ, a consulta dele abre a página do principal
+em segredo), e o item do principal vem com `sigiloso: true` mesmo que a
+página dele, no grau do lote, não mostre o selo; o incidente comum
+(`…-01`) continua sem fazer o principal sigiloso. O originário do 2º
+grau (órgão `0000`) cuja ação de origem (`numeros_1a_instancia` da capa)
+já se sabe sigilosa também vem com
 `sigiloso: true`, e o `detalhe` diz “tratado como sigiloso: o processo de
 origem … é sigiloso” — também quando a origem vem depois dele na relação
 e só então se apura sigilosa: o item do originário é republicado com
@@ -998,8 +1004,10 @@ segue também nas minutas:
   e o item volta `sigiloso: true` (a linha do relatório do acervo é
   mascarada, como na seção 11). O principal, que a consulta mostrou em
   segredo, também fica sigiloso: os autos dele no acervo (`X.pdf` e
-  `X (2G).pdf`, de qualquer lote) vão para a pasta de sigilosos, e o
-  registro do download (`download.sigilo.json`) recebe os dois.
+  `X (2G).pdf`, de qualquer lote) vão para a pasta de sigilosos, o
+  registro do download (`download.sigilo.json`) recebe os dois, e a linha
+  do recurso interno no relatório do lote, com `sigiloso` “sim”, marca
+  também o principal, que não tem linha própria (seção 11).
 
 ### O conector MCP
 
