@@ -1967,18 +1967,20 @@ Se o processo é público e você precisa dele no acervo:
    (`<número>-50000 (2G).pdf`, que já têm o número do processo no nome).
    A coluna `detalhe` da linha do recurso interno (no relatório completo,
    com a separação ligada) dá pistas, mas não basta para saber se ele só
-   herdou: quem decide é a conferência no portal (passo 1). Ela diz
-   “tratado como sigiloso: é incidente de um processo sigiloso…” quando o
-   download dele deu certo e nenhum download anterior do lote tinha
-   deixado no relatório a linha dele ou a do processo com “sim”. Nos
-   outros casos, ela não diz que ele herdou, mesmo quando ele só herdou:
-   se o download dele falhou ou ele não foi encontrado, ela diz só isso
-   (“o portal demorou demais”, por exemplo); se ele já estava na pasta do
-   lote, “já estava na pasta (não baixei de novo)”; e se um download
-   anterior do lote tinha deixado a linha dele ou a do processo com “sim”
-   (quando ele é baixado de novo, com **Tentar de novo**, por exemplo, ou
-   num lote em que o processo já tinha sido baixado como sigiloso),
-   “tratado como sigiloso: assim constava de download anterior”. Já estes
+   herdou: quem decide é a conferência no portal (passo 1). Ela pode dizer
+   “tratado como sigiloso: é incidente de um processo sigiloso…” no
+   download dele que deu certo. Nos outros casos, ela não diz que ele
+   herdou, mesmo quando ele só herdou: se o download dele falhou ou ele
+   não foi encontrado, ela diz só isso (“o portal demorou demais”, por
+   exemplo); se ele já estava na pasta do lote, “já estava na pasta (não
+   baixei de novo)”; se ele já tinha sido baixado noutro lote (os autos
+   dele na pasta dos sigilosos), “tratado como sigiloso: os autos, uma
+   transcrição ou uma gravação dele estão na pasta dos sigilosos”; e se
+   um download anterior do lote tinha deixado a linha dele, a do processo
+   ou a de outro recurso interno dele com “sim” (quando ele é baixado de
+   novo, com **Tentar de novo**, por exemplo, ou num lote em que o
+   processo já tinha sido baixado como sigiloso), “tratado como sigiloso:
+   assim constava de download anterior”. Já estes
    sinais mostram que a página estava em segredo no download dele: a
    capa dele (`_controle\<número>-50000 (2G)_capa.txt`) com a linha
    “SEGREDO DE JUSTIÇA” no começo, a situação `SIGILOSO_SEM_SENHA` na

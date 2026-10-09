@@ -538,9 +538,11 @@ class TestDesfazerPrincipalComRecursoInterno(BaseGrau):
                       "(`<número>-50000 (2G).pdf`",
                       "dá pistas, mas não basta para saber se ele só herdou: quem decide é a "
                       "conferência no portal (passo 1)",
-                      f"Ela diz “{self.HERDOU}…” quando o download dele deu certo e nenhum "
-                      "download anterior do lote tinha deixado no relatório a linha dele ou "
-                      "a do processo com “sim”.",
+                      f"Ela pode dizer “{self.HERDOU}…” no download dele que deu certo.",
+                      "se ele já tinha sido baixado noutro lote (os autos dele na pasta dos "
+                      f"sigilosos), “tratado como sigiloso: {sigilo.MOTIVO_PASTA}”",
+                      "um download anterior do lote tinha deixado a linha dele, a do processo "
+                      "ou a de outro recurso interno dele com “sim”",
                       # os casos em que a linha do que só herdou não diz que herdou
                       "Nos outros casos, ela não diz que ele herdou, mesmo quando ele só "
                       "herdou: se o download dele falhou ou ele não foi encontrado, ela diz "
