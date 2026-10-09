@@ -924,7 +924,10 @@ Com **Separar os sigilosos** ligado (o padrão):
   `0000`) é tratado como sigiloso quando o processo de origem, que a capa
   do 2º grau do e-SAJ lista em **Números de 1ª Instância**, já se sabe
   sigiloso: a petição costuma trazer cópia dele. A linha diz “tratado como
-  sigiloso: o processo de origem … é sigiloso”.
+  sigiloso: o processo de origem … é sigiloso”. E vale também depois do
+  download: se o processo de origem só vier a ser sigiloso mais tarde, o
+  originário vai para a pasta dos sigilosos na próxima atualização do
+  acervo para a IA (o programa relê a capa guardada em `_controle`).
 
 A regra completa está em [Segredo de justiça](#segredo-de-justiça).
 
@@ -1773,7 +1776,12 @@ grau, ele vale para os autos dos dois (`<número>.pdf` e
 `<número> (2G).pdf`). O processo originário do 2º grau (o habeas corpus, o
 mandado de segurança, o agravo de instrumento), que tem número próprio, é
 tratado como sigiloso quando o processo de origem listado na capa do 2º
-grau do e-SAJ (**Números de 1ª Instância**) já se sabe sigiloso.
+grau do e-SAJ (**Números de 1ª Instância**) já se sabe sigiloso — no
+download e depois dele: a capa fica guardada em `_controle` do lote, e o
+programa a relê sempre que aplica a regra; o processo de origem que só se
+revela sigiloso mais tarde leva o originário à pasta dos sigilosos na
+próxima atualização do acervo para a IA, e ele sai do índice, do conector,
+do pacote e da nuvem. Uma vez apurado, fica.
 
 > **Cada computador sabe o que viu.** O sigilo apurado por um download, os
 > autos na pasta dos sigilosos e a pauta ficam no computador em que foram

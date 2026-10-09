@@ -1962,7 +1962,20 @@ dados ficam com a instalação registrada.
     registro (versão anterior) ou depois de ele se perder (LOCAL apagada,
     acervo noutro computador); `chaves_sigilosas` acrescenta ao registro
     do download o que só o relatório conhece (não o que a pasta ou a pauta
-    já dão), e o `preparar --pasta` soma o relatório da própria pasta.
+    já dão), e o `preparar --pasta` soma o relatório da própria pasta; (6)
+    com o acervo, a **capa do 2º grau de um originário** (HC, MS, AI de
+    órgão `0000`; originário de turma recursal, `9xxx`), guardada em
+    `<lote>/_controle/<número> (2G)_capa.json`, lista em
+    `numeros_1a_instancia` uma ação de origem sigilosa por qualquer das
+    fontes anteriores (`sigilo.herdadas_das_origens`: as mesmas pastas
+    `_controle` e o mesmo limite de acervo grande; só as capas de
+    originários são abertas — não a da apelação nem a do recurso interno
+    dela, cuja origem é o próprio número —, cada uma relida só quando muda
+    a data ou o tamanho). O motor já trata o originário como sigiloso no
+    download, se a origem já se sabe sigilosa; esta fonte cobre a origem
+    que vira sigilosa depois. `chaves_sigilosas` acrescenta o originário ao
+    registro do download, e o `preparar --pasta` soma as capas da própria
+    pasta.
     `sigilo.chaves_sigilosas` dá todos; `sigilo.motivo` diz por quê (“os
     autos, uma transcrição ou uma gravação dele estão na pasta dos
     sigilosos”, “a pauta de audiências indica que ele corre em segredo de
@@ -2030,7 +2043,13 @@ dados ficam com a instalação registrada.
     do 2º grau (só o e-SAJ a traz) e, se algum desses números já se sabe
     sigiloso pela regra única, marca o item (`r.sigiloso`, “tratado como
     sigiloso: o processo de origem X é sigiloso”) e o registra
-    (`_lembrar_sigilo`). **Risco aceito:** o sigilo sabido só em outro
+    (`_lembrar_sigilo`). A herança vale também depois do download: com o
+    acervo, `chaves_sigilosas` relê a capa guardada em `_controle` (a
+    fonte 6, acima), e a origem que só vira sigilosa mais tarde — a
+    apelação dela baixada com o selo, os autos levados à pasta dos
+    sigilosos, a pauta — leva o originário à pasta dos sigilosos no
+    próximo preparo e o tira do índice, do MCP, do pacote e da nuvem.
+    **Risco aceito:** o sigilo sabido só em outro
     computador (o da vara) não chega ao do gabinete do 2º grau; o manual o
     diz.
   * **Nada sigiloso vai para a IA nem para a nuvem.** Processo sigiloso
@@ -3052,8 +3071,9 @@ Seção 12 (“O sigilo vale nos dois graus”). Em resumo: o sigilo é do
 processo; `sigilo.contem` normaliza a chave dos autos; o apurado num grau
 tira os autos dos dois do acervo, do índice, do MCP, do pacote e da nuvem;
 o originário do 2º grau herda o sigilo da ação de origem pela capa do 2º
-grau; e o sigilo sabido só em outro computador não chega a este (risco
-aceito, no manual).
+grau, no download e depois dele (a capa guardada em `_controle` é uma das
+fontes da regra única); e o sigilo sabido só em outro computador não chega
+a este (risco aceito, no manual).
 
 ### 14.9 Interface e API
 

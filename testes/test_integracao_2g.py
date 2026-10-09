@@ -37,7 +37,7 @@ from pathlib import Path
 from unittest import mock
 
 from helestron import servicos
-from helestron.compartilhar import chatgpt, mcp_servidor, preparo, textos
+from helestron.compartilhar import chatgpt, mcp_servidor, nuvem, preparo, textos
 from helestron.download import cli, contexto, eproc, esaj, modelos, motor, navegador
 from helestron.nucleo import caminhos, cnj, config, paginacao, sigilo, tribunais
 from helestron.nucleo.cofre_senhas import CofreSenhas
@@ -657,6 +657,70 @@ class TestSigiloSabidoPelaPasta(apoio.PastaTemporaria):
             pacote = chatgpt.gerar_pacote(self.acervo, self.tmp / "Pacotes",
                                           numeros=[A.formatado, H.formatado])
         self.assertEqual(pacote.faltaram, [A.formatado])
+
+    def test_a_origem_que_vira_sigilosa_depois_leva_o_hc(self):
+        """Achado C3 da revisão: o HC foi baixado quando a ação de origem A
+        ainda era pública, e A vira sigilosa depois (os autos dela na pasta
+        dos sigilosos). O HC, que traz cópia de A, sai do acervo pela capa
+        guardada em _controle - do índice, de _ia/texto, do conector, do
+        pacote e da nuvem -, e o originário de origem pública (PL, do
+        plantão do 2º grau) continua servido."""
+        PL = NUMEROS["PL"]
+        pl_2g, h_2g = cnj.nome_dos_autos(PL, "2g"), cnj.nome_dos_autos(H, "2g")
+        pdf_com_manifesto(self.lote / f"{pl_2g}.pdf",
+                          paginacao.manifesto_esaj(PL.formatado, 2, tribunal="TJAL",
+                                                   origem="servidor", grau="2g"), 2, "plantão")
+        controle = self.lote / "_controle"
+        for n, origem in ((H, A), (PL, S), (A, A)):          # a apelação lista a si mesma
+            (controle / f"{cnj.nome_dos_autos(n, '2g')}_capa.json").write_text(json.dumps(
+                {"processo": n.formatado, "grau": "2g",
+                 "numeros_1a_instancia": [{"numero": origem.formatado, "foro": "Maceió"}]}),
+                encoding="utf-8")
+        rel = preparo.atualizar_contexto(self.cfg, extrair_texto=True)
+        self.assertEqual(rel.processos, 5, "A (dois graus), P, os embargos de P, o HC e PL")
+        textos_ia = self.acervo / "_ia" / "texto"
+        self.assertTrue((textos_ia / f"{h_2g}.txt").is_file())
+        destino = self.tmp / "Nuvem"
+        nuvem.espelhar(self.acervo, destino)
+        self.assertEqual(sorted(p.name for p in destino.rglob(f"{h_2g}*")),
+                         [f"{h_2g}.pdf", f"{h_2g}.txt"])
+        # A passa a ser sabida sigilosa pela pasta dos sigilosos
+        pdf_com_manifesto(self.tmp / "Sigilosos" / "Outro lote" / f"{A.nome_arquivo}.pdf",
+                          paginacao.manifesto_esaj(A.formatado, 1, tribunal="TJAL"), 1, "x")
+        with self.assertLogs(level="WARNING") as registro:
+            rel = preparo.atualizar_contexto(self.cfg, extrair_texto=True)
+        self.assertTrue(any(f"Processo sigiloso {H.nome_arquivo}: cópia no acervo levada" in r
+                            for r in registro.output), registro.output)
+        self.assertEqual(rel.sigilosos_no_acervo, [])
+        self.assertEqual(rel.processos, 3, "P, os embargos de P e PL")
+        self.assertEqual(sorted(p.name for p in self.lote.glob("*.pdf")),
+                         sorted([f"{P.nome_arquivo}.pdf", f"{E_2G}.pdf", f"{pl_2g}.pdf"]))
+        sig = self.tmp / "Sigilosos" / "Gabinete"
+        self.assertTrue((sig / f"{h_2g}.pdf").is_file())
+        self.assertTrue((sig / "_controle" / f"{h_2g}_capa.json").is_file())
+        self.assertTrue(sigilo.motivo_do_download(H), "uma vez apurado, fica")
+        indice = (self.acervo / "INDICE.md").read_text(encoding="utf-8")
+        self.assertNotIn(H.nome_arquivo, indice)
+        self.assertIn(f"| {pl_2g} |", indice)
+        self.assertEqual(sorted(p.name for p in textos_ia.glob("*.txt")),
+                         sorted([f"{P.nome_arquivo}.txt", f"{E_2G}.txt", f"{pl_2g}.txt"]))
+        ac = mcp_servidor.Acervo(self.acervo)
+        self.assertEqual(set(ac.pdfs()), {P.nome_arquivo, E_2G, pl_2g})
+        self.assertNotIn(H.nome_arquivo, ac.listar_acervo())
+        with self.assertRaises(LookupError):
+            ac.ler_processo(H.formatado)
+        self.assertTrue(ac.ler_processo(PL.formatado).startswith(
+            f"Processo {PL.formatado} — e-SAJ, 2º grau:"))
+        with self.assertLogs(level="WARNING"):
+            pacote = chatgpt.gerar_pacote(self.acervo, self.tmp / "Pacotes",
+                                          numeros=[H.formatado, PL.formatado])
+        self.assertEqual(pacote.faltaram, [H.formatado])
+        with zipfile.ZipFile(pacote.arquivo_zip) as z:
+            self.assertIn(f"autos/{pl_2g}.pdf", z.namelist())
+        # a nuvem tira a cópia de antes e não leva o HC de novo
+        nuvem.espelhar(self.acervo, destino)
+        self.assertEqual([p.name for p in destino.rglob(f"{H.nome_arquivo}*")], [])
+        self.assertTrue(any(p.name == f"{pl_2g}.pdf" for p in destino.rglob("*.pdf")))
 
 
 # ======================================================== linha de comando

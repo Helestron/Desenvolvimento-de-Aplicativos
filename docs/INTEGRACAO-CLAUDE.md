@@ -647,7 +647,11 @@ processo, e o apurado num grau vale para os autos do outro (`X.pdf` e
 `X (2G).pdf`). O originário do 2º grau (órgão `0000`) cuja ação de origem
 (`numeros_1a_instancia` da capa) já se sabe sigilosa também vem com
 `sigiloso: true`, e o `detalhe` diz “tratado como sigiloso: o processo de
-origem … é sigiloso”.
+origem … é sigiloso”. Essa herança vale também depois do download: a regra
+única relê a capa guardada em `_controle` do lote, e a origem que só vier a
+ser sigilosa mais tarde leva o originário à pasta dos sigilosos no próximo
+preparo (ele sai do índice, do conector, do pacote e da nuvem, e o
+`preparar --pasta` o dá como `sigiloso: true`).
 
 ### A autorização
 
@@ -904,7 +908,10 @@ Há duas chaves:
 
 - a **do processo**, o número, sem grau: o `numero` do JSON
   (`0706265-50.2017.8.02.0001/50000`; nos nomes, com hífen: `…-01`,
-  `…-50000`) e a regra do sigilo, que vale para os dois graus;
+  `…-50000`) e a regra do sigilo, que vale para os dois graus (e alcança o
+  originário cuja ação de origem, pela capa do 2º grau guardada em
+  `_controle`, é sigilosa, mesmo que isso só se saiba depois do download:
+  seção 11);
 - a **dos autos**, o nome do arquivo sem a extensão (`X`, `X-01`,
   `X (2G)`, `X-50000 (2G)`): o `nome_arquivo` do JSON, a coluna Processo
   do `INDICE.md`, a listagem do conector MCP e o nome do texto. No 1º grau,
