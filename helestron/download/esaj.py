@@ -2712,7 +2712,9 @@ class PortalESAJ:
     def _conferir_pagina_2g(self, numero: Numero, cd: str) -> None:
         """A página aberta no 2º grau é a do processo pedido (conferir_pagina_2g)?
         Com o modal de senha na frente não há o que ler: a conferência fica
-        para depois da senha (_liberar)."""
+        para depois da senha (_liberar). O modal é aberto pelo script da
+        página: a que veio sem o número é olhada de novo (precisa_senha)
+        antes de ser dada como de outro processo."""
         self._esperar_carga()
         if self.modal_senha_visivel():
             return
@@ -2721,7 +2723,11 @@ class PortalESAJ:
         except Exception as erro:
             log.debug("  leitura da página do 2º grau: %s", str(erro)[:120])
             dados = {"texto": self._texto_da_pagina()}
-        conferir_pagina_2g(dados if isinstance(dados, dict) else {}, numero, cd)
+        dados = dados if isinstance(dados, dict) else {}
+        if not str(dados.get("numero") or "").strip() and self.precisa_senha():
+            # a página em segredo, sem os dados: o modal abriu depois da 1ª olhada
+            return
+        conferir_pagina_2g(dados, numero, cd)
 
     def _conferir_numero(self, numero: Numero) -> None:
         """A página aberta é mesmo a deste processo? (pelos 20 dígitos, que
