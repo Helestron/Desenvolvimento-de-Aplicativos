@@ -924,7 +924,10 @@ Com **Separar os sigilosos** ligado (o padrão):
   `0000`) é tratado como sigiloso quando o processo de origem, que a capa
   do 2º grau do e-SAJ lista em **Números de 1ª Instância**, já se sabe
   sigiloso: a petição costuma trazer cópia dele. A linha diz “tratado como
-  sigiloso: o processo de origem … é sigiloso”. E vale também depois do
+  sigiloso: o processo de origem … é sigiloso”. Se o processo de origem
+  vem depois do originário na mesma relação e só então se mostra em
+  segredo, o originário já baixado é levado na hora para a pasta dos
+  sigilosos, com a mesma frase na linha. E vale também depois do
   download: se o processo de origem só vier a ser sigiloso mais tarde, o
   originário vai para a pasta dos sigilosos na próxima atualização do
   acervo para a IA (o programa relê a capa guardada em `_controle`).

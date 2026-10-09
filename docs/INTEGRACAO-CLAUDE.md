@@ -652,7 +652,10 @@ processo, e o apurado num grau vale para os autos do outro (`X.pdf` e
 `X (2G).pdf`). O originário do 2º grau (órgão `0000`) cuja ação de origem
 (`numeros_1a_instancia` da capa) já se sabe sigilosa também vem com
 `sigiloso: true`, e o `detalhe` diz “tratado como sigiloso: o processo de
-origem … é sigiloso”. Essa herança vale também depois do download: a regra
+origem … é sigiloso” — também quando a origem vem depois dele na relação
+e só então se apura sigilosa: o item do originário é republicado com
+`sigiloso: true` e o `pdf` na pasta de sigilosos, e `resumo.sigilosos` o
+conta. Essa herança vale também depois do download: a regra
 única relê a capa guardada em `_controle` do lote, e a origem que só vier a
 ser sigilosa mais tarde leva o originário à pasta dos sigilosos no próximo
 preparo (ele sai do índice, do conector, do pacote e da nuvem, e o

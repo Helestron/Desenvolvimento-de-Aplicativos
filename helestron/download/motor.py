@@ -895,7 +895,11 @@ def _mascarar_relatorios(ret: Retirada, lotes: list[Path], raiz_sigilosos: Path,
                 if chave is None and (l.get("sigiloso") or "").strip().lower() == "sim":
                     real = por_ordem.get(l.get("ordem"))
                     if real is not None:
-                        l, chave = real, _chave_relatorio(real.get("processo"))
+                        # A linha mascarada diz "sim", e isso vence o completo
+                        # desatualizado (preso no Excel na rodada que apurou
+                        # o sigilo, ainda com a linha de quando era público).
+                        l, chave = dict(real, sigiloso="sim"), \
+                            _chave_relatorio(real.get("processo"))
                 if chave is not None and sigilo.contem(chaves, chave):
                     l = dict(l, sigiloso="sim")
                     if l.get("arquivo") and "(na pasta de sigilosos)" not in l["arquivo"]:
@@ -913,7 +917,7 @@ def _mascarar_relatorios(ret: Retirada, lotes: list[Path], raiz_sigilosos: Path,
             except OSError as erro:
                 # Sem a linha completa guardada, o número não sai do relatório
                 log.warning("não consegui gravar o relatório da pasta de sigilosos (%s)", erro)
-                ret._preso(ret.outros_presos, arquivo, erro)
+                ret._preso(ret.outros_presos, completo_arq, erro)
                 continue
             mascaradas = []
             for l in linhas:
@@ -1117,7 +1121,11 @@ def _mesclar_relatorios(do_lote: list[dict], completo: list[dict]) -> list[tuple
         if chave is None and _sim(linha.get("sigiloso")):
             real = por_ordem.get(linha.get("ordem"))
             if real is not None:
-                linha, chave = real, _chave_da_linha(real)
+                # A linha mascarada diz "sim", e isso vence o completo
+                # desatualizado (preso no Excel na rodada que apurou o
+                # sigilo, ainda com a linha de quando era público): o número
+                # não volta ao relatório do acervo por ele.
+                linha, chave = dict(real, sigiloso="sim"), _chave_da_linha(real)
         if chave is not None:
             if chave in vistos:
                 continue
@@ -2032,18 +2040,48 @@ class _Lote:
         # O incidente dele baixado nesta rodada, quando o sigilo ainda não se
         # sabia, saiu junto (herda o sigilo): o item passa a dizê-lo, com o
         # PDF e as gravações onde estão agora - o relatório e o JSON do lote
-        # não podem contradizer a pasta.
+        # não podem contradizer a pasta. O que ficou preso (aberto no
+        # leitor) também é sigiloso: o item o diz, com o PDF onde está, e o
+        # aviso no fim desta função pede para fechá-lo e movê-lo.
         for outro in self.itens:
             levado = ret.autos.get(Path(outro.arquivo)) if outro.arquivo else None
-            if outro is r or levado is None:
+            preso = bool(outro.arquivo) and Path(outro.arquivo) in ret.autos_presos
+            if outro is r or (levado is None and not preso):
                 continue
-            outro.sigiloso, outro.arquivo = True, str(levado)
+            outro.sigiloso = True
+            if preso:
+                outro.detalhe = _juntar(outro.detalhe, "processo sigiloso: a cópia dos autos "
+                                        "ficou presa no acervo (feche-a e mova-a para a pasta "
+                                        "de sigilosos)")
+                self._publicar(outro)
+                continue
+            outro.arquivo = str(levado)
             outro.detalhe = _juntar(outro.detalhe, "levado agora para a pasta de sigilosos")
             if outro.midias:
                 velho_midias = self.destino / "_controle" / "midias" / levado.stem
                 novo_midias = levado.parent / "_controle" / "midias" / levado.stem
                 outro.midias = [m.replace(str(velho_midias), str(novo_midias), 1)
                                 for m in outro.midias]
+            self._publicar(outro)
+        # O originário do 2º grau (HC, MS, AI) baixado nesta rodada antes de
+        # a ação de origem se apurar sigilosa herda o sigilo agora, pela capa
+        # que o download guardou em _controle (a mesma regra do preparo,
+        # sigilo.herdadas_das_origens, com o lote como raiz): os autos vão
+        # para a pasta de sigilosos e o item o diz. Deixado ao preparo do fim
+        # do lote, o PDF sairia e o JSON ficaria dizendo "público", com o
+        # caminho de um arquivo que já não existe. O já sigiloso não é
+        # refeito (e a chamada abaixo não volta a este item).
+        herdados = sigilo.herdadas_das_origens(self.destino, sigilo.Sigilosas({n.nome_arquivo}))
+        for outro, numero in zip(self.itens, self.numeros):
+            if outro is r or outro.sigiloso or numero.nome_arquivo not in herdados \
+                    or outro.situacao not in (OK, JA_BAIXADO) or not outro.arquivo \
+                    or not _dentro(outro.arquivo, self.destino):
+                continue
+            outro.sigiloso = True
+            outro.detalhe = _juntar(outro.detalhe, f"tratado como sigiloso: o processo de origem "
+                                                   f"{n.formatado} é sigiloso")
+            self._lembrar_sigilo(numero)
+            self._retirar_do_acervo(outro, numero)
             self._publicar(outro)
         if ret.outros:
             um = len(ret.outros) == 1

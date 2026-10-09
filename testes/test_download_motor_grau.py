@@ -20,6 +20,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import types
 import unittest
 from dataclasses import replace
@@ -482,6 +483,84 @@ class TestRelatorioPorGrau(BaseGrau):
                          [(I.formatado, "sim", f"{I.nome_arquivo}.pdf (na pasta de sigilosos)"),
                           (A.formatado, "sim", f"{A.nome_arquivo}.pdf (na pasta de sigilosos)")])
 
+    def test_incidente_preso_no_acervo_quando_o_principal_vira_sigiloso(self):
+        """Achado V4: I, baixado público numa rodada anterior, está aberto no
+        leitor (preso) quando A se apura sigiloso. A retirada não o leva; o
+        relatório do acervo o mascara, e o item (o JSON do lote) tem de dizer
+        que é sigiloso, com o PDF onde ficou - não "público, no lote"."""
+        self.lote([I], grau="1g")
+        preso = self.destino / f"{I.nome_arquivo}.pdf"
+        original = motor._mover
+
+        def falha(origem, destino, *a):
+            if Path(origem) == preso:
+                raise PermissionError(13, "Acesso negado", str(origem))
+            return original(origem, destino, *a)
+        with mock.patch.object(motor, "_mover", falha):
+            resumo = self.lote([I, A], grau="1g", roteiro={A.formatado: ["ok_sigiloso"]})
+        i, a = resumo.itens
+        self.assertEqual((a.situacao, a.causa), (modelos.ERRO, motor.CAUSA_SIGILO_NO_ACERVO))
+        self.assertEqual(resumo.sigilosos_no_acervo, [str(preso)])
+        self.assertTrue(preso.is_file())
+        self.assertEqual((i.situacao, i.sigiloso, i.arquivo),
+                         (modelos.JA_BAIXADO, True, str(preso)))
+        self.assertIn("a cópia dos autos ficou presa no acervo", i.detalhe)
+        self.assertEqual((processo_json(i)["sigiloso"], processo_json(i)["pdf"]),
+                         (True, str(preso)))
+        self.assertEqual(self.ctx.itens.count((I.formatado, modelos.JA_BAIXADO)), 2,
+                         "o item de I é publicado de novo, já sigiloso")
+        self.assertNotIn(I.nome_arquivo, (self.destino / "_controle" / "relatorio.csv")
+                         .read_bytes().decode("utf-8-sig"))
+        self.assertEqual([(l["processo"], l["situacao"], l["sigiloso"]) for l in self.relatorio()],
+                         [(motor.MASCARA_SIGILOSO, modelos.JA_BAIXADO, "sim"),
+                          (motor.MASCARA_SIGILOSO, modelos.ERRO, "sim")])
+        completo = self.relatorio(self.tmp / "Sigilosos" / self.destino.name / "_controle" /
+                                  "relatorio.csv")
+        self.assertEqual([(l["processo"], l["sigiloso"]) for l in completo],
+                         [(I.formatado, "sim"), (A.formatado, "sim")])
+        self.assertEqual(completo[0]["arquivo"], f"{I.nome_arquivo}.pdf", "ficou no lote")
+
+    def test_completo_preso_na_rodada_do_sigilo_nao_devolve_o_numero(self):
+        """Achado V3: o relatório COMPLETO (o da pasta de sigilosos) estava
+        aberto no Excel na rodada em que A, público no 1º grau, se apurou
+        sigiloso no 2º: ficou com a linha antiga de A dizendo "não". Na
+        rodada seguinte, a linha mascarada do lote é trocada pela dele e tem
+        de sair sigilosa - senão o número de A voltava ao relatório do
+        acervo, sem aviso. E o aviso da rodada do sigilo nomeia o arquivo
+        que de fato ficou preso: o completo, não o relatório do lote."""
+        self.lote([S], grau="1g", roteiro={S.formatado: ["ok_sigiloso"]})   # o completo já existe
+        self.lote([A], grau="1g")
+        sig = self.tmp / "Sigilosos" / self.destino.name
+        completo = sig / "_controle" / "relatorio.csv"
+        original = os.replace
+
+        def preso(origem, destino, *a, **k):
+            if Path(destino) == completo:
+                raise PermissionError(13, "O arquivo está sendo usado por outro processo",
+                                      str(destino))
+            return original(origem, destino, *a, **k)
+        with mock.patch.object(motor.os, "replace", preso):
+            resumo = self.lote([A], grau="2g", roteiro={A.formatado: ["ok_sigiloso"]})
+        self.assertTrue(resumo.itens[0].sigiloso)
+        self.assertEqual(resumo.sigilosos_avisos, [str(completo)])
+        self.assertEqual([(l["processo"], l["sigiloso"]) for l in self.relatorio(completo)],
+                         [(S.formatado, "sim"), (A.formatado, "não")],
+                         "o completo ficou como estava, desatualizado")
+        self.assertEqual([(l["processo"], l["sigiloso"]) for l in self.relatorio()],
+                         [(motor.MASCARA_SIGILOSO, "sim")] * 3)
+        # a rodada seguinte, com o Excel fechado, relê esse completo
+        self.lote([A2], grau="1g")
+        self.assertNotIn(A.nome_arquivo, (self.destino / "_controle" / "relatorio.csv")
+                         .read_bytes().decode("utf-8-sig"))
+        self.assertEqual([(l["processo"], l["sigiloso"], l["grau"]) for l in self.relatorio()],
+                         [(motor.MASCARA_SIGILOSO, "sim", "1g"),
+                          (motor.MASCARA_SIGILOSO, "sim", "1g"),
+                          (motor.MASCARA_SIGILOSO, "sim", "2g"), (A2.formatado, "não", "1g")])
+        self.assertEqual([(l["processo"], l["sigiloso"], l["grau"])
+                          for l in self.relatorio(completo)][:2],
+                         [(S.formatado, "sim", "1g"), (A.formatado, "sim", "1g")],
+                         "o completo regravado passa a dizer que A é sigiloso")
+
 
 # ================================================================== sigilo
 class TestSigiloNosDoisGraus(BaseGrau):
@@ -592,6 +671,47 @@ class TestSigiloNosDoisGraus(BaseGrau):
         self.assertFalse(r.sigiloso)
         self.assertTrue((self.destino / f"{H.nome_arquivo} (2G).pdf").is_file())
         self.assertFalse(sigilo.motivo_do_download(H))
+
+    def test_originario_baixado_antes_de_a_origem_se_apurar_sigilosa(self):
+        """Achado V7: o HC vem antes da ação de origem A na relação do 2º
+        grau e é baixado público (A ainda não se sabia sigilosa); A então se
+        apura sigilosa pelo portal. O HC herda o sigilo na hora, pela capa
+        guardada: o item diz que é sigiloso e onde o PDF está, o relatório o
+        mascara e o registro do download o guarda - não fica para o preparo
+        do fim do lote, que levaria o PDF e deixaria o JSON dizendo público."""
+        capa = {"formato": "helestron.capa/2", "grau": "2g", "capa": {"classe": "Habeas Corpus"},
+                "numeros_1a_instancia": [{"numero": A.formatado, "foro": "x"}]}
+        resumo = self.lote([H, A], grau="2g", capas={H.formatado: capa},
+                           roteiro={A.formatado: ["ok_sigiloso"]})
+        h, a = resumo.itens
+        self.assertEqual((a.situacao, a.sigiloso), (modelos.OK, True))
+        sig = self.tmp / "Sigilosos" / self.destino.name
+        pdf = sig / f"{H.nome_arquivo} (2G).pdf"
+        self.assertEqual(list(self.destino.glob("*.pdf")), [])
+        self.assertTrue(pdf.is_file())
+        self.assertTrue((sig / "_controle" / f"{H.nome_arquivo} (2G)_capa.json").is_file())
+        self.assertEqual((h.situacao, h.sigiloso, h.arquivo), (modelos.OK, True, str(pdf)))
+        self.assertIn(f"tratado como sigiloso: o processo de origem {A.formatado} é sigiloso",
+                      h.detalhe)
+        self.assertIn("levado agora para a pasta de sigilosos", h.detalhe)
+        self.assertEqual((processo_json(h)["sigiloso"], processo_json(h)["pdf"]),
+                         (True, str(pdf)))
+        self.assertEqual(len(resumo.sigilosos), 2)
+        self.assertEqual(resumo.sigilosos_no_acervo, [])
+        self.assertTrue(sigilo.motivo_do_download(H), "vai para a regra única")
+        self.assertEqual(self.ctx.itens.count((H.formatado, modelos.OK)), 2,
+                         "o item do HC é publicado de novo, já sigiloso")
+        self.assertNotIn(H.nome_arquivo, (self.destino / "_controle" / "relatorio.csv")
+                         .read_bytes().decode("utf-8-sig"))
+        self.assertEqual([(l["processo"], l["sigiloso"], l["grau"]) for l in self.relatorio()],
+                         [(motor.MASCARA_SIGILOSO, "sim", "2g"),
+                          (motor.MASCARA_SIGILOSO, "sim", "2g")])
+        self.assertEqual([(l["processo"], l["sigiloso"], l["arquivo"])
+                          for l in self.relatorio(sig / "_controle" / "relatorio.csv")],
+                         [(H.formatado, "sim",
+                           f"{H.nome_arquivo} (2G).pdf (na pasta de sigilosos)"),
+                          (A.formatado, "sim",
+                           f"{A.nome_arquivo} (2G).pdf (na pasta de sigilosos)")])
 
 
 # =================================================================== eProc

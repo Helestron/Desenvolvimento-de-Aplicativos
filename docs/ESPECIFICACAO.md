@@ -869,7 +869,8 @@ Combinados na revisão da versão 1.0.0; cada lado tolera a falta do outro
   `_Lote`) lê o relatório anterior da pasta (o mais recente entre
   `relatorio.csv` e `relatorio (atualizado).csv`; a linha mascarada
   “(processo sigiloso)” é casada, pela ordem, com a do relatório completo da
-  pasta de sigilosos) e grava a mescla: as linhas refeitas no lugar das
+  pasta de sigilosos, e continua sigilosa mesmo que o completo, desatualizado,
+  diga que não) e grava a mescla: as linhas refeitas no lugar das
   antigas, as demais como estavam e as novas no fim, com a ordem
   renumerada. O relatório do acervo continua mascarado, e o completo vai
   para a pasta de sigilosos do lote (`pasta_sigilosos_do_lote`, seção 5.1).
@@ -2043,7 +2044,14 @@ dados ficam com a instalação registrada.
     do 2º grau (só o e-SAJ a traz) e, se algum desses números já se sabe
     sigiloso pela regra única, marca o item (`r.sigiloso`, “tratado como
     sigiloso: o processo de origem X é sigiloso”) e o registra
-    (`_lembrar_sigilo`). A herança vale também depois do download: com o
+    (`_lembrar_sigilo`). Se a origem se apura sigilosa na mesma rodada,
+    depois de o originário já ter sido baixado público (a relação `[H, A]`),
+    a retirada dela (`_Lote._retirar_do_acervo`) aplica a herança na hora,
+    pela mesma capa (`sigilo.herdadas_das_origens` com o lote como raiz):
+    o item do originário passa a sigiloso, com o mesmo detalhe, é
+    registrado e tem os autos levados à pasta de sigilosos, e o relatório
+    o mascara — o JSON do lote não fica dizendo “público” de um PDF que o
+    preparo do fim do lote levaria. A herança vale também depois do download: com o
     acervo, `chaves_sigilosas` relê a capa guardada em `_controle` (a
     fonte 6, acima), e a origem que só vira sigilosa mais tarde — a
     apelação dela baixada com o selo, os autos levados à pasta dos
@@ -2976,9 +2984,20 @@ fora nesta versão: o PDF traz os eventos do próprio processo no 2º grau.
   público no 1º grau antes de o 2º apurar o segredo, no mesmo lote, ou o
   incidente baixado antes do principal, na mesma rodada; a retirada já
   levou os autos, e o `salvar_relatorio` seguinte não os devolve pela
-  linha antiga. O item desta rodada cujo PDF a retirada levou passa a
-  sigiloso, com o PDF e as gravações onde estão (`_retirar_do_acervo`),
-  para o JSON do lote não contradizer o relatório. O grau vazio (CSV de
+  linha antiga. A linha mascarada do lote que `_mesclar_relatorios` (e
+  `_mascarar_relatorios`) troca pela do relatório completo sai com
+  sigiloso “sim” mesmo que o completo diga “não”: ele pode estar
+  desatualizado (aberto no Excel na rodada que apurou o sigilo, quando
+  `_mascarar_relatorios` registra como preso o próprio completo), e o
+  número não volta ao acervo por ele. O item desta rodada cujo PDF a
+  retirada levou passa a sigiloso, com o PDF e as gravações onde estão
+  (`_retirar_do_acervo`), para o JSON do lote não contradizer o
+  relatório; o item cujo PDF ficou preso no acervo também passa a
+  sigiloso, com o PDF onde está e o detalhe “processo sigiloso: a cópia
+  dos autos ficou presa no acervo (feche-a e mova-a para a pasta de
+  sigilosos)”. O originário do 2º grau baixado nesta rodada antes de a
+  ação de origem se apurar sigilosa herda o sigilo na mesma retirada
+  (seção 12). O grau vazio (CSV de
   versão anterior) é
   `cnj.grau_do_numero(n) or "1g"` (`_grau_da_linha`): a 1.0.2 procurava o
   HC de órgão `0000` no 1º grau e gravava a linha sem grau, e lida como 1º
