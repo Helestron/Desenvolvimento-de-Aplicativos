@@ -1973,7 +1973,8 @@ dados ficam com a instalação registrada.
     originários são abertas — não a da apelação nem a do recurso interno
     dela, cuja origem é o próprio número —, cada uma relida só quando muda
     a data ou o tamanho). O motor já trata o originário como sigiloso no
-    download, se a origem já se sabe sigilosa; esta fonte cobre a origem
+    download, se a origem já se sabe sigilosa — e também o que já estava na
+    pasta (`JA_BAIXADO`), pela capa ao lado do PDF; esta fonte cobre a origem
     que vira sigilosa depois. `chaves_sigilosas` acrescenta o originário ao
     registro do download — herdado pela capa, não pelo selo do portal: o
     registro não guarda o porquê (`sigilo.motivo` o dá como apurado por um
@@ -3015,7 +3016,19 @@ fora nesta versão: o PDF traz os eventos do próprio processo no 2º grau.
   dos autos ficou presa no acervo (feche-a e mova-a para a pasta de
   sigilosos)”. O originário do 2º grau baixado nesta rodada antes de a
   ação de origem se apurar sigilosa herda o sigilo na mesma retirada
-  (seção 12). O grau vazio (CSV de
+  (seção 12) e, com a separação desligada, também, sem sair do lote
+  (`_herdar_originarios`). O recurso interno cuja consulta abre a página
+  do principal em segredo (o e-SAJ põe o principal também em
+  `sigilosos_apurados`) apura o principal (`_principal_apurado`): ele vai
+  para o registro do download e para o que o lote já sabe (a linha dele sai
+  mascarada), os autos dele, nos dois graus e em qualquer lote, saem do
+  acervo, e o item dele nesta rodada passa a sigiloso com o detalhe
+  “tratado como sigiloso: a consulta do recurso interno … abriu a página
+  dele em segredo de justiça” (sem item, o detalhe do recurso interno diz o
+  que saiu). O relatório completo que a retirada não pôde regravar (aberto
+  no Excel) não ficou no acervo e tem aviso próprio: “o relatório completo
+  da pasta de sigilosos não pôde ser atualizado: … Feche-o: o próximo
+  download do lote o regrava”. O grau vazio (CSV de
   versão anterior) é
   `cnj.grau_do_numero(n) or "1g"` (`_grau_da_linha`): a 1.0.2 procurava o
   HC de órgão `0000` no 1º grau e gravava a linha sem grau, e lida como 1º

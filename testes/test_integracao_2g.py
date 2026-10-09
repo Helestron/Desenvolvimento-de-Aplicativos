@@ -564,6 +564,34 @@ class TestMotorNosDoisGraus(_ComMotor):
         self.assertEqual([(l["processo"], l["situacao"]) for l in completo],
                          [(s50.formatado, modelos.NAO_SUPORTADO)])
 
+    def test_recurso_interno_em_segredo_tira_do_acervo_o_principal_ja_baixado(self):
+        """Achado W1: S, baixado público no 1º grau, está no acervo; depois
+        só S/50000, cuja consulta abre a página de S em segredo de justiça. O
+        portal apura S também, e o motor o trata como sigiloso: S.pdf vai
+        para a pasta de sigilosos, a linha dele é mascarada, e o registro do
+        download (a regra única: o índice, o MCP, a nuvem) guarda S."""
+        s50 = cnj.ler(S.principal + "/50000")
+        with falso.servidor_esaj(("S",)) as outro:
+            self.apontar_para(outro)
+            lote = self.lote("Segredo principal")
+            r = self.baixar([S], lote, "1g").itens[0]
+            self.assertEqual((r.situacao, r.sigiloso), (modelos.OK, False), r.detalhe)
+            r = self.baixar([s50], lote, "2g", senhas={s50.formatado: SENHA_S_2G}).itens[0]
+        self.assertEqual((r.situacao, r.sigiloso), (modelos.NAO_SUPORTADO, True), r.detalhe)
+        self.assertFalse(list(lote.glob("*.pdf")))
+        self.assertTrue((self.sigilosos / lote.name / f"{S.nome_arquivo}.pdf").is_file())
+        self.assertIn(f"o processo principal {S.formatado} passa a ser tratado como sigiloso: "
+                      "1 cópia dos autos dele levada para a pasta de sigilosos", r.detalhe)
+        self.assertNotIn(S.principal, (lote / "_controle" / "relatorio.csv")
+                         .read_text(encoding="utf-8-sig"))
+        self.assertEqual([(l["processo"], l["sigiloso"], l["grau"])
+                          for l in ler_csv(lote / "_controle" / "relatorio.csv")],
+                         [(motor.MASCARA_SIGILOSO, "sim", "1g"),
+                          (motor.MASCARA_SIGILOSO, "sim", "2g")])
+        self.assertTrue(sigilo.motivo_do_download(S) and sigilo.motivo_do_download(s50))
+        self.assertTrue(sigilo.contem(sigilo.chaves_sigilosas(self.sigilosos, raiz=self.acervo),
+                                      S.nome_arquivo))
+
     def test_tribunal_sem_o_2o_grau_nao_manda_escolher_o_2o_grau(self):
         """Achado da integração: o "não encontrado" do 1º grau mandava todo
         tribunal escolher “2º grau” nas Opções do lote - e o lote do 2º grau

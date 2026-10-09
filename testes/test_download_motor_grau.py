@@ -69,14 +69,42 @@ class ContextoComEventos(apoio.ContextoGravador):
         self.eventos.append((tipo, dados))
 
 
+class PortalDoSegredo(apoio.PortalFalso):
+    """Como o e-SAJ do 2º grau com o recurso interno de processo em segredo
+    (esaj.achar_codigo_2g): a busca cai na página do principal sem o número,
+    o pedido sai NAO_SUPORTADO e sigiloso, e o principal também entra nos
+    sigilosos apurados. O principal pedido sai como no PortalFalso."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.sigilosos_apurados: set[str] = set()
+
+    def baixar(self, numero, destino_pdf, senha=None):
+        if not numero.e_dependente:
+            return super().baixar(numero, destino_pdf, senha)
+        self.chamadas.append((numero.formatado, senha))
+        self.sigilosos_apurados.update((numero.nome_arquivo, numero.principal))
+        r = modelos.ResultadoProcesso(
+            ordem=0, numero=numero.formatado, tribunal=self.tribunal.sigla,
+            sistema=self.sistema, situacao=modelos.NAO_SUPORTADO,
+            detalhe="a consulta de 2º grau abriu a página do processo principal em segredo de "
+                    "justiça, sem o número")
+        r.sigiloso = True
+        return r
+
+
 class BaseGrau(BaseMotor):
     def setUp(self):
         super().setUp()
         self.ctx = ContextoComEventos()
 
     def lote(self, numeros, grau="1g", roteiro=None, capas=None, cofre=None, destino=None,
-             falha_entrar=None, **opcoes):
+             falha_entrar=None, portal=None, **opcoes):
         fp, fn = apoio.fabricas(roteiro, falha_entrar, capas=capas)
+        if portal is not None:             # outro dublê do portal (PortalDoSegredo)
+            def com_portal(nav, tribunal, opcoes_, ctx, credenciais):
+                return portal(nav, tribunal, opcoes_, ctx, credenciais, capas=capas)
+            fp = com_portal
         self.opcoes = apoio.opcoes_de_teste(self.tmp, grau=grau, **opcoes)
         return motor.executar(numeros, destino or self.destino, self.opcoes, self.ctx,
                               cofre=cofre, fabrica_portal=fp, fabrica_navegador=fn)
@@ -561,6 +589,32 @@ class TestRelatorioPorGrau(BaseGrau):
                          [(S.formatado, "sim", "1g"), (A.formatado, "sim", "1g")],
                          "o completo regravado passa a dizer que A é sigiloso")
 
+    def test_aviso_do_completo_preso_nao_manda_mover_nada(self):
+        """Achado W7: o relatório completo preso fica na pasta de sigilosos,
+        fora do acervo. O aviso não diz que algo "ficou no acervo" nem manda
+        movê-lo para a pasta de sigilosos, onde ele já está: diz qual é e que
+        basta fechá-lo."""
+        self.lote([S], grau="1g", roteiro={S.formatado: ["ok_sigiloso"]})   # o completo já existe
+        self.lote([A], grau="1g")
+        completo = self.tmp / "Sigilosos" / self.destino.name / "_controle" / "relatorio.csv"
+        original = os.replace
+
+        def preso(origem, destino, *a, **k):
+            if Path(destino) == completo:
+                raise PermissionError(13, "O arquivo está sendo usado por outro processo",
+                                      str(destino))
+            return original(origem, destino, *a, **k)
+        with mock.patch.object(motor.os, "replace", preso):
+            resumo = self.lote([A], grau="2g", roteiro={A.formatado: ["ok_sigiloso"]})
+        r = resumo.itens[0]
+        self.assertEqual(resumo.sigilosos_avisos, [str(completo)])
+        self.assertNotIn("ficou no acervo", r.detalhe)
+        self.assertNotIn("mova-o", r.detalhe)
+        self.assertIn("atenção: o relatório completo da pasta de sigilosos não pôde ser "
+                      f"atualizado: {Path(self.destino.name) / '_controle' / 'relatorio.csv'} "
+                      "(está aberto em outro programa?). Feche-o: o próximo download do lote o "
+                      "regrava", r.detalhe)
+
 
 # ================================================================== sigilo
 class TestSigiloNosDoisGraus(BaseGrau):
@@ -712,6 +766,158 @@ class TestSigiloNosDoisGraus(BaseGrau):
                            f"{H.nome_arquivo} (2G).pdf (na pasta de sigilosos)"),
                           (A.formatado, "sim",
                            f"{A.nome_arquivo} (2G).pdf (na pasta de sigilosos)")])
+
+    CAPA_DO_HC = {"formato": "helestron.capa/2", "grau": "2g",
+                  "capa": {"classe": "Habeas Corpus"},
+                  "numeros_1a_instancia": [{"numero": A.formatado, "foro": "x"}]}
+
+    def originario_ja_baixado_herda(self, destino: Path) -> None:
+        """Achado W5: o HC baixado público numa rodada; a ação de origem A se
+        apura sigilosa noutra (sem o HC na relação); o HC pedido de novo já
+        está na pasta (JA_BAIXADO) e herda o sigilo pela capa guardada, como
+        herdaria baixado de novo."""
+        self.lote([H], grau="2g", capas={H.formatado: self.CAPA_DO_HC}, destino=destino)
+        self.lote([A], grau="2g", roteiro={A.formatado: ["ok_sigiloso"]}, destino=destino)
+        self.assertTrue((destino / f"{H.nome_arquivo} (2G).pdf").is_file())
+        h = self.lote([H], grau="2g", capas={H.formatado: self.CAPA_DO_HC},
+                      destino=destino).itens[0]
+        sig = motor.pasta_sigilosos_do_lote(self.tmp / "Sigilosos", destino,
+                                            self.cfg.pasta_processos)
+        pdf = sig / f"{H.nome_arquivo} (2G).pdf"
+        self.assertEqual((h.situacao, h.sigiloso, h.arquivo), (modelos.JA_BAIXADO, True, str(pdf)))
+        self.assertTrue(pdf.is_file())
+        self.assertEqual(list(destino.glob("*.pdf")), [])
+        self.assertIn(f"tratado como sigiloso: o processo de origem {A.formatado} é sigiloso",
+                      h.detalhe)
+        self.assertEqual(processo_json(h)["sigiloso"], True)
+        self.assertTrue(sigilo.motivo_do_download(H), "vai para a regra única")
+        self.assertNotIn(H.nome_arquivo, (destino / "_controle" / "relatorio.csv")
+                         .read_bytes().decode("utf-8-sig"))
+
+    def test_originario_ja_baixado_herda_a_origem_que_se_apurou_depois(self):
+        self.originario_ja_baixado_herda(self.destino)
+
+    def test_originario_ja_baixado_herda_tambem_no_lote_fora_do_acervo(self):
+        # o fluxo da skill: o preparo do fim do lote não alcança esta pasta
+        self.originario_ja_baixado_herda(self.tmp / "Trabalho" / "Lotes" / "Semana 42")
+
+    def originario_herda_com_a_separacao_desligada(self, acao: str) -> None:
+        """Achados W6 e W11: com a separação dos sigilosos desligada, o HC
+        baixado antes da ação de origem A na relação herda o sigilo quando A
+        se apura sigilosa, como na ordem [A, H]: o item diz que é sigiloso, a
+        linha dele diz "sim" e o registro do download o guarda; os autos
+        ficam no lote (a separação está desligada)."""
+        resumo = self.lote([H, A], grau="2g", capas={H.formatado: self.CAPA_DO_HC},
+                           roteiro={A.formatado: [acao]}, separar_sigilosos=False)
+        h, a = resumo.itens
+        self.assertTrue(a.sigiloso)
+        pdf = self.destino / f"{H.nome_arquivo} (2G).pdf"
+        self.assertEqual((h.situacao, h.sigiloso, h.arquivo), (modelos.OK, True, str(pdf)))
+        self.assertTrue(pdf.is_file(), "a separação está desligada: fica no lote")
+        self.assertEqual(h.detalhe, f"tratado como sigiloso: o processo de origem {A.formatado} "
+                                    "é sigiloso")
+        self.assertEqual(processo_json(h)["sigiloso"], True)
+        self.assertEqual(len(resumo.sigilosos), 2)
+        self.assertEqual(self.ctx.itens.count((H.formatado, modelos.OK)), 2,
+                         "o item do HC é publicado de novo, já sigiloso")
+        self.assertEqual([(l["processo"], l["sigiloso"]) for l in self.relatorio()],
+                         [(H.formatado, "sim"), (A.formatado, "sim")])
+        self.assertTrue(sigilo.motivo_do_download(H), "vai para a regra única")
+        self.assertFalse((self.tmp / "Sigilosos").exists())
+
+    def test_originario_herda_com_a_separacao_desligada(self):
+        self.originario_herda_com_a_separacao_desligada("ok_sigiloso")
+
+    def test_originario_herda_da_origem_sem_senha_com_a_separacao_desligada(self):
+        # A sem a senha (SIGILOSO_SEM_SENHA): sigilosa, sem PDF novo
+        self.originario_herda_com_a_separacao_desligada("sigiloso_sem_senha")
+
+    def test_separacao_desligada_e_o_registro_do_originario_que_falha(self):
+        """W6, o lado seguro: com a separação desligada, o HC que herda o
+        sigilo e não pode ir para o registro do download vai para a pasta de
+        sigilosos (como o próprio processo, _lembrar_sigilo), com o porquê."""
+        original = sigilo.lembrar_do_download
+
+        def lembrar(processos, *a, **k):
+            if any(cnj.chave(p) == cnj.chave(H) for p in processos):
+                return False
+            return original(processos, *a, **k)
+        with mock.patch.object(sigilo, "lembrar_do_download", lembrar):
+            h, a = self.lote([H, A], grau="2g", capas={H.formatado: self.CAPA_DO_HC},
+                             roteiro={A.formatado: ["ok_sigiloso"]},
+                             separar_sigilosos=False).itens
+        pdf = self.tmp / "Sigilosos" / self.destino.name / f"{H.nome_arquivo} (2G).pdf"
+        self.assertEqual((h.sigiloso, h.arquivo), (True, str(pdf)))
+        self.assertTrue(pdf.is_file())
+        self.assertIn(motor.SEM_REGISTRO_DO_SIGILO, h.detalhe)
+        self.assertTrue((self.destino / f"{A.nome_arquivo} (2G).pdf").is_file(),
+                        "A foi para o registro: fica no lote")
+
+    def test_recurso_interno_em_segredo_apura_o_principal_desta_rodada(self):
+        """Achado W4: P baixado público numa rodada; depois a relação [P, E]
+        (E = P/50000): P sai JA_BAIXADO e a consulta de E abre a página de P
+        em segredo de justiça. O sigilo é de P: o item dele passa a dizê-lo,
+        os autos vão para a pasta de sigilosos, a linha dele é mascarada e o
+        registro do download o guarda."""
+        self.lote([P], grau="2g")
+        resumo = self.lote([P, E], grau="2g", portal=PortalDoSegredo)
+        p, e = resumo.itens
+        self.assertEqual((e.situacao, e.sigiloso), (modelos.NAO_SUPORTADO, True))
+        sig = self.tmp / "Sigilosos" / self.destino.name
+        pdf = sig / f"{P.nome_arquivo} (2G).pdf"
+        self.assertEqual((p.situacao, p.sigiloso, p.arquivo), (modelos.JA_BAIXADO, True, str(pdf)))
+        self.assertTrue(pdf.is_file())
+        self.assertEqual(list(self.destino.glob("*.pdf")), [])
+        self.assertIn(f"tratado como sigiloso: a consulta do recurso interno {E.formatado} abriu "
+                      "a página dele em segredo de justiça", p.detalhe)
+        self.assertIn("levado agora para a pasta de sigilosos", p.detalhe)
+        self.assertEqual((processo_json(p)["sigiloso"], processo_json(p)["pdf"]), (True, str(pdf)))
+        self.assertEqual(self.ctx.itens.count((P.formatado, modelos.JA_BAIXADO)), 2,
+                         "o item de P é publicado de novo, já sigiloso")
+        self.assertTrue(sigilo.motivo_do_download(P), "vai para a regra única")
+        self.assertNotIn(P.nome_arquivo, (self.destino / "_controle" / "relatorio.csv")
+                         .read_bytes().decode("utf-8-sig"))
+        self.assertEqual([(l["processo"], l["sigiloso"])
+                          for l in self.relatorio(sig / "_controle" / "relatorio.csv")],
+                         [(P.formatado, "sim"), (E.formatado, "sim")])
+
+    def test_recurso_interno_em_segredo_tira_o_principal_de_todo_o_acervo(self):
+        """Achado W1: P baixado público no 1º grau neste lote e no 2º grau
+        noutro; depois só E (= P/50000), cuja consulta abre a página de P em
+        segredo de justiça. Os autos de P, nos dois graus e nos dois lotes,
+        saem do acervo; a linha de P é mascarada; o registro do download
+        guarda P e E; o detalhe de E diz o que saiu; e P, pedido depois,
+        nasce sigiloso."""
+        outro = self.tmp / "Acervo" / "Processos" / "Outro"
+        self.lote([P], grau="1g")
+        self.lote([P], grau="2g", destino=outro)
+        e = self.lote([E], grau="2g", portal=PortalDoSegredo).itens[0]
+        self.assertEqual((e.situacao, e.sigiloso), (modelos.NAO_SUPORTADO, True))
+        sig = self.tmp / "Sigilosos"
+        self.assertEqual(list(self.destino.glob("*.pdf")), [])
+        self.assertEqual(list(outro.glob("*.pdf")), [])
+        self.assertTrue((sig / self.destino.name / f"{P.nome_arquivo}.pdf").is_file())
+        self.assertTrue((sig / "Outro" / f"{P.nome_arquivo} (2G).pdf").is_file())
+        self.assertIn(f"o processo principal {P.formatado} passa a ser tratado como sigiloso: "
+                      "2 cópias dos autos dele levadas para a pasta de sigilosos", e.detalhe)
+        self.assertTrue(sigilo.motivo_do_download(P) and sigilo.motivo_do_download(E))
+        self.assertTrue(sigilo.motivo(self.cfg, P))
+        self.assertEqual([(l["processo"], l["situacao"], l["sigiloso"], l["grau"])
+                          for l in self.relatorio()],
+                         [(motor.MASCARA_SIGILOSO, modelos.OK, "sim", "1g"),
+                          (motor.MASCARA_SIGILOSO, modelos.NAO_SUPORTADO, "sim", "2g")])
+        self.assertEqual([(l["processo"], l["sigiloso"])
+                          for l in self.relatorio(outro / "_controle" / "relatorio.csv")],
+                         [(motor.MASCARA_SIGILOSO, "sim")])
+        self.assertEqual([(l["processo"], l["sigiloso"], l["arquivo"])
+                          for l in self.relatorio(sig / self.destino.name / "_controle" /
+                                                  "relatorio.csv")],
+                         [(P.formatado, "sim", f"{P.nome_arquivo}.pdf (na pasta de sigilosos)"),
+                          (E.formatado, "sim", "")])
+        # P pedido depois, neste lote, já nasce sigiloso
+        r = self.lote([P], grau="2g").itens[0]
+        self.assertEqual((r.situacao, r.sigiloso), (modelos.OK, True))
+        self.assertTrue((sig / self.destino.name / f"{P.nome_arquivo} (2G).pdf").is_file())
 
 
 # =================================================================== eProc
