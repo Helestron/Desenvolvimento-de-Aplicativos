@@ -615,6 +615,70 @@ class TestRelatorioPorGrau(BaseGrau):
                       "(está aberto em outro programa?). Feche-o: o próximo download do lote o "
                       "regrava", r.detalhe)
 
+    def test_marcado_por_engano_e_desfeito_pelo_manual_continua_publico(self):
+        """Achados W8 e W10: desde a correção V3, a linha "(processo sigiloso)"
+        do relatório do acervo vale "sim" mesmo que o completo diga "não". O
+        manual ("Se um processo foi marcado como sigiloso por engano") mandava
+        trocar o "sim" só no completo: a rodada seguinte do lote marcava A de
+        novo e a outra levava os autos de volta à pasta dos sigilosos. O passo
+        5 manda agora trocar também a linha mascarada do acervo pela de A,
+        copiada do completo; seguido à letra, A continua pública."""
+        import re
+
+        manual = (Path(__file__).resolve().parents[1] / "docs" / "MANUAL.md") \
+            .read_text(encoding="utf-8")
+        secao = manual.split("### Se um processo foi marcado como sigiloso por engano", 1)[1]
+        passo5 = re.sub(r"\s+", " ", secao.split("\n5. ", 1)[1].split("\n6. ", 1)[0])
+        self.assertIn("`Acervo\\Processos\\<nome do lote>\\_controle\\relatorio.csv`", passo5)
+        self.assertIn("“(processo sigiloso)”", passo5)
+        self.assertIn("copiada do relatório completo", passo5)
+
+        r = self.lote([A], roteiro={A.formatado: ["ok_sigiloso"]}).itens[0]
+        self.assertTrue(r.sigiloso)
+        sig = self.tmp / "Sigilosos" / self.destino.name
+        completo = sig / "_controle" / "relatorio.csv"
+        do_acervo = self.destino / "_controle" / "relatorio.csv"
+
+        def gravar(arquivo, linhas):                # como o Excel, no mesmo formato
+            with open(arquivo, "w", encoding="utf-8-sig", newline="") as f:
+                escritor = csv.DictWriter(f, fieldnames=list(linhas[0]), delimiter=";",
+                                          lineterminator="\r\n")
+                escritor.writeheader()
+                escritor.writerows(linhas)
+
+        # o manual, à letra: 4. o download.sigilo.json fora
+        sigilo.arquivo_do_download().unlink()
+        # 5. "não" na linha de A do completo; no relatório do acervo, a linha
+        # mascarada de mesma ordem trocada pela de A copiada do completo
+        linhas = self.relatorio(completo)
+        dela = next(l for l in linhas if l["processo"] == A.formatado)
+        dela["sigiloso"] = "não"
+        gravar(completo, linhas)
+        gravar(do_acervo, [dela if (l["processo"], l["ordem"]) ==
+                           (motor.MASCARA_SIGILOSO, dela["ordem"]) else l
+                           for l in self.relatorio(do_acervo)])
+        # 6. os autos (e o que mais tiver o número dele) de volta ao lote
+        for pasta in (sig, sig / "_controle"):
+            for p in list(pasta.glob(f"{A.nome_arquivo}*")):
+                p.replace(self.destino / p.relative_to(sig))
+
+        # a rodada seguinte do lote, com outro processo, não o marca de novo...
+        self.lote([A2])
+        for arquivo in (do_acervo, completo):
+            self.assertEqual([(l["processo"], l["sigiloso"]) for l in self.relatorio(arquivo)],
+                             [(A.formatado, "não"), (A2.formatado, "não")], arquivo)
+        # ... e a que o tem na relação não o leva de volta aos sigilosos
+        r = self.lote([A]).itens[0]
+        self.assertEqual((r.situacao, r.sigiloso, r.arquivo),
+                         (modelos.JA_BAIXADO, False, str(self.destino / f"{A.nome_arquivo}.pdf")))
+        self.assertTrue((self.destino / f"{A.nome_arquivo}.pdf").is_file())
+        self.assertFalse((sig / f"{A.nome_arquivo}.pdf").exists())
+        self.assertEqual([(l["processo"], l["sigiloso"]) for l in self.relatorio()],
+                         [(A.formatado, "não"), (A2.formatado, "não")])
+        self.assertNotIn(A.nome_arquivo, sigilo.apuradas_no_download())
+        self.assertNotIn(A.nome_arquivo, sigilo.chaves_sigilosas(self.tmp / "Sigilosos",
+                                                                 self.tmp / "Acervo"))
+
 
 # ================================================================== sigilo
 class TestSigiloNosDoisGraus(BaseGrau):

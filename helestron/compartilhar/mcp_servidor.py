@@ -1012,6 +1012,17 @@ def main(argv: list[str] | None = None) -> int:
     # stdout é o canal do protocolo: todo log vai para stderr.
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    # E também para o registro do programa (Logs), como o da janela e o da
+    # linha de comando, sem console: o aviso que a regra do sigilo dá uma vez
+    # só (o originário herdado da origem) pode sair justamente aqui, e o
+    # manual diz que ele fica em Logs, fora do acervo. Sem Logs, fica o stderr.
+    if not any(getattr(h, "_helestron", False) for h in logging.getLogger().handlers):
+        try:
+            from ..nucleo import registro
+
+            registro.configurar(console=False, nivel=logging.WARNING)
+        except Exception:
+            pass
     # Biblioteca que imprima aviso com print() não pode sujar o canal do
     # protocolo: o print comum passa a ir para o stderr, e só as respostas
     # vão para o stdout verdadeiro.

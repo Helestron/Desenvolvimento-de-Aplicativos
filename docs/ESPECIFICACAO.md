@@ -870,7 +870,9 @@ Combinados na revisão da versão 1.0.0; cada lado tolera a falta do outro
   `relatorio.csv` e `relatorio (atualizado).csv`; a linha mascarada
   “(processo sigiloso)” é casada, pela ordem, com a do relatório completo da
   pasta de sigilosos, e continua sigilosa mesmo que o completo, desatualizado,
-  diga que não) e grava a mescla: as linhas refeitas no lugar das
+  diga que não — por isso, para desfazer uma marcação por engano, o manual
+  manda trocar também a linha mascarada pela do completo, já com “não”:
+  seção 12, Sigilo) e grava a mescla: as linhas refeitas no lugar das
   antigas, as demais como estavam e as novas no fim, com a ordem
   renumerada. O relatório do acervo continua mascarado, e o completo vai
   para a pasta de sigilosos do lote (`pasta_sigilosos_do_lote`, seção 5.1).
@@ -2217,6 +2219,17 @@ dados ficam com a instalação registrada.
     arquivos de volta da pasta dos sigilosos para o acervo — também o
     originário do 2º grau levado pela capa (fonte 6), que fica sigiloso
     pela própria pasta, com o “sim” da linha dele no relatório completo.
+    Com a separação dos sigilosos ligada, o “não” vai no relatório
+    completo, e a linha mascarada “(processo sigiloso)” de mesma ordem, no
+    relatório do acervo (e no “(atualizado)”), é trocada pela linha copiada
+    do completo (a do processo e a do originário levado junto): desde a
+    1.1.0 (contrato C9, seção 6.6), a linha mascarada vale “sim” mesmo que
+    o completo diga “não”, para o completo desatualizado (preso no Excel na
+    rodada que apurou o sigilo) não devolver o número ao acervo, e não há
+    como distinguir dele o completo editado. Sem a troca, a rodada seguinte
+    do lote regrava o “sim” no completo, e a primeira que tiver o processo
+    na relação leva os autos de volta para a pasta dos sigilosos (uma vez
+    sigiloso, sempre sigiloso).
   * **Download.** O processo que o programa já sabe sigiloso pela regra
     única vai para a pasta dos sigilosos mesmo que a página do portal não
     mostre o selo (segredo decretado depois, leiaute que a leitura não
@@ -2657,7 +2670,11 @@ objeto, `-32602`; `tools/call` com `name` ou `arguments` inválidos,
 `-32602`; qualquer outro defeito vira `-32603`, e o laço continua. A
 resposta que repete um texto sem forma em UTF-8 (o escape `\ud800` no
 `id` ou no `termo`) vai com escapes `\uXXXX`; a que não vira JSON vira
-`-32603`.
+`-32603`. O stdout é só do protocolo: o registro do conector (avisos e
+erros) vai para o stderr e, como o da janela e o da linha de comando, para
+`Logs` (`registro.configurar(console=False)`), onde fica, por exemplo, o
+aviso do originário herdado pela capa quando é o conector que aplica a
+regra primeiro (seção 12).
 
 ### 13.7 Arquivos de contexto, índice e pacote (`compartilhar/preparo.py`, `compartilhar/chatgpt.py`)
 
