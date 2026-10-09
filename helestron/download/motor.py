@@ -1698,10 +1698,11 @@ class _Lote:
                     # a linha completa diz que é sigiloso e, se a retirada
                     # já levou os autos, onde eles estão (como _mascarar_relatorios)
                     item = dict(item, sigiloso="sim")
-                    if item["arquivo"] and "(na pasta de sigilosos)" not in item["arquivo"] \
+                    arquivo = item.get("arquivo") or ""
+                    if arquivo and "(na pasta de sigilosos)" not in arquivo \
                             and (self.pasta_sigilosos / f"{chave}.pdf").exists() \
                             and not (self.destino / f"{chave}.pdf").exists():
-                        item["arquivo"] += " (na pasta de sigilosos)"
+                        item["arquivo"] = arquivo + " (na pasta de sigilosos)"
                 w.writerow(self._linha_antiga(item, ordem, mascarar))
                 continue
             r = item
