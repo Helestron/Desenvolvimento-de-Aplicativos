@@ -672,6 +672,16 @@ class TestComandosParaAutomacao(unittest.TestCase):
         self.assertEqual(len(linha), 1)
         self.assertIn("`--grau`", linha[0])
         self.assertIn("do 2º grau: para retomá-la, use --grau 2g", linha[0])
+        # a ajuda do próprio programa (baixar --help) diz o mesmo, com a
+        # mensagem que a linha "não retomado" imprime (cli._fora_do_grau)
+        from helestron.download import cli
+        from helestron.nucleo import cnj
+
+        ajuda = re.sub(r"\s+", " ", cli.criar_parser().format_help())
+        retomar = ajuda.rsplit("--retomar", 1)[1].split("--texto", 1)[0]
+        self.assertIn("passe o mesmo --grau do lote", retomar)
+        self.assertIn(cli._fora_do_grau(cnj.ler("0700001-93.2024.8.02.0058"), "2g", cnj),
+                      retomar)
 
     def test_preparar_pasta_no_acervo_pula_sigiloso_e_inclui_os_do_lote(self):
         lote = self.acervo / "Processos" / "Lote 1"

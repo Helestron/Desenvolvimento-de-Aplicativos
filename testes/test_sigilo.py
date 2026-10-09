@@ -592,6 +592,33 @@ class TestOrigemDoOriginario(Base):
         self.assertEqual(sigilo.herdadas_das_origens(None, sabidas), set())
         self.assertEqual(sigilo.herdadas_das_origens(self.acervo, set()), set())
 
+    def test_o_registro_diz_a_origem_e_a_capa_uma_vez(self):
+        """Achado V6 da verificação: o originário levado pela origem DEPOIS do
+        download entrava no registro do download em silêncio - o motivo
+        passava a ser "um download anterior apurou", e nada dizia que o HC
+        saiu por causa de A. O aviso diz a origem e a capa, uma vez por
+        originário novo: depois, o registro já o conhece."""
+        capa = _capa_2g(self.controle, self.hc, self.a)
+        _capa_2g(self.controle, self.hc_publico, self.b)
+        self.arquivo(f"Lote 9/{self.a.nome_arquivo}.pdf")
+        sabidas = sigilo.Sigilosas({self.a.nome_arquivo})
+        self.assertEqual(sigilo.origens_herdadas(self.acervo, sabidas),
+                         {self.hc.nome_arquivo: (self.a.nome_arquivo, capa)})
+        self.assertEqual(sigilo.herdadas_das_origens(self.acervo, sabidas),
+                         {self.hc.nome_arquivo})
+        with self.assertLogs("nucleo.sigilo", "WARNING") as registro:
+            chaves = sigilo.chaves_sigilosas(self.sigilosos, self.acervo)
+        self.assertIn(self.hc.nome_arquivo, chaves)
+        self.assertEqual(len(registro.output), 1, registro.output)
+        self.assertIn(f"originário {self.hc.nome_arquivo} tratado como sigiloso: o processo "
+                      f"de origem {self.a.nome_arquivo} é sigiloso (capa do 2º grau em {capa})",
+                      registro.output[0])
+        self.assertEqual(sigilo.apuradas_no_download(), {self.hc.nome_arquivo})
+        # o registro já o conhece: a consulta seguinte não avisa de novo
+        with self.assertNoLogs("nucleo.sigilo", "WARNING"):
+            self.assertIn(self.hc.nome_arquivo,
+                          sigilo.chaves_sigilosas(self.sigilosos, self.acervo))
+
 
 class TestPastaFunda(Base):
     """Achado 16: o que o preparo leva para a pasta dos sigilosos conta."""

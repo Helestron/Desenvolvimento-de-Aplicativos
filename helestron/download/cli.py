@@ -146,7 +146,9 @@ def criar_parser() -> ArgumentParser:
                         "(falhou, ficou pendente ou interrompido), os números que ainda não "
                         "estão nele e o baixado cujo PDF saiu da pasta (com "
                         "--rebaixar-incompletos, também o que tem folhas ou documentos "
-                        "ausentes)")
+                        "ausentes); só as linhas do grau desta chamada: passe o mesmo --grau "
+                        "do lote (sem ele vale 1g, e a linha do 2º grau fica de fora: 'não "
+                        "retomado: ... (do 2º grau: para retomá-la, use --grau 2g)')")
     p.add_argument("--texto", action="store_true",
                    help="ao fim, extrai o texto de cada PDF com a marca da folha (em _texto, ao "
                         "lado dos PDFs; dentro do acervo, em _ia\\texto)")
