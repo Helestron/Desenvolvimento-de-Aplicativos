@@ -592,6 +592,29 @@ class TestBaixar2g(apoio.PastaTemporaria):
         self.assertFalse(self.destino().exists())
         self.assertEqual(p.pecas_pedidas, [], "não vira peça a peça")
 
+    def test_consulta_sem_um_processo_so_nao_grava_no_2o_grau(self):
+        """Achado da revisão: a recusa da consulta (dois principais do mesmo
+        número; só outros números) saía como ERRO passageiro, com "Tentar de
+        novo". É definitiva, como as folhas em duplicidade."""
+        dois = {"candidatos": modal(A, "P0000AAAA0000") + modal(A, "P0000BBBB0000")}
+        outros = {"candidatos": modal(H, "P0000HHHH0000")}
+        for resposta, frase in ((dois, "mais de um processo com este número"),
+                                (outros, "nenhum traz exatamente este número")):
+            with self.subTest(frase=frase):
+                consulta = PortalDeConsulta2G(resposta)
+
+                class Recusada(PortalDeDownload2G):
+                    def achar_codigo_2g(self, numero):
+                        return consulta.achar_codigo_2g(numero)
+
+                r = Recusada(info=INFO_2G).baixar(A, self.destino())
+                self.assertEqual((r.situacao, r.causa, r.refazer),
+                                 (modelos.NAO_SUPORTADO, "", False), r.detalhe)
+                self.assertIn(frase, r.detalhe)
+                self.assertTrue(r.detalhe.endswith("não baixei, para não gravar autos trocados"))
+                self.assertFalse(self.destino().exists())
+                self.assertFalse((self.tmp / "Lote" / "_controle").exists())
+
     def test_senha_no_2o_grau_e_conferida_depois(self):
         p = PortalDeDownload2G(senha_pedida=[True])
         r = p.baixar(A, self.destino(), senha="s1")
